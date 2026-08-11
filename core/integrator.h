@@ -32,4 +32,46 @@ CoreResult rk4_step(AccelFunc f, void *ctx, const State *in, double h,
 CoreResult rk4_integrate(AccelFunc f, void *ctx, const State *in,
                          double t_end, double h, State *out);
 
+/* ---- DOP853: the runtime integrator ------------------------------------ */
+
+typedef struct {
+    /* Absolute position tolerance in metres. Not relative: a relative
+     * tolerance behaves badly near a coordinate zero, which a barycentric
+     * frame crosses constantly (PROJECT.md section 4).
+     *
+     * The velocity scale is derived as tol_m / |h|: the velocity error that
+     * would accumulate to tol_m of position over one step. So there is one
+     * number for the caller to choose, and it is in metres. */
+    double tol_m;
+
+    double h_init;    /* 0 -> chosen automatically */
+    double h_min;     /* 0 -> no floor; a step below this is an error */
+    double h_max;     /* 0 -> no ceiling */
+    long   max_steps; /* 0 -> default */
+} Dop853Config;
+
+typedef struct {
+    /* The step size to start the next integration with. This is why the type
+     * exists: PROJECT.md section 4 requires the integrator's step to be part
+     * of the save. An adaptive step sequence depends on its own history, so
+     * resuming from a "fresh" step produces a different trajectory from the
+     * one that was saved, and in an N-body system that difference grows. */
+    double h;
+
+    long n_accepted;
+    long n_rejected;
+    long n_evals;
+} Dop853State;
+
+/* Adaptive integration from in->t to t_end.
+ *
+ * io->h is read on entry (0 means "choose") and left holding the step the
+ * next call should continue with. Pass the same Dop853State back to continue
+ * a trajectory; zero it to start one.
+ *
+ * Direction comes from t_end, so backwards integration works. */
+CoreResult dop853_integrate(AccelFunc f, void *ctx, const State *in,
+                            double t_end, const Dop853Config *cfg,
+                            Dop853State *io, State *out);
+
 #endif /* CORE_INTEGRATOR_H */
