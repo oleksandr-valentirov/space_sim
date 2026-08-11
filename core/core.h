@@ -6,6 +6,21 @@
 #ifndef CORE_H
 #define CORE_H
 
+#include "vec3.h"
+
+/* A body or vessel at one instant.
+ *
+ * Frame: barycentric, inertial, ICRF-like (PROJECT.md section 4). Position in
+ * metres, velocity in metres per second, t in seconds from the epoch of the
+ * loaded ephemeris. Everything that crosses the FFI boundary uses this
+ * layout, so it must stay a plain struct of doubles with no padding
+ * surprises. */
+typedef struct {
+    Vec3d  r;
+    Vec3d  v;
+    double t;
+} State;
+
 typedef enum {
     CORE_OK = 0,
     CORE_ERR_BUFFER_TOO_SMALL,

@@ -26,10 +26,13 @@ LIB   := $(BUILD)/libcore.a
 CORE_SRC := $(wildcard core/*.c)
 CORE_OBJ := $(patsubst core/%.c,$(BUILD)/core/%.o,$(CORE_SRC))
 
-TEST_SRC := $(wildcard core/test/*.c)
+# $(sort) не для краси: порядок сценаріїв визначає порядок рядків у actual.txt,
+# а $(wildcard) не гарантує сталого порядку. Без сортування звірка з еталоном
+# могла б падати через перестановку рядків.
+TEST_SRC := $(sort $(wildcard core/test/*.c))
 TEST_BIN := $(patsubst core/test/%.c,$(BUILD)/test/%,$(TEST_SRC))
 
-SCEN_SRC := $(wildcard core/scenario/*.c)
+SCEN_SRC := $(sort $(wildcard core/scenario/*.c))
 SCEN_BIN := $(patsubst core/scenario/%.c,$(BUILD)/scenario/%,$(SCEN_SRC))
 GOLDEN   := core/scenario/golden.txt
 ACTUAL   := $(BUILD)/scenario/actual.txt

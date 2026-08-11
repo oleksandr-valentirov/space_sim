@@ -1,1 +1,2 @@
 sc_arith 00272faa96f0960f
+sc_vec3 0becdeab231904ff
