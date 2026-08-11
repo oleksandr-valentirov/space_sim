@@ -16,15 +16,29 @@ AR ?= ar
 # Прапорці беруться з core/cflags.txt і НІДЕ більше не задаються.
 CFLAGS := $(shell sed -e 's/#.*//' core/cflags.txt | tr '\n' ' ')
 
-# -lm свідомо НЕ лінкуємо: у детермінованій зоні libm заборонений
-# (PROJECT.md §4). Це другий рубіж захисту після make check-libm.
+# Дві бібліотеки — це і є межа детермінізму, виражена в графі збірки:
+#
+#   libcore.a          core/*.c        РАНТАЙМ. libm заборонений, -lm не
+#                                      лінкується взагалі. Другий рубіж
+#                                      захисту після make check-libm.
+#   libcore_offline.a  core/offline/*.c КУКЕР. libm дозволений, лінкується
+#                                      з -lm. Сюди йде все, що рахується
+#                                      наперед і потрапляє в білд ассетом.
+#
+# Сценарії детермінізму лінкуються ТІЛЬКИ з libcore.a і без -lm: якщо туди
+# просочиться тригонометрія, лінкування впаде. Тести лінкуються з обома.
 LDLIBS :=
+LDLIBS_OFFLINE := -lm
 
 BUILD := build
 LIB   := $(BUILD)/libcore.a
+LIB_OFFLINE := $(BUILD)/libcore_offline.a
 
-CORE_SRC := $(wildcard core/*.c)
+CORE_SRC := $(sort $(wildcard core/*.c))
 CORE_OBJ := $(patsubst core/%.c,$(BUILD)/core/%.o,$(CORE_SRC))
+
+OFFLINE_SRC := $(sort $(wildcard core/offline/*.c))
+OFFLINE_OBJ := $(patsubst core/offline/%.c,$(BUILD)/core/offline/%.o,$(OFFLINE_SRC))
 
 # $(sort) не для краси: порядок сценаріїв визначає порядок рядків у actual.txt,
 # а $(wildcard) не гарантує сталого порядку. Без сортування звірка з еталоном
@@ -39,20 +53,31 @@ ACTUAL   := $(BUILD)/scenario/actual.txt
 
 .PHONY: all test unit check-libm determinism determinism-bless flags clean
 
-all: $(LIB)
+all: $(LIB) $(LIB_OFFLINE)
 
 $(BUILD)/core/%.o: core/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Icore -c $< -o $@
 
+$(BUILD)/core/offline/%.o: core/offline/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Icore -Icore/offline -c $< -o $@
+
 $(LIB): $(CORE_OBJ)
 	@mkdir -p $(dir $@)
 	$(AR) rcs $@ $^
 
-$(BUILD)/test/%: core/test/%.c $(LIB)
+$(LIB_OFFLINE): $(OFFLINE_OBJ)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Icore -o $@ $< $(LIB) $(LDLIBS)
+	$(AR) rcs $@ $^
 
+$(BUILD)/test/%: core/test/%.c $(LIB) $(LIB_OFFLINE)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Icore -Icore/offline -o $@ $< \
+		$(LIB_OFFLINE) $(LIB) $(LDLIBS_OFFLINE)
+
+# Без libcore_offline.a і без -lm: лінкування тут — жива перевірка того,
+# що в рантаймовій частині немає libm.
 $(BUILD)/scenario/%: core/scenario/%.c $(LIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Icore -o $@ $< $(LIB) $(LDLIBS)
