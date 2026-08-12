@@ -10,6 +10,8 @@
 #   make hashes           показати фактичні хеші сценаріїв
 #   make flags            показати фактичні прапорці (звірка з build.rs на M1)
 #   make cook             перегенерувати ассет-фікстуру (робити свідомо!)
+#   make csv              вивести результати ядра у build/csv/*.csv
+#   make plots            побудувати графіки з CSV у build/plots/*.png
 #   make clean
 
 CC ?= cc
@@ -89,12 +91,22 @@ TEST_BIN := $(patsubst core/test/%.c,$(BUILD)/test/%$(EXE),$(TEST_SRC))
 COOK_SRC := $(sort $(wildcard core/cook/*.c))
 COOK_BIN := $(patsubst core/cook/%.c,$(BUILD)/cook/%$(EXE),$(COOK_SRC))
 
+# csv.c is the shared writer, not a program: it is compiled into each exporter
+# rather than being one, so it must not match the pattern that builds them.
+EXPORT_SRC := $(filter-out core/export/csv.c,$(sort $(wildcard core/export/*.c)))
+EXPORT_BIN := $(patsubst core/export/%.c,$(BUILD)/export/%$(EXE),$(EXPORT_SRC))
+CSV_DIR    := $(BUILD)/csv
+PLOT_DIR   := $(BUILD)/plots
+
+PYTHON ?= python3
+
 SCEN_SRC := $(sort $(wildcard core/scenario/*.c))
 SCEN_BIN := $(patsubst core/scenario/%.c,$(BUILD)/scenario/%$(EXE),$(SCEN_SRC))
 GOLDEN   := core/scenario/golden.txt
 ACTUAL   := $(BUILD)/scenario/actual.txt
 
-.PHONY: all test unit check-libm determinism determinism-bless hashes cook flags clean
+.PHONY: all test unit check-libm determinism determinism-bless hashes cook \
+        csv plots flags clean
 
 all: $(LIB) $(LIB_OFFLINE)
 
@@ -124,6 +136,15 @@ $(BUILD)/cook/%$(EXE): core/cook/%.c $(LIB) $(LIB_OFFLINE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Icore -Icore/offline -o $@ $< \
 		$(LIB_OFFLINE) $(LIB) $(LDLIBS_OFFLINE)
+
+# Експортери CSV. Лінкуються як тести, з обома бібліотеками й -lm: це
+# діагностичні драйвери, а не рантайм, і один з них (ex_horizons) свідомо
+# ганяє офлайновий взаємний N-body проти Horizons. Живу перевірку «в рантаймі
+# немає libm» дають сценарії нижче — дублювати її тут нічого не додає.
+$(BUILD)/export/%$(EXE): core/export/%.c core/export/csv.c $(LIB) $(LIB_OFFLINE)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Icore -Icore/offline -Icore/export -o $@ \
+		$< core/export/csv.c $(LIB_OFFLINE) $(LIB) $(LDLIBS_OFFLINE)
 
 # Без libcore_offline.a і без -lm: лінкування тут — жива перевірка того,
 # що в рантаймовій частині немає libm.
@@ -190,6 +211,28 @@ cook: $(COOK_BIN)
 	@echo ""
 	@echo "Перегенеровано. Перевірте git diff і що визначає зміну:"
 	@echo "  зміна тут змінює всі хеші сценаріїв, які читають ассет."
+
+# --- Поставка M0: подивитися очима ----------------------------------------
+#
+# Тести кажуть «пройдено», а це показує, що саме пораховано. Обидва потрібні:
+# траєкторія, яка вкладається в допуск і при цьому летить не туди, — річ, яка
+# трапляється, і ловиться вона оком, а не порогом.
+#
+# CSV — артефакти збірки, у git їх немає (.gitignore). Вони НЕ входять у
+# звірку детермінізму: друк double у десятковий текст — справа libc, а не
+# IEEE, тож порівнювати ці файли між платформами не можна. Для цього є хеші
+# сценаріїв (core/export/csv.h).
+csv: $(EXPORT_BIN)
+	@mkdir -p $(CSV_DIR)
+	@for e in $(EXPORT_BIN); do echo "== $$e"; $$e || exit 1; done
+	@echo ""
+	@echo "CSV у $(CSV_DIR). Далі: make plots"
+
+# matplotlib свідомо не є залежністю збірки: ядро від нього не залежить,
+# і на CI його немає. Скрипт сам скаже, чого бракує.
+plots: csv
+	@mkdir -p $(PLOT_DIR)
+	@$(PYTHON) scripts/plot.py --csv $(CSV_DIR) --out $(PLOT_DIR)
 
 flags:
 	@echo $(CFLAGS)
