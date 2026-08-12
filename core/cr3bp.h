@@ -51,4 +51,47 @@ double cr3bp_jacobi(Vec3d r, Vec3d v, double mu);
  * cube root, which matters because pow() is not available here. */
 CoreResult cr3bp_lagrange(double mu, int point, Vec3d *out);
 
+/* Second derivatives of the effective potential, row-major 3x3 and symmetric:
+ * u[i*3+j] = d2 Omega / d r_i d r_j.
+ *
+ * This is the whole content of the variational equations - everything else
+ * about them is the same Coriolis term the state already has, because that
+ * part of the dynamics is already linear in velocity. */
+void cr3bp_hessian(Vec3d r, double mu, double u[9]);
+
+/* Accelerations for a reference trajectory in block 0 and up to six
+ * linearised companions in blocks 1..n-1, in the form
+ * dop853_integrate_blocks wants. ctx is a Cr3bpCtx, as for accel_cr3bp.
+ *
+ * Companion b is a perturbation (dr, dv) about block 0, and its acceleration
+ * is Omega_rr(r0) dr plus the Coriolis term applied to dv. Note that it is
+ * evaluated at block 0's position at that stage, not at the start of the step:
+ * that is exactly why the STM has to share the integrator's stages rather than
+ * run beside it on its own. */
+void accel_cr3bp_var(double t, const Vec3d *r, const Vec3d *v, int n_blocks,
+                     void *ctx, Vec3d *a_out);
+
+/* Re-express a transition matrix from (position, velocity) coordinates in
+ * (position, conjugate momentum) ones. Both 6x6 row-major; in and out may not
+ * alias.
+ *
+ * This exists because of a trap that cost a wrong conclusion here. The CR3BP
+ * is Hamiltonian, so its transition matrix must be symplectic - and the one
+ * stm_integrate produces is not, because in a rotating frame the momentum
+ * conjugate to position is not the velocity:
+ *
+ *     px = vx - y,   py = vy + x,   pz = vz
+ *
+ * Checking Phi in velocity coordinates against Phi^T J Phi = J gives a defect
+ * of 60 where the entries are 10, and - the part that identifies it as a
+ * definition error rather than a numerical one - the defect does not move at
+ * all when the tolerance is tightened by three orders of magnitude. After the
+ * change of variables the defect falls from 7.5e-9 to 3.9e-12 as the tolerance
+ * goes from 1e-12 to 1e-15, which is what an integration error looks like.
+ *
+ * No transformation is needed in an inertial frame, where momentum per unit
+ * mass is velocity. This is a rotating-frame matter, which is why it lives
+ * here and not in stm.c. */
+void cr3bp_stm_canonical(const double phi_v[36], double phi_p[36]);
+
 #endif /* CORE_CR3BP_H */

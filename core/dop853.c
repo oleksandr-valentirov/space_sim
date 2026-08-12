@@ -8,7 +8,7 @@
 
 #define DEFAULT_MAX_STEPS 1000000L
 
-/* One derivative of the state: dr/dt and dv/dt. */
+/* One derivative of one block: dr/dt and dv/dt. */
 typedef struct {
     Vec3d dr;
     Vec3d dv;
@@ -45,61 +45,80 @@ static double err_norm_sq(Vec3d er, Vec3d ev, double scale_r, double scale_v)
     return xr * xr + yr * yr + zr * zr + xv * xv + yv * yv + zv * zv;
 }
 
-/* One trial step of size h from (t, r, v), given the derivative there in
- * k[0]. Writes the proposed state, its derivative into k[DOP853_STAGES], and
- * the error norm. Does not decide whether to accept. */
-static void dop853_try_step(AccelFunc f, void *ctx,
-                            double t, Vec3d r, Vec3d v, double h,
-                            double tol_m, Deriv *k,
-                            State *out, double *error_norm, long *n_evals)
+/* One trial step of size h from (t, r, v), given the derivatives there in
+ * k[0]. Writes the proposed blocks, their derivatives into k[DOP853_STAGES],
+ * and the error norm of block 0. Does not decide whether to accept. */
+static void try_step(BlockAccelFunc f, void *ctx, int nb,
+                     double t, const Vec3d *r, const Vec3d *v, double h,
+                     double tol_m, Deriv k[][DOP853_MAX_BLOCKS],
+                     Vec3d *r_out, Vec3d *v_out,
+                     double *error_norm, long *n_evals)
 {
-    for (int i = 1; i < DOP853_STAGES; i++) {
-        Vec3d dr = vec3_zero();
-        Vec3d dv = vec3_zero();
+    Vec3d r_stage[DOP853_MAX_BLOCKS];
+    Vec3d v_stage[DOP853_MAX_BLOCKS];
+    Vec3d a_stage[DOP853_MAX_BLOCKS];
 
-        /* Stage sums are accumulated in stage order, including the zero
-         * coefficients. Skipping them would save a few multiplies and change
-         * nothing numerically, but it is exactly the kind of shortcut that
-         * makes two builds disagree if someone later reorders the test. */
-        for (int j = 0; j < i; j++) {
-            double a = DOP853_A[i][j];
-            dr = vec3_add_scaled(dr, k[j].dr, a);
-            dv = vec3_add_scaled(dv, k[j].dv, a);
+    for (int i = 1; i < DOP853_STAGES; i++) {
+        for (int b = 0; b < nb; b++) {
+            Vec3d dr = vec3_zero();
+            Vec3d dv = vec3_zero();
+
+            /* Stage sums are accumulated in stage order, including the zero
+             * coefficients. Skipping them would save a few multiplies and
+             * change nothing numerically, but it is exactly the kind of
+             * shortcut that makes two builds disagree if someone later
+             * reorders the test. */
+            for (int j = 0; j < i; j++) {
+                double a = DOP853_A[i][j];
+                dr = vec3_add_scaled(dr, k[j][b].dr, a);
+                dv = vec3_add_scaled(dv, k[j][b].dv, a);
+            }
+
+            r_stage[b] = vec3_add_scaled(r[b], dr, h);
+            v_stage[b] = vec3_add_scaled(v[b], dv, h);
+
+            k[i][b].dr = v_stage[b];
         }
 
-        Vec3d r_stage = vec3_add_scaled(r, dr, h);
-        Vec3d v_stage = vec3_add_scaled(v, dv, h);
-
-        k[i].dr = v_stage;
-        f(t + DOP853_C[i] * h, r_stage, v_stage, ctx, &k[i].dv);
+        f(t + DOP853_C[i] * h, r_stage, v_stage, nb, ctx, a_stage);
         (*n_evals)++;
+
+        for (int b = 0; b < nb; b++) {
+            k[i][b].dv = a_stage[b];
+        }
     }
 
-    Vec3d sum_r = vec3_zero();
-    Vec3d sum_v = vec3_zero();
-    for (int j = 0; j < DOP853_STAGES; j++) {
-        sum_r = vec3_add_scaled(sum_r, k[j].dr, DOP853_B[j]);
-        sum_v = vec3_add_scaled(sum_v, k[j].dv, DOP853_B[j]);
+    for (int b = 0; b < nb; b++) {
+        Vec3d sum_r = vec3_zero();
+        Vec3d sum_v = vec3_zero();
+        for (int j = 0; j < DOP853_STAGES; j++) {
+            sum_r = vec3_add_scaled(sum_r, k[j][b].dr, DOP853_B[j]);
+            sum_v = vec3_add_scaled(sum_v, k[j][b].dv, DOP853_B[j]);
+        }
+
+        r_out[b] = vec3_add_scaled(r[b], sum_r, h);
+        v_out[b] = vec3_add_scaled(v[b], sum_v, h);
+
+        /* The derivative at the end of the step. Needed for the error
+         * estimate, and reused as stage zero of the next step if this one is
+         * accepted (first-same-as-last), so it costs nothing. */
+        k[DOP853_STAGES][b].dr = v_out[b];
     }
 
-    out->r = vec3_add_scaled(r, sum_r, h);
-    out->v = vec3_add_scaled(v, sum_v, h);
-    out->t = t + h;
-
-    /* The derivative at the end of the step. Needed for the error estimate,
-     * and reused as stage zero of the next step if this one is accepted
-     * (first-same-as-last), so it costs nothing. */
-    k[DOP853_STAGES].dr = out->v;
-    f(out->t, out->r, out->v, ctx, &k[DOP853_STAGES].dv);
+    f(t + h, r_out, v_out, nb, ctx, a_stage);
     (*n_evals)++;
+
+    for (int b = 0; b < nb; b++) {
+        k[DOP853_STAGES][b].dv = a_stage[b];
+    }
 
     Vec3d e5r = vec3_zero(), e5v = vec3_zero();
     Vec3d e3r = vec3_zero(), e3v = vec3_zero();
     for (int j = 0; j <= DOP853_STAGES; j++) {
-        e5r = vec3_add_scaled(e5r, k[j].dr, DOP853_E5[j]);
-        e5v = vec3_add_scaled(e5v, k[j].dv, DOP853_E5[j]);
-        e3r = vec3_add_scaled(e3r, k[j].dr, DOP853_E3[j]);
-        e3v = vec3_add_scaled(e3v, k[j].dv, DOP853_E3[j]);
+        e5r = vec3_add_scaled(e5r, k[j][0].dr, DOP853_E5[j]);
+        e5v = vec3_add_scaled(e5v, k[j][0].dv, DOP853_E5[j]);
+        e3r = vec3_add_scaled(e3r, k[j][0].dr, DOP853_E3[j]);
+        e3v = vec3_add_scaled(e3v, k[j][0].dv, DOP853_E3[j]);
     }
 
     double scale_r = tol_m;
@@ -122,13 +141,18 @@ static void dop853_try_step(AccelFunc f, void *ctx,
 /* Hairer's starting step heuristic: guess from the ratio of the state to its
  * derivative, take one Euler probe, and refine from the curvature it reveals.
  * Getting this roughly right matters only for the first few steps, but a
- * wildly wrong guess costs a run of rejections. */
-static double initial_step(AccelFunc f, void *ctx, const State *s,
+ * wildly wrong guess costs a run of rejections.
+ *
+ * Reads block 0 only, for the reason given at dop853_integrate_blocks; the
+ * probe still advances every block, because f is entitled to see a consistent
+ * set of them. */
+static double initial_step(BlockAccelFunc f, void *ctx, int nb,
+                           double t0, const Vec3d *r, const Vec3d *v,
                            double tol_m, double direction,
                            const Deriv *k0, long *n_evals)
 {
-    double d0 = sqrt(err_norm_sq(s->r, s->v, tol_m, tol_m));
-    double d1 = sqrt(err_norm_sq(k0->dr, k0->dv, tol_m, tol_m));
+    double d0 = sqrt(err_norm_sq(r[0], v[0], tol_m, tol_m));
+    double d1 = sqrt(err_norm_sq(k0[0].dr, k0[0].dv, tol_m, tol_m));
 
     double h0;
     if (d0 < 1e-5 || d1 < 1e-5) {
@@ -137,15 +161,20 @@ static double initial_step(AccelFunc f, void *ctx, const State *s,
         h0 = 0.01 * (d0 / d1);
     }
 
-    Vec3d r1 = vec3_add_scaled(s->r, k0->dr, h0 * direction);
-    Vec3d v1 = vec3_add_scaled(s->v, k0->dv, h0 * direction);
+    Vec3d r1[DOP853_MAX_BLOCKS];
+    Vec3d v1[DOP853_MAX_BLOCKS];
+    Vec3d a1[DOP853_MAX_BLOCKS];
 
-    Vec3d a1;
-    f(s->t + h0 * direction, r1, v1, ctx, &a1);
+    for (int b = 0; b < nb; b++) {
+        r1[b] = vec3_add_scaled(r[b], k0[b].dr, h0 * direction);
+        v1[b] = vec3_add_scaled(v[b], k0[b].dv, h0 * direction);
+    }
+
+    f(t0 + h0 * direction, r1, v1, nb, ctx, a1);
     (*n_evals)++;
 
-    Vec3d ddr = vec3_sub(v1, k0->dr);
-    Vec3d ddv = vec3_sub(a1, k0->dv);
+    Vec3d ddr = vec3_sub(v1[0], k0[0].dr);
+    Vec3d ddv = vec3_sub(a1[0], k0[0].dv);
     double d2 = sqrt(err_norm_sq(ddr, ddv, tol_m, tol_m)) / h0;
 
     double d_max = d1 > d2 ? d1 : d2;
@@ -162,31 +191,39 @@ static double initial_step(AccelFunc f, void *ctx, const State *s,
     return h1 < capped ? h1 : capped;
 }
 
-CoreResult dop853_integrate(AccelFunc f, void *ctx, const State *in,
-                            double t_end, const Dop853Config *cfg,
-                            Dop853State *io, State *out)
+CoreResult dop853_integrate_blocks(BlockAccelFunc f, void *ctx, int n_blocks,
+                                   double t0, double t_end,
+                                   Vec3d *r, Vec3d *v,
+                                   const Dop853Config *cfg, Dop853State *io)
 {
-    if (f == NULL || in == NULL || cfg == NULL || io == NULL || out == NULL) {
+    if (f == NULL || r == NULL || v == NULL || cfg == NULL || io == NULL) {
+        return CORE_ERR_INVALID_ARG;
+    }
+    if (n_blocks < 1 || n_blocks > DOP853_MAX_BLOCKS) {
         return CORE_ERR_INVALID_ARG;
     }
     if (!(cfg->tol_m > 0.0)) {
         return CORE_ERR_INVALID_ARG;
     }
 
-    State current = *in;
-
-    if (t_end == current.t) {
-        *out = current;
+    if (t_end == t0) {
         return CORE_OK;
     }
 
-    double direction = t_end > current.t ? 1.0 : -1.0;
+    double direction = t_end > t0 ? 1.0 : -1.0;
     long max_steps = cfg->max_steps > 0 ? cfg->max_steps : DEFAULT_MAX_STEPS;
 
-    Deriv k[DOP853_STAGES + 1];
-    k[0].dr = current.v;
-    f(current.t, current.r, current.v, ctx, &k[0].dv);
+    Deriv k[DOP853_STAGES + 1][DOP853_MAX_BLOCKS];
+    Vec3d a0[DOP853_MAX_BLOCKS];
+
+    for (int b = 0; b < n_blocks; b++) {
+        k[0][b].dr = v[b];
+    }
+    f(t0, r, v, n_blocks, ctx, a0);
     io->n_evals++;
+    for (int b = 0; b < n_blocks; b++) {
+        k[0][b].dv = a0[b];
+    }
 
     /* Pick up the step from the previous leg, or from the config, or guess. */
     double h;
@@ -195,8 +232,8 @@ CoreResult dop853_integrate(AccelFunc f, void *ctx, const State *in,
     } else if (cfg->h_init > 0.0) {
         h = cfg->h_init;
     } else {
-        h = initial_step(f, ctx, &current, cfg->tol_m, direction, &k[0],
-                         &io->n_evals);
+        h = initial_step(f, ctx, n_blocks, t0, r, v, cfg->tol_m, direction,
+                         k[0], &io->n_evals);
     }
 
     /* A step larger than the whole span is never useful, and without a
@@ -210,14 +247,18 @@ CoreResult dop853_integrate(AccelFunc f, void *ctx, const State *in,
      * 2.9e14 s after twenty-five legs of 0.8 days. Once it overflows to
      * infinity a rejected step can no longer shrink it, since inf * 0.2 is
      * still inf, and the integrator rejects forever. */
-    double h_ceiling = cfg->h_max > 0.0 ? cfg->h_max : dabs(t_end - current.t);
+    double h_ceiling = cfg->h_max > 0.0 ? cfg->h_max : dabs(t_end - t0);
     if (h > h_ceiling) {
         h = h_ceiling;
     }
 
+    double t = t0;
     long steps = 0;
 
-    while ((t_end - current.t) * direction > 0.0) {
+    Vec3d r_try[DOP853_MAX_BLOCKS];
+    Vec3d v_try[DOP853_MAX_BLOCKS];
+
+    while ((t_end - t) * direction > 0.0) {
         if (++steps > max_steps) {
             return CORE_ERR_TOLERANCE_NOT_MET;
         }
@@ -227,14 +268,12 @@ CoreResult dop853_integrate(AccelFunc f, void *ctx, const State *in,
 
         /* Clamp the last step onto t_end exactly, without letting the clamp
          * contaminate the step the controller carries forward. */
-        double remaining = (t_end - current.t) * direction;
+        double remaining = (t_end - t) * direction;
         double h_used = h < remaining ? h : remaining;
 
-        State candidate;
         double error_norm;
-        dop853_try_step(f, ctx, current.t, current.r, current.v,
-                        h_used * direction, cfg->tol_m, k,
-                        &candidate, &error_norm, &io->n_evals);
+        try_step(f, ctx, n_blocks, t, r, v, h_used * direction, cfg->tol_m, k,
+                 r_try, v_try, &error_norm, &io->n_evals);
 
         double factor;
         if (error_norm == 0.0) {
@@ -244,12 +283,18 @@ CoreResult dop853_integrate(AccelFunc f, void *ctx, const State *in,
         }
 
         if (error_norm < 1.0) {
-            current = candidate;
+            for (int b = 0; b < n_blocks; b++) {
+                r[b] = r_try[b];
+                v[b] = v_try[b];
+            }
+            t = t + h_used * direction;
             io->n_accepted++;
 
             /* First-same-as-last: the derivative computed at the end of the
              * accepted step is stage zero of the next one. */
-            k[0] = k[DOP853_STAGES];
+            for (int b = 0; b < n_blocks; b++) {
+                k[0][b] = k[DOP853_STAGES][b];
+            }
 
             if (factor > MAX_SCALE) {
                 factor = MAX_SCALE;
@@ -272,8 +317,45 @@ CoreResult dop853_integrate(AccelFunc f, void *ctx, const State *in,
         }
     }
 
-    current.t = t_end;
     io->h = h;
-    *out = current;
+    return CORE_OK;
+}
+
+/* ---- The one-block case ------------------------------------------------- */
+
+typedef struct {
+    AccelFunc f;
+    void     *ctx;
+} SingleCtx;
+
+static void single_block(double t, const Vec3d *r, const Vec3d *v,
+                         int n_blocks, void *ctx, Vec3d *a_out)
+{
+    (void)n_blocks;
+    const SingleCtx *s = (const SingleCtx *)ctx;
+    s->f(t, r[0], v[0], s->ctx, &a_out[0]);
+}
+
+CoreResult dop853_integrate(AccelFunc f, void *ctx, const State *in,
+                            double t_end, const Dop853Config *cfg,
+                            Dop853State *io, State *out)
+{
+    if (f == NULL || in == NULL || out == NULL) {
+        return CORE_ERR_INVALID_ARG;
+    }
+
+    SingleCtx single = { f, ctx };
+    Vec3d r = in->r;
+    Vec3d v = in->v;
+
+    CoreResult res = dop853_integrate_blocks(single_block, &single, 1,
+                                             in->t, t_end, &r, &v, cfg, io);
+    if (res != CORE_OK) {
+        return res;
+    }
+
+    out->r = r;
+    out->v = v;
+    out->t = t_end;
     return CORE_OK;
 }

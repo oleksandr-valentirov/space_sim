@@ -74,4 +74,47 @@ CoreResult dop853_integrate(AccelFunc f, void *ctx, const State *in,
                             double t_end, const Dop853Config *cfg,
                             Dop853State *io, State *out);
 
+/* ---- Blocks: carrying companion trajectories through the same steps ------ */
+
+/* Everything below exists to serve one requirement, and it is worth naming it
+ * before the mechanism: the state transition matrix (PROJECT.md section 5,
+ * prop_run_stm). Differential correction needs it, and so does the uncertainty
+ * machinery in section 8.
+ *
+ * The variational equations that produce the STM are six extra
+ * (position, velocity) pairs riding alongside the trajectory, each obeying
+ * d(dr)/dt = dv exactly as the state does. So rather than a second integrator
+ * for a 42-dimensional system, DOP853 here steps an array of blocks: block 0
+ * is the trajectory, blocks 1..n-1 are whatever travels with it.
+ *
+ * They must share one step sequence. A separately integrated STM would be the
+ * derivative of a slightly different trajectory than the one it is paired
+ * with, and the two would disagree exactly where correction needs them to
+ * agree - near the singular passages where the step is small.
+ *
+ * dop853_integrate is a one-block call into this, which keeps the invariant
+ * from CLAUDE.md - one integrator, one tolerance - true by construction rather
+ * than by discipline. */
+
+#define DOP853_MAX_BLOCKS 7
+
+/* Accelerations for every block at once. r, v and a_out are arrays of
+ * n_blocks entries; block 0 is the reference trajectory, and the rest may
+ * depend on it, which is exactly what a variational equation does. */
+typedef void (*BlockAccelFunc)(double t, const Vec3d *r, const Vec3d *v,
+                               int n_blocks, void *ctx, Vec3d *a_out);
+
+/* Adaptive integration of n_blocks blocks from t0 to t_end, in place.
+ *
+ * Step size control reads block 0 only. That is a deliberate choice, not an
+ * oversight: cfg->tol_m is a tolerance in metres on a trajectory, and the
+ * variational blocks are dimensionless sensitivities with no such scale. What
+ * keeps them honest is that their accuracy follows the trajectory's - and the
+ * proof of it is the finite-difference test in core/test/test_stm.c, which is
+ * the diagnostic ROADMAP C2b asks for. */
+CoreResult dop853_integrate_blocks(BlockAccelFunc f, void *ctx, int n_blocks,
+                                   double t0, double t_end,
+                                   Vec3d *r, Vec3d *v,
+                                   const Dop853Config *cfg, Dop853State *io);
+
 #endif /* CORE_INTEGRATOR_H */
