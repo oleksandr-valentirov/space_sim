@@ -7,6 +7,7 @@
 #   make check-libm       лише «поліція libm» (ROADMAP A2)
 #   make determinism      звірити хеші сценаріїв з еталонними
 #   make determinism-bless оновити еталонні хеші (робити свідомо!)
+#   make hashes           показати фактичні хеші сценаріїв
 #   make flags            показати фактичні прапорці (звірка з build.rs на M1)
 #   make cook             перегенерувати ассет-фікстуру (робити свідомо!)
 #   make clean
@@ -55,7 +56,7 @@ SCEN_BIN := $(patsubst core/scenario/%.c,$(BUILD)/scenario/%,$(SCEN_SRC))
 GOLDEN   := core/scenario/golden.txt
 ACTUAL   := $(BUILD)/scenario/actual.txt
 
-.PHONY: all test unit check-libm determinism determinism-bless cook flags clean
+.PHONY: all test unit check-libm determinism determinism-bless hashes cook flags clean
 
 all: $(LIB) $(LIB_OFFLINE)
 
@@ -135,6 +136,11 @@ determinism-bless: $(ACTUAL)
 	@cp $(ACTUAL) $(GOLDEN)
 	@echo "Еталонні хеші оновлено. Перегляньте git diff $(GOLDEN) перед комітом:"
 	@echo "  зміна тут означає, що результат симуляції змінився."
+
+# Для ручної звірки між машинами, коли CI ще немає або коли він уже впав
+# і треба подивитись очима (ROADMAP C5).
+hashes: $(ACTUAL)
+	@cat $(ACTUAL)
 
 # Ассет-фікстура закомічена навмисно. Кукер використовує cos() через
 # чебишевську підгонку, тож два комп'ютери порахували б РІЗНІ коефіцієнти —

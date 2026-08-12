@@ -1,0 +1,100 @@
+# Крос-платформна перевірка детермінізму — гейт M0 (ROADMAP C5).
+#
+# Що саме перевіряється: `make determinism` звіряє хеші сценаріїв з
+# core/scenario/golden.txt, закоміченим один раз. Якщо джоб зелений на всіх
+# платформах — значить усі порахували БІТОВО однакові числа. Окремого кроку
+# «порівняти платформи між собою» не треба: еталон один на всіх.
+#
+# Матриця навмисно містить два компілятори на Linux. Розбіжність gcc/clang
+# на одній машині шукається набагато дешевше за розбіжність Linux/Windows,
+# і ловить ту саму причину — тож нехай падає раніше й ближче.
+#
+# Windows іде через MSYS2, а не MSVC. На M0 збірка — це Makefile, `nm` і `sh`,
+# і MSYS2 дає їх усі. MSVC з'явиться на M1 разом з `cargo` і крейтом `cc`
+# (ROADMAP D1), і тоді ж доведеться звірити його прапорці з core/cflags.txt —
+# це вже записано як борг у ROADMAP A1.
+#
+# Якщо перший запуск розійдеться, порядок пошуку — у ROADMAP C5:
+#   1. прапорці справді однакові (`make flags` у логах нижче);
+#   2. «поліція libm» відпрацювала на всіх платформах;
+#   3. ділити сценарій навпіл, поки не локалізується перша розбіжна операція.
+# Крок 3 уже підготовлено: сценаріїв дев'ять, і кожен покриває свій шар.
+
+name: determinism
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gate:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    # Без fail-fast: коли платформи розходяться, потрібні ВСІ результати,
+    # а не перший провалений. Дві збіжні платформи проти однієї — це вже
+    # напівдіагноз.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-gcc
+            os: ubuntu-latest
+            cc: gcc
+            shell: bash
+          - name: linux-clang
+            os: ubuntu-latest
+            cc: clang
+            shell: bash
+          - name: macos-clang
+            os: macos-latest
+            cc: clang
+            shell: bash
+          - name: windows-mingw
+            os: windows-latest
+            cc: gcc
+            shell: 'msys2 {0}'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: MSYS2
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: >-
+            make
+            diffutils
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-binutils
+
+      # Прапорці в лог, до будь-якої збірки. Розбіжність хешів починають
+      # шукати саме тут, і мати їх у логах кожного джоба економить один цикл.
+      - name: Flags
+        shell: ${{ matrix.shell }}
+        run: |
+          make flags
+          ${{ matrix.cc }} --version
+
+      - name: Build and check
+        shell: ${{ matrix.shell }}
+        env:
+          CC: ${{ matrix.cc }}
+        run: make test
+
+      # Завжди, навіть коли впало: у провалі саме хеші й потрібні.
+      - name: Hashes
+        if: always()
+        shell: ${{ matrix.shell }}
+        run: cat build/scenario/actual.txt || true
+
+      - name: Upload hashes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hashes-${{ matrix.name }}
+          path: build/scenario/actual.txt
+          if-no-files-found: warn
