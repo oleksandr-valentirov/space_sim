@@ -108,6 +108,84 @@ CoreResult refdata_load_gm(const char *path,
     return result;
 }
 
+CoreResult refdata_load_halo(const char *path,
+                             RefHalo *out, size_t cap, size_t *out_count)
+{
+    if (path == NULL || out == NULL || out_count == NULL) {
+        return CORE_ERR_INVALID_ARG;
+    }
+
+    FILE *f = fopen(path, "r");
+    if (f == NULL) {
+        return CORE_ERR_INVALID_ARG;
+    }
+
+    char line[LINE_MAX];
+    size_t n = 0;
+    CoreResult result = CORE_OK;
+
+    while (fgets(line, sizeof line, f) != NULL) {
+        if (is_blank_or_comment(line)) {
+            continue;
+        }
+
+        int index;
+        double x, y, z, vx, vy, vz, jacobi, period, stability;
+        if (sscanf(line, "%d,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf",
+                   &index, &x, &y, &z, &vx, &vy, &vz,
+                   &jacobi, &period, &stability) != 10) {
+            result = CORE_ERR_INVALID_ARG;
+            break;
+        }
+
+        if (n >= cap) {
+            result = CORE_ERR_BUFFER_TOO_SMALL;
+            break;
+        }
+
+        out[n].index = index;
+        out[n].s.r = vec3(x, y, z);
+        out[n].s.v = vec3(vx, vy, vz);
+        out[n].s.t = 0.0;
+        out[n].jacobi = jacobi;
+        out[n].period = period;
+        out[n].stability = stability;
+        n++;
+    }
+
+    fclose(f);
+    *out_count = n;
+    return result;
+}
+
+CoreResult refdata_load_scalar(const char *path, double *out)
+{
+    if (path == NULL || out == NULL) {
+        return CORE_ERR_INVALID_ARG;
+    }
+
+    FILE *f = fopen(path, "r");
+    if (f == NULL) {
+        return CORE_ERR_INVALID_ARG;
+    }
+
+    char line[LINE_MAX];
+    CoreResult result = CORE_ERR_INVALID_ARG;
+
+    while (fgets(line, sizeof line, f) != NULL) {
+        if (is_blank_or_comment(line)) {
+            continue;
+        }
+        if (sscanf(line, "%lf", out) == 1) {
+            result = CORE_OK;
+        }
+        break;
+    }
+
+    fclose(f);
+    return result;
+}
+
 double refdata_gm_of(const RefGm *table, size_t n, const char *name)
 {
     for (size_t i = 0; i < n; i++) {

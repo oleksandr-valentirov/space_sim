@@ -47,4 +47,22 @@ CoreResult refdata_load_gm(const char *path,
  * plausible-looking trajectory with no gravity in it. */
 double refdata_gm_of(const RefGm *table, size_t n, const char *name);
 
+/* A published periodic orbit from the JPL three-body catalogue (ROADMAP C2).
+ * Dimensionless CR3BP units; see data/jpl_halo/. */
+typedef struct {
+    int    index;      /* position in the catalogue, for traceability */
+    State  s;          /* initial state, t = 0 */
+    double jacobi;
+    double period;
+    double stability;  /* max eigenvalue magnitude of the monodromy matrix */
+} RefHalo;
+
+CoreResult refdata_load_halo(const char *path,
+                             RefHalo *out, size_t cap, size_t *out_count);
+
+/* A file holding one number and any number of comment lines. Exists because
+ * the halo catalogue's mass ratio must travel with the orbits rather than be
+ * recomputed from GM values that disagree with it in the eighth digit. */
+CoreResult refdata_load_scalar(const char *path, double *out);
+
 #endif /* CORE_REFDATA_H */
