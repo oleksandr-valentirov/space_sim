@@ -3,6 +3,7 @@ sc_cheb d1404e2c8a4d356e
 sc_correct 216c4e6af226ff12
 sc_cr3bp 507580e8ab7cf799
 sc_dop853 8400ba159cae7209
+sc_richardson 4727f9efe7889769
 sc_rk4 cf327da9e36dc16c
 sc_stm c2fa6f7a5186dc04
 sc_vec3 0becdeab231904ff
