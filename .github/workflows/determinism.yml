@@ -76,6 +76,12 @@ jobs:
         with:
           msystem: UCRT64
           update: false
+
+          # Не тягнути базову інсталяцію з GitHub Releases, а взяти ту, що вже
+          # є на образі раннера. Перший запуск упав саме тут — 503 від
+          # роздачі. Мережа лишається в грі через pacman нижче, але це
+          # набагато менший і дешевший шлях, ніж викачувати весь MSYS2.
+          release: false
           # Явно все, чим користується Makefile і scripts/check_no_libm.sh:
           # sed і tr читають cflags.txt, diff звіряє хеші, awk і find працюють
           # у «поліції libm», nm — з binutils саме під UCRT64, щоб формат
