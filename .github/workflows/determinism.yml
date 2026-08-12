@@ -18,7 +18,7 @@
 #   1. прапорці справді однакові (`make flags` у логах нижче);
 #   2. «поліція libm» відпрацювала на всіх платформах;
 #   3. ділити сценарій навпіл, поки не локалізується перша розбіжна операція.
-# Крок 3 уже підготовлено: сценаріїв дев'ять, і кожен покриває свій шар.
+# Крок 3 уже підготовлено: сценаріїв одинадцять, і кожен покриває свій шар.
 
 name: determinism
 
@@ -31,6 +31,17 @@ jobs:
   gate:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+
+    # Оболонка задається саме тут, а не в кроках. `steps[*].shell` не приймає
+    # ЖОДНОГО контексту — ні matrix, ні будь-якого іншого, — тож `${{ matrix.shell }}`
+    # у кроці не просто не спрацює, а зламає весь файл: GitHub відхиляє його
+    # цілком, джоби не створюються, і в UI workflow називається шляхом до файлу
+    # замість свого імені. `defaults.run.shell` matrix підтримує.
+    #
+    # Перевіряти локально перед пушем: actionlint (github.com/rhysd/actionlint).
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
 
     # Без fail-fast: коли платформи розходяться, потрібні ВСІ результати,
     # а не перший провалений. Дві збіжні платформи проти однієї — це вже
@@ -65,22 +76,29 @@ jobs:
         with:
           msystem: UCRT64
           update: false
+          # Явно все, чим користується Makefile і scripts/check_no_libm.sh:
+          # sed і tr читають cflags.txt, diff звіряє хеші, awk і find працюють
+          # у «поліції libm», nm — з binutils саме під UCRT64, щоб формат
+          # об'єктних файлів збігався з тим, що видає цей gcc.
           install: >-
             make
             diffutils
+            coreutils
+            findutils
+            gawk
+            grep
+            sed
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-binutils
 
       # Прапорці в лог, до будь-якої збірки. Розбіжність хешів починають
       # шукати саме тут, і мати їх у логах кожного джоба економить один цикл.
       - name: Flags
-        shell: ${{ matrix.shell }}
         run: |
           make flags
           ${{ matrix.cc }} --version
 
       - name: Build and check
-        shell: ${{ matrix.shell }}
         env:
           CC: ${{ matrix.cc }}
         run: make test
@@ -88,7 +106,6 @@ jobs:
       # Завжди, навіть коли впало: у провалі саме хеші й потрібні.
       - name: Hashes
         if: always()
-        shell: ${{ matrix.shell }}
         run: cat build/scenario/actual.txt || true
 
       - name: Upload hashes

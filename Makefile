@@ -32,6 +32,14 @@ CFLAGS := $(shell sed -e 's/#.*//' core/cflags.txt | tr '\n' ' ')
 LDLIBS :=
 LDLIBS_OFFLINE := -lm
 
+# MinGW дописує .exe до виконуваних файлів незалежно від -o, тож без цього
+# make вважав би цілі непобудованими й перезбирав усе щоразу. MSYS2 успадковує
+# OS=Windows_NT з Windows, тож перевірка надійна (ROADMAP C5).
+EXE :=
+ifeq ($(OS),Windows_NT)
+EXE := .exe
+endif
+
 BUILD := build
 LIB   := $(BUILD)/libcore.a
 LIB_OFFLINE := $(BUILD)/libcore_offline.a
@@ -46,13 +54,13 @@ OFFLINE_OBJ := $(patsubst core/offline/%.c,$(BUILD)/core/offline/%.o,$(OFFLINE_S
 # а $(wildcard) не гарантує сталого порядку. Без сортування звірка з еталоном
 # могла б падати через перестановку рядків.
 TEST_SRC := $(sort $(wildcard core/test/*.c))
-TEST_BIN := $(patsubst core/test/%.c,$(BUILD)/test/%,$(TEST_SRC))
+TEST_BIN := $(patsubst core/test/%.c,$(BUILD)/test/%$(EXE),$(TEST_SRC))
 
 COOK_SRC := $(sort $(wildcard core/cook/*.c))
-COOK_BIN := $(patsubst core/cook/%.c,$(BUILD)/cook/%,$(COOK_SRC))
+COOK_BIN := $(patsubst core/cook/%.c,$(BUILD)/cook/%$(EXE),$(COOK_SRC))
 
 SCEN_SRC := $(sort $(wildcard core/scenario/*.c))
-SCEN_BIN := $(patsubst core/scenario/%.c,$(BUILD)/scenario/%,$(SCEN_SRC))
+SCEN_BIN := $(patsubst core/scenario/%.c,$(BUILD)/scenario/%$(EXE),$(SCEN_SRC))
 GOLDEN   := core/scenario/golden.txt
 ACTUAL   := $(BUILD)/scenario/actual.txt
 
@@ -76,20 +84,20 @@ $(LIB_OFFLINE): $(OFFLINE_OBJ)
 	@mkdir -p $(dir $@)
 	$(AR) rcs $@ $^
 
-$(BUILD)/test/%: core/test/%.c $(LIB) $(LIB_OFFLINE)
+$(BUILD)/test/%$(EXE): core/test/%.c $(LIB) $(LIB_OFFLINE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Icore -Icore/offline -o $@ $< \
 		$(LIB_OFFLINE) $(LIB) $(LDLIBS_OFFLINE)
 
 # Кукер: офлайновий, libm дозволений.
-$(BUILD)/cook/%: core/cook/%.c $(LIB) $(LIB_OFFLINE)
+$(BUILD)/cook/%$(EXE): core/cook/%.c $(LIB) $(LIB_OFFLINE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Icore -Icore/offline -o $@ $< \
 		$(LIB_OFFLINE) $(LIB) $(LDLIBS_OFFLINE)
 
 # Без libcore_offline.a і без -lm: лінкування тут — жива перевірка того,
 # що в рантаймовій частині немає libm.
-$(BUILD)/scenario/%: core/scenario/%.c $(LIB)
+$(BUILD)/scenario/%$(EXE): core/scenario/%.c $(LIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Icore -o $@ $< $(LIB) $(LDLIBS)
 
@@ -148,7 +156,7 @@ hashes: $(ACTUAL)
 # має перевіряти. Готуємо один раз, комітимо, звіряємо (ROADMAP C5).
 cook: $(COOK_BIN)
 	@mkdir -p data/fixture
-	@$(BUILD)/cook/cook_fixture
+	@$(BUILD)/cook/cook_fixture$(EXE)
 	@echo ""
 	@echo "Перегенеровано. Перевірте git diff і що визначає зміну:"
 	@echo "  зміна тут змінює всі хеші сценаріїв, які читають ассет."
