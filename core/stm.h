@@ -64,4 +64,55 @@ void stm_identity(double phi[STM_SIZE]);
  * contain. */
 double stm_symplectic_defect(const double phi[STM_SIZE]);
 
+/* ---- Stability of a periodic orbit (ROADMAP C3) ------------------------- */
+
+typedef struct {
+    /* The two nontrivial values of lambda + 1/lambda. When real_pair is 0
+     * these are instead the real and imaginary parts of one conjugate pair. */
+    double invariant[2];
+    int    real_pair;
+
+    /* |invariant| / 2, which is the stability index the JPL catalogue
+     * publishes. Meaningful only when real_pair is 1. */
+    double index[2];
+
+    /* Modulus of the largest eigenvalue: the factor by which a perturbation
+     * is multiplied per revolution. This is the number ROADMAP C3 asks for,
+     * and it is NOT the stability index - for a real pair the index is
+     * (lambda + 1/lambda)/2, which for lambda = 594 is 297. Reporting the
+     * index as a growth rate understates it by a factor of two, and for
+     * weakly unstable orbits by much more: index 1.015 means lambda 1.19. */
+    double lambda_max;
+
+    /* How far mu = 2 fails to be a root of the reduced cubic.
+     *
+     * Every periodic orbit of an autonomous Hamiltonian system has a pair of
+     * unit eigenvalues - one from translation along the orbit, one from the
+     * neighbouring orbit at the same energy. The factorisation below assumes
+     * it. This residual is what the assumption costs, so it doubles as an
+     * accuracy measure of the monodromy matrix itself: measured 5e-10 for a
+     * well-integrated orbit and 2e-2 for the near-rectilinear member of the
+     * family whose integration is known to be poor. */
+    double unit_pair_residual;
+} StmStability;
+
+/* Eigenvalue moduli of a monodromy matrix, without an eigenvalue solver.
+ *
+ * The matrix is similar to a symplectic one, so its characteristic polynomial
+ * is reciprocal: eigenvalues come in pairs lambda, 1/lambda. Substituting
+ * mu = lambda + 1/lambda turns the sixth-degree polynomial into a cubic,
+ * dividing out the known unit pair leaves a quadratic, and the quadratic is
+ * solved in closed form. The coefficients come from the traces of m, m^2 and
+ * m^3 through Newton's identities.
+ *
+ * That matters beyond elegance: QR iteration would be several hundred lines
+ * and would need libm, while this needs +, -, *, / and sqrt, so it runs in
+ * the deterministic zone.
+ *
+ * Note the matrix may be given in velocity coordinates - similarity preserves
+ * the characteristic polynomial, so no canonical transformation is needed
+ * here, unlike stm_symplectic_defect. */
+CoreResult stm_monodromy_stability(const double m[STM_SIZE],
+                                   StmStability *out);
+
 #endif /* CORE_STM_H */

@@ -141,12 +141,18 @@ int main(void)
 
     /* Instability does not dominate closure over a single period, which is
      * worth stating because it is the opposite of what one expects. Orbit
-     * 1151 amplifies perturbations by 297 per revolution and closes to
-     * 3.24e-13; orbit 0 amplifies by 1.015 and closes to 3.03e-12 - the far
+     * 1151 amplifies perturbations by 594 per revolution and closes to
+     * 3.24e-13; orbit 0 amplifies by 1.19 and closes to 3.03e-12 - the far
      * more unstable orbit closes better. Over one period the seed being
-     * amplified is around 1e-16, so 297 times it is still below the
+     * amplified is around 1e-16, so 594 times it is still below the
      * integrator's own error. What actually decides the difficulty is how
-     * close the orbit passes to a primary. */
+     * close the orbit passes to a primary.
+     *
+     * Those factors are the eigenvalues, not the catalogue's stability
+     * column, which is (lambda + 1/lambda)/2 and so reads 297 and 1.015.
+     * ROADMAP C3 and core/test/test_stability.c derive both; the amplification
+     * per revolution is the eigenvalue, and this comment used to quote the
+     * index in its place. */
     {
         CHECK(orbit[3].stability > 100.0);
         CHECK(orbit[0].stability < 1.1);
