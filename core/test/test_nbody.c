@@ -17,14 +17,18 @@
 #define MAX_SAMPLES 256
 #define AU_M 1.495978707e11
 
-/* Order matters: the first three are the Milestone 0 system, and the rest are
- * appended one at a time to see what each contributes. */
-static const char *BODY_NAMES[] = {
-    "sun", "earth", "moon", "venus", "mars_bary", "jupiter_bary",
+/* Every major body of the solar system, in the order the fixtures use. */
+static const char *ALL_BODIES[] = {
+    "sun", "mercury", "venus", "earth", "moon",
+    "mars_bary", "jupiter_bary", "saturn_bary", "uranus_bary", "neptune_bary",
 };
-#define N_BODIES (sizeof BODY_NAMES / sizeof BODY_NAMES[0])
+#define N_ALL (sizeof ALL_BODIES / sizeof ALL_BODIES[0])
 
-static RefSample reference[N_BODIES][MAX_SAMPLES];
+/* The Milestone 0 system, kept as a deliberate contrast. */
+static const char *MINIMAL_BODIES[] = { "sun", "earth", "moon" };
+#define N_MINIMAL (sizeof MINIMAL_BODIES / sizeof MINIMAL_BODIES[0])
+
+static RefSample reference[N_ALL][MAX_SAMPLES];
 static size_t n_samples;
 static RefGm gm_table[16];
 static size_t n_gm;
@@ -32,20 +36,29 @@ static size_t n_gm;
 typedef struct {
     double max_earth;            /* against Horizons, in the SSB frame */
     double max_earth_relative;   /* with the model's own barycentre removed */
-    double max_moon;
     double max_moon_geocentric;  /* Moon relative to Earth: the geometry the
-                                  * game actually cares about */
+                                  * game is actually built on */
     double energy_drift;
     double barycentre_drift;
     long   steps;
 } RunResult;
 
+static int index_of(const char *name)
+{
+    for (size_t i = 0; i < N_ALL; i++) {
+        if (strcmp(ALL_BODIES[i], name) == 0) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
 static int load_fixtures(void)
 {
     char path[128];
 
-    for (size_t i = 0; i < N_BODIES; i++) {
-        snprintf(path, sizeof path, "data/horizons/vec_%s.csv", BODY_NAMES[i]);
+    for (size_t i = 0; i < N_ALL; i++) {
+        snprintf(path, sizeof path, "data/horizons/vec_%s.csv", ALL_BODIES[i]);
         size_t n = 0;
         if (refdata_load_vectors(path, reference[i], MAX_SAMPLES, &n) != CORE_OK) {
             fprintf(stderr, "  cannot load %s\n", path);
@@ -63,9 +76,9 @@ static int load_fixtures(void)
     return refdata_load_gm("data/horizons/gm.csv", gm_table, 16, &n_gm) == CORE_OK;
 }
 
-/* Integrates the first n bodies from J2000 across the whole fixture, stopping
+/* Integrates the named bodies from J2000 across the whole fixture, stopping
  * at every reference epoch to measure the divergence. */
-static RunResult run_model(size_t n, double tol_m)
+static RunResult run_model(const char **names, size_t n, double tol_m)
 {
     RunResult out;
     memset(&out, 0, sizeof out);
@@ -74,12 +87,25 @@ static RunResult run_model(size_t n, double tol_m)
     memset(&sys, 0, sizeof sys);
     sys.n = n;
 
+    int map[NBODY_MAX];
+    int earth = -1, moon = -1;
     State current[NBODY_MAX];
+
     for (size_t i = 0; i < n; i++) {
-        sys.mu[i] = refdata_gm_of(gm_table, n_gm, BODY_NAMES[i]);
+        map[i] = index_of(names[i]);
+        CHECK(map[i] >= 0);
+        sys.mu[i] = refdata_gm_of(gm_table, n_gm, names[i]);
         CHECK(sys.mu[i] > 0.0);
-        current[i] = reference[i][0].s;
+        current[i] = reference[map[i]][0].s;
+
+        if (strcmp(names[i], "earth") == 0) {
+            earth = (int)i;
+        }
+        if (strcmp(names[i], "moon") == 0) {
+            moon = (int)i;
+        }
     }
+    CHECK(earth >= 0 && moon >= 0);
 
     double energy0 = nbody_energy(&sys, current);
     Vec3d barycentre0 = nbody_barycentre(&sys, current);
@@ -102,31 +128,27 @@ static RunResult run_model(size_t n, double tol_m)
         }
         memcpy(current, next, sizeof next);
 
-        /* The same barycentre, computed from the model and from the
-         * reference with the same bodies and the same weights. Subtracting it
-         * removes the bulk translation of the subsystem and leaves the part
-         * of the error that is actually a distortion of the orbits. */
+        /* The same barycentre computed from the model and from the reference,
+         * over the same bodies with the same weights. Subtracting it removes
+         * the bulk translation of the subsystem and leaves the part of the
+         * error that is a genuine distortion of the orbits. */
         State ref_now[NBODY_MAX];
         for (size_t i = 0; i < n; i++) {
-            ref_now[i] = reference[i][s].s;
+            ref_now[i] = reference[map[i]][s].s;
         }
         Vec3d bary_model = nbody_barycentre(&sys, current);
         Vec3d bary_ref = nbody_barycentre(&sys, ref_now);
 
-        double d_earth = vec3_distance(current[1].r, reference[1][s].s.r);
-        double d_moon = vec3_distance(current[2].r, reference[2][s].s.r);
-
-        double d_earth_rel = vec3_distance(vec3_sub(current[1].r, bary_model),
-                                           vec3_sub(reference[1][s].s.r, bary_ref));
-        double d_moon_geo = vec3_distance(vec3_sub(current[2].r, current[1].r),
-                                          vec3_sub(reference[2][s].s.r,
-                                                   reference[1][s].s.r));
+        double d_earth = vec3_distance(current[earth].r, ref_now[earth].r);
+        double d_earth_rel = vec3_distance(
+            vec3_sub(current[earth].r, bary_model),
+            vec3_sub(ref_now[earth].r, bary_ref));
+        double d_moon_geo = vec3_distance(
+            vec3_sub(current[moon].r, current[earth].r),
+            vec3_sub(ref_now[moon].r, ref_now[earth].r));
 
         if (d_earth > out.max_earth) {
             out.max_earth = d_earth;
-        }
-        if (d_moon > out.max_moon) {
-            out.max_moon = d_moon;
         }
         if (d_earth_rel > out.max_earth_relative) {
             out.max_earth_relative = d_earth_rel;
@@ -155,8 +177,8 @@ int main(void)
     /* The N-body integrator against the two-body one. Give the second body
      * zero mass and it becomes a test particle in the first body's field,
      * which is exactly the problem dop853_integrate solves. Two
-     * implementations agreeing is the check; the shared coefficient table is
-     * the only thing they have in common. */
+     * implementations agreeing is the check; a shared coefficient table is
+     * all they have in common. */
     {
         NBodySystem sys;
         memset(&sys, 0, sizeof sys);
@@ -196,100 +218,106 @@ int main(void)
         CHECK(vec3_norm(out_n[0].r) < 1e-9);
     }
 
-    /* Baseline: Sun, Earth and Moon as point masses, ten years.
-     *
-     * Measured maxima against Horizons: 5.415e9 m for the Earth, 5.544e9 m
-     * for the Moon. Large, and correctly so - this model is missing every
-     * other planet. What matters is the order of magnitude: a wrong frame or
-     * centre would put this above 1e11 m, an AU or more. */
-    RunResult baseline = run_model(3, 1e1);
+    /* Sun, Earth and Moon alone: kept as the contrast that makes the point
+     * below visible. Measured over ten years at tol 1e1 m: 5.417e9 m against
+     * Horizons in the SSB frame, which sounds catastrophic and is not a bug.
+     * A wrong frame or centre would put it above 1e11 m, an AU or more. */
+    RunResult minimal = run_model(MINIMAL_BODIES, N_MINIMAL, 1e0);
     {
-        CHECK(baseline.max_earth > 1e8);
-        CHECK(baseline.max_earth < 5e10);
-        CHECK(baseline.max_moon < 5e10);
+        CHECK(minimal.max_earth > 1e9);
+        CHECK(minimal.max_earth < 2e10);
 
-        /* Energy of the isolated three-body system is conserved by the
-         * dynamics, so its drift measures the integrator rather than the
-         * model. Separating those two is the whole point of this test.
+        /* Energy of the isolated system is conserved by the true dynamics, so
+         * its drift measures the integrator while the position error measures
+         * the model. Separating those two is the point of this whole step.
+         * Measured 4.23e-11 at tol 1e1, tracking tolerance closely: 9.10e-9
+         * at 1e3 and 2.99e-12 at 1e0. */
+        CHECK(minimal.energy_drift < 1e-9);
+
+        /* Nearly all of the error is the subsystem translating as a whole.
+         * Measured 5.417e9 m absolute against 5.605e7 m once the model's own
+         * barycentre is removed - a factor of 97.
          *
-         * Measured at tol 1e1 m: 4.23e-11, and it tracks the tolerance
-         * closely - 9.10e-9 at tol 1e3, 2.99e-12 at tol 1e0. */
-        CHECK(baseline.energy_drift < 1e-9);
+         * The cause is momentum: three bodies carry only part of the solar
+         * system's, so their common barycentre drifts in a straight line
+         * through the SSB frame. Measured drift 4.959e9 m, identical at every
+         * tolerance from 1e5 down to 1e0 m, which is what proves it is
+         * physics and not integration error. */
+        CHECK(minimal.max_earth_relative < minimal.max_earth / 20.0);
+        CHECK(minimal.barycentre_drift > 1e9);
 
-        /* Nearly all of the error is the subsystem translating as a whole,
-         * not its orbits deforming. Measured 5.417e9 m in the SSB frame
-         * against 5.605e7 m once the model's own barycentre is removed - a
-         * factor of 97.
-         *
-         * The reason is momentum: three bodies carrying only part of the
-         * solar system's momentum have a barycentre that drifts in a
-         * straight line through the SSB frame. Measured drift 4.959e9 m,
-         * identical at every tolerance from 1e5 down to 1e0, which is what
-         * proves it is physics and not integration error. */
-        CHECK(baseline.max_earth_relative < baseline.max_earth / 20.0);
-
-        /* And the geometry the game is actually built on - where the Moon is
-         * relative to the Earth - is far better still: 4.98e5 m over ten
-         * years from three point masses. Half a megametre on a 384000 km
-         * orbit. */
-        CHECK(baseline.max_moon_geocentric < 2e6);
+        /* Geocentric lunar geometry, on the other hand, is already decent:
+         * 1.460e5 m over ten years from three point masses. The Earth-Moon
+         * system barely notices that the rest of the solar system is
+         * missing - it notices only where it is as a whole. */
+        CHECK(minimal.max_moon_geocentric < 1e6);
     }
 
-    /* Jupiter is the dominant missing perturber. Adding it must help, and
-     * measurably: 5.415e9 -> 8.331e8 m for the Earth, a factor of 6.5.
+    /* Every major body: the fix that the measurement above pointed at. The
+     * missing momentum is no longer missing, and the drift collapses with it.
      *
-     * Venus and Mars, measured at 5.428e9 and 5.421e9, change nothing at this
-     * error level. That is not a failure of the model - they are simply far
-     * below the residual, which is dominated by the planets still missing.
-     * The ROADMAP expectation that every added body reduces the error was too
-     * strong; only the dominant one does. */
-    RunResult with_jupiter = run_model(6, 1e1);
+     * Measured over ten years at tol 1e0 m: Earth 1.679e6 m against Horizons,
+     * down from 5.417e9 - a factor of 3226. Barycentre drift 1.051e6 m, down
+     * from 4.959e9. The Moon improves too, 1.460e5 m to 9.322e4 m geocentric.
+     * For a model that is still nothing but point masses, 1700 km over a
+     * decade at one AU is a good place to be. */
+    RunResult full = run_model(ALL_BODIES, N_ALL, 1e0);
     {
-        CHECK(with_jupiter.max_earth < baseline.max_earth / 3.0);
-        CHECK(with_jupiter.max_moon < baseline.max_moon / 3.0);
-        CHECK(with_jupiter.energy_drift < 1e-9);
+        CHECK(full.max_earth < minimal.max_earth / 100.0);
+        CHECK(full.barycentre_drift < minimal.barycentre_drift / 100.0);
+        CHECK(full.max_earth < 1e7);
+        CHECK(full.energy_drift < 1e-9);
 
-        /* Same story about the frame: 8.357e8 m absolute against 1.358e7 m
-         * relative, a factor of 62, with a barycentre drift of 8.886e8 m that
-         * is again tolerance-independent. */
-        CHECK(with_jupiter.max_earth_relative < with_jupiter.max_earth / 20.0);
-        CHECK(with_jupiter.barycentre_drift < baseline.barycentre_drift);
-
-        /* Worth recording because it is the one number that got worse:
-         * geocentric lunar error 9.07e5 m against the three-body model's
-         * 4.98e5 m. Adding planets moves the Earth's orbit, which shifts the
-         * phase of the Sun's perturbation on the Moon; the three-body value
-         * benefits from a cancellation that has no particular right to hold.
-         * Not a regression to chase - a reminder that a single number is not
-         * a measure of a model. */
-        CHECK(with_jupiter.max_moon_geocentric < 3e6);
+        CHECK(full.max_moon_geocentric < minimal.max_moon_geocentric);
+        CHECK(full.max_moon_geocentric < 5e5);
     }
 
-    /* The residual is model error, not integration error - which is the
-     * single most useful thing this test establishes. Tightening the
-     * tolerance by four orders of magnitude moves the answer by under a
-     * percent: measured 8.341e8 m at tol 1e5 and 8.357e8 m at tol 1e1.
+    /* Tolerance sensitivity, and the trap it exposes.
      *
-     * So there is no point tuning the integrator to close this gap. The gap
-     * closes by adding bodies. */
+     * The Earth's error is model-limited: 1.659e6, 1.679e6, 1.681e6 m at tol
+     * 1e1, 1e0, 1e-1. Converged, so no amount of integrator tuning closes
+     * that gap - it closes by adding physics.
+     *
+     * The Moon is not, and this cost a wrong conclusion before it was
+     * measured. Geocentric error runs 8.5e8, 3.7e8, 4.0e7, 3.0e6, 9.3e4 m as
+     * the tolerance tightens from 1e6 to 1e0. At tol 1e1 the lunar figure is
+     * still almost entirely integration error, and reading it as a physical
+     * limit produced a confident and completely wrong claim about the
+     * Earth's oblateness. A single global tolerance in metres treats the
+     * Moon's 3.8e8 m orbit and Neptune's 4.5e12 m one alike, and the Moon is
+     * the fastest thing in the system, so it converges last.
+     *
+     * Practical consequence for the ephemeris cooker: pick the tolerance from
+     * the fastest body, not from a whole-system error norm, and verify
+     * convergence per body rather than in aggregate. */
     {
-        RunResult loose = run_model(6, 1e5);
-        RunResult tight = run_model(6, 1e1);
+        RunResult loose = run_model(ALL_BODIES, N_ALL, 1e1);
 
-        CHECK(tight.steps > loose.steps * 2);
+        CHECK(full.steps > loose.steps);
 
-        double relative_change = fabs(tight.max_earth - loose.max_earth)
-                               / loose.max_earth;
-        CHECK(relative_change < 0.05);
+        double earth_change = fabs(full.max_earth - loose.max_earth)
+                            / loose.max_earth;
+        CHECK(earth_change < 0.05);
+
+        /* The Moon moves by more than an order of magnitude over the same
+         * tolerance change, which is what makes the point. */
+        CHECK(loose.max_moon_geocentric > 10.0 * full.max_moon_geocentric);
+
+        /* The barycentre drift does not move at all with tolerance, which is
+         * what identifies it as physical rather than numerical. Measured
+         * 1.0509e6 m at every tolerance from 1e6 down to 1e-1. */
+        double bary_change = fabs(full.barycentre_drift - loose.barycentre_drift)
+                           / loose.barycentre_drift;
+        CHECK(bary_change < 1e-3);
     }
 
-    /* Sanity of the fixtures as used here, independent of the integration:
-     * the Earth starts about an AU from the barycentre and the Moon starts
-     * near the Earth. If either were false, everything above would be
-     * measuring the wrong thing. */
+    /* Sanity of the fixtures as used here, independent of any integration. */
     {
-        CHECK(fabs(vec3_norm(reference[1][0].s.r) / AU_M - 1.0) < 0.05);
-        CHECK(vec3_distance(reference[2][0].s.r, reference[1][0].s.r) < 4.1e8);
+        int earth = index_of("earth");
+        int moon = index_of("moon");
+        CHECK(fabs(vec3_norm(reference[earth][0].s.r) / AU_M - 1.0) < 0.05);
+        CHECK(vec3_distance(reference[moon][0].s.r,
+                            reference[earth][0].s.r) < 4.1e8);
     }
 
     return TEST_RESULT();

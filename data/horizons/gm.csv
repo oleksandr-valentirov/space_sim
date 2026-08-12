@@ -4,8 +4,12 @@
 # Див. README.md, розділ про GM барицентрів.
 # name,gm_km3_s2
 sun,132712440041.93938
+mercury,22031.86855
+venus,324858.592
 earth,398600.435436
 moon,4902.800066
-venus,324858.592
 mars_bary,42828.375662
 jupiter_bary,126686531.900
+saturn_bary,37931206.234
+uranus_bary,5793950.6103
+neptune_bary,6835099.97

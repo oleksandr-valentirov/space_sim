@@ -100,7 +100,7 @@ int main(void)
         size_t n_gm = 0;
         CoreResult r = refdata_load_gm("data/horizons/gm.csv", gm, 16, &n_gm);
         CHECK(r == CORE_OK);
-        CHECK(n_gm == 6);
+        CHECK(n_gm == 10);   /* every major body; see data/horizons/README.md */
 
         double gm_sun = refdata_gm_of(gm, n_gm, "sun");
         double gm_earth = refdata_gm_of(gm, n_gm, "earth");
