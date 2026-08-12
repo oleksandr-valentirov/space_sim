@@ -8,6 +8,7 @@
 #   make determinism      звірити хеші сценаріїв з еталонними
 #   make determinism-bless оновити еталонні хеші (робити свідомо!)
 #   make flags            показати фактичні прапорці (звірка з build.rs на M1)
+#   make cook             перегенерувати ассет-фікстуру (робити свідомо!)
 #   make clean
 
 CC ?= cc
@@ -46,12 +47,15 @@ OFFLINE_OBJ := $(patsubst core/offline/%.c,$(BUILD)/core/offline/%.o,$(OFFLINE_S
 TEST_SRC := $(sort $(wildcard core/test/*.c))
 TEST_BIN := $(patsubst core/test/%.c,$(BUILD)/test/%,$(TEST_SRC))
 
+COOK_SRC := $(sort $(wildcard core/cook/*.c))
+COOK_BIN := $(patsubst core/cook/%.c,$(BUILD)/cook/%,$(COOK_SRC))
+
 SCEN_SRC := $(sort $(wildcard core/scenario/*.c))
 SCEN_BIN := $(patsubst core/scenario/%.c,$(BUILD)/scenario/%,$(SCEN_SRC))
 GOLDEN   := core/scenario/golden.txt
 ACTUAL   := $(BUILD)/scenario/actual.txt
 
-.PHONY: all test unit check-libm determinism determinism-bless flags clean
+.PHONY: all test unit check-libm determinism determinism-bless cook flags clean
 
 all: $(LIB) $(LIB_OFFLINE)
 
@@ -72,6 +76,12 @@ $(LIB_OFFLINE): $(OFFLINE_OBJ)
 	$(AR) rcs $@ $^
 
 $(BUILD)/test/%: core/test/%.c $(LIB) $(LIB_OFFLINE)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Icore -Icore/offline -o $@ $< \
+		$(LIB_OFFLINE) $(LIB) $(LDLIBS_OFFLINE)
+
+# Кукер: офлайновий, libm дозволений.
+$(BUILD)/cook/%: core/cook/%.c $(LIB) $(LIB_OFFLINE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Icore -Icore/offline -o $@ $< \
 		$(LIB_OFFLINE) $(LIB) $(LDLIBS_OFFLINE)
@@ -125,6 +135,17 @@ determinism-bless: $(ACTUAL)
 	@cp $(ACTUAL) $(GOLDEN)
 	@echo "Еталонні хеші оновлено. Перегляньте git diff $(GOLDEN) перед комітом:"
 	@echo "  зміна тут означає, що результат симуляції змінився."
+
+# Ассет-фікстура закомічена навмисно. Кукер використовує cos() через
+# чебишевську підгонку, тож два комп'ютери порахували б РІЗНІ коефіцієнти —
+# і крос-платформна звірка падала б на кукері, а не на рантаймі, який вона
+# має перевіряти. Готуємо один раз, комітимо, звіряємо (ROADMAP C5).
+cook: $(COOK_BIN)
+	@mkdir -p data/fixture
+	@$(BUILD)/cook/cook_fixture
+	@echo ""
+	@echo "Перегенеровано. Перевірте git diff і що визначає зміну:"
+	@echo "  зміна тут змінює всі хеші сценаріїв, які читають ассет."
 
 flags:
 	@echo $(CFLAGS)
