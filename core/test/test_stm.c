@@ -287,6 +287,44 @@ int main(void)
         CHECK(stm_symplectic_defect(a) != stm_symplectic_defect(canonical));
     }
 
+    /* Carrying the STM does not change the trajectory - bit for bit.
+     *
+     * This is not a nicety, it is what the corrector in correct.c is built on.
+     * It finds the crossing of y = 0 with cheap one-block propagations and
+     * then measures the sensitivities there with a seven-block one, and those
+     * two are the same trajectory only if this holds. It does hold by
+     * construction: block 0's arithmetic does not depend on how many blocks
+     * travel beside it, and the step controller reads block 0 alone. Asserted
+     * anyway, because "by construction" is a claim about code that changes. */
+    for (size_t i = 0; i < 4; i++) {
+        Dop853Config cfg = tight();
+
+        Dop853State st_one;
+        memset(&st_one, 0, sizeof st_one);
+        State plain;
+        CHECK(dop853_integrate(accel_cr3bp, &ctx, &orbit[i].s,
+                               0.5 * orbit[i].period, &cfg, &st_one, &plain)
+              == CORE_OK);
+
+        Dop853State st_seven;
+        memset(&st_seven, 0, sizeof st_seven);
+        State with_stm;
+        double phi[STM_SIZE];
+        CHECK(stm_integrate(accel_cr3bp_var, &ctx, &orbit[i].s,
+                            0.5 * orbit[i].period, &cfg, &st_seven, &with_stm,
+                            phi) == CORE_OK);
+
+        CHECK_BITS_EQ(plain.r.x, with_stm.r.x);
+        CHECK_BITS_EQ(plain.r.y, with_stm.r.y);
+        CHECK_BITS_EQ(plain.r.z, with_stm.r.z);
+        CHECK_BITS_EQ(plain.v.x, with_stm.v.x);
+        CHECK_BITS_EQ(plain.v.y, with_stm.v.y);
+        CHECK_BITS_EQ(plain.v.z, with_stm.v.z);
+        CHECK_BITS_EQ(st_one.h, st_seven.h);
+        CHECK(st_one.n_accepted == st_seven.n_accepted);
+        CHECK(st_one.n_rejected == st_seven.n_rejected);
+    }
+
     /* Composition: propagating in two legs and multiplying must agree with
      * propagating in one. This is the property multiple shooting in C4 rests
      * on, and it is independent of whether the Jacobian is right - a wrong but
