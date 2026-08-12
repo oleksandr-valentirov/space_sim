@@ -216,8 +216,13 @@ CoreResult nbody_integrate(const NBodySystem *sys, const State *in,
     double h = io->h > 0.0 ? io->h
              : (cfg->h_init > 0.0 ? cfg->h_init : 60.0);
 
-    if (cfg->h_max > 0.0 && h > cfg->h_max) {
-        h = cfg->h_max;
+    /* See the same clamp in dop853.c: without a ceiling, a caller that
+     * integrates in legs shorter than the natural step compounds h without
+     * bound until it overflows, after which a rejected step can never shrink
+     * again. The ephemeris cooker is exactly such a caller. */
+    double h_ceiling = cfg->h_max > 0.0 ? cfg->h_max : dabs(t_end - t0);
+    if (h > h_ceiling) {
+        h = h_ceiling;
     }
 
     long steps = 0;
@@ -265,8 +270,8 @@ CoreResult nbody_integrate(const NBodySystem *sys, const State *in,
             h *= factor;
         }
 
-        if (cfg->h_max > 0.0 && h > cfg->h_max) {
-            h = cfg->h_max;
+        if (h > h_ceiling) {
+            h = h_ceiling;
         }
     }
 

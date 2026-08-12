@@ -42,12 +42,17 @@ int main(void)
     for (int i = 0; i <= 5000; i++) {
         double x = a + (b - a) * ((double)i / 5000.0);
         core_hash_f64(&h, cheb_eval(c, 32, a, b, x));
+
+        /* The derivative is runtime code too: every velocity the ephemeris
+         * reports comes through it. */
+        core_hash_f64(&h, cheb_eval_deriv(c, 32, a, b, x));
     }
 
     /* Short series and the degenerate case, since they take different paths
      * through the recurrence. */
     for (size_t n = 0; n <= 4; n++) {
         core_hash_f64(&h, cheb_eval(c, n, a, b, opaque(12345.0)));
+        core_hash_f64(&h, cheb_eval_deriv(c, n, a, b, opaque(12345.0)));
     }
 
     printf("sc_cheb %016llx\n", (unsigned long long)core_hash_value(&h));

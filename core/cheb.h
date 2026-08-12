@@ -27,4 +27,14 @@
  * cost a branch in the innermost loop of the whole simulation. */
 double cheb_eval(const double *c, size_t n, double a, double b, double x);
 
+/* Derivative of the same series with respect to x, in units of value per x.
+ *
+ * The ephemeris stores position only and gets velocity from here, which is
+ * what SPICE type 2 does. Storing a second set of coefficients would double
+ * the asset for a quantity that is already exactly determined by the first:
+ * differentiating a polynomial is exact, and the only loss is that the fit
+ * itself is about one order less accurate in the derivative than in the
+ * value. Measured for the real ephemeris in test_ephemeris.c. */
+double cheb_eval_deriv(const double *c, size_t n, double a, double b, double x);
+
 #endif /* CORE_CHEB_H */

@@ -6,31 +6,34 @@
  * guaranteed to exist. */
 static const double CHEB_PI = 3.14159265358979323846;
 
-CoreResult cheb_fit(ChebFunc f, void *ctx, double a, double b,
-                    double *c_out, size_t n)
+CoreResult cheb_nodes(double a, double b, double *t_out, size_t n)
 {
-    if (f == NULL || c_out == NULL || n == 0 || n > CHEB_FIT_MAX_N) {
-        return CORE_ERR_INVALID_ARG;
-    }
-    if (!(b > a)) {
+    if (t_out == NULL || n == 0 || n > CHEB_FIT_MAX_N || !(b > a)) {
         return CORE_ERR_INVALID_ARG;
     }
 
-    double fx[CHEB_FIT_MAX_N];
-
-    /* Sample f at the Chebyshev-Gauss nodes cos(pi*(k+1/2)/n), mapped from
-     * [-1, 1] onto [a, b]. Clustering the nodes towards the ends is what
-     * keeps the error uniform instead of blowing up at the edges. */
+    /* Chebyshev-Gauss nodes cos(pi*(k+1/2)/n) mapped from [-1, 1] onto
+     * [a, b]. Clustering them towards the ends is what keeps the error
+     * uniform instead of blowing up at the edges. */
     for (size_t k = 0; k < n; k++) {
         double node = cos(CHEB_PI * ((double)k + 0.5) / (double)n);
-        double x = 0.5 * (node * (b - a) + (a + b));
-        fx[k] = f(x, ctx);
+        t_out[k] = 0.5 * (node * (b - a) + (a + b));
+    }
+
+    return CORE_OK;
+}
+
+CoreResult cheb_fit_samples(const double *values, double *c_out, size_t n)
+{
+    if (values == NULL || c_out == NULL || n == 0 || n > CHEB_FIT_MAX_N) {
+        return CORE_ERR_INVALID_ARG;
     }
 
     for (size_t j = 0; j < n; j++) {
         double sum = 0.0;
         for (size_t k = 0; k < n; k++) {
-            sum += fx[k] * cos(CHEB_PI * (double)j * ((double)k + 0.5) / (double)n);
+            sum += values[k]
+                 * cos(CHEB_PI * (double)j * ((double)k + 0.5) / (double)n);
         }
         c_out[j] = (2.0 / (double)n) * sum;
     }
@@ -41,4 +44,29 @@ CoreResult cheb_fit(ChebFunc f, void *ctx, double a, double b,
     c_out[0] *= 0.5;
 
     return CORE_OK;
+}
+
+CoreResult cheb_fit(ChebFunc f, void *ctx, double a, double b,
+                    double *c_out, size_t n)
+{
+    if (f == NULL || c_out == NULL || n == 0 || n > CHEB_FIT_MAX_N) {
+        return CORE_ERR_INVALID_ARG;
+    }
+    if (!(b > a)) {
+        return CORE_ERR_INVALID_ARG;
+    }
+
+    double t[CHEB_FIT_MAX_N];
+    double fx[CHEB_FIT_MAX_N];
+
+    CoreResult r = cheb_nodes(a, b, t, n);
+    if (r != CORE_OK) {
+        return r;
+    }
+
+    for (size_t k = 0; k < n; k++) {
+        fx[k] = f(t[k], ctx);
+    }
+
+    return cheb_fit_samples(fx, c_out, n);
 }

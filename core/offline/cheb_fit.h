@@ -33,4 +33,16 @@ typedef double (*ChebFunc)(double x, void *ctx);
 CoreResult cheb_fit(ChebFunc f, void *ctx, double a, double b,
                     double *c_out, size_t n);
 
+/* The n sample points cheb_fit would use, written to t_out in the same order
+ * it visits them - which is descending in time, since the nodes are cosines.
+ *
+ * The ephemeris cooker cannot hand cheb_fit a function: it has an integrator
+ * that marches forward, not something that can be evaluated at an arbitrary
+ * instant. So it asks for the sample times, integrates through them, and
+ * fits from the values. */
+CoreResult cheb_nodes(double a, double b, double *t_out, size_t n);
+
+/* Fits from values already sampled at exactly those nodes, in that order. */
+CoreResult cheb_fit_samples(const double *values, double *c_out, size_t n);
+
 #endif /* CORE_CHEB_FIT_H */

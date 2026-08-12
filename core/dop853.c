@@ -199,8 +199,20 @@ CoreResult dop853_integrate(AccelFunc f, void *ctx, const State *in,
                          &io->n_evals);
     }
 
-    if (cfg->h_max > 0.0 && h > cfg->h_max) {
-        h = cfg->h_max;
+    /* A step larger than the whole span is never useful, and without a
+     * ceiling the controller compounds one without bound.
+     *
+     * That is not hypothetical. When a caller integrates in legs shorter than
+     * the natural step - which the ephemeris cooker does constantly, stopping
+     * at every fit node - each step is clamped to the remaining time, comes
+     * out far more accurate than requested, and the controller multiplies h
+     * by the maximum growth factor. Measured: h grew 2.3x per leg and reached
+     * 2.9e14 s after twenty-five legs of 0.8 days. Once it overflows to
+     * infinity a rejected step can no longer shrink it, since inf * 0.2 is
+     * still inf, and the integrator rejects forever. */
+    double h_ceiling = cfg->h_max > 0.0 ? cfg->h_max : dabs(t_end - current.t);
+    if (h > h_ceiling) {
+        h = h_ceiling;
     }
 
     long steps = 0;
@@ -255,8 +267,8 @@ CoreResult dop853_integrate(AccelFunc f, void *ctx, const State *in,
             h *= factor;
         }
 
-        if (cfg->h_max > 0.0 && h > cfg->h_max) {
-            h = cfg->h_max;
+        if (h > h_ceiling) {
+            h = h_ceiling;
         }
     }
 
