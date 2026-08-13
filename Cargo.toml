@@ -6,7 +6,7 @@
 
 [workspace]
 resolver = "2"
-members = ["core-sys", "core-rs", "tools/gpu-probe", "tools/slang-probe"]
+members = ["core-sys", "core-rs", "engine", "tools/gpu-probe", "tools/slang-probe"]
 
 # Мінімальна версія Rust.
 #

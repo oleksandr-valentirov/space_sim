@@ -146,6 +146,15 @@ jobs:
       # там MSVC, а core/cflags.txt написаний під gcc — потрібен
       # x86_64-pc-windows-gnu. Це записано боргом у ROADMAP D1; джоб
       # windows-mingw поки що перевіряє тільки збірку через make.
+      # Програмний Vulkan для тестів рушія: без адаптера вони пропускаються,
+      # а мовчазний пропуск — це зелений тест, який нічого не перевіряє.
+      # macOS має Metal сам.
+      - name: Mesa
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers
+
       - name: Cargo determinism
         if: runner.os != 'Windows'
         env:

@@ -1,0 +1,18 @@
+[package]
+name = "engine"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+pollster = "1.0.1"
+wgpu = "30"
+winit = "0.30"
+
+# Знімок кадру у файл. Кодек не пишемо самі (PROJECT.md, «чого НЕ робимо»);
+# png малий і робить рівно одне.
+png = "0.18"
+
+[lints]
+workspace = true
