@@ -17,6 +17,12 @@
 #define MAX_SAMPLES 256
 #define AU_M 1.495978707e11
 
+/* Tight enough that the slowest-converging body in the set - the Moon, always
+ * the Moon - has stopped moving. Same number the ephemeris cooker uses, and
+ * for the same reason; the tolerance block at the end of main() is where it
+ * was measured and where the cost of being looser is written down. */
+#define CONVERGED_TOL_M 1.0e-6
+
 /* Every major body of the solar system, in the order the fixtures use. */
 static const char *ALL_BODIES[] = {
     "sun", "mercury", "venus", "earth", "moon",
@@ -219,10 +225,15 @@ int main(void)
     }
 
     /* Sun, Earth and Moon alone: kept as the contrast that makes the point
-     * below visible. Measured over ten years at tol 1e1 m: 5.417e9 m against
-     * Horizons in the SSB frame, which sounds catastrophic and is not a bug.
-     * A wrong frame or centre would put it above 1e11 m, an AU or more. */
-    RunResult minimal = run_model(MINIMAL_BODIES, N_MINIMAL, 1e0);
+     * below visible. Measured over ten years: 5.417e9 m against Horizons in
+     * the SSB frame, which sounds catastrophic and is not a bug. A wrong frame
+     * or centre would put it above 1e11 m, an AU or more.
+     *
+     * Both runs here use CONVERGED_TOL_M rather than the 1e0 they used until
+     * the ephemeris span study measured what that costs - see the tolerance
+     * block at the bottom of this function. The Earth's numbers are unchanged
+     * by that (they were already converged at 1e0); the Moon's are not. */
+    RunResult minimal = run_model(MINIMAL_BODIES, N_MINIMAL, CONVERGED_TOL_M);
     {
         CHECK(minimal.max_earth > 1e9);
         CHECK(minimal.max_earth < 2e10);
@@ -247,7 +258,7 @@ int main(void)
         CHECK(minimal.barycentre_drift > 1e9);
 
         /* Geocentric lunar geometry, on the other hand, is already decent:
-         * 1.460e5 m over ten years from three point masses. The Earth-Moon
+         * 1.843e5 m over ten years from three point masses. The Earth-Moon
          * system barely notices that the rest of the solar system is
          * missing - it notices only where it is as a whole. */
         CHECK(minimal.max_moon_geocentric < 1e6);
@@ -256,12 +267,13 @@ int main(void)
     /* Every major body: the fix that the measurement above pointed at. The
      * missing momentum is no longer missing, and the drift collapses with it.
      *
-     * Measured over ten years at tol 1e0 m: Earth 1.679e6 m against Horizons,
-     * down from 5.417e9 - a factor of 3226. Barycentre drift 1.051e6 m, down
-     * from 4.959e9. The Moon improves too, 1.460e5 m to 9.322e4 m geocentric.
-     * For a model that is still nothing but point masses, 1700 km over a
-     * decade at one AU is a good place to be. */
-    RunResult full = run_model(ALL_BODIES, N_ALL, 1e0);
+     * Measured over ten years: Earth 1.681e6 m against Horizons, down from
+     * 5.417e9 - a factor of 3223. Barycentre drift 1.051e6 m, down from
+     * 4.959e9. The Moon improves too, 1.843e5 m to 1.549e5 m geocentric, but
+     * only by a sixth: what the planets fix is where the subsystem is, not
+     * the shape of the orbit inside it. For a model that is still nothing but
+     * point masses, 1700 km over a decade at one AU is a good place to be. */
+    RunResult full = run_model(ALL_BODIES, N_ALL, CONVERGED_TOL_M);
     {
         CHECK(full.max_earth < minimal.max_earth / 100.0);
         CHECK(full.barycentre_drift < minimal.barycentre_drift / 100.0);
@@ -278,18 +290,31 @@ int main(void)
      * 1e1, 1e0, 1e-1. Converged, so no amount of integrator tuning closes
      * that gap - it closes by adding physics.
      *
-     * The Moon is not, and this cost a wrong conclusion before it was
-     * measured. Geocentric error runs 8.5e8, 3.7e8, 4.0e7, 3.0e6, 9.3e4 m as
-     * the tolerance tightens from 1e6 to 1e0. At tol 1e1 the lunar figure is
-     * still almost entirely integration error, and reading it as a physical
-     * limit produced a confident and completely wrong claim about the
-     * Earth's oblateness. A single global tolerance in metres treats the
-     * Moon's 3.8e8 m orbit and Neptune's 4.5e12 m one alike, and the Moon is
-     * the fastest thing in the system, so it converges last.
+     * The Moon is not, and this has now cost two wrong conclusions rather
+     * than one. Geocentric error runs 8.5e8, 3.7e8, 4.0e7, 3.0e6, 9.32e4,
+     * 1.417e5, 1.539e5, 1.548e5, 1.549e5 m as the tolerance tightens from 1e6
+     * to 1e-6. A single global tolerance in metres treats the Moon's 3.8e8 m
+     * orbit and Neptune's 4.5e12 m one alike, and the Moon is the fastest
+     * thing in the system, so it converges last.
+     *
+     * The first wrong conclusion was reading the tol 1e1 figure as a physical
+     * limit, which produced a confident and completely wrong claim about the
+     * Earth's oblateness.
+     *
+     * The second was written here as the fix for the first: that tol 1e0 was
+     * where the Moon had converged, at 9.32e4 m. It is not. It is where the
+     * sequence crosses the converged value on its way past - the integration
+     * error there partly cancels the missing physics, and the reading comes
+     * out 40% BELOW the truth of 1.549e5 m. That is the failure mode worth
+     * remembering: an unconverged number that is too small looks like
+     * success, and no bound of the form "is the error below X" can catch it.
+     * Only running the same thing twice at different tolerances can, which is
+     * what the block below now does.
      *
      * Practical consequence for the ephemeris cooker: pick the tolerance from
-     * the fastest body, not from a whole-system error norm, and verify
-     * convergence per body rather than in aggregate. */
+     * the fastest body, not from a whole-system error norm; verify
+     * convergence per body rather than in aggregate; and verify it by
+     * agreement between two tolerances, not by the size of one. */
     {
         RunResult loose = run_model(ALL_BODIES, N_ALL, 1e1);
 
@@ -302,6 +327,16 @@ int main(void)
         /* The Moon moves by more than an order of magnitude over the same
          * tolerance change, which is what makes the point. */
         CHECK(loose.max_moon_geocentric > 10.0 * full.max_moon_geocentric);
+
+        /* And the claim that `full` itself is converged, enforced rather than
+         * asserted in a comment. Four orders of tolerance apart, agreeing to
+         * better than a percent: 1.539e5 m against 1.549e5 m. Had this check
+         * existed, the 9.32e4 m at tol 1e0 would have failed it by 40%. */
+        RunResult check = run_model(ALL_BODIES, N_ALL, 1e-2);
+        double moon_change = fabs(full.max_moon_geocentric
+                                  - check.max_moon_geocentric)
+                           / check.max_moon_geocentric;
+        CHECK(moon_change < 0.02);
 
         /* The barycentre drift does not move at all with tolerance, which is
          * what identifies it as physical rather than numerical. Measured

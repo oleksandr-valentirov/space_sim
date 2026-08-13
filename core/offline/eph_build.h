@@ -26,7 +26,23 @@ typedef struct {
      * Choose it from the fastest body in the set, not from the size of the
      * system. B5 measured why: one global tolerance treats the Moon's 3.8e8 m
      * orbit and Neptune's 4.5e12 m one alike, and the Moon converges two
-     * orders of magnitude later than everything else. */
+     * orders of magnitude later than everything else.
+     *
+     * Choose it so that it binds, which is a separate requirement and the one
+     * that is easy to miss. ex_ephspan measured a ten-year cook at falling
+     * tolerances and found 1, 1e-1 and 1e-2 m producing the identical step
+     * count: below roughly 1e-3 m the steps here are set by the forced
+     * landings on fit nodes, not by this field. A cook in that regime is as
+     * accurate as its node cadence happens to make it, and changing
+     * interval_seconds or degree would silently change its accuracy while
+     * max_fit_error_m, which is per-interval, reported nothing.
+     *
+     * It is not what limits the asset - the Chebyshev fit is, by two orders -
+     * because this controls local error that accumulates over the whole span
+     * while the fit error does not accumulate at all. Over ten years the
+     * accumulated difference between 1e-3 and 1e-6 m is about 18 m of lunar
+     * position, against a 7.6e-2 m fit error. Hence a tolerance far below the
+     * fit error is not waste. */
     double tol_m;
 } EphBuildConfig;
 

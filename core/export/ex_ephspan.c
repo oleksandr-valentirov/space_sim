@@ -52,14 +52,14 @@
  * is worse, the Chebyshev layer dominates and a better integrator buys
  * nothing.
  *
- * It runs twice, and the second run is the point. The cooker lands on every
- * fit node, so it takes far shorter steps than a control that lands only on
- * reference epochs - at one shared tolerance the two are not the same
- * integration, and the difference is easy to read as the asset being wrong.
- * TOLERANCE_M is the fixture's 1 m; TOLERANCE_CONVERGED_M is tight enough
- * that the answer no longer moves. Exporting both is what separates "the
- * asset differs from the truth" from "the control has not converged to it",
- * and the tolerance sweep printed at the end says which of the two happened.
+ * It runs twice, at TOLERANCE_M and at TOLERANCE_LOOSE_M, and the second run
+ * is history kept deliberately. The cooker lands on every fit node, so it
+ * takes far shorter steps than a control landing only on reference epochs; at
+ * the metre the fixture used until this file was written, the two were not
+ * the same integration at all, and the gap was easy to read as the asset
+ * being wrong when it was the control that had not converged. Exporting both
+ * is what tells those apart, and the tolerance sweep printed at the end is
+ * what the fixture's current tolerance was chosen from.
  *
  * Offline code: the mutual N-body integration the cooker runs, never the
  * runtime (core/offline/nbody.h). Run from the repository root. */
@@ -70,6 +70,7 @@
 #include "nbody.h"
 #include "refdata.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -89,11 +90,16 @@ static const char *BODIES[] = {
 #define START_DAYS 120.0
 #define INTERVAL_DAYS 8.0
 #define DEGREE 14
-#define TOLERANCE_M 1.0
 
-/* Three orders below the fixture's, which the sweep at the end shows is two
- * more than the answer needs. Cheap: the whole control run is milliseconds. */
-#define TOLERANCE_CONVERGED_M 1.0e-3
+/* Tracks cook_fixture.c deliberately: this file exists to say what the
+ * shipped asset does, and a tolerance of its own would answer about something
+ * nobody ships. */
+#define TOLERANCE_M 1.0e-6
+
+/* What the fixture used before ex_ephspan measured it. Kept as a control
+ * rather than deleted: the difference between the two rows is the finding,
+ * and a number that only exists in a commit message stops being checked. */
+#define TOLERANCE_LOOSE_M 1.0
 
 /* Overwritten once per span. Only one asset is needed at a time, and the
  * longest is 1.5 MB - worth not leaving six of them in build/. */
@@ -368,6 +374,52 @@ static int sweep_tolerance(const NBodySystem *sys)
     return 1;
 }
 
+/* How fast the divergence grows, as the exponent k in error ~ t^k, by least
+ * squares on log t against log error.
+ *
+ * This is the number the whole fork turns on and it belongs here rather than
+ * in the plotting script, which deliberately computes nothing. A
+ * non-symplectic integrator's roundoff shows up as k = 2 - that is exactly
+ * what ex_accuracy.c's reversibility diagnostic measures over 200 years, a
+ * round-trip error growing quadratically. A constant missing force shows up
+ * as k = 1. The two mechanisms are told apart by this one number, and no
+ * amount of looking at the size of the error would separate them.
+ *
+ * from_days skips the start, where the error is still climbing out of the
+ * initial condition and the exponent means nothing yet. */
+static double growth_exponent(const double values[MAX_SAMPLES][3], size_t n,
+                              int measure, double from_days)
+{
+    double sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0;
+    size_t used = 0;
+
+    for (size_t s = 0; s < n; s++) {
+        double days = reference[0][s].s.t / DAY;
+        double v = values[s][measure];
+        if (days < from_days || !(v > 0.0)) {
+            continue;
+        }
+
+        double x = log(days), y = log(v);
+        sx += x;
+        sy += y;
+        sxx += x * x;
+        sxy += x * y;
+        used++;
+    }
+
+    if (used < 2) {
+        return 0.0;
+    }
+
+    double dn = (double)used;
+    double denominator = dn * sxx - sx * sx;
+    if (denominator == 0.0) {
+        return 0.0;
+    }
+    return (dn * sxy - sx * sy) / denominator;
+}
+
 /* Every shorter span against the longest one, epoch by epoch, as exact
  * equality - except at the span's own end, where the seam described in the
  * header makes exact equality the wrong question and the size of the
@@ -423,7 +475,7 @@ int main(void)
 
     printf("ex_ephspan: oracle is %.0f days (%.1f years) in %zu epochs\n",
            oracle_days, oracle_days * DAY / YEAR, n_samples);
-    printf("  fixed: interval %.0f days, degree %d, tol %.0f m\n",
+    printf("  fixed: interval %.0f days, degree %d, tol %g m\n",
            INTERVAL_DAYS, DEGREE, TOLERANCE_M);
 
     Csv c;
@@ -442,9 +494,9 @@ int main(void)
     double raw_tight[3] = { 0.0, 0.0, 0.0 };
     long raw_loose_steps = 0, raw_tight_steps = 0;
 
-    if (!measure_raw(&c, &sys, "raw_tol_1m", TOLERANCE_M,
+    if (!measure_raw(&c, &sys, "raw_tol_1m", TOLERANCE_LOOSE_M,
                      raw_loose, &raw_loose_steps)
-        || !measure_raw(&c, &sys, "raw_converged", TOLERANCE_CONVERGED_M,
+        || !measure_raw(&c, &sys, "raw_fixture_tol", TOLERANCE_M,
                         raw_tight, &raw_tight_steps)) {
         return 1;
     }
@@ -466,14 +518,27 @@ int main(void)
                summary[k].moon_geo_m);
     }
 
+    char loose_label[32], tight_label[32];
+    snprintf(loose_label, sizeof loose_label, "ctrl %g m", TOLERANCE_LOOSE_M);
+    snprintf(tight_label, sizeof tight_label, "ctrl %g m", TOLERANCE_M);
+
     printf("  %13s %6.2f %5s %8s %8ld %11s %11.4g %11.4g %11.4g\n",
-           "control 1 m", oracle_days * DAY / YEAR, "-", "-",
+           loose_label, oracle_days * DAY / YEAR, "-", "-",
            raw_loose_steps, "-",
            raw_loose[0], raw_loose[1], raw_loose[2]);
     printf("  %13s %6.2f %5s %8s %8ld %11s %11.4g %11.4g %11.4g\n",
-           "control 1 mm", oracle_days * DAY / YEAR, "-", "-",
+           tight_label, oracle_days * DAY / YEAR, "-", "-",
            raw_tight_steps, "-",
            raw_tight[0], raw_tight[1], raw_tight[2]);
+
+    size_t last = n_spans - 1;
+    printf("\n  growth exponent k in error ~ t^k, full asset, from one year on:\n");
+    printf("    earth_rel  k = %.2f\n",
+           growth_exponent(errors[last], n_epochs[last], 1, 365.0));
+    printf("    moon_geo   k = %.2f\n",
+           growth_exponent(errors[last], n_epochs[last], 2, 365.0));
+    printf("  (k=1 a constant missing force, k=2 a non-symplectic "
+           "integrator's roundoff)\n");
 
     if (!sweep_tolerance(&sys)) {
         return 1;

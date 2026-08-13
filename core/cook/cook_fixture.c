@@ -96,8 +96,13 @@ int main(void)
     cfg.degree = DEGREE;
 
     /* Chosen from the fastest body, not from the size of the system - the
-     * lesson of ROADMAP B5. */
-    cfg.tol_m = 1.0;
+     * lesson of ROADMAP B5 - and tight enough to bind on its own, which is
+     * the lesson of ex_ephspan: at the metre this was until now, the step
+     * size came from the forced landings on fit nodes rather than from here,
+     * and the cook was accurate by accident. Same number as the reversibility
+     * diagnostic in ex_accuracy.c uses, and the cost of it is 0.04 s on a
+     * ten-year cook. See EphBuildConfig::tol_m. */
+    cfg.tol_m = 1.0e-6;
 
     EphBuildReport report;
     memset(&report, 0, sizeof report);

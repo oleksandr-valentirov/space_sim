@@ -21,6 +21,11 @@
 __pycache__/
 *.pyc
 
+# Віртуальне середовище для matplotlib — шлях, який описує
+# scripts/requirements.txt. Потрібне лише для make plots; ядро від нього
+# не залежить, на CI його немає.
+/.venv/
+
 # Редактори, ОС
 .vscode/
 .idea/

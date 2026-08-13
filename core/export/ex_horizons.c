@@ -49,7 +49,14 @@ static const char *ALL_BODIES[] = {
 static const char *MINIMAL_BODIES[] = { "sun", "earth", "moon" };
 #define N_MINIMAL (sizeof MINIMAL_BODIES / sizeof MINIMAL_BODIES[0])
 
-#define TOLERANCE_M 1.0
+/* Was 1.0 until ex_ephspan measured what that costs here. This run lands only
+ * on reference epochs, so unlike the cooker it has no forced landings to save
+ * it, and at a metre the ten-year geocentric Moon had not converged: 8.4e4 m
+ * against 1.396e5 m at 1e-2 m and tighter. Worse than wrong by 56 km, it was
+ * wrong in the flattering direction - the integrator's error partly cancelled
+ * the missing physics, and the curve oscillated by a factor of six while
+ * looking like a result. Same number as the cooker now uses. */
+#define TOLERANCE_M 1.0e-6
 
 static RefSample reference[N_ALL][MAX_SAMPLES];
 static size_t n_samples;

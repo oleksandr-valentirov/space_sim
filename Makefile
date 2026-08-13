@@ -132,6 +132,13 @@ SCEN_BIN := $(patsubst core/scenario/%.c,$(BUILD)/scenario/%$(EXE),$(SCEN_SRC))
 GOLDEN   := core/scenario/golden.txt
 ACTUAL   := $(BUILD)/scenario/actual.txt
 
+# Ассет — такий самий вхід сценаріїв, як їхній власний код: sc_ephemeris
+# і sc_trajectory читають його в рантаймі. Без цієї залежності `make cook`
+# змінював ассет, а наступний `make test` звіряв СТАРИЙ actual.txt і мовчки
+# проходив — тобто перевірка, яка існує заради ловіння тихих змін, сама
+# пропускала б найтихішу з них.
+FIXTURE  := $(wildcard data/fixture/*.eph)
+
 .PHONY: all test unit check-libm determinism determinism-bless hashes cook \
         csv plots bench flags clean
 
@@ -213,7 +220,7 @@ unit: $(TEST_BIN)
 	done; \
 	if [ $$fail -ne 0 ]; then echo "ЮНІТ-ТЕСТИ ПРОВАЛЕНІ"; exit 1; fi
 
-$(ACTUAL): $(SCEN_BIN)
+$(ACTUAL): $(SCEN_BIN) $(FIXTURE)
 	@mkdir -p $(dir $@)
 	@rm -f $@
 	@for s in $(SCEN_BIN); do $$s >> $@; done
