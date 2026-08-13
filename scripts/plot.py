@@ -356,6 +356,55 @@ def figure_station(csv_dir, out_dir):
     return save(fig, out_dir / "station.png")
 
 
+# --- Механіка невизначеності: зростання й проходи трекінгу -----------------
+
+def figure_uncertainty(csv_dir, out_dir):
+    u = load(csv_dir / "uncertainty.csv")
+
+    passed = [i for i, p in enumerate(u["just_had_pass"]) if p > 0.5]
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    fig.suptitle("Зростання невизначеності на halo-орбіті 1151 (λ=594/оберт) "
+                 "між проходами трекінгу")
+
+    for ax, key, title, unit in (
+            (axes[0], "pos_sigma_m", "позиція, 1σ", "м"),
+            (axes[1], "vel_sigma_mps", "швидкість, 1σ", "м/с")):
+        x, y = log_pairs(u["days"], u[key])
+        ax.plot(x, y, color="C0", linewidth=1.2, label="між проходами")
+
+        px = [u["days"][i] for i in passed]
+        py = [u[key][i] for i in passed]
+        ax.scatter(px, py, color="C3", marker="v", zorder=3, s=30,
+                  label="одразу після проходу")
+
+        ax.set_yscale("log")
+        ax.set_xlabel("доба місії")
+        ax.set_ylabel(unit)
+        ax.set_title(title)
+        ax.grid(alpha=0.3, which="both")
+        ax.legend(fontsize=8)
+
+    text = ("Кожен прохід ділить дисперсію на 10 (σ на √10 ≈ 3.16) — "
+            "ілюстративне число, не результат розрахунку каналу зв'язку "
+            "(core/uncertainty.h). Зростання між проходами — не ілюстрація: "
+            "та сама STM, що вже звірена з нелінійною динамікою в "
+            "core/test/test_uncertainty.c, пронесена крізь реальне "
+            "10-тільне поле.\n"
+            "На перших проходах масштаб — кілометри, той самий порядок, що "
+            "приклад PROJECT.md §8 (±40 км). Далі крива обганяє власну вісь: "
+            "594-кратне зростання за оберт з часом переважає 3.16-кратне "
+            "стиснення проходу, і до кінця місії σ сягає астрономічних "
+            "чисел, з якими вже нема сенсу порівнювати. Це не помилка "
+            "розрахунку, а межа ілюстративної моделі проходу: постійний "
+            "коефіцієнт стиснення не встигає за нестійкістю цієї конкретної "
+            "орбіти, і саме тому реальні місії біля L2 стежать за апаратом "
+            "частіше, що ближче до критичних подій.")
+    caption(fig, text)
+
+    return save(fig, out_dir / "uncertainty.png")
+
+
 # --- Що втрачає інтегратор -------------------------------------------------
 
 def figure_accuracy(csv_dir, out_dir):
@@ -500,6 +549,7 @@ FIGURES = (
     ("stability", figure_stability),
     ("trajectory", figure_trajectory),
     ("station", figure_station),
+    ("uncertainty", figure_uncertainty),
     ("accuracy", figure_accuracy),
     ("horizons", figure_horizons),
 )
