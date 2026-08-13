@@ -165,6 +165,10 @@ fn the_handle_can_be_shared_between_threads() {
     let first = eph.body_state(4, 0.0).unwrap().r.x;
     for handle in handles {
         let got = handle.join().expect("потік не мав панікувати").unwrap();
-        assert_eq!(got.to_bits(), first.to_bits(), "паралельне читання розійшлося");
+        assert_eq!(
+            got.to_bits(),
+            first.to_bits(),
+            "паралельне читання розійшлося"
+        );
     }
 }

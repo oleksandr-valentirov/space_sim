@@ -79,9 +79,7 @@ fn hashes_match_the_committed_golden() {
     report.push_str("хеші cargo НЕ збіглися з core/scenario/golden.txt\n\n");
     report.push_str(&format!("прапорці cargo:  {CFLAGS}\n"));
     report.push_str("прапорці make:   make flags\n");
-    report.push_str(
-        "повний виклик:   CC_ENABLE_DEBUG_OUTPUT=1 cargo build -vv\n\n",
-    );
+    report.push_str("повний виклик:   CC_ENABLE_DEBUG_OUTPUT=1 cargo build -vv\n\n");
 
     let expected: Vec<&str> = golden.lines().collect();
     let got: Vec<&str> = actual.lines().collect();

@@ -169,6 +169,13 @@ jobs:
           CC: ${{ matrix.cc }}
         run: cargo clippy --all-targets -- -D warnings
 
+      # Форматування — це не смак, а відсутність суперечки про смак. Приймаємо
+      # rustfmt як є, включно з тими місцями, де він розбиває читабельний
+      # однорядковий виклик на чотири.
+      - name: Rustfmt
+        if: matrix.name == 'linux-gcc'
+        run: cargo fmt --check
+
       # Пам'ять межі C↔Rust (ROADMAP D3).
       #
       # Роадмап казав «Miri, або хоча б ASan». Тут valgrind, і це не

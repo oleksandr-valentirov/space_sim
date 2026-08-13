@@ -49,7 +49,9 @@ use std::process::Command;
 
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let root = manifest.parent().expect("core-sys має лежати в репозиторії");
+    let root = manifest
+        .parent()
+        .expect("core-sys має лежати в репозиторії");
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
     let core_dir = root.join("core");
@@ -90,8 +92,8 @@ fn main() {
 /// проявилися б однаково: збірка мовчки пішла б з дефолтними прапорцями
 /// компілятора, а впала б звірка хешів — за кілометр від причини.
 fn read_flags(path: &Path) -> Vec<String> {
-    let text = fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("не читається {}: {e}", path.display()));
+    let text =
+        fs::read_to_string(path).unwrap_or_else(|e| panic!("не читається {}: {e}", path.display()));
 
     let flags: Vec<String> = text
         .lines()
@@ -167,12 +169,7 @@ fn build_library(core_dir: &Path, flags: &[String]) -> cc::Tool {
 /// Без `libcore_offline.a` і без `-lm`, точно як у `Makefile`: лінкування тут
 /// саме по собі є перевіркою того, що в рантайм не просочилася тригонометрія.
 /// Якщо просочиться — впаде саме тут, а не через тиждень на іншій платформі.
-fn build_scenarios(
-    tool: &cc::Tool,
-    core_dir: &Path,
-    out_dir: &Path,
-    flags: &[String],
-) -> PathBuf {
+fn build_scenarios(tool: &cc::Tool, core_dir: &Path, out_dir: &Path, flags: &[String]) -> PathBuf {
     let scenario_dir = core_dir.join("scenario");
     let bin_dir = out_dir.join("scenario");
     fs::create_dir_all(&bin_dir).expect("не створюється каталог для сценаріїв");
@@ -248,7 +245,10 @@ fn sources(dir: &Path) -> Vec<PathBuf> {
 /// не відстежує, а зміна `.h` без зміни `.c` — звичайна річ.
 fn watch(core_dir: &Path) {
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed={}", core_dir.join("cflags.txt").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        core_dir.join("cflags.txt").display()
+    );
 
     for dir in [core_dir.to_path_buf(), core_dir.join("scenario")] {
         let entries = match fs::read_dir(&dir) {
@@ -257,10 +257,7 @@ fn watch(core_dir: &Path) {
         };
 
         for path in entries.filter_map(|e| e.ok().map(|e| e.path())) {
-            if path
-                .extension()
-                .is_some_and(|ext| ext == "c" || ext == "h")
-            {
+            if path.extension().is_some_and(|ext| ext == "c" || ext == "h") {
                 println!("cargo:rerun-if-changed={}", path.display());
             }
         }

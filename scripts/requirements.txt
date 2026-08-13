@@ -1,0 +1,19 @@
+# Python-залежності скриптів. Список навмисно короткий і має таким лишитися:
+# скрипти тут нічого не рахують, уся фізика в C.
+#
+# Системний пакет зазвичай зручніше:
+#     sudo apt install python3-matplotlib
+#
+# Через venv, якщо системний не годиться:
+#     python3 -m venv .venv && .venv/bin/pip install -r scripts/requirements.txt
+#     make plots PYTHON=.venv/bin/python
+#
+# Версія не закріплена свідомо. Це діагностичні графіки, а не збірка: тут
+# важить «будується будь-де», а не «будується однаково». Відтворюваність
+# живе в іншому місці — у прапорцях ядра й хешах сценаріїв.
+
+# scripts/plot.py — графіки з build/csv/*.csv
+matplotlib
+
+# fetch_horizons.sh, fetch_halo_orbits.py, gen_dop853_coeffs.py обходяться
+# стандартною бібліотекою: urllib, json, csv. Залежностей не додавати.
