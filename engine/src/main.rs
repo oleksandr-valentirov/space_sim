@@ -20,6 +20,7 @@ fn main() {
     let mut depth_probe = false;
     let mut perf_probe = false;
     let mut flight_probe = false;
+    let mut trajectory_probe = false;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -44,6 +45,7 @@ fn main() {
             "--depth-probe" => depth_probe = true,
             "--perf-probe" => perf_probe = true,
             "--flight-probe" => flight_probe = true,
+            "--trajectory-probe" => trajectory_probe = true,
             "--help" | "-h" => {
                 println!("{}", HELP);
                 return;
@@ -64,6 +66,8 @@ fn main() {
         run_perf_probe()
     } else if flight_probe {
         run_flight_probe()
+    } else if trajectory_probe {
+        run_trajectory_probe()
     } else {
         match shot_path {
             Some(path) => take_shot(&path, options.width, options.height),
@@ -84,6 +88,7 @@ const HELP: &str = "\
   --depth-probe     заміряти роздільність глибини (ROADMAP F3)
   --perf-probe      заміряти час кадру рендера (скіл perf-probe)
   --flight-probe    проліт 10 м -> 10⁷ м над сферою (ROADMAP F5)
+  --trajectory-probe  halo-орбіта, інерціальний і обертовий фрейм (ROADMAP F6)
   --width <px>      ширина, типово 1280
   --height <px>     висота, типово 720";
 
@@ -285,6 +290,59 @@ fn run_flight_probe() -> Result<(), String> {
             last.altitude
         );
     }
+
+    Ok(())
+}
+
+/// Halo-орбіта з етапу C, два фрейми з тих самих вершинних буферів
+/// (ROADMAP F6).
+///
+/// Обидва знімки йдуть з ОДНОГО завантаження й ОДНОГО набору буферів —
+/// перемикання фрейму це прапорець в uniform, не перезавантаження вершин.
+fn run_trajectory_probe() -> Result<(), String> {
+    use engine::trajectory;
+    use engine::trajectory_render::{geocentric_framing, render, rotating_framing, Params};
+
+    const SIZE: u32 = 720;
+
+    let gpu = Gpu::new(wgpu::Instance::default(), None)?;
+    println!("адаптер: {}\n", gpu.describe());
+
+    let samples = trajectory::load();
+    println!(
+        "траєкторія: {} семплів, {:.1} діб, mu = {}\n",
+        samples.len(),
+        samples.last().unwrap().t / 86400.0,
+        trajectory::MU
+    );
+
+    let geocentric = render(
+        &gpu,
+        SIZE,
+        SIZE,
+        &samples,
+        &Params {
+            rotating: false,
+            framing: geocentric_framing(&samples),
+            colour: [0.9, 0.6, 0.2, 1.0],
+        },
+    )?;
+    geocentric.write_png(std::path::Path::new("build/f6_geocentric.png"))?;
+    println!("знімок: build/f6_geocentric.png (інерціальний, геоцентричний)");
+
+    let rotating = render(
+        &gpu,
+        SIZE,
+        SIZE,
+        &samples,
+        &Params {
+            rotating: true,
+            framing: rotating_framing(&samples),
+            colour: [0.3, 0.8, 0.9, 1.0],
+        },
+    )?;
+    rotating.write_png(std::path::Path::new("build/f6_rotating.png"))?;
+    println!("знімок: build/f6_rotating.png (обертовий, синодичний, біля L2)");
 
     Ok(())
 }

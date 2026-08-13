@@ -29,3 +29,5 @@ pub mod perf_probe;
 pub mod shot;
 pub mod sphere;
 pub mod sphere_render;
+pub mod trajectory;
+pub mod trajectory_render;
