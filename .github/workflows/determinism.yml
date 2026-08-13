@@ -200,6 +200,19 @@ jobs:
       # неможливі за конструкцією типів. Вони НЕ доводять, що звільнення
       # взагалі відбувається. Витік — це не помилка типів, і побачити його
       # можна тільки так.
+      #
+      # ⚠ ТІЛЬКИ core-sys і core-rs, і це не економія часу.
+      #
+      # Перша версія ганяла valgrind по всіх тестових бінарниках, і на F3
+      # вона впала: тести рушія створюють пристрій wgpu, той тягне програмний
+      # Vulkan від Mesa, а Mesa губить 56 байт у стеку без жодного символу
+      # (`???` — усередині dlopen-нутого драйвера). Це не наш код, ми його не
+      # полагодимо, і робити з нього червоний гейт означає привчити себе
+      # ігнорувати червоне.
+      #
+      # Межа C↔Rust — єдине місце, де пам'ять справді наша: там `malloc` у
+      # ephemeris.c і `Drop` у core-rs. Рушій власної пам'яті не виділяє
+      # взагалі, тож перевіряти в ньому нічого.
       - name: Valgrind
         if: matrix.name == 'linux-gcc'
         env:
@@ -207,15 +220,22 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y valgrind
-          cargo test --no-run --message-format=json \
-            | jq -r 'select(.profile.test == true and .executable != null) | .executable' \
-            | while read -r binary; do
-                echo "== $binary"
-                valgrind --error-exitcode=1 \
-                         --leak-check=full \
-                         --errors-for-leak-kinds=definite \
-                         "$binary"
-              done
+          binaries=$(cargo test --no-run --message-format=json \
+            | jq -r 'select(.profile.test == true and .executable != null)
+                     | select(.package_id | test("core-sys|core-rs"))
+                     | .executable')
+          if [ -z "$binaries" ]; then
+            echo "не знайдено жодного тестового бінарника core-sys/core-rs;"
+            echo "порожня перевірка мовчки 'проходить', тому це провал"
+            exit 1
+          fi
+          echo "$binaries" | while read -r binary; do
+            echo "== $binary"
+            valgrind --error-exitcode=1 \
+                     --leak-check=full \
+                     --errors-for-leak-kinds=definite \
+                     "$binary"
+          done
 
       # Завжди, навіть коли впало: у провалі саме хеші й потрібні.
       - name: Hashes
