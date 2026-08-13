@@ -30,6 +30,7 @@
  * the runtime (core/offline/nbody.h). Run from the repository root. */
 
 #include "csv.h"
+#include "eph_build.h"
 #include "nbody.h"
 #include "refdata.h"
 
@@ -132,6 +133,14 @@ static int run_model(Csv *c, const char *label, const char **names, size_t n)
 
     if (earth < 0 || moon < 0) {
         return 0;
+    }
+
+    /* The same treatment the cooker gives its copy. Both systems get it, the
+     * three-body control included: it is the control precisely because it is
+     * the same run with bodies removed, and treating them differently here
+     * would put the difference in the wrong column. */
+    if (eph_anchor_enabled()) {
+        nbody_anchor_barycentre(&sys, current);
     }
 
     double energy0 = nbody_energy(&sys, current);

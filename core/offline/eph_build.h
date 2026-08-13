@@ -64,4 +64,23 @@ CoreResult eph_build(const NBodySystem *sys, const State *initial,
                      const char *out_path,
                      EphBuildReport *report);
 
+/* Whether this build of the cooker anchors the barycentre before integrating
+ * (nbody_anchor_barycentre). Compiled in, not configurable at run time:
+ *
+ *     make                            anchored, the default
+ *     make ANCHOR_BARYCENTRE=0        not anchored, for comparison
+ *
+ * A build switch rather than an EphBuildConfig field on purpose. It is not a
+ * knob a caller should be choosing per cook - the asset ships one way, and
+ * two callers picking differently would be a bug that produced two plausible
+ * ephemerides. It exists so the effect can be measured against its own
+ * absence, which is the only way the number in nbody.h stays honest.
+ *
+ * Diagnostics that integrate the same system WITHOUT going through eph_build
+ * ask this, so that a comparison against the asset stays a comparison of one
+ * thing. That is why it is a function and not a macro the callers test: the
+ * setting is compiled into this translation unit alone, and nothing else
+ * needs the -D. */
+int eph_anchor_enabled(void);
+
 #endif /* CORE_EPH_BUILD_H */

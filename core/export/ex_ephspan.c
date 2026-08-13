@@ -317,6 +317,12 @@ static int measure_raw(Csv *c, const NBodySystem *sys, const char *label,
         current[i] = reference[i][0].s;
     }
 
+    /* Whatever eph_build does to its own copy, so that "the asset agrees with
+     * the control" keeps meaning what it says. */
+    if (eph_anchor_enabled()) {
+        nbody_anchor_barycentre(sys, current);
+    }
+
     Dop853Config cfg;
     memset(&cfg, 0, sizeof cfg);
     cfg.tol_m = tol_m;
@@ -475,8 +481,9 @@ int main(void)
 
     printf("ex_ephspan: oracle is %.0f days (%.1f years) in %zu epochs\n",
            oracle_days, oracle_days * DAY / YEAR, n_samples);
-    printf("  fixed: interval %.0f days, degree %d, tol %g m\n",
-           INTERVAL_DAYS, DEGREE, TOLERANCE_M);
+    printf("  fixed: interval %.0f days, degree %d, tol %g m, barycentre %s\n",
+           INTERVAL_DAYS, DEGREE, TOLERANCE_M,
+           eph_anchor_enabled() ? "anchored" : "NOT anchored");
 
     Csv c;
     if (!csv_open(&c, "build/csv/ephspan.csv",

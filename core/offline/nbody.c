@@ -69,6 +69,31 @@ Vec3d nbody_barycentre(const NBodySystem *sys, const State *states)
     return vec3_scale(weighted, 1.0 / total);
 }
 
+Vec3d nbody_momentum_velocity(const NBodySystem *sys, const State *states)
+{
+    Vec3d weighted = vec3_zero();
+    double total = 0.0;
+
+    for (size_t i = 0; i < sys->n; i++) {
+        weighted = vec3_add_scaled(weighted, states[i].v, sys->mu[i]);
+        total += sys->mu[i];
+    }
+
+    if (total == 0.0) {
+        return vec3_zero();
+    }
+    return vec3_scale(weighted, 1.0 / total);
+}
+
+void nbody_anchor_barycentre(const NBodySystem *sys, State *states)
+{
+    Vec3d drift = nbody_momentum_velocity(sys, states);
+
+    for (size_t i = 0; i < sys->n; i++) {
+        states[i].v = vec3_sub(states[i].v, drift);
+    }
+}
+
 static double dabs(double x)
 {
     return x < 0.0 ? -x : x;

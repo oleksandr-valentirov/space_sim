@@ -175,7 +175,16 @@ int main(void)
      * independently from the same start, so it accumulates its own path
      * error on top of the fit. Measured 4.38e1 m for position and 9.19e-5
      * m/s for velocity over sixty days - dominated by the two integrations
-     * diverging, not by the polynomial. */
+     * diverging, not by the polynomial.
+     *
+     * "The same start" is what makes this work, and it stopped being true the
+     * moment the cooker began anchoring the barycentre: this run failed at
+     * 1e3 m immediately, because it was integrating a system carrying the
+     * residual momentum that the asset no longer has. The test was right and
+     * the omission was here. Anchoring the copy below restores the
+     * comparison; it does not paper over anything, because the quantity being
+     * checked is agreement between the asset and its own integrator, not
+     * agreement with any particular frame. */
     {
         Dop853Config integ;
         memset(&integ, 0, sizeof integ);
@@ -187,6 +196,9 @@ int main(void)
 
         State current[NBODY_MAX];
         memcpy(current, initial, sizeof current);
+        if (eph_anchor_enabled()) {
+            nbody_anchor_barycentre(&system_config, current);
+        }
 
         double max_position = 0.0;
         double max_velocity = 0.0;

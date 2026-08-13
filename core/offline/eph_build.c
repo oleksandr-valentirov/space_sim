@@ -12,6 +12,18 @@
  * degree as well. */
 #define MAX_DEGREE CHEB_FIT_MAX_N
 
+/* Default on. The Makefile passes -DEPH_ANCHOR_BARYCENTRE=0 when asked; this
+ * fallback is what a build outside the Makefile gets, and it should be what
+ * ships. See eph_anchor_enabled() in the header for why it is a build switch. */
+#ifndef EPH_ANCHOR_BARYCENTRE
+#define EPH_ANCHOR_BARYCENTRE 1
+#endif
+
+int eph_anchor_enabled(void)
+{
+    return EPH_ANCHOR_BARYCENTRE;
+}
+
 static int write_exact(FILE *f, const void *src, size_t n)
 {
     return fwrite(src, 1, n, f) == n;
@@ -96,6 +108,12 @@ CoreResult eph_build(const NBodySystem *sys, const State *initial,
     State current[NBODY_MAX];
     for (size_t b = 0; b < n_bodies; b++) {
         current[b] = initial[b];
+    }
+
+    /* On the working copy, so the caller's initial conditions stay the
+     * published ones. Before the first node, so every interval sees it. */
+    if (eph_anchor_enabled()) {
+        nbody_anchor_barycentre(sys, current);
     }
 
     double max_fit_error = 0.0;

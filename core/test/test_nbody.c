@@ -346,6 +346,67 @@ int main(void)
         CHECK(bary_change < 1e-3);
     }
 
+    /* Anchoring the barycentre, and the claim it rests on.
+     *
+     * The drift above is not a mystery to be integrated away, it is momentum
+     * the initial conditions carry: 3.35e-3 m/s of it for this set, which
+     * over ten years is 1.057e6 m against the 1.051e6 m measured. Naming the
+     * cause is what makes removing it legitimate rather than a fudge - the
+     * true solar system's barycentre is at rest by construction, and ours
+     * moves only because the set is incomplete.
+     *
+     * Checked here rather than only in the cooker because the arithmetic is
+     * the claim: subtract the mass-weighted mean velocity and the system's
+     * momentum is gone, whatever anyone then builds with it. */
+    {
+        NBodySystem sys;
+        State current[NBODY_MAX];
+        memset(&sys, 0, sizeof sys);
+        sys.n = N_ALL;
+
+        for (size_t i = 0; i < N_ALL; i++) {
+            sys.mu[i] = refdata_gm_of(gm_table, n_gm, ALL_BODIES[i]);
+            CHECK(sys.mu[i] > 0.0);
+            current[i] = reference[i][0].s;
+        }
+
+        Vec3d before = nbody_momentum_velocity(&sys, current);
+        CHECK(vec3_norm(before) > 3.0e-3);
+        CHECK(vec3_norm(before) < 4.0e-3);
+
+        /* Predicted drift from the momentum alone, against the measured one:
+         * they agree to under a percent, which is what says the drift is this
+         * and not something else wearing its shape. */
+        double predicted = vec3_norm(before) * 10.0 * 365.25 * 86400.0;
+        CHECK(fabs(predicted - full.barycentre_drift)
+              < 0.02 * full.barycentre_drift);
+
+        nbody_anchor_barycentre(&sys, current);
+
+        /* Not "smaller" - gone. What remains is the rounding of a sum of ten
+         * terms spanning eleven orders of magnitude. */
+        Vec3d after = nbody_momentum_velocity(&sys, current);
+        CHECK(vec3_norm(after) < 1e-12);
+
+        /* And it is a change of frame, not of the system: relative velocities
+         * are untouched, so every orbit inside is the same orbit. */
+        int earth = -1, moon = -1;
+        for (size_t i = 0; i < N_ALL; i++) {
+            if (strcmp(ALL_BODIES[i], "earth") == 0) {
+                earth = (int)i;
+            }
+            if (strcmp(ALL_BODIES[i], "moon") == 0) {
+                moon = (int)i;
+            }
+        }
+        CHECK(earth >= 0 && moon >= 0);
+
+        Vec3d rel_before = vec3_sub(reference[moon][0].s.v,
+                                    reference[earth][0].s.v);
+        Vec3d rel_after = vec3_sub(current[moon].v, current[earth].v);
+        CHECK(vec3_distance(rel_before, rel_after) < 1e-12);
+    }
+
     /* Sanity of the fixtures as used here, independent of any integration. */
     {
         int earth = index_of("earth");

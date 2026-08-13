@@ -45,6 +45,32 @@ double nbody_energy(const NBodySystem *sys, const State *states);
  * missing. */
 Vec3d nbody_barycentre(const NBodySystem *sys, const State *states);
 
+/* Velocity of that barycentre - the system's net momentum per unit of the mass
+ * convention used here. Zero for the whole solar system in the SSB frame, and
+ * not zero for any subset of it. */
+Vec3d nbody_momentum_velocity(const NBodySystem *sys, const State *states);
+
+/* Subtract that velocity from every body, so the system's barycentre stops
+ * moving through the frame.
+ *
+ * Measured on the ten-body set at J2000: 3.35 mm/s of residual barycentre
+ * velocity, which over ten years is 1.057e6 m of drift - against a measured
+ * 1.051e6 m, so the drift is that momentum and nothing else. It is an
+ * artefact rather than motion: the true solar system's barycentre is at rest
+ * by construction, and ours moves only because a few hundred asteroids' worth
+ * of mass and momentum is missing from the set, plus whatever the barycentre
+ * GM question in data/horizons/README.md is worth. Choosing the frame in
+ * which our own incomplete system is at rest costs nothing physical and
+ * removes an error that grows without bound.
+ *
+ * Only the velocity. The barycentre also sits 3.4e5 m off the origin at
+ * J2000, and that offset is deliberately left alone: a constant offset is not
+ * an error that accumulates, and removing it would move every body away from
+ * the published initial conditions, which are the best data available. The
+ * drift is the artefact; where the subset's centre of mass happens to be is
+ * not. */
+void nbody_anchor_barycentre(const NBodySystem *sys, State *states);
+
 /* DOP853 over the whole system. Same coefficients and same controller as the
  * runtime integrator, applied to n bodies at once; the error norm runs over
  * every position and velocity component of every body. */

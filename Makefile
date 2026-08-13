@@ -19,6 +19,8 @@
 #   make hashes           показати фактичні хеші сценаріїв
 #   make flags            показати фактичні прапорці (звірка з build.rs на M1)
 #   make cook             перегенерувати ассет-фікстуру (робити свідомо!)
+#   make cook ANCHOR_BARYCENTRE=0   те саме, без закріплення баріцентру —
+#                         лише щоб зміряти ефект, у гру їде анкерований ассет
 #   make csv              вивести результати ядра у build/csv/*.csv
 #   make plots            побудувати графіки з CSV у build/plots/*.png
 #   make bench            пропускна здатність DOP853 (скіл perf-probe)
@@ -92,6 +94,22 @@ ifeq ($(OS),Windows_NT)
 EXE := .exe
 endif
 
+# Прибирання залишкового імпульсу в кукері (nbody_anchor_barycentre).
+# Типово увімкнено; вимикається лише щоб зміряти власний ефект:
+#
+#     make cook                        як їде в гру
+#     make cook ANCHOR_BARYCENTRE=0    без прибирання, для порівняння
+#
+# Це ЄДИНЕ, що цією змінною можна передати в компілятор, і значення
+# перевіряється нижче. Загального EXTRA_CFLAGS тут немає навмисно: він був би
+# дірою, крізь яку в збірку заходить -ffast-math, а прапорці мають лишатися
+# в core/cflags.txt і більше ніде.
+ANCHOR_BARYCENTRE ?= 1
+ifeq (,$(filter 0 1,$(ANCHOR_BARYCENTRE)))
+$(error ANCHOR_BARYCENTRE має бути 0 або 1, а не «$(ANCHOR_BARYCENTRE)»)
+endif
+OFFLINE_DEFS := -DEPH_ANCHOR_BARYCENTRE=$(ANCHOR_BARYCENTRE)
+
 BUILD := build
 LIB   := $(BUILD)/libcore.a
 LIB_OFFLINE := $(BUILD)/libcore_offline.a
@@ -102,6 +120,7 @@ CORE_OBJ := $(patsubst core/%.c,$(BUILD)/core/%.o,$(CORE_SRC))
 
 OFFLINE_SRC := $(sort $(wildcard core/offline/*.c))
 OFFLINE_OBJ := $(patsubst core/offline/%.c,$(BUILD)/core/offline/%.o,$(OFFLINE_SRC))
+ANCHOR_STAMP := $(BUILD)/core/offline/.anchor-$(ANCHOR_BARYCENTRE)
 
 PLANNING_SRC := $(sort $(wildcard core/planning/*.c))
 PLANNING_OBJ := $(patsubst core/planning/%.c,$(BUILD)/core/planning/%.o,$(PLANNING_SRC))
@@ -148,9 +167,19 @@ $(BUILD)/core/%.o: core/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Icore -c $< -o $@
 
-$(BUILD)/core/offline/%.o: core/offline/%.c
+$(BUILD)/core/offline/%.o: core/offline/%.c $(ANCHOR_STAMP)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Icore -Icore/offline -c $< -o $@
+	$(CC) $(CFLAGS) $(OFFLINE_DEFS) -Icore -Icore/offline -c $< -o $@
+
+# Без цього `make cook ANCHOR_BARYCENTRE=0` після звичайного `make` нічого б
+# не перезібрав: make не бачить значень змінних, лише файли. Ім'я штампа
+# несе значення, тож зміна значення робить його неіснуючим — і всі об'єктні
+# файли кукера стають застарілими. Мовчазний ассет, скукований не тим кодом,
+# який просили, — рівно той клас помилки, який ловить решта цього файлу.
+$(ANCHOR_STAMP):
+	@mkdir -p $(dir $@)
+	@rm -f $(BUILD)/core/offline/.anchor-*
+	@touch $@
 
 $(BUILD)/core/planning/%.o: core/planning/%.c
 	@mkdir -p $(dir $@)
