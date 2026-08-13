@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use crate::frame::Frame;
+use crate::frame::{self, Frame};
 use crate::gpu::Gpu;
 
 /// Формат цілі. Не sRGB навмисно: у знімку хочемо ті самі байти, які
@@ -51,6 +51,9 @@ impl Shot {
 }
 
 /// Малює один кадр у текстуру й читає його назад.
+///
+/// Камера — [`frame::default_camera`]: той самий погляд, що й у вікні при
+/// старті, тож знімок показує саме те, що показало б вікно.
 pub fn take(gpu: &Gpu, width: u32, height: u32) -> Result<Shot, String> {
     let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("shot"),
@@ -74,7 +77,14 @@ pub fn take(gpu: &Gpu, width: u32, height: u32) -> Result<Shot, String> {
             label: Some("shot"),
         });
 
-    Frame::new(&gpu.device, FORMAT).draw(&mut encoder, &view);
+    Frame::new(gpu, FORMAT).draw(
+        gpu,
+        &mut encoder,
+        &view,
+        width,
+        height,
+        &frame::default_camera(),
+    );
 
     read_back(gpu, encoder, &texture, width, height)
 }

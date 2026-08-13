@@ -24,7 +24,7 @@
 
 use std::time::Instant;
 
-use crate::frame::Frame;
+use crate::frame::{self, Frame};
 use crate::gpu::Gpu;
 use crate::shot;
 
@@ -57,7 +57,8 @@ impl Stats {
 /// Проганяє `frames` кадрів `width`×`height` без вікна й повертає статистику
 /// часу кадру в мілісекундах.
 pub fn measure(gpu: &Gpu, width: u32, height: u32, frames: u32) -> Result<Stats, String> {
-    let frame = Frame::new(&gpu.device, shot::FORMAT);
+    let mut frame = Frame::new(gpu, shot::FORMAT);
+    let camera = frame::default_camera();
 
     // COPY_SRC свідомо відсутній: цей вимір не читає пікселі назад, а
     // читання назад — окрема вартість, якої немає в реальному кадрі
@@ -79,7 +80,7 @@ pub fn measure(gpu: &Gpu, width: u32, height: u32, frames: u32) -> Result<Stats,
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-    let draw_once = || -> Result<f64, String> {
+    let mut draw_once = || -> Result<f64, String> {
         let start = Instant::now();
 
         let mut encoder = gpu
@@ -87,7 +88,7 @@ pub fn measure(gpu: &Gpu, width: u32, height: u32, frames: u32) -> Result<Stats,
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("perf probe"),
             });
-        frame.draw(&mut encoder, &view);
+        frame.draw(gpu, &mut encoder, &view, width, height, &camera);
         gpu.queue.submit([encoder.finish()]);
 
         gpu.device
