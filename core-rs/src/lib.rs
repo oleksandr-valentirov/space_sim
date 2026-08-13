@@ -27,6 +27,7 @@
 use std::ffi::CString;
 use std::fmt;
 use std::path::Path;
+use std::sync::Arc;
 
 pub use core_sys::{State, Vec3d};
 
@@ -183,5 +184,308 @@ impl fmt::Debug for Ephemeris {
     /// Без адреси всередині: вона нічого не пояснює й шумить у логах.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Ephemeris")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Пропагатор (ROADMAP H4)
+// ---------------------------------------------------------------------------
+
+/// Який інтегратор рахує.
+///
+/// `Rkn` оголошений, але ядро його ще не має: `Propagator::new` з ним поверне
+/// [`CoreError::InvalidArg`]. Це не забутий шматок, а те, чого вимагає
+/// PROJECT.md §4 — поле вибору інтегратора існує з першого дня, щоб додати RKN
+/// колись означало змінити виклик, а не переписати шар.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Integrator {
+    Dop853,
+    Rkn,
+}
+
+/// Налаштування пропагатора.
+#[derive(Debug, Clone, Copy)]
+pub struct PropConfig {
+    pub integrator: Integrator,
+    /// Допуск по позиції в метрах — абсолютний, не відносний.
+    pub tol_m: f64,
+    /// Стеля кроку в секундах. Задавайте її: з нулем стелю обирає інтегратор
+    /// за довжиною ланки, і тоді зшитий прогін лишає по собі інший крок, ніж
+    /// безперервний (`core/prop.h`, виміряно).
+    pub h_max_s: f64,
+    /// Ліміт кроків на **один виклик** `run`. 0 — типовий ліміт ядра.
+    pub max_steps: i64,
+}
+
+impl Default for PropConfig {
+    /// Метр допуску й година стелі — тобто числа, з якими вже рахували
+    /// фікстуру (`data/fixture/README.md`), а не круглі значення з повітря.
+    fn default() -> Self {
+        PropConfig {
+            integrator: Integrator::Dop853,
+            tol_m: 1.0,
+            h_max_s: 3600.0,
+            max_steps: 0,
+        }
+    }
+}
+
+/// Подія, на якій прогін зупиняється.
+///
+/// Енум замість структури з полем `param`, яке для двох видів із трьох нічого
+/// не означає: тут неможливо задати перицентр із відстанню, бо такого варіанту
+/// просто немає.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Event {
+    /// Найближча точка до тіла.
+    Periapsis { body: i32 },
+    /// Найдальша.
+    Apoapsis { body: i32 },
+    /// Задана відстань від **центра** тіла, в обидва боки. Не висота: в ассеті
+    /// лежать ім'я і `mu`, радіуса немає (`core/prop.h`).
+    Distance { body: i32, metres: f64 },
+}
+
+impl Event {
+    fn raw(&self) -> core_sys::CoreEvent {
+        match *self {
+            Event::Periapsis { body } => core_sys::CoreEvent {
+                kind: core_sys::CORE_EVENT_PERIAPSIS,
+                body_id: body,
+                param: 0.0,
+            },
+            Event::Apoapsis { body } => core_sys::CoreEvent {
+                kind: core_sys::CORE_EVENT_APOAPSIS,
+                body_id: body,
+                param: 0.0,
+            },
+            Event::Distance { body, metres } => core_sys::CoreEvent {
+                kind: core_sys::CORE_EVENT_DISTANCE,
+                body_id: body,
+                param: metres,
+            },
+        }
+    }
+}
+
+/// Чому прогін спинився.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stop {
+    /// Дійшов до `t_end`.
+    ReachedEnd,
+    /// Скінчився буфер під семпли. Продовжуйте з `final_state` і тим самим
+    /// кроком — це буде та сама траєкторія, бітово.
+    BufferFull,
+    /// Спрацювала подія з таким індексом у переданому зрізі.
+    Event(usize),
+}
+
+/// Що дав один виклик [`Propagator::run`].
+#[derive(Debug, Clone, Copy)]
+pub struct Run {
+    /// Скільки семплів записано на початок переданого зрізу.
+    pub filled: usize,
+    /// Стан, у якому прогін спинився. Саме з нього продовжувати.
+    pub final_state: State,
+    pub stop: Stop,
+}
+
+/// Пропагатор апарата в полі всіх тіл ассета.
+///
+/// Тримає [`Arc`] на ефемериду, а не позичену ссилку: контекст у C зберігає
+/// сирий вказівник на неї, тож вона мусить пережити пропагатор. Лайфтайм у
+/// структурі виразив би те саме й заразив би ним усе, що пропагатор
+/// зберігає (CLAUDE.md: жодних лайфтаймів у структурах).
+///
+/// ```no_run
+/// use core_rs::{Ephemeris, Event, PropConfig, Propagator, State};
+/// use std::path::Path;
+/// use std::sync::Arc;
+///
+/// let eph = Arc::new(Ephemeris::load(Path::new("data/fixture/earth_moon.eph"))?);
+/// let mut prop = Propagator::new(eph.clone(), PropConfig::default())?;
+///
+/// let mut samples = vec![State::default(); 256];
+/// let mut step = 0.0;
+/// let vessel = State::default();
+///
+/// let run = prop.run(&vessel, 86_400.0, &[Event::Periapsis { body: 3 }],
+///                    &mut samples, &mut step)?;
+/// println!("{:?} після {} семплів", run.stop, run.filled);
+/// # Ok::<(), core_rs::CoreError>(())
+/// ```
+///
+/// Використання після звільнення не компілюється:
+///
+/// ```compile_fail
+/// use core_rs::{Ephemeris, PropConfig, Propagator, State};
+/// use std::path::Path;
+/// use std::sync::Arc;
+///
+/// let eph = Arc::new(Ephemeris::load(Path::new("data/fixture/earth_moon.eph")).unwrap());
+/// let mut prop = Propagator::new(eph, PropConfig::default()).unwrap();
+/// drop(prop);
+/// let mut step = 0.0;
+/// let _ = prop.run(&State::default(), 1.0, &[], &mut [], &mut step);
+/// ```
+///
+/// Звільнити двічі теж нема чим — `prop_free` не реекспортується, поле
+/// приватне:
+///
+/// ```compile_fail
+/// use core_rs::{Ephemeris, PropConfig, Propagator};
+/// use std::path::Path;
+/// use std::sync::Arc;
+///
+/// let eph = Arc::new(Ephemeris::load(Path::new("data/fixture/earth_moon.eph")).unwrap());
+/// let prop = Propagator::new(eph, PropConfig::default()).unwrap();
+/// let _ = prop.ctx;
+/// ```
+pub struct Propagator {
+    // Тримає ефемериду живою. Читається лише в Drop-порядку — поле мусить
+    // існувати, а не використовуватись.
+    _eph: Arc<Ephemeris>,
+    ctx: *mut core_sys::PropagatorCtx,
+}
+
+// Пропагатор можна віддати іншому потоку — саме це й станеться, щойно фізика
+// поїде у свій (PROJECT.md §6). Він володіє своїм контекстом, а ефемерида, на
+// яку той дивиться, вже `Sync` (обґрунтування вище).
+//
+// `Sync` НЕ оголошений, і це не забутий рядок: контекст усередині C несе
+// липкий прапорець помилки, який `prop_run` скидає на початку кожного
+// прогону. Два потоки з `&Propagator` не могли б навіть покликати `run` —
+// вона бере `&mut self`, — але заявляти безпеку, якої ніхто не перевіряв,
+// немає навіщо. Один потік — один пропагатор.
+unsafe impl Send for Propagator {}
+
+impl Propagator {
+    pub fn new(eph: Arc<Ephemeris>, cfg: PropConfig) -> Result<Propagator> {
+        let raw = core_sys::PropConfig {
+            integrator: match cfg.integrator {
+                Integrator::Dop853 => core_sys::CORE_INTEG_DOP853,
+                Integrator::Rkn => core_sys::CORE_INTEG_RKN,
+            },
+            tol_m: cfg.tol_m,
+            h_max_s: cfg.h_max_s,
+            max_steps: cfg.max_steps as std::ffi::c_long,
+        };
+
+        let mut ctx: *mut core_sys::PropagatorCtx = std::ptr::null_mut();
+
+        // SAFETY: eph.ctx отримано з eph_load і живий — `Arc` нижче тримає
+        // його щонайменше стільки ж, скільки цей пропагатор. `raw` живе до
+        // кінця виклику, C його лише читає. `ctx` — валідне місце під один
+        // вказівник, C пише туди лише при CORE_OK.
+        let code = unsafe { core_sys::prop_create(eph.ctx, &raw, &mut ctx) };
+        check(code)?;
+
+        if ctx.is_null() {
+            return Err(CoreError::Unknown(core_sys::CORE_OK));
+        }
+
+        Ok(Propagator { _eph: eph, ctx })
+    }
+
+    /// Інтегрує від `initial` до `t_end`, до першої події або поки не
+    /// скінчиться `samples`.
+    ///
+    /// `samples` може бути порожнім — тоді прогін іде без семплування й
+    /// зупиняється лише на `t_end` або на події. Це та сама інтеграція, крок
+    /// у крок, і саме тому фізика й лінія прогнозу можуть ділити один шлях
+    /// (CLAUDE.md, інваріант 5).
+    ///
+    /// `step` несе крок інтегратора між викликами: 0 на першому, далі —
+    /// значення, яке лишив попередній. Він входить у сейв (PROJECT.md §4), і
+    /// це не формальність: викинути його коштує сімдесятикратної роботи й
+    /// іншої траєкторії (`core/test/test_prop.c`).
+    pub fn run(
+        &mut self,
+        initial: &State,
+        t_end: f64,
+        events: &[Event],
+        samples: &mut [State],
+        step: &mut f64,
+    ) -> Result<Run> {
+        let raw_events: Vec<core_sys::CoreEvent> = events.iter().map(|e| e.raw()).collect();
+
+        let mut count: usize = 0;
+        let mut final_state = State::default();
+        let mut stop: core_sys::CoreStopReason = -1;
+        let mut event: std::ffi::c_int = -1;
+
+        // Порожній зріз у Rust — це НЕ нульовий вказівник, а вирівняний
+        // «висячий», і C розрізняє ці випадки: буфер без місця він вважає
+        // помилкою викликача, бо той крутився б у циклі без поступу. Тож
+        // порожність перекладається явно.
+        let (out_ptr, out_cap) = if samples.is_empty() {
+            (std::ptr::null_mut(), 0)
+        } else {
+            (samples.as_mut_ptr(), samples.len())
+        };
+
+        let events_ptr = if raw_events.is_empty() {
+            std::ptr::null()
+        } else {
+            raw_events.as_ptr()
+        };
+
+        // SAFETY: self.ctx отримано з prop_create і ще не звільнено (звільняє
+        // лише Drop, а `&mut self` доводить, що його не було). `initial` і
+        // `raw_events` живі до кінця виклику й лише читаються. Буфер має рівно
+        // `out_cap` елементів `State`, і C обіцяє не писати далі — рівно тому
+        // місткість передається поруч із ним. Решта вказівників — місця під
+        // по одному значенню на стеку.
+        let code = unsafe {
+            core_sys::prop_run(
+                self.ctx,
+                initial,
+                t_end,
+                events_ptr,
+                raw_events.len(),
+                out_ptr,
+                out_cap,
+                &mut count,
+                &mut final_state,
+                &mut stop,
+                &mut event,
+                step,
+            )
+        };
+        check(code)?;
+
+        let stop = match stop {
+            core_sys::CORE_STOP_T_END => Stop::ReachedEnd,
+            core_sys::CORE_STOP_BUFFER_FULL => Stop::BufferFull,
+            core_sys::CORE_STOP_EVENT => {
+                // Індекс приходить із C і вказує в зріз, який дав викликач.
+                // Перевіряємо, а не довіряємо: з нього збираються зрізати.
+                if event < 0 || (event as usize) >= events.len() {
+                    return Err(CoreError::Unknown(event));
+                }
+                Stop::Event(event as usize)
+            }
+            other => return Err(CoreError::Unknown(other)),
+        };
+
+        Ok(Run {
+            filled: count,
+            final_state,
+            stop,
+        })
+    }
+}
+
+impl Drop for Propagator {
+    fn drop(&mut self) {
+        // SAFETY: вказівник отримано з prop_create, звільняється рівно тут і
+        // рівно раз — поле приватне, тип не Copy і не Clone.
+        unsafe { core_sys::prop_free(self.ctx) };
+    }
+}
+
+impl fmt::Debug for Propagator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Propagator")
     }
 }
