@@ -1,0 +1,65 @@
+# Розвідка P0: таблиця «платформа × бекенд × фіча» (ROADMAP, етап E).
+#
+# Окремий workflow, а не крок у гейті детермінізму, і це навмисно. Гейт
+# відповідає на питання «чи не зламалося»; цей — на питання «що взагалі є»,
+# і відповідь потрібна кілька разів за проєкт, а не на кожен пуш. Тому
+# workflow_dispatch плюс зміни самого зонда.
+#
+# ⚠ Раннери GitHub — не ігрові машини. На Windows це майже напевно WARP
+#   (програмний D3D12), на Linux — lavapipe. Їхні фічі кажуть, що вміє
+#   **wgpu і його бекенд**, а не що вміє реальне залізо користувача. Єдиний
+#   тут «справжній» GPU — Apple Silicon на macOS.
+#
+#   Тобто ця таблиця відповідає на питання «чи підтримує wgpu bindless на
+#   цьому API», а не «чи потягне його машина гравця». Друге питання
+#   закривається залізом розробника (див. ROADMAP P0) і згодом телеметрією.
+
+name: gpu-probe
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'tools/gpu-probe/**'
+      - '.github/workflows/gpu-probe.yml'
+
+jobs:
+  probe:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-latest
+          - name: windows
+            os: windows-latest
+          - name: macos
+            os: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Mesa з програмним Vulkan: без нього на раннері Linux немає жодного
+      # адаптера, і зонд не мав би що показати.
+      - name: Mesa
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
+
+      # Тільки -p gpu-probe. Складання всієї робочої області тут ні до чого:
+      # core-sys збирає ядро на C, а на Windows тулчейн за замовчуванням
+      # MSVC, і build.rs свідомо на ньому падає (ROADMAP D1).
+      - name: Probe
+        run: cargo run -p gpu-probe
+
+      - name: Upload table
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-features-${{ matrix.name }}
+          path: build/csv/gpu_features.csv
+          if-no-files-found: warn
