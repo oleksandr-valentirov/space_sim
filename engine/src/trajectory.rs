@@ -7,6 +7,10 @@
 //! (це окреме, більше рішення, не для кроку про рендер), тож дані приходять
 //! готовим ассетом, а не через FFI.
 //!
+//! Стовпці `vx,vy,vz` — швидкість апарата. Вона не потрібна для лінії й тому
+//! спершу не експортувалася; тепер потрібна, бо з неї починається живий
+//! прогноз (`engine::live`, ROADMAP H5): пропагатору треба стан, а не позиція.
+//!
 //! Стовпці `sx,sy,sz` — синодичні координати з `frame_from_inertial` (C,
 //! `core/frame.h`), безрозмірні одиниці CR3BP. Це оракул, не вхід рендера:
 //! PROJECT.md §7 вимагає рахувати те саме перетворення у вертексному
@@ -24,6 +28,9 @@ pub const MU: f64 = 0.012_150_585_609_624_04;
 pub struct Sample {
     pub t: f64,
     pub vessel: [f64; 3],
+    /// Швидкість апарата. Лінії вона не потрібна — потрібна тому, хто цю
+    /// траєкторію продовжить (`engine::live`).
+    pub velocity: [f64; 3],
     pub earth: [f64; 3],
     pub moon: [f64; 3],
     /// Нормаль миттєвої орбітальної площини Земля-Місяць, `d × ḋ`
@@ -96,9 +103,9 @@ pub fn load() -> Vec<Sample> {
     let mut lines = CSV.lines();
     lines.next(); // заголовок
 
-    let rows: Vec<[f64; 13]> = lines
+    let rows: Vec<[f64; 16]> = lines
         .map(|line| {
-            let mut values = [0.0; 13];
+            let mut values = [0.0; 16];
             for (slot, field) in values.iter_mut().zip(line.split(',')) {
                 *slot = field.parse().expect("фікстура — валідні числа");
             }
@@ -106,29 +113,39 @@ pub fn load() -> Vec<Sample> {
         })
         .collect();
 
-    let d_of =
-        |row: &[f64; 13]| -> [f64; 3] { [row[7] - row[4], row[8] - row[5], row[9] - row[6]] };
-
-    let mut samples = Vec::with_capacity(rows.len());
-    for i in 0..rows.len() {
-        let row = &rows[i];
-
-        let prev = if i == 0 { i } else { i - 1 };
-        let next = if i + 1 == rows.len() { i } else { i + 1 };
-        let d_dot = sub(d_of(&rows[next]), d_of(&rows[prev]));
-        let z_axis = normalize(cross(d_of(row), d_dot));
-
-        samples.push(Sample {
+    let mut samples: Vec<Sample> = rows
+        .iter()
+        .map(|row| Sample {
             t: row[0],
             vessel: [row[1], row[2], row[3]],
-            earth: [row[4], row[5], row[6]],
-            moon: [row[7], row[8], row[9]],
-            z_axis,
-            synodic_reference: [row[10], row[11], row[12]],
-        });
-    }
+            velocity: [row[4], row[5], row[6]],
+            earth: [row[7], row[8], row[9]],
+            moon: [row[10], row[11], row[12]],
+            z_axis: [0.0, 0.0, 0.0],
+            synodic_reference: [row[13], row[14], row[15]],
+        })
+        .collect();
 
+    fill_axes(&mut samples);
     samples
+}
+
+/// Довиводить `z_axis` центральною різницею по сусідніх семплах.
+///
+/// Окремо від [`load`], бо цього ж потребує живий прогноз (`engine::live`):
+/// нормаль площини — властивість ряду семплів, а не того, звідки вони
+/// приїхали.
+pub fn fill_axes(samples: &mut [Sample]) {
+    let d_of = |s: &Sample| -> [f64; 3] { sub(s.moon, s.earth) };
+
+    let d: Vec<[f64; 3]> = samples.iter().map(d_of).collect();
+
+    for i in 0..samples.len() {
+        let prev = if i == 0 { i } else { i - 1 };
+        let next = if i + 1 == samples.len() { i } else { i + 1 };
+        let d_dot = sub(d[next], d[prev]);
+        samples[i].z_axis = normalize(cross(d[i], d_dot));
+    }
 }
 
 #[cfg(test)]

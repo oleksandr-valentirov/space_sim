@@ -21,6 +21,7 @@ fn main() {
     let mut perf_probe = false;
     let mut flight_probe = false;
     let mut trajectory_probe = false;
+    let mut live_probe = false;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -46,6 +47,7 @@ fn main() {
             "--perf-probe" => perf_probe = true,
             "--flight-probe" => flight_probe = true,
             "--trajectory-probe" => trajectory_probe = true,
+            "--live-probe" => live_probe = true,
             "--help" | "-h" => {
                 println!("{}", HELP);
                 return;
@@ -68,6 +70,8 @@ fn main() {
         run_flight_probe()
     } else if trajectory_probe {
         run_trajectory_probe()
+    } else if live_probe {
+        run_live_probe()
     } else {
         match shot_path {
             Some(path) => take_shot(&path, options.width, options.height),
@@ -88,7 +92,8 @@ const HELP: &str = "\
   --depth-probe     заміряти роздільність глибини (ROADMAP F3)
   --perf-probe      заміряти час кадру рендера (скіл perf-probe)
   --flight-probe    проліт 10 м -> 10⁷ м над сферою (ROADMAP F5)
-  --trajectory-probe  halo-орбіта, інерціальний і обертовий фрейм (ROADMAP F6)
+  --trajectory-probe  halo-орбіта з фікстури, два фрейми (ROADMAP F6)
+  --live-probe      та сама орбіта, порахована зараз через core-rs (ROADMAP H5)
   --width <px>      ширина, типово 1280
   --height <px>     висота, типово 720";
 
@@ -343,6 +348,70 @@ fn run_trajectory_probe() -> Result<(), String> {
     )?;
     rotating.write_png(std::path::Path::new("build/f6_rotating.png"))?;
     println!("знімок: build/f6_rotating.png (обертовий, синодичний, біля L2)");
+
+    Ok(())
+}
+
+/// Траєкторія, порахована зараз, а не прочитана з CSV (ROADMAP H5).
+///
+/// Перший зонд, у якому рушій викликає ядро: стан апарата береться з першого
+/// семпла фікстури, а далі все рахує `prop_run` — і поруч, тим самим
+/// рендером, малюється сама фікстура, щоб різницю було видно оком, а не лише
+/// у числах з `engine/tests/live.rs`.
+fn run_live_probe() -> Result<(), String> {
+    use engine::live;
+    use engine::trajectory;
+    use engine::trajectory_render::{render, rotating_framing, Params};
+
+    const SIZE: u32 = 720;
+    const DAYS: f64 = 101.79;
+
+    let gpu = Gpu::new(wgpu::Instance::default(), None)?;
+    println!("адаптер: {}\n", gpu.describe());
+
+    let start = live::fixture_start();
+    let live = live::propagate(&start, DAYS, &live::repo_asset())
+        .map_err(|e| format!("прогноз не порахувався: {e}"))?;
+
+    println!(
+        "прогноз: {} семплів за {} викликів prop_run, {:.1} діб",
+        live.samples.len(),
+        live.legs,
+        (live.samples.last().unwrap().t - start.t) / 86400.0
+    );
+
+    // Кадрування спільне — від еталона, — інакше дві картинки мали б різні
+    // масштаби й порівнювати їх було б ні до чого.
+    let reference = trajectory::load();
+    let framing = rotating_framing(&reference);
+
+    let shot = render(
+        &gpu,
+        SIZE,
+        SIZE,
+        &live.samples,
+        &Params {
+            rotating: true,
+            framing,
+            colour: [0.9, 0.6, 0.2, 1.0],
+        },
+    )?;
+    shot.write_png(std::path::Path::new("build/h5_live.png"))?;
+    println!("знімок: build/h5_live.png (порахований зараз)");
+
+    let shot = render(
+        &gpu,
+        SIZE,
+        SIZE,
+        &reference,
+        &Params {
+            rotating: true,
+            framing,
+            colour: [0.3, 0.8, 0.9, 1.0],
+        },
+    )?;
+    shot.write_png(std::path::Path::new("build/h5_reference.png"))?;
+    println!("знімок: build/h5_reference.png (фікстура, той самий кадр)");
 
     Ok(())
 }

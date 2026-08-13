@@ -71,6 +71,7 @@ fn view_axes(vessel: [f64; 3], moon: [f64; 3], z_axis: [f64; 3]) -> [f64; 3] {
 
 /// Центр і радіус обмежувальної сфери для кадрування камери — той самий
 /// вигляд, що видасть шейдер, порахований у Rust, а не вгаданий.
+#[derive(Clone, Copy)]
 pub struct Framing {
     pub centre: [f64; 3],
     pub radius: f64,

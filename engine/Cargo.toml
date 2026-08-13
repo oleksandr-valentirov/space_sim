@@ -6,6 +6,11 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+# Межа C↔Rust. З H5 рушій рахує траєкторії сам, а не читає їх з CSV —
+# `engine::live`. Ніякого `unsafe` це сюди не приносить: увесь він лишається
+# в `core-rs` (CLAUDE.md, інваріант 1).
+core-rs = { path = "../core-rs" }
+
 pollster = "1.0.1"
 wgpu = "30"
 winit = "0.30"

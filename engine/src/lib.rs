@@ -25,6 +25,7 @@ pub mod depth_probe;
 pub mod flight_probe;
 pub mod frame;
 pub mod gpu;
+pub mod live;
 pub mod perf_probe;
 pub mod shot;
 pub mod sphere;
