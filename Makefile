@@ -1,4 +1,13 @@
-# Збірка числового ядра на C. Milestone 0 — Rust тут не бере участі.
+# Збірка числового ядра на C.
+#
+# З M1 ті самі .c збирає ще й `cargo` через core-sys/build.rs (ROADMAP D1).
+# Прапорці обидві збірки читають з core/cflags.txt і більше нізвідки, а що
+# вони дають однакові числа — перевіряє core-sys/tests/determinism.rs проти
+# того самого core/scenario/golden.txt. Звірити руками:
+#
+#     make flags
+#     cargo run -q --example flags
+#
 # Послідовність робіт: ROADMAP.md.
 #
 #   make                  зібрати статичну бібліотеку

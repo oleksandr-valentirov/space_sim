@@ -1,0 +1,16 @@
+[package]
+name = "core-sys"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Оголошує нативну бібліотеку, яку збирає build.rs. Дає дві речі: cargo не
+# дозволить двом крейтам злінкувати її двічі, і build.rs може передавати
+# метадані далі по графу (DEP_CORE_*).
+links = "core"
+
+[build-dependencies]
+cc = "1"
+
+[lints]
+workspace = true

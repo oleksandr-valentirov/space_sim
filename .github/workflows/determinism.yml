@@ -133,6 +133,42 @@ jobs:
         if: matrix.name == 'linux-gcc'
         run: python3 -m py_compile scripts/plot.py
 
+      # ЦЕ ЧАСТИНА ГЕЙТА (ROADMAP D1). core-sys/build.rs збирає ті самі .c
+      # крейтом `cc`, і тест звіряє хеші з тим самим core/scenario/golden.txt.
+      # Тобто перевіряється не «cargo дає те саме, що make на цій машині», а
+      # «cargo дає те саме, що еталон» — еталон один на всіх, і саме тому
+      # окремого кроку «порівняти дві збірки» тут немає.
+      #
+      # CC передається той самий, що і в make: на linux-clang ядро для cargo
+      # теж збере clang, і розбіжність gcc/clang усередині cargo впаде тут.
+      #
+      # Windows пропущено свідомо, а не забуто. Тулчейн Rust за замовчуванням
+      # там MSVC, а core/cflags.txt написаний під gcc — потрібен
+      # x86_64-pc-windows-gnu. Це записано боргом у ROADMAP D1; джоб
+      # windows-mingw поки що перевіряє тільки збірку через make.
+      - name: Cargo determinism
+        if: runner.os != 'Windows'
+        env:
+          CC: ${{ matrix.cc }}
+        run: |
+          cargo run -q --example flags
+          cargo test
+
+      # Профіль cargo не має протікати в C: прапорці ядра задає
+      # core/cflags.txt, а не рівень оптимізації Rust. Release-прогін і є
+      # перевіркою цього твердження — хеші мусять лишитись ті самі.
+      - name: Cargo determinism (release)
+        if: runner.os != 'Windows'
+        env:
+          CC: ${{ matrix.cc }}
+        run: cargo test --release
+
+      - name: Clippy
+        if: matrix.name == 'linux-gcc'
+        env:
+          CC: ${{ matrix.cc }}
+        run: cargo clippy --all-targets -- -D warnings
+
       # Завжди, навіть коли впало: у провалі саме хеші й потрібні.
       - name: Hashes
         if: always()
