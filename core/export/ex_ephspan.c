@@ -1,0 +1,498 @@
+/* Export: what a longer ephemeris asset costs and what it buys.
+ *
+ *   ephspan.csv   divergence from JPL Horizons, measured through the asset,
+ *                 for a doubling sequence of asset spans
+ *
+ * ROADMAP's first fork - "ефемерида не тримає точності на 200 років" - was
+ * measured out to 200 years on a two-body round trip and deliberately left
+ * open, with one concrete objection recorded against deciding it: the shipped
+ * fixture spans 120 days, so nothing in the repository ever exercised a long
+ * asset. Swapping DOP853 for IAS15 in the cooker cannot be justified by a
+ * number that no fixture reaches.
+ *
+ * This removes that objection at the only horizon the repository can defend.
+ * The cooker is run at 120, 240, 480, 960, 1920 days and finally the full
+ * span of data/horizons, and each asset is read back through eph_body_state -
+ * the runtime's own path, not the integrator's internal state - and compared
+ * with JPL at every reference epoch it covers.
+ *
+ * The upper limit is not a preference. Past the last Horizons epoch there is
+ * nothing left to be wrong against, and a curve with no oracle beneath it
+ * would measure self-consistency, which max_fit_error_m already measures.
+ * So the sequence doubles until it would overshoot the oracle and then lands
+ * exactly on it, and the number comes from the loaded data rather than from a
+ * constant here that could drift away from data/horizons unnoticed.
+ *
+ * Interval length, degree and integrator tolerance are held at the committed
+ * fixture's values. Span is the only variable, which is what makes the rows
+ * comparable at all.
+ *
+ * Two things are measured that a single long cook would not show:
+ *
+ *   cost     intervals, bytes and integrator steps against span, which is the
+ *            practical question if the shipped fixture is ever extended
+ *   prefix   whether a longer asset merely extends a shorter one or is a
+ *            different asset over the shared part. Interval k is fitted from
+ *            the same forced landings whatever the total span, so it should
+ *            be bit-identical - but "should" is how silent asset changes get
+ *            through, and every determinism hash that reads the fixture is
+ *            downstream of the answer. It is checked, not assumed.
+ *
+ *            One epoch per span is exempt from that check and reported apart:
+ *            the span's own end. A closing interval's polynomial is evaluated
+ *            there at its right edge, while in a longer asset the same instant
+ *            falls at the left edge of the interval after it. Two polynomials,
+ *            one instant, agreeing only to the fit error - that is the seam
+ *            between intervals, present in every asset at every interval
+ *            boundary, and nothing to do with where the cook stopped.
+ *
+ * The raw ten-body integration is exported alongside as a control: same
+ * physics, no asset in between. If the asset's error tracks it, the
+ * divergence is the integrator's and the fork is about IAS15; if the asset
+ * is worse, the Chebyshev layer dominates and a better integrator buys
+ * nothing.
+ *
+ * It runs twice, and the second run is the point. The cooker lands on every
+ * fit node, so it takes far shorter steps than a control that lands only on
+ * reference epochs - at one shared tolerance the two are not the same
+ * integration, and the difference is easy to read as the asset being wrong.
+ * TOLERANCE_M is the fixture's 1 m; TOLERANCE_CONVERGED_M is tight enough
+ * that the answer no longer moves. Exporting both is what separates "the
+ * asset differs from the truth" from "the control has not converged to it",
+ * and the tolerance sweep printed at the end says which of the two happened.
+ *
+ * Offline code: the mutual N-body integration the cooker runs, never the
+ * runtime (core/offline/nbody.h). Run from the repository root. */
+
+#include "csv.h"
+#include "eph_build.h"
+#include "ephemeris.h"
+#include "nbody.h"
+#include "refdata.h"
+
+#include <stdio.h>
+#include <string.h>
+
+#define MAX_SAMPLES 256
+#define MAX_SPANS 8
+#define DAY 86400.0
+#define YEAR (365.25 * DAY)
+
+/* Every major body, in the order and with the parameters cook_fixture.c uses.
+ * Diverging from it here would measure this file rather than the fixture. */
+static const char *BODIES[] = {
+    "sun", "mercury", "venus", "earth", "moon",
+    "mars_bary", "jupiter_bary", "saturn_bary", "uranus_bary", "neptune_bary",
+};
+#define N_BODIES (sizeof BODIES / sizeof BODIES[0])
+
+#define START_DAYS 120.0
+#define INTERVAL_DAYS 8.0
+#define DEGREE 14
+#define TOLERANCE_M 1.0
+
+/* Three orders below the fixture's, which the sweep at the end shows is two
+ * more than the answer needs. Cheap: the whole control run is milliseconds. */
+#define TOLERANCE_CONVERGED_M 1.0e-3
+
+/* Overwritten once per span. Only one asset is needed at a time, and the
+ * longest is 1.5 MB - worth not leaving six of them in build/. */
+static const char *SCRATCH_PATH = "build/ephspan.eph";
+
+static RefSample reference[N_BODIES][MAX_SAMPLES];
+static size_t n_samples;
+static RefGm gm_table[16];
+static size_t n_gm;
+
+static int earth_idx = -1;
+static int moon_idx = -1;
+
+/* Errors at every epoch of every span, kept so the prefix check can compare a
+ * span against the longest one afterwards. [span][sample][earth, rel, moon] */
+static double errors[MAX_SPANS][MAX_SAMPLES][3];
+static size_t n_epochs[MAX_SPANS];
+
+typedef struct {
+    double days;
+    size_t intervals;
+    size_t bytes;
+    long   steps;
+    double fit_error_m;
+    double earth_m;
+    double earth_rel_m;
+    double moon_geo_m;
+} SpanSummary;
+
+static SpanSummary summary[MAX_SPANS];
+static double spans[MAX_SPANS];
+static size_t n_spans;
+
+static int load_fixtures(void)
+{
+    char path[128];
+
+    for (size_t i = 0; i < N_BODIES; i++) {
+        snprintf(path, sizeof path, "data/horizons/vec_%s.csv", BODIES[i]);
+        size_t n = 0;
+        if (refdata_load_vectors(path, reference[i], MAX_SAMPLES, &n)
+            != CORE_OK) {
+            fprintf(stderr, "ex_ephspan: cannot load %s\n", path);
+            return 0;
+        }
+        if (i == 0) {
+            n_samples = n;
+        } else if (n != n_samples) {
+            fprintf(stderr, "ex_ephspan: %s has %zu samples, expected %zu\n",
+                    path, n, n_samples);
+            return 0;
+        }
+
+        if (strcmp(BODIES[i], "earth") == 0) {
+            earth_idx = (int)i;
+        }
+        if (strcmp(BODIES[i], "moon") == 0) {
+            moon_idx = (int)i;
+        }
+    }
+
+    if (earth_idx < 0 || moon_idx < 0) {
+        return 0;
+    }
+
+    return refdata_load_gm("data/horizons/gm.csv", gm_table, 16, &n_gm)
+           == CORE_OK;
+}
+
+/* Doubling from the committed fixture's span, stopping on the oracle rather
+ * than past it. */
+static void build_span_list(double oracle_days)
+{
+    n_spans = 0;
+    for (double d = START_DAYS;
+         d < oracle_days && n_spans + 1 < MAX_SPANS;
+         d *= 2.0) {
+        spans[n_spans++] = d;
+    }
+    spans[n_spans++] = oracle_days;
+}
+
+static int fill_system(NBodySystem *sys)
+{
+    memset(sys, 0, sizeof *sys);
+    sys->n = N_BODIES;
+
+    for (size_t i = 0; i < N_BODIES; i++) {
+        sys->mu[i] = refdata_gm_of(gm_table, n_gm, BODIES[i]);
+        if (!(sys->mu[i] > 0.0)) {
+            fprintf(stderr, "ex_ephspan: no GM for %s\n", BODIES[i]);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* The three measures ex_horizons settled on, for the same reasons: the
+ * barycentric error carries any bulk drift of the modelled subsystem, the
+ * relative one is genuine distortion of the orbits, and the geocentric Moon
+ * is the geometry the game is built on. */
+static void compare(const NBodySystem *sys, const State *model, size_t sample,
+                    double out[3])
+{
+    State ref_now[NBODY_MAX];
+    for (size_t i = 0; i < N_BODIES; i++) {
+        ref_now[i] = reference[i][sample].s;
+    }
+
+    Vec3d bary_model = nbody_barycentre(sys, model);
+    Vec3d bary_ref = nbody_barycentre(sys, ref_now);
+
+    out[0] = vec3_distance(model[earth_idx].r, ref_now[earth_idx].r);
+    out[1] = vec3_distance(vec3_sub(model[earth_idx].r, bary_model),
+                           vec3_sub(ref_now[earth_idx].r, bary_ref));
+    out[2] = vec3_distance(vec3_sub(model[moon_idx].r, model[earth_idx].r),
+                           vec3_sub(ref_now[moon_idx].r, ref_now[earth_idx].r));
+}
+
+static int measure_span(Csv *c, size_t slot, const NBodySystem *sys)
+{
+    double span_days = spans[slot];
+    char label[32];
+    snprintf(label, sizeof label, "asset_%.0fd", span_days);
+
+    State initial[NBODY_MAX];
+    for (size_t i = 0; i < N_BODIES; i++) {
+        initial[i] = reference[i][0].s;
+    }
+
+    EphBuildConfig cfg;
+    memset(&cfg, 0, sizeof cfg);
+    cfg.t_begin = 0.0;
+    cfg.t_end = span_days * DAY;
+    cfg.interval_seconds = INTERVAL_DAYS * DAY;
+    cfg.degree = DEGREE;
+    cfg.tol_m = TOLERANCE_M;
+
+    EphBuildReport report;
+    memset(&report, 0, sizeof report);
+
+    if (eph_build(sys, initial, BODIES, &cfg, SCRATCH_PATH, &report)
+        != CORE_OK) {
+        fprintf(stderr, "ex_ephspan: build failed at %.0f days\n", span_days);
+        return 0;
+    }
+
+    /* Read back through the runtime's path. Measuring the integrator's own
+     * states instead would skip the Chebyshev layer, which is half of what
+     * the asset is. */
+    EphemerisCtx *ctx = NULL;
+    if (eph_load(SCRATCH_PATH, &ctx) != CORE_OK) {
+        fprintf(stderr, "ex_ephspan: cannot load %s\n", SCRATCH_PATH);
+        return 0;
+    }
+
+    size_t count = 0;
+
+    for (size_t s = 0; s < n_samples; s++) {
+        double t = reference[0][s].s.t;
+        if (t > cfg.t_end) {
+            break;
+        }
+
+        State model[NBODY_MAX];
+        int ok = 1;
+        for (size_t i = 0; i < N_BODIES && ok; i++) {
+            ok = eph_body_state(ctx, (int)i, t, &model[i]) == CORE_OK;
+        }
+        if (!ok) {
+            fprintf(stderr, "ex_ephspan: %s has no state at %.0f days\n",
+                    label, t / DAY);
+            eph_free(ctx);
+            return 0;
+        }
+
+        compare(sys, model, s, errors[slot][count]);
+
+        csv_named(c, label, 4, t / DAY,
+                  errors[slot][count][0],
+                  errors[slot][count][1],
+                  errors[slot][count][2]);
+        count++;
+    }
+
+    eph_free(ctx);
+
+    if (count == 0) {
+        return 0;
+    }
+    n_epochs[slot] = count;
+
+    summary[slot].days = span_days;
+    summary[slot].intervals = report.intervals;
+    summary[slot].bytes = report.bytes_written;
+    summary[slot].steps = report.integrator_steps;
+    summary[slot].fit_error_m = report.max_fit_error_m;
+    summary[slot].earth_m = errors[slot][count - 1][0];
+    summary[slot].earth_rel_m = errors[slot][count - 1][1];
+    summary[slot].moon_geo_m = errors[slot][count - 1][2];
+
+    return 1;
+}
+
+/* The same ten bodies integrated straight to each reference epoch, with no
+ * asset in between. `label` and `tol_m` vary because the control has to be
+ * run at both tolerances to be readable at all - see the header. Rows go to
+ * the CSV only when `c` is given; the sweep below reuses this for its final
+ * numbers and wants no curves. */
+static int measure_raw(Csv *c, const NBodySystem *sys, const char *label,
+                       double tol_m, double out[3], long *steps_out)
+{
+    State current[NBODY_MAX];
+    for (size_t i = 0; i < N_BODIES; i++) {
+        current[i] = reference[i][0].s;
+    }
+
+    Dop853Config cfg;
+    memset(&cfg, 0, sizeof cfg);
+    cfg.tol_m = tol_m;
+    cfg.max_steps = 50000000;
+
+    Dop853State st;
+    memset(&st, 0, sizeof st);
+
+    if (c != NULL) {
+        csv_named(c, label, 4, 0.0, 0.0, 0.0, 0.0);
+    }
+
+    for (size_t s = 1; s < n_samples; s++) {
+        State next[NBODY_MAX];
+        if (nbody_integrate(sys, current, reference[0][s].s.t, &cfg, &st, next)
+            != CORE_OK) {
+            fprintf(stderr, "ex_ephspan: %s stopped at sample %zu\n", label, s);
+            return 0;
+        }
+        memcpy(current, next, sizeof next);
+
+        compare(sys, current, s, out);
+        if (c != NULL) {
+            csv_named(c, label, 4, reference[0][s].s.t / DAY,
+                      out[0], out[1], out[2]);
+        }
+    }
+
+    if (steps_out != NULL) {
+        *steps_out = st.n_accepted;
+    }
+    return 1;
+}
+
+/* Why the control is run twice, as a table rather than as an assertion: the
+ * tolerance at which the ten-year answer stops moving is a property of the
+ * system, not something to assume. It is also the number that says whether
+ * the fixture's 1 m has any margin left at the Moon. */
+static int sweep_tolerance(const NBodySystem *sys)
+{
+    static const double tols[] = { 1.0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5 };
+
+    printf("\n  control at falling tolerance, at the last epoch:\n");
+    printf("  %10s %8s %13s %13s\n",
+           "tol_m", "steps", "earth_rel_m", "moon_geo_m");
+
+    for (size_t i = 0; i < sizeof tols / sizeof tols[0]; i++) {
+        double e[3] = { 0.0, 0.0, 0.0 };
+        long steps = 0;
+        if (!measure_raw(NULL, sys, "sweep", tols[i], e, &steps)) {
+            return 0;
+        }
+        printf("  %10.0e %8ld %13.5g %13.5g\n", tols[i], steps, e[1], e[2]);
+    }
+    return 1;
+}
+
+/* Every shorter span against the longest one, epoch by epoch, as exact
+ * equality - except at the span's own end, where the seam described in the
+ * header makes exact equality the wrong question and the size of the
+ * disagreement the right one.
+ *
+ * An interior mismatch would mean the cook depends on where it stops, which
+ * would make extending the fixture a rewrite of its whole history rather than
+ * an addition to its end. */
+static void prefix_check(size_t *interior_bad, double *seam_max_m)
+{
+    size_t last = n_spans - 1;
+
+    *interior_bad = 0;
+    *seam_max_m = 0.0;
+
+    for (size_t k = 0; k < last; k++) {
+        for (size_t s = 0; s < n_epochs[k]; s++) {
+            int at_seam = reference[0][s].s.t == spans[k] * DAY;
+
+            for (int m = 0; m < 3; m++) {
+                double d = errors[k][s][m] - errors[last][s][m];
+                if (d == 0.0) {
+                    continue;
+                }
+                if (at_seam) {
+                    double a = d < 0.0 ? -d : d;
+                    if (a > *seam_max_m) {
+                        *seam_max_m = a;
+                    }
+                } else {
+                    (*interior_bad)++;
+                }
+            }
+        }
+    }
+}
+
+int main(void)
+{
+    if (!load_fixtures()) {
+        fprintf(stderr, "  run from the repository root\n");
+        return 1;
+    }
+
+    NBodySystem sys;
+    if (!fill_system(&sys)) {
+        return 1;
+    }
+
+    double oracle_days =
+        (reference[0][n_samples - 1].s.t - reference[0][0].s.t) / DAY;
+    build_span_list(oracle_days);
+
+    printf("ex_ephspan: oracle is %.0f days (%.1f years) in %zu epochs\n",
+           oracle_days, oracle_days * DAY / YEAR, n_samples);
+    printf("  fixed: interval %.0f days, degree %d, tol %.0f m\n",
+           INTERVAL_DAYS, DEGREE, TOLERANCE_M);
+
+    Csv c;
+    if (!csv_open(&c, "build/csv/ephspan.csv",
+                  "source,days,earth_m,earth_rel_m,moon_geo_m")) {
+        return 1;
+    }
+
+    for (size_t k = 0; k < n_spans; k++) {
+        if (!measure_span(&c, k, &sys)) {
+            return 1;
+        }
+    }
+
+    double raw_loose[3] = { 0.0, 0.0, 0.0 };
+    double raw_tight[3] = { 0.0, 0.0, 0.0 };
+    long raw_loose_steps = 0, raw_tight_steps = 0;
+
+    if (!measure_raw(&c, &sys, "raw_tol_1m", TOLERANCE_M,
+                     raw_loose, &raw_loose_steps)
+        || !measure_raw(&c, &sys, "raw_converged", TOLERANCE_CONVERGED_M,
+                        raw_tight, &raw_tight_steps)) {
+        return 1;
+    }
+
+    printf("\n");
+    printf("  %13s %6s %5s %8s %8s %11s %11s %11s %11s\n",
+           "asset span", "years", "intv", "kB", "steps", "fit_err_m",
+           "earth_m", "earth_rel_m", "moon_geo_m");
+
+    for (size_t k = 0; k < n_spans; k++) {
+        char span_label[16];
+        snprintf(span_label, sizeof span_label, "%.0f d", summary[k].days);
+
+        printf("  %13s %6.2f %5zu %8.1f %8ld %11.4g %11.4g %11.4g %11.4g\n",
+               span_label, summary[k].days * DAY / YEAR,
+               summary[k].intervals, (double)summary[k].bytes / 1024.0,
+               summary[k].steps, summary[k].fit_error_m,
+               summary[k].earth_m, summary[k].earth_rel_m,
+               summary[k].moon_geo_m);
+    }
+
+    printf("  %13s %6.2f %5s %8s %8ld %11s %11.4g %11.4g %11.4g\n",
+           "control 1 m", oracle_days * DAY / YEAR, "-", "-",
+           raw_loose_steps, "-",
+           raw_loose[0], raw_loose[1], raw_loose[2]);
+    printf("  %13s %6.2f %5s %8s %8ld %11s %11.4g %11.4g %11.4g\n",
+           "control 1 mm", oracle_days * DAY / YEAR, "-", "-",
+           raw_tight_steps, "-",
+           raw_tight[0], raw_tight[1], raw_tight[2]);
+
+    if (!sweep_tolerance(&sys)) {
+        return 1;
+    }
+
+    size_t interior_bad = 0;
+    double seam_max_m = 0.0;
+    prefix_check(&interior_bad, &seam_max_m);
+
+    printf("\n  prefix: %s\n",
+           interior_bad == 0
+               ? "every shorter span is bit-identical to the longest"
+               : "SPANS DISAGREE - a longer asset is not an extension");
+    if (interior_bad != 0) {
+        printf("  %zu differing values away from any interval seam\n",
+               interior_bad);
+    }
+    printf("  seam:   %.3g m, largest disagreement at a span's own end\n",
+           seam_max_m);
+
+    return csv_close(&c) ? 0 : 1;
+}

@@ -44,6 +44,9 @@ NAMES = {
     "close_approach": "близький проліт",
     "ten_body": "десять тіл",
     "three_body": "три тіла (контроль)",
+    "asset_3630d": "ассет, повний спан",
+    "raw_tol_1m": "контроль, допуск 1 м",
+    "raw_converged": "контроль, збіжний допуск",
 }
 
 
@@ -536,6 +539,70 @@ def figure_horizons(csv_dir, out_dir):
     return save(fig, out_dir / "horizons.png")
 
 
+# --- Довжина спану ефемериди -----------------------------------------------
+
+def figure_ephspan(csv_dir, out_dir):
+    e = load(csv_dir / "ephspan.csv")
+    cases = dict(groups(e, "source"))
+
+    # Кінці коротших спанів — з самих даних, а не окремим списком: вони й так
+    # там є, останнім днем кожної групи asset_*.
+    ends = sorted(max(case["days"]) for name, case in cases.items()
+                  if name.startswith("asset_"))
+
+    # Малюються лише повний ассет і два контролі. Коротші спани не пропущені —
+    # ex_ephspan довів, що вони бітово збігаються з повним, тож окремими
+    # кривими вони лягли б рівно на неї. Замість шести однакових ліній —
+    # шість точок на одній.
+    shown = ("asset_3630d", "raw_tol_1m", "raw_converged")
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    fig.suptitle("Чи тримає ассет ефемериди довший спан: 120 діб → 10 років")
+
+    panels = (
+        (axes[0], "moon_geo_m", "Місяць відносно Землі"),
+        (axes[1], "earth_rel_m", "Земля, зсув баріцентру моделі відкинуто"),
+    )
+
+    for ax, key, title in panels:
+        for name in shown:
+            case = cases.get(name)
+            if case is None:
+                continue
+            x, y = log_pairs([d / YEAR_DAYS for d in case["days"]], case[key])
+            ax.plot(x, y, linewidth=1.4, label=label_of(name))
+
+        asset = cases.get("asset_3630d")
+        if asset is not None:
+            marks = [(d / YEAR_DAYS, v)
+                     for d, v in zip(asset["days"], asset[key])
+                     if d in ends and v > 0.0]
+            ax.plot([d for d, _ in marks], [v for _, v in marks],
+                    "o", markersize=5, color="0.2", zorder=3,
+                    label="кінці спанів")
+
+        ax.set_yscale("log")
+        ax.set_xlabel("років від J2000")
+        ax.set_ylabel("м")
+        ax.set_title(title)
+        ax.grid(alpha=0.3, which="both")
+        ax.legend(fontsize=8)
+
+    caption(fig,
+            "Точки — де зупинявся б ассет завдовжки 120, 240, 480, 960, 1920 "
+            "діб. Вони лежать на кривій повного спану, бо лежать на ній "
+            "бітово: довший ассет не переписує коротший, а продовжує його. "
+            "Похибка підгонки при цьому не росте зі спаном узагалі — вона "
+            "властивість інтервалу (8 діб, ступінь 14), а не довжини.\n"
+            "Два контролі — не дві версії одного: при допуску 1 м "
+            "десятирічна геометрія Місяця ще не збіглася, і розбіжність з "
+            "ассетом на цій панелі — саме це, а не хиба ассета. Кукер "
+            "приземляється на кожен вузол підгонки, тож іде коротшими "
+            "кроками й отримує збіжну відповідь при тому самому допуску.")
+
+    return save(fig, out_dir / "ephspan.png")
+
+
 def save(fig, path):
     fig.tight_layout()
     fig.savefig(path, dpi=140, bbox_inches="tight")
@@ -552,6 +619,7 @@ FIGURES = (
     ("uncertainty", figure_uncertainty),
     ("accuracy", figure_accuracy),
     ("horizons", figure_horizons),
+    ("ephspan", figure_ephspan),
 )
 
 
