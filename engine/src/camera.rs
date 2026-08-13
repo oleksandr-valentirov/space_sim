@@ -1,0 +1,103 @@
+//! Камера: позиція в `double`, camera-relative перетворення (ROADMAP F4, F5).
+//!
+//! PROJECT.md §7, рішення 1: світові координати НІКОЛИ не потрапляють у
+//! `float`. [`camera_probe`](crate::camera_probe) довів принцип на одній
+//! точці; тут той самий принцип застосований до кожної вершини меша,
+//! оскільки об'єкт планетарного розміру — камера може опинитися за десять
+//! метрів від однієї вершини й за 10⁷ м від протилежної одночасно.
+//!
+//! Поворот і перенесення рахуються разом, у `double`, до звуження: базис
+//! камери (right, up, forward) обертає різницю `світ − камера`, і лише
+//! результат — уже маленьке число — стає `f32`. Проєкційна матриця
+//! ([`crate::depth`]) далі чекає готові координати камерного простору, як
+//! і в `depth_quad.slang`.
+
+fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn normalize(v: [f64; 3]) -> [f64; 3] {
+    let len = dot(v, v).sqrt();
+    [v[0] / len, v[1] / len, v[2] / len]
+}
+
+pub struct Camera {
+    position: [f64; 3],
+    right: [f64; 3],
+    up: [f64; 3],
+    forward: [f64; 3],
+}
+
+impl Camera {
+    /// `world_up` — орієнтир, не обов'язково ортогональний до напрямку
+    /// погляду; ортогоналізується тут же (стандартний Грам-Шмідт для трьох
+    /// векторів).
+    pub fn look_at(position: [f64; 3], target: [f64; 3], world_up: [f64; 3]) -> Camera {
+        let forward = normalize(sub(target, position));
+        let right = normalize(cross(forward, world_up));
+        let up = cross(right, forward);
+
+        Camera {
+            position,
+            right,
+            up,
+            forward,
+        }
+    }
+
+    /// Точка світу → координата в камерному просторі (камера в (0,0,0),
+    /// дивиться вздовж −z). Віднімання й поворот — у `double`; звуження до
+    /// `f32` — останній крок, коли число вже мале.
+    pub fn relative(&self, world: [f64; 3]) -> [f32; 3] {
+        let d = sub(world, self.position);
+        [
+            dot(d, self.right) as f32,
+            dot(d, self.up) as f32,
+            -dot(d, self.forward) as f32,
+        ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_point_straight_ahead_lands_on_negative_z() {
+        let camera = Camera::look_at([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
+        let p = camera.relative([10.0, 0.0, 0.0]);
+        assert!((p[0]).abs() < 1e-6);
+        assert!((p[1]).abs() < 1e-6);
+        assert!((p[2] - (-10.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn distance_to_the_world_origin_does_not_enter_the_result() {
+        let near = Camera::look_at([1e3, 0.0, 0.0], [1e3 + 1.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
+        let far = Camera::look_at([1e11, 0.0, 0.0], [1e11 + 1.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
+
+        let a = near.relative([1e3 + 5.0, 2.0, -3.0]);
+        let b = far.relative([1e11 + 5.0, 2.0, -3.0]);
+
+        for i in 0..3 {
+            assert!(
+                (a[i] - b[i]).abs() < 1e-4,
+                "компонента {i}: {} проти {}",
+                a[i],
+                b[i]
+            );
+        }
+    }
+}

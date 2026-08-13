@@ -18,10 +18,14 @@
 //! виглядає так само.
 
 pub mod app;
+pub mod camera;
 pub mod camera_probe;
 pub mod depth;
 pub mod depth_probe;
+pub mod flight_probe;
 pub mod frame;
 pub mod gpu;
 pub mod perf_probe;
 pub mod shot;
+pub mod sphere;
+pub mod sphere_render;

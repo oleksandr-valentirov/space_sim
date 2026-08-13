@@ -19,6 +19,7 @@ fn main() {
     let mut vsync_asked = false;
     let mut depth_probe = false;
     let mut perf_probe = false;
+    let mut flight_probe = false;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -42,6 +43,7 @@ fn main() {
             "--height" => options.height = parse(&value("--height"), "--height"),
             "--depth-probe" => depth_probe = true,
             "--perf-probe" => perf_probe = true,
+            "--flight-probe" => flight_probe = true,
             "--help" | "-h" => {
                 println!("{}", HELP);
                 return;
@@ -60,6 +62,8 @@ fn main() {
         run_depth_probe()
     } else if perf_probe {
         run_perf_probe()
+    } else if flight_probe {
+        run_flight_probe()
     } else {
         match shot_path {
             Some(path) => take_shot(&path, options.width, options.height),
@@ -79,6 +83,7 @@ const HELP: &str = "\
   --no-vsync        не чекати
   --depth-probe     заміряти роздільність глибини (ROADMAP F3)
   --perf-probe      заміряти час кадру рендера (скіл perf-probe)
+  --flight-probe    проліт 10 м -> 10⁷ м над сферою (ROADMAP F5)
   --width <px>      ширина, типово 1280
   --height <px>     висота, типово 720";
 
@@ -202,6 +207,82 @@ fn run_perf_probe() -> Result<(), String> {
             stats.fps(),
             stats.headroom_ms(BUDGET_60),
             stats.headroom_ms(BUDGET_30),
+        );
+    }
+
+    Ok(())
+}
+
+/// Проліт від поверхні до орбіти (ROADMAP F5).
+///
+/// Друкує таблицю «висота × покриття кадру» — виміряне проти аналітичного
+/// (`asin(R/(R+висота))`, точна формула для опуклої сфери) там, де його
+/// можна порахувати без наближень.
+fn run_flight_probe() -> Result<(), String> {
+    use engine::flight_probe::{expected_coverage, sweep};
+    use engine::sphere;
+
+    const SIZE: u32 = 512;
+    const STEPS: u32 = 15;
+
+    let gpu = Gpu::new(wgpu::Instance::default(), None)?;
+    println!("адаптер: {}\n", gpu.describe());
+
+    let mesh = sphere::generate(sphere::EARTH_RADIUS_M, 64, 128);
+    println!(
+        "меш: R = {:.0} м, {} вершин, {} трикутників\n",
+        sphere::EARTH_RADIUS_M,
+        mesh.positions.len(),
+        mesh.indices.len() / 3
+    );
+
+    println!("Частка кадру, яку займає сфера. Виміряне проти аналітичного диска");
+    println!("силуету — там, де його можна порахувати без наближень.\n");
+    println!(
+        "{:>12} {:>10} {:>12} {:>12}",
+        "висота, м", "покриття", "аналітично", "різниця"
+    );
+
+    let samples = sweep(&gpu, SIZE, &mesh, STEPS)?;
+    let mut previous_coverage: Option<f64> = None;
+    for s in &samples {
+        let expected = expected_coverage(s.expected_half_angle, 1.0);
+        let expected_text = expected.map_or("—".to_string(), |e| format!("{e:.3}"));
+        let diff_text = expected.map_or("—".to_string(), |e| format!("{:+.4}", s.coverage - e));
+
+        println!(
+            "{:>12.1e} {:>10.3} {:>12} {:>12}",
+            s.altitude, s.coverage, expected_text, diff_text
+        );
+
+        if let Some(previous) = previous_coverage {
+            if s.coverage > previous + 1e-9 {
+                println!(
+                    "  ПОПЕРЕДЖЕННЯ: покриття зросло з висотою ({previous:.4} -> {:.4}) — \
+                     не має бути стрибків",
+                    s.coverage
+                );
+            }
+        }
+        previous_coverage = Some(s.coverage);
+    }
+
+    if let Some(first) = samples.first() {
+        first
+            .shot
+            .write_png(std::path::Path::new("build/f5_surface.png"))?;
+        println!(
+            "знімок: build/f5_surface.png (висота {:.0e} м)",
+            first.altitude
+        );
+    }
+
+    if let Some(last) = samples.last() {
+        last.shot
+            .write_png(std::path::Path::new("build/f5_flight.png"))?;
+        println!(
+            "знімок: build/f5_flight.png (висота {:.0e} м)",
+            last.altitude
         );
     }
 
