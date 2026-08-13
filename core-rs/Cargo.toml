@@ -1,0 +1,16 @@
+[package]
+name = "core-rs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+core-sys = { path = "../core-sys" }
+
+# Той самий крейт ще й у dev: тести звіряють обгортку з сирим викликом бітово,
+# і без прямого доступу до core-sys не було б із чим звіряти.
+[dev-dependencies]
+core-sys = { path = "../core-sys" }
+
+[lints]
+workspace = true

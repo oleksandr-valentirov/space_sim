@@ -13,6 +13,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-rs"
+version = "0.1.0"
+dependencies = [
+ "core-sys",
+]
+
+[[package]]
 name = "core-sys"
 version = "0.1.0"
 dependencies = [
