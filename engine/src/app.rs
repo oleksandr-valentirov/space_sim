@@ -11,7 +11,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
-use crate::frame;
+use crate::frame::Frame;
 use crate::gpu::Gpu;
 
 pub struct Options {
@@ -62,6 +62,7 @@ struct State {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     gpu: Gpu,
+    frame: Frame,
 }
 
 pub fn run(options: Options) -> Result<(), String> {
@@ -214,6 +215,10 @@ impl State {
         };
         surface.configure(&gpu.device, &config);
 
+        // Пайплайн прив'язаний до формату цілі, тож будується після того, як
+        // формат обрано, і переживає зміни розміру — вони формату не чіпають.
+        let frame = Frame::new(&gpu.device, config.format);
+
         window.request_redraw();
 
         Ok(State {
@@ -221,6 +226,7 @@ impl State {
             surface,
             config,
             gpu,
+            frame,
         })
     }
 
@@ -280,7 +286,7 @@ impl State {
                 label: Some("frame"),
             });
 
-        frame::draw(&mut encoder, &view);
+        self.frame.draw(&mut encoder, &view);
 
         self.gpu.queue.submit([encoder.finish()]);
         // У wgpu 30 показ кадру перейшов на чергу: раніше це був метод самої

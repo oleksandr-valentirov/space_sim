@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use crate::frame;
+use crate::frame::Frame;
 use crate::gpu::Gpu;
 
 /// Формат цілі. Не sRGB навмисно: у знімку хочемо ті самі байти, які
@@ -87,7 +87,7 @@ pub fn take(gpu: &Gpu, width: u32, height: u32) -> Result<Shot, String> {
             label: Some("shot"),
         });
 
-    frame::draw(&mut encoder, &view);
+    Frame::new(&gpu.device, FORMAT).draw(&mut encoder, &view);
 
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {

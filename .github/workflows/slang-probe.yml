@@ -51,6 +51,23 @@ jobs:
       - name: Probe
         run: cargo run -p slang-probe
 
+      # Згенерований WGSL закомічений (ROADMAP F2), тож може протухнути:
+      # хтось править .slang і забуває перезібрати. Тут слангc уже є, тож
+      # перевірка коштує секунду — перезібрати й подивитися на різницю.
+      #
+      # Лише на linux: два джоби перезбирали б те саме й другий бачив би
+      # чужий діф.
+      - name: Shaders are up to date
+        if: matrix.name == 'linux'
+        run: |
+          sh scripts/build_shaders.sh
+          if ! git diff --exit-code -- engine/shaders; then
+            echo ""
+            echo "Закомічений WGSL не збігається з тим, що дає slangc."
+            echo "Перезберіть і закомітьте: sh scripts/build_shaders.sh"
+            exit 1
+          fi
+
       - name: Upload output
         if: always()
         uses: actions/upload-artifact@v4
