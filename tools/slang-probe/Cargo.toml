@@ -1,0 +1,17 @@
+[package]
+name = "slang-probe"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+pollster = "1.0.1"
+
+# Фіча spirv вмикає розбір SPIR-V у naga. Без неї лишається тільки
+# passthrough, який працює на одному бекенді, — і половина питання P1
+# лишилася б без відповіді.
+wgpu = { version = "30", features = ["spirv"] }
+
+[lints]
+workspace = true

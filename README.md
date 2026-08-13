@@ -26,6 +26,7 @@
 | python3 | скрипти в `scripts/` | для `make plots` і завантаження даних | є в системі |
 | matplotlib | графіки з CSV | для `make plots` | `python3-matplotlib` |
 | valgrind | перевірка пам'яті на межі (ROADMAP D3) | ні, це робить CI | `valgrind` |
+| Slang | компілятор шейдерів (ROADMAP P1) | для `slang-probe` і згодом для шейдерів | `sh scripts/fetch_slang.sh` |
 
 ```sh
 sudo apt install build-essential binutils python3-matplotlib valgrind

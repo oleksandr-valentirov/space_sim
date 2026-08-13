@@ -1,0 +1,60 @@
+# Розвідка P1: чи доїжджає вихід Slang до wgpu (ROADMAP, етап E).
+#
+# Окремо від gpu-probe.yml, бо це окреме питання й окремі залежності: тут
+# треба качати компілятор Slang, там — ні. Тригери ті самі: вручну й на
+# зміни самого зонда. Розвідка потрібна кілька разів за проєкт, а не на пуш.
+#
+# ⚠ Windows тут немає, і це свідомо. scripts/fetch_slang.sh вміє tar.gz для
+#   Linux і macOS; під Windows реліз лежить у zip і шлях до slangc інший.
+#   Додавати цю гілку заради розвідки, відповідь якої не залежить від
+#   платформи (naga розбирає WGSL однаково на всіх бекендах), — робота без
+#   інформації. Якщо колись знадобиться — це чверть години.
+
+name: slang-probe
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'tools/slang-probe/**'
+      - 'scripts/fetch_slang.sh'
+      - '.github/workflows/slang-probe.yml'
+
+jobs:
+  probe:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-latest
+          - name: macos
+            os: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Без програмного Vulkan на раннері Linux немає жодного адаптера, а
+      # зонд має саме малювати, не лише компілювати.
+      - name: Mesa
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers
+
+      - name: Slang
+        run: sh scripts/fetch_slang.sh
+
+      - name: Probe
+        run: cargo run -p slang-probe
+
+      - name: Upload output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: slang-output-${{ matrix.name }}
+          path: build/slang/
+          if-no-files-found: warn
