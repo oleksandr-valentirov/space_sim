@@ -16,11 +16,25 @@
  * Друк у %.17g: сімнадцять значущих цифр однозначно відновлюють double, тож
  * текст посередині нічого не втрачає.
  *
- * Формат рядка: <body> <t> <x> <y> <z> <vx> <vy> <vz>
+ * Формат: перше поле — тег, далі числа в %.17g.
+ *
+ *   eph  <body> <t> <x> <y> <z> <vx> <vy> <vz>
+ *   samp <k> <t> <x> <y> <z> <vx> <vy> <vz>      семпл прогону
+ *   run  <count> <stop> <event> <step>           підсумок прогону
+ *   end  <t> <x> <y> <z> <vx> <vy> <vz>          кінцевий стан прогону
+ *
+ * Прогонів два: без подій до заданого часу і з озброєним перицентром.
+ * Другий важливий окремо — він проходить через `CoreEvent`, а структура з
+ * enum, int і double поспіль це саме те місце, де розкладка й вирівнювання
+ * розходяться тихо.
+ *
+ * Апарат заданий літералами, а не порахований: `sqrt` тут немає, бо оракул
+ * лінкується без `libm` — так само, як сценарії детермінізму (build.rs).
  *
  * Запускається з кореня репозиторію. */
 
 #include "ephemeris.h"
+#include "prop.h"
 
 #include <stdio.h>
 
@@ -36,6 +50,86 @@ static const int BODIES[] = { 0, 3, 4 };
 
 static const double TIMES[] = { 0.0, 30.0 * DAY, 119.0 * DAY };
 #define N_TIMES (sizeof TIMES / sizeof TIMES[0])
+
+/* Апарат на витягнутій навколоземній орбіті: зсув від Землі й швидкість,
+ * задані числами. 0.8 колової швидкості на геостаціонарному радіусі — тобто
+ * орбіта з перицентром, який є що шукати. */
+#define VESSEL_T0 (1.0 * DAY)
+#define VESSEL_DX 42164.0e3
+#define VESSEL_VY 1967.84
+#define VESSEL_VZ 1475.88
+
+#define CAP 64
+
+static void print_state(const char *tag, const State *s)
+{
+    printf("%s %.17g %.17g %.17g %.17g %.17g %.17g %.17g\n",
+           tag, s->t, s->r.x, s->r.y, s->r.z, s->v.x, s->v.y, s->v.z);
+}
+
+static int propagate(const EphemerisCtx *eph)
+{
+    State earth;
+    if (eph_body_state(eph, 3, VESSEL_T0, &earth) != CORE_OK) {
+        return 0;
+    }
+
+    State vessel;
+    vessel.r = vec3(earth.r.x + VESSEL_DX, earth.r.y, earth.r.z);
+    vessel.v = vec3(earth.v.x, earth.v.y + VESSEL_VY, earth.v.z + VESSEL_VZ);
+    vessel.t = VESSEL_T0;
+
+    PropConfig cfg;
+    cfg.integrator = CORE_INTEG_DOP853;
+    cfg.tol_m = 1e-2;
+    cfg.h_max_s = 1800.0;
+    cfg.max_steps = 0;
+
+    PropagatorCtx *p = NULL;
+    if (prop_create(eph, &cfg, &p) != CORE_OK) {
+        return 0;
+    }
+
+    State samples[CAP];
+    size_t n = 0;
+    State final_state;
+    CoreStopReason stop;
+    int event = -1;
+    double step = 0.0;
+
+    if (prop_run(p, &vessel, VESSEL_T0 + 0.5 * DAY, NULL, 0, samples, CAP, &n,
+                 &final_state, &stop, &event, &step) != CORE_OK) {
+        prop_free(p);
+        return 0;
+    }
+
+    for (size_t k = 0; k < n; k++) {
+        printf("samp %zu %.17g %.17g %.17g %.17g %.17g %.17g %.17g\n",
+               k, samples[k].t, samples[k].r.x, samples[k].r.y, samples[k].r.z,
+               samples[k].v.x, samples[k].v.y, samples[k].v.z);
+    }
+    printf("run %zu %d %d %.17g\n", n, (int)stop, event, step);
+    print_state("end", &final_state);
+
+    /* Той самий апарат, але прогін зупиняє подія. */
+    CoreEvent ev;
+    ev.kind = CORE_EVENT_PERIAPSIS;
+    ev.body_id = 3;
+    ev.param = 0.0;
+
+    step = 0.0;
+    if (prop_run(p, &vessel, VESSEL_T0 + 4.0 * DAY, &ev, 1, NULL, 0, &n,
+                 &final_state, &stop, &event, &step) != CORE_OK) {
+        prop_free(p);
+        return 0;
+    }
+
+    printf("run %zu %d %d %.17g\n", n, (int)stop, event, step);
+    print_state("end", &final_state);
+
+    prop_free(p);
+    return 1;
+}
 
 int main(void)
 {
@@ -56,10 +150,15 @@ int main(void)
                 return 1;
             }
 
-            printf("%d %.17g %.17g %.17g %.17g %.17g %.17g %.17g\n",
+            printf("eph %d %.17g %.17g %.17g %.17g %.17g %.17g %.17g\n",
                    BODIES[b], TIMES[k],
                    s.r.x, s.r.y, s.r.z, s.v.x, s.v.y, s.v.z);
         }
+    }
+
+    if (!propagate(eph)) {
+        eph_free(eph);
+        return 1;
     }
 
     eph_free(eph);

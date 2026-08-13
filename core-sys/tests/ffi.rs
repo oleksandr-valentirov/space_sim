@@ -19,8 +19,9 @@ use std::path::Path;
 use std::process::Command;
 
 use core_sys::{
-    eph_body_state, eph_free, eph_load, CoreResult, EphemerisCtx, State, CORE_ERR_INVALID_ARG,
-    CORE_OK,
+    eph_body_state, eph_free, eph_load, prop_create, prop_free, prop_run, CoreEvent, CoreResult,
+    EphemerisCtx, PropConfig, PropagatorCtx, State, CORE_ERR_INVALID_ARG, CORE_EVENT_PERIAPSIS,
+    CORE_INTEG_DOP853, CORE_OK, CORE_STOP_EVENT,
 };
 
 const ORACLE: &str = env!("CORE_ORACLE");
@@ -29,18 +30,64 @@ const REPO_ROOT: &str = env!("CORE_REPO_ROOT");
 const ASSET: &str = "data/fixture/earth_moon.eph";
 const DAY: f64 = 86400.0;
 
-/// Один рядок виводу оракула: тіло, час і шість компонент стану.
-struct Sample {
-    body: i32,
-    t: f64,
-    values: [f64; 6],
+/// Один рядок виводу оракула: тег і числа після нього.
+#[derive(Clone)]
+struct Record {
+    tag: String,
+    values: Vec<f64>,
+}
+
+impl Record {
+    fn state(&self, from: usize) -> State {
+        State {
+            t: self.values[from],
+            r: core_sys::Vec3d {
+                x: self.values[from + 1],
+                y: self.values[from + 2],
+                z: self.values[from + 3],
+            },
+            v: core_sys::Vec3d {
+                x: self.values[from + 4],
+                y: self.values[from + 5],
+                z: self.values[from + 6],
+            },
+        }
+    }
+}
+
+/// Бітова звірка двох станів із зрозумілим повідомленням.
+///
+/// Порівнюються біти, а не значення: різниця тут — це розкладка структур або
+/// типи в декларації, і жоден допуск про неї нічого не скаже.
+fn same_bits(from_c: &State, from_rust: &State, what: &str) {
+    let c = [
+        from_c.t, from_c.r.x, from_c.r.y, from_c.r.z, from_c.v.x, from_c.v.y, from_c.v.z,
+    ];
+    let rust = [
+        from_rust.t,
+        from_rust.r.x,
+        from_rust.r.y,
+        from_rust.r.z,
+        from_rust.v.x,
+        from_rust.v.y,
+        from_rust.v.z,
+    ];
+
+    for (i, (&a, &b)) in c.iter().zip(rust.iter()).enumerate() {
+        assert_eq!(
+            a.to_bits(),
+            b.to_bits(),
+            "{what}, компонента {i}: C дало {a:.17e}, Rust {b:.17e}.\n\
+             Це розкладка структур або типи в декларації, а не фізика."
+        );
+    }
 }
 
 /// Запускає оракул і розбирає його вивід.
 ///
 /// `%.17g` однозначно відновлює double, а парсер Rust коректно заокруглює,
 /// тож текст посередині нічого не втрачає — порівнювати можна побітово.
-fn oracle_samples() -> Vec<Sample> {
+fn oracle_records() -> Vec<Record> {
     let output = Command::new(ORACLE)
         .current_dir(REPO_ROOT)
         .output()
@@ -54,37 +101,39 @@ fn oracle_samples() -> Vec<Sample> {
     );
 
     let text = String::from_utf8(output.stdout).expect("оракул видав не UTF-8");
-    let mut samples = Vec::new();
+    let mut records = Vec::new();
 
     for line in text.lines() {
         let fields: Vec<&str> = line.split_whitespace().collect();
-        assert_eq!(fields.len(), 8, "неочікуваний рядок оракула: {line}");
+        assert!(fields.len() > 1, "неочікуваний рядок оракула: {line}");
 
-        let number = |i: usize| -> f64 {
-            fields[i]
-                .parse()
-                .unwrap_or_else(|e| panic!("не число в '{line}', поле {i}: {e}"))
-        };
+        let values = fields[1..]
+            .iter()
+            .map(|f| {
+                f.parse()
+                    .unwrap_or_else(|e| panic!("не число в '{line}': {e}"))
+            })
+            .collect();
 
-        let mut values = [0.0; 6];
-        for (i, value) in values.iter_mut().enumerate() {
-            *value = number(2 + i);
-        }
-
-        samples.push(Sample {
-            body: fields[0].parse().expect("тіло не ціле"),
-            t: number(1),
+        records.push(Record {
+            tag: fields[0].to_string(),
             values,
         });
     }
 
     assert!(
-        !samples.is_empty(),
+        !records.is_empty(),
         "оракул нічого не вивів — порожня звірка мовчки 'проходить', \
          тому це провал"
     );
 
-    samples
+    records
+}
+
+/// Рядки одного тегу, у порядку виводу. Клонує замість позичання — межа тут
+/// не в продуктивності, а в тому, щоб код читався (CLAUDE.md, стиль Rust).
+fn tagged(records: &[Record], tag: &str) -> Vec<Record> {
+    records.iter().filter(|r| r.tag == tag).cloned().collect()
 }
 
 /// Завантажує фікстуру. Викликач зобов'язаний віддати результат у `eph_free` —
@@ -108,39 +157,25 @@ unsafe fn load_fixture() -> *mut EphemerisCtx {
 
 #[test]
 fn states_match_the_c_oracle_bit_for_bit() {
-    let samples = oracle_samples();
+    let records = oracle_records();
+    let samples = tagged(&records, "eph");
+    assert!(!samples.is_empty(), "оракул не дав жодного рядка eph");
 
     unsafe {
         let ctx = load_fixture();
 
         for sample in &samples {
+            let body = sample.values[0] as i32;
+            let t = sample.values[1];
+
             let mut state = State::default();
-            let result = eph_body_state(ctx, sample.body, sample.t, &mut state);
-            assert_eq!(
-                result, CORE_OK,
-                "тіло {} у момент {}",
-                sample.body, sample.t
-            );
+            let result = eph_body_state(ctx, body, t, &mut state);
+            assert_eq!(result, CORE_OK, "тіло {body} у момент {t}");
 
-            let got = [
-                state.r.x, state.r.y, state.r.z, state.v.x, state.v.y, state.v.z,
-            ];
-
-            for (i, (&from_c, &from_rust)) in sample.values.iter().zip(got.iter()).enumerate() {
-                assert_eq!(
-                    from_c.to_bits(),
-                    from_rust.to_bits(),
-                    "тіло {}, момент {}, компонента {i}: C дало {from_c:.17e}, \
-                     Rust {from_rust:.17e}.\nЦе розкладка структур або типи \
-                     в декларації, а не фізика.",
-                    sample.body,
-                    sample.t
-                );
-            }
-
-            // Час у структурі — теж поле, і теж може з'їхати, якщо порядок
-            // полів State оголошено неправильно.
-            assert_eq!(state.t.to_bits(), sample.t.to_bits(), "поле t зсунулося");
+            let mut expected = sample.state(1);
+            // Час у рядку — той, про який просили; решта з C.
+            expected.t = t;
+            same_bits(&expected, &state, &format!("тіло {body}, момент {t}"));
         }
 
         eph_free(ctx);
@@ -194,5 +229,158 @@ fn out_of_range_is_reported_not_extrapolated() {
 fn freeing_null_is_allowed() {
     unsafe {
         eph_free(std::ptr::null_mut());
+    }
+}
+
+/// Пропагація через межу дає ті самі біти, що прямий виклик у C (ROADMAP H3).
+///
+/// Тут перевіряється більше, ніж одна функція. `prop_run` бере одинадцять
+/// аргументів, серед них дві структури (`PropConfig` з `enum`, двома `double`
+/// і `long`; `CoreEvent` з `enum`, `int` і `double`), три вихідні вказівники
+/// й буфер, який дає Rust. Кожне з цього — окремий спосіб мовчки розійтися:
+/// зсунуте поле, не той цілий тип, переплутаний порядок `out_cap`/`out_count`.
+/// Жоден із них не падає — усі повертають числа, схожі на траєкторію.
+///
+/// Оракул проганяє два прогони: один до заданого часу з семплами, другий до
+/// перицентра. Другий проходить саме через `CoreEvent` і через код зупинки.
+#[test]
+fn propagation_matches_the_c_oracle_bit_for_bit() {
+    // Ті самі літерали, що в core-sys/oracle.c. Апарат заданий числами, а не
+    // порахований: оракул лінкується без libm, тож sqrt там немає.
+    const VESSEL_T0: f64 = DAY;
+    const VESSEL_DX: f64 = 42_164.0e3;
+    const VESSEL_VY: f64 = 1967.84;
+    const VESSEL_VZ: f64 = 1475.88;
+    const CAP: usize = 64;
+
+    let records = oracle_records();
+    let oracle_samples = tagged(&records, "samp");
+    let oracle_runs = tagged(&records, "run");
+    let oracle_ends = tagged(&records, "end");
+
+    assert!(!oracle_samples.is_empty(), "оракул не дав жодного семпла");
+    assert_eq!(oracle_runs.len(), 2, "оракул мав дати два прогони");
+    assert_eq!(oracle_ends.len(), 2);
+
+    unsafe {
+        let ctx = load_fixture();
+
+        let mut earth = State::default();
+        assert_eq!(eph_body_state(ctx, 3, VESSEL_T0, &mut earth), CORE_OK);
+
+        let mut vessel = State {
+            r: earth.r,
+            v: earth.v,
+            t: VESSEL_T0,
+        };
+        vessel.r.x += VESSEL_DX;
+        vessel.v.y += VESSEL_VY;
+        vessel.v.z += VESSEL_VZ;
+
+        let cfg = PropConfig {
+            integrator: CORE_INTEG_DOP853,
+            tol_m: 1e-2,
+            h_max_s: 1800.0,
+            max_steps: 0,
+        };
+
+        let mut p: *mut PropagatorCtx = std::ptr::null_mut();
+        assert_eq!(prop_create(ctx, &cfg, &mut p), CORE_OK);
+        assert!(!p.is_null(), "prop_create повернув CORE_OK і NULL");
+
+        // ---- Прогін перший: семпли до заданого часу.
+        let mut samples = vec![State::default(); CAP];
+        let mut count: usize = 0;
+        let mut final_state = State::default();
+        let mut stop: core_sys::CoreStopReason = -1;
+        let mut event: i32 = -2;
+        let mut step = 0.0f64;
+
+        let result = prop_run(
+            p,
+            &vessel,
+            VESSEL_T0 + 0.5 * DAY,
+            std::ptr::null(),
+            0,
+            samples.as_mut_ptr(),
+            CAP,
+            &mut count,
+            &mut final_state,
+            &mut stop,
+            &mut event,
+            &mut step,
+        );
+        assert_eq!(result, CORE_OK);
+
+        assert_eq!(
+            count,
+            oracle_samples.len(),
+            "кількість семплів розійшлася: буфер із Rust наповнюється не так, \
+             як у C"
+        );
+        for (k, from_c) in oracle_samples.iter().enumerate() {
+            assert_eq!(from_c.values[0] as usize, k, "порядок семплів оракула");
+            same_bits(&from_c.state(1), &samples[k], &format!("семпл {k}"));
+        }
+
+        let run = &oracle_runs[0];
+        assert_eq!(run.values[0] as usize, count, "out_count");
+        assert_eq!(run.values[1] as i32, stop, "код зупинки");
+        assert_eq!(run.values[2] as i32, event, "індекс події");
+        assert_eq!(
+            run.values[3].to_bits(),
+            step.to_bits(),
+            "перенесений крок: {} проти {}",
+            run.values[3],
+            step
+        );
+        same_bits(&oracle_ends[0].state(0), &final_state, "кінцевий стан");
+
+        // ---- Прогін другий: зупинка на події.
+        let ev = CoreEvent {
+            kind: CORE_EVENT_PERIAPSIS,
+            body_id: 3,
+            param: 0.0,
+        };
+
+        step = 0.0;
+        let result = prop_run(
+            p,
+            &vessel,
+            VESSEL_T0 + 4.0 * DAY,
+            &ev,
+            1,
+            std::ptr::null_mut(),
+            0,
+            &mut count,
+            &mut final_state,
+            &mut stop,
+            &mut event,
+            &mut step,
+        );
+        assert_eq!(result, CORE_OK);
+
+        // Не лише «збіглося з оракулом», а й «сталося те, про що просили»:
+        // якби подія не спрацювала, обидва боки однаково дійшли б до t_end і
+        // звірка мовчки пройшла б.
+        assert_eq!(stop, CORE_STOP_EVENT, "подія мала зупинити прогін");
+        assert_eq!(event, 0);
+
+        let run = &oracle_runs[1];
+        assert_eq!(run.values[1] as i32, stop);
+        assert_eq!(run.values[2] as i32, event);
+        assert_eq!(run.values[3].to_bits(), step.to_bits(), "крок після події");
+        same_bits(&oracle_ends[1].state(0), &final_state, "стан на події");
+
+        prop_free(p);
+        eph_free(ctx);
+    }
+}
+
+/// `prop_free(NULL)` дозволений — так каже `core/prop.h`, і H4 на це спирається.
+#[test]
+fn freeing_a_null_propagator_is_allowed() {
+    unsafe {
+        prop_free(std::ptr::null_mut());
     }
 }

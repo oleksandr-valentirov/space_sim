@@ -14,7 +14,7 @@
 
 #![no_std]
 
-use core::ffi::{c_char, c_int};
+use core::ffi::{c_char, c_int, c_long};
 
 /// Код повернення. У C це `enum CoreResult`, тут — ціле число.
 ///
@@ -64,6 +64,67 @@ pub struct EphemerisCtx {
     _opaque: [u8; 0],
 }
 
+/// Непрозорий хендл пропагатора (`core/prop.h`, ROADMAP H3).
+///
+/// Позичає ефемериду й не володіє нею: контекст ефемериди мусить пережити
+/// кожен пропагатор, збудований на ньому. У `core-rs` це не обіцянка, а тип —
+/// обгортка тримає `Arc`.
+#[repr(C)]
+pub struct PropagatorCtx {
+    _opaque: [u8; 0],
+}
+
+/// Вибір інтегратора. `CoreIntegrator` у C — теж `enum`, тобто `int`.
+pub type CoreIntegrator = c_int;
+
+pub const CORE_INTEG_DOP853: CoreIntegrator = 0;
+pub const CORE_INTEG_RKN: CoreIntegrator = 1;
+
+/// Чому прогін скінчився. Значення поза переліком тут так само неприпустимі
+/// для Rust-енума, як і в `CoreResult`, тож це ціле число.
+pub type CoreStopReason = c_int;
+
+pub const CORE_STOP_T_END: CoreStopReason = 0;
+pub const CORE_STOP_BUFFER_FULL: CoreStopReason = 1;
+pub const CORE_STOP_EVENT: CoreStopReason = 2;
+
+pub type CoreEventKind = c_int;
+
+pub const CORE_EVENT_PERIAPSIS: CoreEventKind = 0;
+pub const CORE_EVENT_APOAPSIS: CoreEventKind = 1;
+pub const CORE_EVENT_DISTANCE: CoreEventKind = 2;
+
+/// Скільки подій `prop_run` бере за раз (`PROP_MAX_EVENTS`).
+pub const PROP_MAX_EVENTS: usize = 8;
+
+/// `PropConfig` з `core/prop.h`.
+///
+/// `max_steps` — `c_long`, бо в C це `long`: на Linux і macOS це 64 біти, на
+/// Windows 32. `c_long` іде за платформою так само, тож обидва боки згодні.
+/// Це межа кількості кроків, а не арифметика, тож різна ширина на різних
+/// платформах детермінізму не торкається.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct PropConfig {
+    pub integrator: CoreIntegrator,
+    pub tol_m: f64,
+    pub h_max_s: f64,
+    pub max_steps: c_long,
+}
+
+/// `CoreEvent` з `core/prop.h`: подія, описана даними.
+///
+/// Саме така структура — `enum`, `int`, `double` поспіль — і є місцем, де
+/// вирівнювання розходиться тихо, тож у `tests/ffi.rs` прогін з озброєною
+/// подією звіряється з C бітово.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct CoreEvent {
+    pub kind: CoreEventKind,
+    pub body_id: c_int,
+    pub param: f64,
+}
+
 extern "C" {
     /// Завантажує скукований ассет. `path` має бути C-рядком із `\0`.
     ///
@@ -85,5 +146,43 @@ extern "C" {
         body: c_int,
         t: f64,
         out: *mut State,
+    ) -> CoreResult;
+
+    /// Створює пропагатор над ефемеридою. Друга (і остання) алокуюча пара
+    /// межі; `prop_free(NULL)` дозволений.
+    pub fn prop_create(
+        eph: *const EphemerisCtx,
+        cfg: *const PropConfig,
+        out: *mut *mut PropagatorCtx,
+    ) -> CoreResult;
+
+    /// Звільняє контекст. `NULL` допустимий.
+    pub fn prop_free(p: *mut PropagatorCtx);
+
+    /// Інтегрує апарат від `initial` до `t_end`, до першої озброєної події
+    /// або поки не заповниться `out_states`.
+    ///
+    /// Буфер дає **Rust**, а C лише заповнює його й повертає фактичну
+    /// кількість (PROJECT.md §5, правило 1) — тому питання «хто звільняє»
+    /// не виникає взагалі.
+    ///
+    /// `in_out_step` несе крок інтегратора між викликами. Нуль на першому
+    /// виклику означає «обери сам»; далі туди слід повертати те, що функція
+    /// там лишила, — інакше траєкторія буде інша, і це виміряно
+    /// (`core/test/test_prop.c`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn prop_run(
+        p: *mut PropagatorCtx,
+        initial: *const State,
+        t_end: f64,
+        events: *const CoreEvent,
+        n_events: usize,
+        out_states: *mut State,
+        out_cap: usize,
+        out_count: *mut usize,
+        out_final: *mut State,
+        out_stop: *mut CoreStopReason,
+        out_event: *mut c_int,
+        in_out_step: *mut f64,
     ) -> CoreResult;
 }
