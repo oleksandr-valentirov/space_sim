@@ -191,10 +191,19 @@ static double initial_step(BlockAccelFunc f, void *ctx, int nb,
     return h1 < capped ? h1 : capped;
 }
 
-CoreResult dop853_integrate_blocks(BlockAccelFunc f, void *ctx, int n_blocks,
+/* The loop itself. Every public entry point below is this function with the
+ * observer left out, so there is exactly one step controller in the core -
+ * which is the invariant CLAUDE.md states as "one integrator, one tolerance",
+ * held by construction rather than by discipline.
+ *
+ * out_t, when asked for, is the time actually reached: t_end for a completed
+ * run, and where it stopped for one the observer ended early. */
+static CoreResult integrate_blocks(BlockAccelFunc f, void *ctx, int n_blocks,
                                    double t0, double t_end,
                                    Vec3d *r, Vec3d *v,
-                                   const Dop853Config *cfg, Dop853State *io)
+                                   const Dop853Config *cfg, Dop853State *io,
+                                   StepObserver obs, void *obs_ctx,
+                                   double *out_t)
 {
     if (f == NULL || r == NULL || v == NULL || cfg == NULL || io == NULL) {
         return CORE_ERR_INVALID_ARG;
@@ -207,6 +216,9 @@ CoreResult dop853_integrate_blocks(BlockAccelFunc f, void *ctx, int n_blocks,
     }
 
     if (t_end == t0) {
+        if (out_t != NULL) {
+            *out_t = t_end;
+        }
         return CORE_OK;
     }
 
@@ -254,6 +266,7 @@ CoreResult dop853_integrate_blocks(BlockAccelFunc f, void *ctx, int n_blocks,
 
     double t = t0;
     long steps = 0;
+    int stopped = 0;
 
     Vec3d r_try[DOP853_MAX_BLOCKS];
     Vec3d v_try[DOP853_MAX_BLOCKS];
@@ -300,6 +313,21 @@ CoreResult dop853_integrate_blocks(BlockAccelFunc f, void *ctx, int n_blocks,
                 factor = MAX_SCALE;
             }
             h *= factor;
+
+            /* The observer sees the step the controller chose, after the
+             * controller has already decided what the next one will be. That
+             * order is the whole point: whatever it does with the state, io->h
+             * is left holding a step that continues this trajectory, not one
+             * shortened to land on a time somebody asked for. */
+            if (obs != NULL) {
+                State s;
+                s.r = r[0];
+                s.v = v[0];
+                s.t = t;
+                if (obs(&s, obs_ctx)) {
+                    stopped = 1;
+                }
+            }
         } else {
             io->n_rejected++;
 
@@ -315,10 +343,26 @@ CoreResult dop853_integrate_blocks(BlockAccelFunc f, void *ctx, int n_blocks,
         if (h > h_ceiling) {
             h = h_ceiling;
         }
+
+        if (stopped) {
+            break;
+        }
     }
 
     io->h = h;
+    if (out_t != NULL) {
+        *out_t = stopped ? t : t_end;
+    }
     return CORE_OK;
+}
+
+CoreResult dop853_integrate_blocks(BlockAccelFunc f, void *ctx, int n_blocks,
+                                   double t0, double t_end,
+                                   Vec3d *r, Vec3d *v,
+                                   const Dop853Config *cfg, Dop853State *io)
+{
+    return integrate_blocks(f, ctx, n_blocks, t0, t_end, r, v, cfg, io,
+                            NULL, NULL, NULL);
 }
 
 /* ---- The one-block case ------------------------------------------------- */
@@ -336,9 +380,10 @@ static void single_block(double t, const Vec3d *r, const Vec3d *v,
     s->f(t, r[0], v[0], s->ctx, &a_out[0]);
 }
 
-CoreResult dop853_integrate(AccelFunc f, void *ctx, const State *in,
-                            double t_end, const Dop853Config *cfg,
-                            Dop853State *io, State *out)
+static CoreResult integrate_single(AccelFunc f, void *ctx, const State *in,
+                                   double t_end, const Dop853Config *cfg,
+                                   Dop853State *io, StepObserver obs,
+                                   void *obs_ctx, State *out)
 {
     if (f == NULL || in == NULL || out == NULL) {
         return CORE_ERR_INVALID_ARG;
@@ -347,15 +392,32 @@ CoreResult dop853_integrate(AccelFunc f, void *ctx, const State *in,
     SingleCtx single = { f, ctx };
     Vec3d r = in->r;
     Vec3d v = in->v;
+    double t_reached = t_end;
 
-    CoreResult res = dop853_integrate_blocks(single_block, &single, 1,
-                                             in->t, t_end, &r, &v, cfg, io);
+    CoreResult res = integrate_blocks(single_block, &single, 1,
+                                      in->t, t_end, &r, &v, cfg, io,
+                                      obs, obs_ctx, &t_reached);
     if (res != CORE_OK) {
         return res;
     }
 
     out->r = r;
     out->v = v;
-    out->t = t_end;
+    out->t = t_reached;
     return CORE_OK;
+}
+
+CoreResult dop853_integrate(AccelFunc f, void *ctx, const State *in,
+                            double t_end, const Dop853Config *cfg,
+                            Dop853State *io, State *out)
+{
+    return integrate_single(f, ctx, in, t_end, cfg, io, NULL, NULL, out);
+}
+
+CoreResult dop853_integrate_obs(AccelFunc f, void *ctx, const State *in,
+                                double t_end, const Dop853Config *cfg,
+                                Dop853State *io, StepObserver obs,
+                                void *obs_ctx, State *out)
+{
+    return integrate_single(f, ctx, in, t_end, cfg, io, obs, obs_ctx, out);
 }

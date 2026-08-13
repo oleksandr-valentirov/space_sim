@@ -74,6 +74,36 @@ CoreResult dop853_integrate(AccelFunc f, void *ctx, const State *in,
                             double t_end, const Dop853Config *cfg,
                             Dop853State *io, State *out);
 
+/* ---- Watching a run without steering it --------------------------------- */
+
+/* Called after each accepted step, with the state at the end of it. Return
+ * non-zero to stop the run there.
+ *
+ * This exists so that prop_run (core/prop.h) can sample a trajectory and,
+ * later, stop on an event, without any of that touching the arithmetic. The
+ * alternative - integrating in short legs that land on chosen times - is not
+ * neutral, and the ephemeris cooker measured how badly: forced landings on fit
+ * nodes drove the step sequence instead of the tolerance, and the tolerance
+ * stopped binding at all (ROADMAP, "Допуск оновлено: 1 м -> 1e-6 м"). An
+ * observer sees the steps the controller picked and changes none of them.
+ *
+ * A callback inside C, and it stays inside C. Nothing of the kind crosses the
+ * FFI boundary (CLAUDE.md invariant 7): there, Rust hands over a buffer and
+ * gets it filled.
+ *
+ * When the observer stops a run: the result is CORE_OK, out->t is the time
+ * actually reached, and io->h holds the step that continues this trajectory.
+ * Calling again with that state and that step is bit-identical to never having
+ * stopped - which is what makes a prediction, cut into pieces by a buffer, the
+ * same trajectory the vessel then flies (CLAUDE.md invariant 5). Measured in
+ * core/test/test_prop.c, not assumed. */
+typedef int (*StepObserver)(const State *s, void *ctx);
+
+CoreResult dop853_integrate_obs(AccelFunc f, void *ctx, const State *in,
+                                double t_end, const Dop853Config *cfg,
+                                Dop853State *io, StepObserver obs,
+                                void *obs_ctx, State *out);
+
 /* ---- Blocks: carrying companion trajectories through the same steps ------ */
 
 /* Everything below exists to serve one requirement, and it is worth naming it
