@@ -80,7 +80,7 @@ static int same_state(const State *a, const State *b)
  * asset uses: the Earth's own state plus a relative position and the speed
  * that closes a circle at that radius. sqrt is the only function used, so the
  * setup itself stays inside the rules the core is built under. */
-static State vessel_at(const EphemerisCtx *eph, double t)
+static State vessel_at(const EphemerisCtx *eph, double t, double speed_factor)
 {
     State earth;
     State s = { { 0.0, 0.0, 0.0 }, { 0.0, 0.0, 0.0 }, t };
@@ -89,7 +89,7 @@ static State vessel_at(const EphemerisCtx *eph, double t)
         return s;
     }
 
-    double speed = sqrt(eph_body_mu(eph, EARTH) / ORBIT_R);
+    double speed = speed_factor * sqrt(eph_body_mu(eph, EARTH) / ORBIT_R);
 
     /* (0, 0.8, 0.6) is a unit vector exactly, in binary as well as in
      * decimal: the inclination is a real one and it costs no rounding. */
@@ -121,13 +121,14 @@ static int stitch(PropagatorCtx *p, const State *start, double t_end,
         size_t n = 0;
         State final_state;
         CoreStopReason stop;
+        int event = 0;
 
         if (!carry_step) {
             step = 0.0;
         }
 
-        if (prop_run(p, &s, t_end, chunk, cap, &n, &final_state, &stop, &step)
-            != CORE_OK) {
+        if (prop_run(p, &s, t_end, NULL, 0, chunk, cap, &n, &final_state,
+                     &stop, &event, &step) != CORE_OK) {
             return -1;
         }
 
@@ -160,7 +161,7 @@ int main(void)
 
     double t0 = t_begin + 1.0 * DAY;
     double t_end = t0 + SPAN;
-    State start = vessel_at(eph, t0);
+    State start = vessel_at(eph, t0, 1.0);
 
     /* ---- The direct run, which is the oracle for everything below ------- */
 
@@ -184,10 +185,11 @@ int main(void)
         State final_state;
         size_t n = 1;
         CoreStopReason stop;
+        int event = 0;
         double step = 0.0;
 
-        CHECK(prop_run(p, &start, t_end, NULL, 0, &n, &final_state, &stop,
-                       &step) == CORE_OK);
+        CHECK(prop_run(p, &start, t_end, NULL, 0, NULL, 0, &n, &final_state,
+                       &stop, &event, &step) == CORE_OK);
         CHECK(same_state(&final_state, &direct));
         CHECK(n == 0);
         CHECK(stop == CORE_STOP_T_END);
@@ -200,10 +202,11 @@ int main(void)
     {
         State final_state;
         CoreStopReason stop;
+        int event = 0;
         double step = 0.0;
 
-        CHECK(prop_run(p, &start, t_end, samples_one, BIG_CAP, &n_one,
-                       &final_state, &stop, &step) == CORE_OK);
+        CHECK(prop_run(p, &start, t_end, NULL, 0, samples_one, BIG_CAP, &n_one,
+                       &final_state, &stop, &event, &step) == CORE_OK);
         CHECK(same_state(&final_state, &direct));
         CHECK(stop == CORE_STOP_T_END);
         CHECK(n_one == (size_t)dst.n_accepted);
@@ -320,15 +323,16 @@ int main(void)
         State final_state;
         size_t n = 0;
         CoreStopReason stop;
+        int event = 0;
         double step = 0.0;
 
-        CHECK(prop_run(q, &start, t_span_end + 10.0 * DAY, NULL, 0, &n,
-                       &final_state, &stop, &step) == CORE_ERR_INVALID_ARG);
+        CHECK(prop_run(q, &start, t_span_end + 10.0 * DAY, NULL, 0, NULL, 0, &n,
+                       &final_state, &stop, &event, &step) == CORE_ERR_INVALID_ARG);
 
         /* And the context is not poisoned by it: the sticky flag is cleared
          * at the start of every run, so the next one still works. */
-        CHECK(prop_run(q, &start, t0 + HOUR, NULL, 0, &n, &final_state, &stop,
-                       &step) == CORE_OK);
+        CHECK(prop_run(q, &start, t0 + HOUR, NULL, 0, NULL, 0, &n, &final_state,
+                       &stop, &event, &step) == CORE_OK);
 
         prop_free(q);
     }
@@ -353,23 +357,322 @@ int main(void)
         State final_state;
         size_t n = 0;
         CoreStopReason stop;
+        int event = 0;
         double step = 0.0;
 
         /* A buffer with no room in it: an immediate stop with no progress,
          * which a caller stitching legs would spin on forever. */
-        CHECK(prop_run(q, &start, t_end, samples_two, 0, &n, &final_state,
-                       &stop, &step) == CORE_ERR_INVALID_ARG);
-        CHECK(prop_run(q, NULL, t_end, NULL, 0, &n, &final_state, &stop, &step)
+        CHECK(prop_run(q, &start, t_end, NULL, 0, samples_two, 0, &n,
+                       &final_state, &stop, &event, &step)
               == CORE_ERR_INVALID_ARG);
-        CHECK(prop_run(q, &start, t_end, NULL, 0, &n, &final_state, &stop, NULL)
-              == CORE_ERR_INVALID_ARG);
+        CHECK(prop_run(q, NULL, t_end, NULL, 0, NULL, 0, &n, &final_state,
+                       &stop, &event, &step) == CORE_ERR_INVALID_ARG);
+        CHECK(prop_run(q, &start, t_end, NULL, 0, NULL, 0, &n, &final_state,
+                       &stop, &event, NULL) == CORE_ERR_INVALID_ARG);
 
         /* Zero length is a legal request and does nothing. */
-        CHECK(prop_run(q, &start, start.t, samples_two, BIG_CAP, &n,
-                       &final_state, &stop, &step) == CORE_OK);
+        CHECK(prop_run(q, &start, start.t, NULL, 0, samples_two, BIG_CAP, &n,
+                       &final_state, &stop, &event, &step) == CORE_OK);
         CHECK(n == 0);
         CHECK(stop == CORE_STOP_T_END);
         CHECK(same_state(&final_state, &start));
+
+        prop_free(q);
+    }
+
+    /* ---- Events (ROADMAP H2) -------------------------------------------- *
+     *
+     * On an eccentric orbit, because a circular one has no periapsis worth
+     * finding: d . d' hovers at zero the whole way round, and every step
+     * would look like a crossing of nothing. Apoapsis is exactly where the
+     * vessel starts - the position offset is along x and the velocity has no
+     * x component, so the radial rate is zero to the bit. That is the awkward
+     * case and it is deliberate: an event system that fires on the state it
+     * was handed reports an event that has not happened. */
+
+    State ecc = vessel_at(eph, t0, 0.8);
+    double t_far = t0 + 4.0 * DAY;
+
+    /* 8. Periapsis: found, and it is a real minimum of the distance. */
+    double t_peri = 0.0;
+    {
+        PropagatorCtx *q = NULL;
+        PropConfig c = config(H_MAX);
+        CHECK(prop_create(eph, &c, &q) == CORE_OK);
+
+        CoreEvent ev = { CORE_EVENT_PERIAPSIS, EARTH, 0.0 };
+        State final_state;
+        size_t n = 0;
+        CoreStopReason stop;
+        int event = 0;
+        double step = 0.0;
+
+        CHECK(prop_run(q, &ecc, t_far, &ev, 1, samples_one, BIG_CAP, &n,
+                       &final_state, &stop, &event, &step) == CORE_OK);
+        CHECK(stop == CORE_STOP_EVENT);
+        CHECK(event == 0);
+        CHECK(n > 0);
+
+        /* The polyline ends at the event, not a step past it. */
+        CHECK(same_state(&samples_one[n - 1], &final_state));
+
+        t_peri = final_state.t;
+
+        /* The oracle is the shape of the trajectory itself, not a number
+         * copied from elsewhere: a minute either side of a minimum is
+         * farther away. Nothing here knows what the answer should be. */
+        State earth_at, before, after;
+        CHECK(eph_body_state(eph, EARTH, final_state.t, &earth_at) == CORE_OK);
+        double r_event = vec3_distance(final_state.r, earth_at.r);
+
+        double probe_step = 0.0;
+        size_t probe_n = 0;
+        CoreStopReason probe_stop;
+        int probe_event = 0;
+
+        CHECK(prop_run(q, &ecc, final_state.t - 60.0, NULL, 0, NULL, 0,
+                       &probe_n, &before, &probe_stop, &probe_event,
+                       &probe_step) == CORE_OK);
+        probe_step = 0.0;
+        CHECK(prop_run(q, &final_state, final_state.t + 60.0, NULL, 0, NULL, 0,
+                       &probe_n, &after, &probe_stop, &probe_event,
+                       &probe_step) == CORE_OK);
+
+        State earth_before, earth_after;
+        CHECK(eph_body_state(eph, EARTH, before.t, &earth_before) == CORE_OK);
+        CHECK(eph_body_state(eph, EARTH, after.t, &earth_after) == CORE_OK);
+
+        double r_before = vec3_distance(before.r, earth_before.r);
+        double r_after = vec3_distance(after.r, earth_after.r);
+
+        CHECK(r_event < r_before);
+        CHECK(r_event < r_after);
+
+        printf("  periapsis at t0+%.3f h, r = %.3f km (%.3f / %.3f a minute "
+               "either side)\n",
+               (t_peri - t0) / HOUR, r_event / 1000.0, r_before / 1000.0,
+               r_after / 1000.0);
+
+        prop_free(q);
+    }
+
+    /* 9. The event time does not depend on where the steps fell.
+     *
+     *    This is the whole reason the run stops at the event instead of at the
+     *    end of the step that crossed it (PROJECT.md section 4). Two runs with
+     *    different step ceilings take different steps over the same
+     *    trajectory; if the event time followed the steps, they would disagree
+     *    by a step, which is thousands of seconds. */
+    {
+        PropagatorCtx *q = NULL;
+        PropConfig c = config(H_MAX / 4.0);
+        CHECK(prop_create(eph, &c, &q) == CORE_OK);
+
+        CoreEvent ev = { CORE_EVENT_PERIAPSIS, EARTH, 0.0 };
+        State final_state;
+        size_t n = 0;
+        CoreStopReason stop;
+        int event = 0;
+        double step = 0.0;
+
+        CHECK(prop_run(q, &ecc, t_far, &ev, 1, NULL, 0, &n, &final_state,
+                       &stop, &event, &step) == CORE_OK);
+        CHECK(stop == CORE_STOP_EVENT);
+
+        /* A step here is hundreds to thousands of seconds. The bound is
+         * microseconds, and what is measured is smaller still. */
+        double shift = final_state.t - t_peri;
+        CHECK(shift < 1e-3 && shift > -1e-3);
+        printf("  quarter the step ceiling moves the periapsis by %.3g s\n",
+               shift);
+
+        prop_free(q);
+    }
+
+    /* 10. Apoapsis, and the zero the run starts on.
+     *
+     *     The vessel begins exactly at apoapsis. Firing there would be the
+     *     easy mistake, and it would be a bad one: a caller stopping at every
+     *     apoapsis would stop forever without moving. The next apoapsis is one
+     *     period later, and that is what must come back. */
+    {
+        PropagatorCtx *q = NULL;
+        PropConfig c = config(H_MAX);
+        CHECK(prop_create(eph, &c, &q) == CORE_OK);
+
+        CoreEvent ev = { CORE_EVENT_APOAPSIS, EARTH, 0.0 };
+        State final_state;
+        size_t n = 0;
+        CoreStopReason stop;
+        int event = 0;
+        double step = 0.0;
+
+        CHECK(prop_run(q, &ecc, t_far, &ev, 1, NULL, 0, &n, &final_state,
+                       &stop, &event, &step) == CORE_OK);
+        CHECK(stop == CORE_STOP_EVENT);
+        CHECK(final_state.t > t_peri);
+
+        /* And from that apoapsis, the next one is a period further on rather
+         * than immediately: the same zero, now reached rather than started
+         * from. */
+        State second;
+        step = 0.0;
+        CHECK(prop_run(q, &final_state, t_far, &ev, 1, NULL, 0, &n, &second,
+                       &stop, &event, &step) == CORE_OK);
+
+        double period = second.t - final_state.t;
+        printf("  apoapsis at t0+%.3f h, the next one %.3f h later\n",
+               (final_state.t - t0) / HOUR, period / HOUR);
+        CHECK(stop == CORE_STOP_EVENT);
+        CHECK(period > HOUR);
+
+        /* Two apoapses either side of a periapsis, so a period is twice the
+         * gap to it - a consistency check between two different events on the
+         * same orbit, neither of which is told the answer. */
+        double half = t_peri - t0;
+        CHECK(period > 1.9 * half && period < 2.1 * half);
+
+        prop_free(q);
+    }
+
+    /* 11. Distance, both ways across the same sphere, and the buffer losing
+     *     to the event. */
+    {
+        PropagatorCtx *q = NULL;
+        PropConfig c = config(H_MAX);
+        CHECK(prop_create(eph, &c, &q) == CORE_OK);
+
+        double radius = 30000.0e3; /* between periapsis and apoapsis */
+        CoreEvent ev = { CORE_EVENT_DISTANCE, EARTH, radius };
+
+        State final_state;
+        size_t n = 0;
+        CoreStopReason stop;
+        int event = 0;
+        double step = 0.0;
+
+        /* A buffer of four, which would stop the run long before the event if
+         * the event did not come first. */
+        CHECK(prop_run(q, &ecc, t_far, &ev, 1, samples_two, SMALL_CAP, &n,
+                       &final_state, &stop, &event, &step) == CORE_OK);
+
+        State earth_at;
+        CHECK(eph_body_state(eph, EARTH, final_state.t, &earth_at) == CORE_OK);
+        double r_in = vec3_distance(final_state.r, earth_at.r);
+
+        if (stop == CORE_STOP_EVENT) {
+            CHECK(n > 0 && n <= SMALL_CAP);
+            CHECK(same_state(&samples_two[n - 1], &final_state));
+        } else {
+            /* The crossing is farther away than four steps: legs first, then
+             * the event. Either way the run below starts from where this one
+             * stopped, so the test says the same thing. */
+            CHECK(stop == CORE_STOP_BUFFER_FULL);
+            for (int leg = 0; leg < 1000 && stop != CORE_STOP_EVENT; leg++) {
+                State s = final_state;
+                CHECK(prop_run(q, &s, t_far, &ev, 1, samples_two, SMALL_CAP,
+                               &n, &final_state, &stop, &event, &step)
+                      == CORE_OK);
+            }
+            CHECK(stop == CORE_STOP_EVENT);
+            CHECK(eph_body_state(eph, EARTH, final_state.t, &earth_at)
+                  == CORE_OK);
+            r_in = vec3_distance(final_state.r, earth_at.r);
+        }
+
+        /* The root finder's own accuracy, measured rather than assumed: the
+         * event state must be ON the sphere it was asked about. */
+        double miss_in = r_in - radius;
+        CHECK(miss_in < 1e-3 && miss_in > -1e-3);
+
+        /* Outbound again, from just after the crossing. */
+        State onward;
+        step = 0.0;
+        CHECK(prop_run(q, &final_state, t_far, &ev, 1, NULL, 0, &n, &onward,
+                       &stop, &event, &step) == CORE_OK);
+        CHECK(stop == CORE_STOP_EVENT);
+        CHECK(eph_body_state(eph, EARTH, onward.t, &earth_at) == CORE_OK);
+        double miss_out = vec3_distance(onward.r, earth_at.r) - radius;
+        CHECK(miss_out < 1e-3 && miss_out > -1e-3);
+
+        printf("  distance %.0f km crossed inbound (miss %.3g m) and outbound "
+               "(miss %.3g m), %.3f h apart\n",
+               radius / 1000.0, miss_in, miss_out,
+               (onward.t - final_state.t) / HOUR);
+
+        prop_free(q);
+    }
+
+    /* 12. Two events armed at once, and the arithmetic that decides which
+     *     one happened. The periapsis is inside the sphere, so the sphere is
+     *     crossed first and must be the one reported. */
+    {
+        PropagatorCtx *q = NULL;
+        PropConfig c = config(H_MAX);
+        CHECK(prop_create(eph, &c, &q) == CORE_OK);
+
+        CoreEvent evs[2] = {
+            { CORE_EVENT_PERIAPSIS, EARTH, 0.0 },
+            { CORE_EVENT_DISTANCE, EARTH, 30000.0e3 },
+        };
+
+        State final_state;
+        size_t n = 0;
+        CoreStopReason stop;
+        int event = 0;
+        double step = 0.0;
+
+        CHECK(prop_run(q, &ecc, t_far, evs, 2, NULL, 0, &n, &final_state,
+                       &stop, &event, &step) == CORE_OK);
+        CHECK(stop == CORE_STOP_EVENT);
+        CHECK(event == 1);
+        CHECK(final_state.t < t_peri);
+
+        /* Carry on, and now the periapsis is the next thing to happen. */
+        step = 0.0;
+        State next;
+        CHECK(prop_run(q, &final_state, t_far, evs, 2, NULL, 0, &n, &next,
+                       &stop, &event, &step) == CORE_OK);
+        CHECK(stop == CORE_STOP_EVENT);
+        CHECK(event == 0);
+
+        double shift = next.t - t_peri;
+        printf("  two events armed: sphere first, then periapsis %.3g s from "
+               "where it was found alone\n", shift);
+        CHECK(shift < 1e-3 && shift > -1e-3);
+
+        prop_free(q);
+    }
+
+    /* 13. An event that never happens is not an event: the run reaches t_end
+     *     and says so. */
+    {
+        PropagatorCtx *q = NULL;
+        PropConfig c = config(H_MAX);
+        CHECK(prop_create(eph, &c, &q) == CORE_OK);
+
+        CoreEvent ev = { CORE_EVENT_DISTANCE, EARTH, 1.0e12 };
+        State final_state;
+        size_t n = 0;
+        CoreStopReason stop;
+        int event = 0;
+        double step = 0.0;
+
+        CHECK(prop_run(q, &ecc, t0 + HOUR, &ev, 1, NULL, 0, &n, &final_state,
+                       &stop, &event, &step) == CORE_OK);
+        CHECK(stop == CORE_STOP_T_END);
+        CHECK(event == -1);
+
+        /* Nonsense arguments are refused rather than quietly ignored. */
+        CoreEvent bad = { CORE_EVENT_DISTANCE, EARTH, -1.0 };
+        CHECK(prop_run(q, &ecc, t_far, &bad, 1, NULL, 0, &n, &final_state,
+                       &stop, &event, &step) == CORE_ERR_INVALID_ARG);
+        CoreEvent nobody = { CORE_EVENT_PERIAPSIS, 999, 0.0 };
+        CHECK(prop_run(q, &ecc, t_far, &nobody, 1, NULL, 0, &n, &final_state,
+                       &stop, &event, &step) == CORE_ERR_INVALID_ARG);
+        CHECK(prop_run(q, &ecc, t_far, &ev, PROP_MAX_EVENTS + 1, NULL, 0, &n,
+                       &final_state, &stop, &event, &step)
+              == CORE_ERR_INVALID_ARG);
 
         prop_free(q);
     }

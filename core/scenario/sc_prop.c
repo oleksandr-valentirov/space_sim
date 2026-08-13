@@ -115,9 +115,10 @@ int main(void)
         size_t n = 0;
         State final_state;
         CoreStopReason stop;
+        int event = -1;
 
-        if (prop_run(p, &vessel, t_end, samples, CAP, &n, &final_state, &stop,
-                     &step) != CORE_OK) {
+        if (prop_run(p, &vessel, t_end, NULL, 0, samples, CAP, &n, &final_state,
+                     &stop, &event, &step) != CORE_OK) {
             return 1;
         }
 
@@ -143,6 +144,52 @@ int main(void)
     hash_state(&h, &vessel);
     core_hash_f64(&h, (double)legs);
     core_hash_f64(&h, (double)total);
+
+    /* And the same propagator driven by events, on an eccentric orbit that
+     * has a periapsis worth finding.
+     *
+     * This is the most branch-heavy code on the runtime side of the boundary:
+     * how many Newton iterations the root search takes, and whether each one
+     * is taken at all or replaced by a bisection, are decided by comparing
+     * floating point numbers. Same reason sc_trajectory exists for multiple
+     * shooting - a platform that disagreed by one ulp somewhere could take a
+     * different number of iterations and land on a different last bit. */
+    State ecc = vessel;
+    ecc.r = vec3(earth.r.x + opaque(ORBIT_R), earth.r.y, earth.r.z);
+    ecc.v = vec3(earth.v.x,
+                 earth.v.y + opaque(0.8) * opaque(0.8) * speed,
+                 earth.v.z + opaque(0.6) * opaque(0.8) * speed);
+    ecc.t = t0;
+
+    CoreEvent evs[2];
+    evs[0].kind = CORE_EVENT_PERIAPSIS;
+    evs[0].body_id = EARTH;
+    evs[0].param = 0.0;
+    evs[1].kind = CORE_EVENT_DISTANCE;
+    evs[1].body_id = EARTH;
+    evs[1].param = opaque(30000.0e3);
+
+    step = 0.0;
+    for (int i = 0; i < 12; i++) {
+        State samples[CAP];
+        size_t n = 0;
+        State final_state;
+        CoreStopReason stop;
+        int event = -1;
+
+        if (prop_run(p, &ecc, t0 + opaque(4.0 * DAY), evs, 2, samples, CAP, &n,
+                     &final_state, &stop, &event, &step) != CORE_OK) {
+            return 1;
+        }
+
+        hash_state(&h, &final_state);
+        core_hash_f64(&h, (double)n);
+        core_hash_f64(&h, (double)stop);
+        core_hash_f64(&h, (double)event);
+        core_hash_f64(&h, step);
+
+        ecc = final_state;
+    }
 
     prop_free(p);
     eph_free(eph);

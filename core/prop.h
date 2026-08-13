@@ -106,7 +106,59 @@ typedef enum {
     /* out_states filled up first. Continue from out_final with the same
      * in_out_step; the continuation is the same trajectory. */
     CORE_STOP_BUFFER_FULL = 1,
+    /* An event fired. out_final is the state at the event, and out_event says
+     * which one it was. */
+    CORE_STOP_EVENT = 2,
 } CoreStopReason;
+
+/* ---- Events (ROADMAP H2) ------------------------------------------------ *
+ *
+ * Described by data, and the root finding lives in C. That pairing is what
+ * makes CLAUDE.md invariant 7 - no callbacks from C into Rust - possible
+ * rather than merely stated: the caller says what to stop at, gets control
+ * back at that point, and decides what happens next.
+ *
+ * "At that point" is meant exactly. The run stops AT the event, not at the end
+ * of the step that crossed it, because a mode switch that happens at the next
+ * step boundary happens at a time that depends on the step size, and then two
+ * runs of the same plan light the engine at different places (PROJECT.md
+ * section 4, "Перемикання режимів — через події, не поперек кроку").
+ *
+ * The price is paid honestly: stopping at an event does change the step
+ * sequence afterwards, because the trajectory resumes from a time the
+ * controller did not choose. That is the intended behaviour and not a
+ * relaxation of invariant 5 - the same plan replayed stops at the same event
+ * time and resumes from the same state, which is what determinism requires.
+ * What would break it is the opposite: letting the step size decide where the
+ * event happened. */
+typedef enum {
+    /* Closest approach to a body: the radial rate crosses zero upwards. */
+    CORE_EVENT_PERIAPSIS = 0,
+    /* Farthest, the same crossing downwards. */
+    CORE_EVENT_APOAPSIS = 1,
+    /* param metres from the body's centre, crossed in either direction -
+     * entering and leaving are both worth stopping for.
+     *
+     * Distance from the centre, not altitude, and that is not a simplification
+     * to tidy up later: the asset carries a name and a mu per body and no
+     * radius (core/ephemeris.h). An altitude event would have to invent one.
+     * It becomes altitude the day body radii ship in the asset, which is M4's
+     * business, and the atmosphere boundary the sketch in PROJECT.md section 5
+     * mentions arrives with it. */
+    CORE_EVENT_DISTANCE = 2,
+} CoreEventKind;
+
+/* Not here yet, and each for a reason rather than for lack of time:
+ * SHADOW_ENTRY needs the shadow model that comes with SRP (M3.5), and
+ * STATION_RISE needs body rotation matrices, which the asset does not carry
+ * yet either. */
+typedef struct {
+    CoreEventKind kind;
+    int           body_id;  /* index into the ephemeris */
+    double        param;    /* metres, for CORE_EVENT_DISTANCE; unused else */
+} CoreEvent;
+
+#define PROP_MAX_EVENTS 8
 
 /* The context borrows the ephemeris and does not own it: it must outlive every
  * propagator built on it. On the Rust side that is not a promise but a type -
@@ -119,7 +171,8 @@ CoreResult prop_create(const EphemerisCtx *eph, const PropConfig *cfg,
                        PropagatorCtx **out);
 void       prop_free(PropagatorCtx *p);
 
-/* Integrate from *initial to t_end, in the field of every body in the asset.
+/* Integrate from *initial to t_end, in the field of every body in the asset,
+ * stopping at the first of: t_end, a full buffer, or an armed event.
  *
  * Fills out_states with the state at the end of each accepted step and stops
  * early if it runs out of room. Pass out_states = NULL (and out_cap = 0) to
@@ -151,11 +204,24 @@ void       prop_free(PropagatorCtx *p);
  *                               every step is rejected and the run ends here
  *                               rather than returning nonsense).
  *
- * out_count, out_final, out_stop and in_out_step are all required; out_states
- * is the only optional one. */
+ * Events are evaluated at the end of every accepted step and bracketed
+ * between two of them, so an event whose whole excursion fits inside one step
+ * is missed - a periapsis fifty metres deep in a step spanning an hour, for
+ * instance. That is a property of every event system built this way and not a
+ * defect to be fixed by checking more often: the same tolerance that keeps the
+ * step honest is what keeps the bracket meaningful. out_event carries the
+ * index into events[] of the one that fired, or -1.
+ *
+ * When an event fires, the sample past it is replaced by the event state, so
+ * the polyline in out_states ends exactly where the run ended.
+ *
+ * out_count, out_final, out_stop, out_event and in_out_step are all required;
+ * out_states is the only optional one, and events may be NULL with
+ * n_events = 0. */
 CoreResult prop_run(PropagatorCtx *p, const State *initial, double t_end,
+                    const CoreEvent *events, size_t n_events,
                     State *out_states, size_t out_cap, size_t *out_count,
-                    State *out_final, CoreStopReason *out_stop,
+                    State *out_final, CoreStopReason *out_stop, int *out_event,
                     double *in_out_step);
 
 #endif /* CORE_PROP_H */
