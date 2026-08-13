@@ -63,9 +63,9 @@ fn vertex_main(@builtin(vertex_index) index_0 : u32) -> VertexOutput_0
     {
         y_0 = 1.0f;
     }
-    var half_size_0 : f32 = params_0.placement_0.y;
+    var half_size_0 : f32 = params_0.placement_0.w;
     var output_0 : VertexOutput_0;
-    output_0.position_0 = (((vec4<f32>(vec3<f32>(x_0 * half_size_0, y_0 * half_size_0, params_0.placement_0.x), 1.0f)) * (mat4x4<f32>(params_0.projection_0.data_0[i32(0)][i32(0)], params_0.projection_0.data_0[i32(1)][i32(0)], params_0.projection_0.data_0[i32(2)][i32(0)], params_0.projection_0.data_0[i32(3)][i32(0)], params_0.projection_0.data_0[i32(0)][i32(1)], params_0.projection_0.data_0[i32(1)][i32(1)], params_0.projection_0.data_0[i32(2)][i32(1)], params_0.projection_0.data_0[i32(3)][i32(1)], params_0.projection_0.data_0[i32(0)][i32(2)], params_0.projection_0.data_0[i32(1)][i32(2)], params_0.projection_0.data_0[i32(2)][i32(2)], params_0.projection_0.data_0[i32(3)][i32(2)], params_0.projection_0.data_0[i32(0)][i32(3)], params_0.projection_0.data_0[i32(1)][i32(3)], params_0.projection_0.data_0[i32(2)][i32(3)], params_0.projection_0.data_0[i32(3)][i32(3)]))));
+    output_0.position_0 = (((vec4<f32>(params_0.placement_0.xyz + vec3<f32>(x_0 * half_size_0, y_0 * half_size_0, 0.0f), 1.0f)) * (mat4x4<f32>(params_0.projection_0.data_0[i32(0)][i32(0)], params_0.projection_0.data_0[i32(1)][i32(0)], params_0.projection_0.data_0[i32(2)][i32(0)], params_0.projection_0.data_0[i32(3)][i32(0)], params_0.projection_0.data_0[i32(0)][i32(1)], params_0.projection_0.data_0[i32(1)][i32(1)], params_0.projection_0.data_0[i32(2)][i32(1)], params_0.projection_0.data_0[i32(3)][i32(1)], params_0.projection_0.data_0[i32(0)][i32(2)], params_0.projection_0.data_0[i32(1)][i32(2)], params_0.projection_0.data_0[i32(2)][i32(2)], params_0.projection_0.data_0[i32(3)][i32(2)], params_0.projection_0.data_0[i32(0)][i32(3)], params_0.projection_0.data_0[i32(1)][i32(3)], params_0.projection_0.data_0[i32(2)][i32(3)], params_0.projection_0.data_0[i32(3)][i32(3)]))));
     output_0.colour_1 = params_0.colour_0.xyz;
     return output_0;
 }

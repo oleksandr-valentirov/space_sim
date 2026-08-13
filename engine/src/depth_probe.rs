@@ -40,10 +40,10 @@ const FAR_COLOUR: [f32; 4] = [0.9, 0.1, 0.1, 1.0];
 const NEAR_COLOUR: [f32; 4] = [0.1, 0.9, 0.1, 1.0];
 
 #[derive(Clone, Copy)]
-struct Params {
-    projection: depth::Matrix,
-    colour: [f32; 4],
-    placement: [f32; 4],
+pub struct Params {
+    pub projection: depth::Matrix,
+    pub colour: [f32; 4],
+    pub placement: [f32; 4],
 }
 
 impl Params {
@@ -81,22 +81,27 @@ pub fn measure(gpu: &Gpu, width: u32, height: u32, setup: &Setup) -> Result<Meas
         projection,
         colour,
         placement: [
+            0.0,
+            0.0,
             -distance as f32,
             // Удвічі більше за півекран на цій відстані: перекриття має
             // накривати кадр цілком, інакше мерехтіння на краю не видно.
             (2.0 * distance * (FOV_Y / 2.0).tan() * aspect.max(1.0)) as f32,
-            0.0,
-            0.0,
         ],
     };
 
     let far = quad(setup.distance, FAR_COLOUR);
     let near = quad(setup.distance - setup.gap, NEAR_COLOUR);
 
-    render(gpu, width, height, setup.reversed, &[far, near])
+    render_quads(gpu, width, height, setup.reversed, &[far, near])
 }
 
-fn render(
+/// Малює задані чотирикутники й читає кадр назад.
+///
+/// Публічна, бо тим самим користується [`crate::camera_probe`]: там інше
+/// питання, але та сама сцена — один шейдер, один пайплайн, різниця лише в
+/// тому, які числа доїхали.
+pub fn render_quads(
     gpu: &Gpu,
     width: u32,
     height: u32,

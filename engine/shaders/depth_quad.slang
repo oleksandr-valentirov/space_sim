@@ -14,7 +14,7 @@ struct Params
 {
     float4x4 projection;
     float4 colour;
-    float4 placement;   // x — z у камерному просторі (від'ємне), y — півширина
+    float4 placement;   // xyz — центр у камерному просторі, w — півширина
 };
 
 ConstantBuffer<Params> params;
@@ -34,8 +34,8 @@ VertexOutput vertex_main(uint index: SV_VertexID)
     float x = ((corner & 1) == 0) ? -1.0 : 1.0;
     float y = ((corner & 2) == 0) ? -1.0 : 1.0;
 
-    float half_size = params.placement.y;
-    float3 view = float3(x * half_size, y * half_size, params.placement.x);
+    float half_size = params.placement.w;
+    float3 view = params.placement.xyz + float3(x * half_size, y * half_size, 0.0);
 
     VertexOutput output;
     output.position = mul(params.projection, float4(view, 1.0));
