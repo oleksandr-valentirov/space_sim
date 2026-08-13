@@ -89,6 +89,7 @@ feature `edition2024` is required ... not stabilized in this version of Cargo (1
 make test        # усе про C: «поліція libm», юніт-тести, звірка хешів
 make csv         # вивід ядра у build/csv/*.csv
 make plots       # графіки з CSV у build/plots/*.png (потрібен matplotlib)
+make bench       # пропускна здатність DOP853 (скіл perf-probe)
 make flags       # прапорці компіляції ядра
 make cook        # перегенерувати ассет-фікстуру (робити свідомо!)
 

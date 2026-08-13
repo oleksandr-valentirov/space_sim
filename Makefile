@@ -21,6 +21,7 @@
 #   make cook             перегенерувати ассет-фікстуру (робити свідомо!)
 #   make csv              вивести результати ядра у build/csv/*.csv
 #   make plots            побудувати графіки з CSV у build/plots/*.png
+#   make bench            пропускна здатність DOP853 (скіл perf-probe)
 #   make clean
 
 CC ?= cc
@@ -107,6 +108,9 @@ EXPORT_BIN := $(patsubst core/export/%.c,$(BUILD)/export/%$(EXE),$(EXPORT_SRC))
 CSV_DIR    := $(BUILD)/csv
 PLOT_DIR   := $(BUILD)/plots
 
+BENCH_SRC := $(sort $(wildcard core/bench/*.c))
+BENCH_BIN := $(patsubst core/bench/%.c,$(BUILD)/bench/%$(EXE),$(BENCH_SRC))
+
 PYTHON ?= python3
 
 SCEN_SRC := $(sort $(wildcard core/scenario/*.c))
@@ -115,7 +119,7 @@ GOLDEN   := core/scenario/golden.txt
 ACTUAL   := $(BUILD)/scenario/actual.txt
 
 .PHONY: all test unit check-libm determinism determinism-bless hashes cook \
-        csv plots flags clean
+        csv plots bench flags clean
 
 all: $(LIB) $(LIB_OFFLINE)
 
@@ -158,6 +162,14 @@ $(BUILD)/export/%$(EXE): core/export/%.c core/export/csv.c $(LIB) $(LIB_OFFLINE)
 # Без libcore_offline.a і без -lm: лінкування тут — жива перевірка того,
 # що в рантаймовій частині немає libm.
 $(BUILD)/scenario/%$(EXE): core/scenario/%.c $(LIB)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Icore -o $@ $< $(LIB) $(LDLIBS)
+
+# Той самий рантаймовий libcore.a, без -lm: бенчмарк заявляє, що міряє
+# пропускну здатність деталізованої фізики (CLAUDE.md, інваріант 3 — жодного
+# libm у циклі інтегрування), і лінкування без -lm — жива перевірка цього,
+# а не просто оптимізм.
+$(BUILD)/bench/%$(EXE): core/bench/%.c $(LIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Icore -o $@ $< $(LIB) $(LDLIBS)
 
@@ -242,6 +254,12 @@ csv: $(EXPORT_BIN)
 plots: csv
 	@mkdir -p $(PLOT_DIR)
 	@$(PYTHON) scripts/plot.py --csv $(CSV_DIR) --out $(PLOT_DIR)
+
+# Пропускна здатність DOP853 на цій машині, у число, не хеш (скіл
+# perf-probe). Час стінного годинника нестабільний між прогонами й
+# машинами навмисно — саме тому результат не входить у determinism.
+bench: $(BENCH_BIN)
+	@for b in $(BENCH_BIN); do echo "== $$b"; $$b; done
 
 flags:
 	@echo $(CFLAGS)

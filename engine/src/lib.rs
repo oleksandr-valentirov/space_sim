@@ -23,4 +23,5 @@ pub mod depth;
 pub mod depth_probe;
 pub mod frame;
 pub mod gpu;
+pub mod perf_probe;
 pub mod shot;

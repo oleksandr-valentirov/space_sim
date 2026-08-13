@@ -18,6 +18,7 @@ fn main() {
     let mut shot_path: Option<PathBuf> = None;
     let mut vsync_asked = false;
     let mut depth_probe = false;
+    let mut perf_probe = false;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -40,6 +41,7 @@ fn main() {
             "--width" => options.width = parse(&value("--width"), "--width"),
             "--height" => options.height = parse(&value("--height"), "--height"),
             "--depth-probe" => depth_probe = true,
+            "--perf-probe" => perf_probe = true,
             "--help" | "-h" => {
                 println!("{}", HELP);
                 return;
@@ -56,6 +58,8 @@ fn main() {
 
     let result = if depth_probe {
         run_depth_probe()
+    } else if perf_probe {
+        run_perf_probe()
     } else {
         match shot_path {
             Some(path) => take_shot(&path, options.width, options.height),
@@ -74,6 +78,7 @@ const HELP: &str = "\
   --vsync           чекати на вертикальну синхронізацію
   --no-vsync        не чекати
   --depth-probe     заміряти роздільність глибини (ROADMAP F3)
+  --perf-probe      заміряти час кадру рендера (скіл perf-probe)
   --width <px>      ширина, типово 1280
   --height <px>     висота, типово 720";
 
@@ -158,6 +163,47 @@ fn run_depth_probe() -> Result<(), String> {
         .shot
         .write_png(std::path::Path::new("build/f3_reversed.png"))?;
     println!("\nзнімок: build/f3_reversed.png (10⁷ м, зазор 1 м, reversed-Z)");
+
+    Ok(())
+}
+
+/// Замір часу кадру рендера (скіл `perf-probe`).
+///
+/// Друкує min/mean/p95/max у мс і запас до бюджетів 60 fps (16.6 мс) та
+/// 30 fps (33.3 мс) для кількох роздільностей. Метод і його межі — див.
+/// `engine::perf_probe`.
+fn run_perf_probe() -> Result<(), String> {
+    use engine::perf_probe::measure;
+
+    const FRAMES: u32 = 300;
+    const BUDGET_60: f64 = 1000.0 / 60.0;
+    const BUDGET_30: f64 = 1000.0 / 30.0;
+
+    let gpu = Gpu::new(wgpu::Instance::default(), None)?;
+    println!("адаптер: {}\n", gpu.describe());
+    println!(
+        "{FRAMES} кадрів на роздільність, синхронний submit+poll (верхня межа, не конвеєр).\n"
+    );
+    println!(
+        "{:>10} {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>9}",
+        "розд.", "min мс", "mean мс", "p95 мс", "max мс", "fps", "запас60", "запас30"
+    );
+
+    for (width, height) in [(1280, 720), (1920, 1080)] {
+        let stats = measure(&gpu, width, height, FRAMES)?;
+        println!(
+            "{:>5}×{:<4} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.1} {:>+9.3} {:>+9.3}",
+            width,
+            height,
+            stats.min_ms,
+            stats.mean_ms,
+            stats.p95_ms,
+            stats.max_ms,
+            stats.fps(),
+            stats.headroom_ms(BUDGET_60),
+            stats.headroom_ms(BUDGET_30),
+        );
+    }
 
     Ok(())
 }
