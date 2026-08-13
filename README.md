@@ -21,17 +21,18 @@
 | C11-компілятор | ядро, `make` і `cargo` | так | `build-essential` або `clang` |
 | GNU make | збірка ядра | так | `build-essential` |
 | binutils (`nm`, `ar`) | «поліція libm», статичні бібліотеки | так | `binutils` |
-| rustc + cargo | межа C↔Rust, з M1 | так | `rustc cargo` |
-| clippy | лінт, попередження = помилки | для розробки | `rust-clippy` |
-| rustfmt | форматування | для розробки | `rustfmt` |
+| rustup (stable) | межа C↔Rust, з M1 | так | див. «Версія Rust» нижче |
+| clippy, rustfmt | лінт і форматування, у CI обидва — гейт | для розробки | ставить rustup за `rust-toolchain.toml` |
 | python3 | скрипти в `scripts/` | для `make plots` і завантаження даних | є в системі |
 | matplotlib | графіки з CSV | для `make plots` | `python3-matplotlib` |
 | valgrind | перевірка пам'яті на межі (ROADMAP D3) | ні, це робить CI | `valgrind` |
 
 ```sh
-sudo apt install build-essential binutils rustc cargo rust-clippy rustfmt \
-                 python3-matplotlib valgrind
+sudo apt install build-essential binutils python3-matplotlib valgrind
 ```
+
+Rust — не з apt: див. «Версія Rust» нижче. Версія в репозиторіях Ubuntu вже
+застара для того, що знадобиться на етапі E.
 
 Python-залежності продубльовано машинно-читно у
 [scripts/requirements.txt](scripts/requirements.txt) — якщо ставите не через
@@ -39,13 +40,37 @@ apt, а у venv.
 
 ### Версія Rust
 
-Мінімум — **1.75**, і це не оцінка, а те, на чому справді прогнано. Потрібна
-не мова, а `cargo`: таблиця `[lints]` у маніфесті з'явилася в 1.74.
-Оголошено в `Cargo.toml` як `rust-version`.
+Проєкт стоїть на **rustup, канал stable** — це закріплено в
+[rust-toolchain.toml](rust-toolchain.toml), і rustup підхоплює його сам.
 
-> **Це вже впирається в стелю.** Найновіший `wgpu` (30.0) вимагає Rust 1.87,
-> а етап E ROADMAP.md — розвідка bindless — питає саме про **актуальний**
-> wgpu. Розвилка описана там же, у розділі етапу E.
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+`rust-version` у `Cargo.toml` — **1.75**: це не оцінка, а найстаріше, на чому
+справді прогнано (упирається не в мову, а в cargo — таблиця `[lints]`
+з'явилася в 1.74). Прогнано також на 1.97. Поріг підніметься до **1.87**,
+щойно з'явиться `wgpu`: найновіший (30.0) вимагає саме його, а етап E
+ROADMAP.md — розвідка bindless — питає про **актуальний** wgpu, бо зонд на
+старому дав би відповідь про не той wgpu.
+
+> ⚠ **Якщо стоять обидва — з apt і з rustup — перевірте, чий cargo у вас
+> у PATH.** `rust-toolchain.toml` читає лише rustup; системний cargo його не
+> бачить і збиратиме своєю версією, мовчки.
+>
+> ```sh
+> cargo --version           # чий саме
+> which -a cargo            # де вони обидва
+> ```
+>
+> Щоб завжди брався rustup, у `~/.bashrc`:
+>
+> ```sh
+> . "$HOME/.cargo/env"
+> ```
+>
+> Без цього рядка `~/.cargo/bin` не потрапляє в PATH, і `cargo` лишається
+> системним.
 
 ---
 
