@@ -17,6 +17,7 @@ fn main() {
     let mut options = app::Options::default();
     let mut shot_path: Option<PathBuf> = None;
     let mut vsync_asked = false;
+    let mut depth_probe = false;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -38,6 +39,7 @@ fn main() {
             }
             "--width" => options.width = parse(&value("--width"), "--width"),
             "--height" => options.height = parse(&value("--height"), "--height"),
+            "--depth-probe" => depth_probe = true,
             "--help" | "-h" => {
                 println!("{}", HELP);
                 return;
@@ -52,9 +54,13 @@ fn main() {
         options.vsync = false;
     }
 
-    let result = match shot_path {
-        Some(path) => take_shot(&path, options.width, options.height),
-        None => app::run(options),
+    let result = if depth_probe {
+        run_depth_probe()
+    } else {
+        match shot_path {
+            Some(path) => take_shot(&path, options.width, options.height),
+            None => app::run(options),
+        }
     };
 
     if let Err(e) = result {
@@ -67,6 +73,7 @@ const HELP: &str = "\
   --frames <N>      намалювати N кадрів і вийти (вимикає vsync)
   --vsync           чекати на вертикальну синхронізацію
   --no-vsync        не чекати
+  --depth-probe     заміряти роздільність глибини (ROADMAP F3)
   --width <px>      ширина, типово 1280
   --height <px>     висота, типово 720";
 
@@ -90,4 +97,67 @@ fn parse(text: &str, name: &str) -> u32 {
 fn fail(message: &str) -> ! {
     eprintln!("{message}");
     std::process::exit(1);
+}
+
+/// Замір роздільності глибини (ROADMAP F3).
+///
+/// Друкує таблицю «відстань × зазор» для reversed-Z і для звичайної
+/// проєкції поруч. Без другого стовпця перший був би твердженням без
+/// порівняння.
+fn run_depth_probe() -> Result<(), String> {
+    use engine::depth;
+    use engine::depth_probe::{measure, Setup};
+
+    let gpu = Gpu::new(wgpu::Instance::default(), None)?;
+    println!("адаптер: {}\n", gpu.describe());
+
+    let near = 0.1;
+    println!("Частка кадру, де ближча поверхня попереду. 1.000 — глибина");
+    println!("роздільна; 0.000 — виграв порядок малювання; між — z-fighting.\n");
+    println!("near = {near} м, Depth32Float, поле зору 60°\n");
+    println!(
+        "{:>12} {:>10} {:>12} {:>12} {:>10}",
+        "відстань, м", "зазор, м", "reversed-Z", "звичайна", "межа, м"
+    );
+
+    for distance in [1e4, 1e5, 1e6, 1e7, 1e8] {
+        for gap in [1.0, 100.0] {
+            let make = |reversed| Setup {
+                reversed,
+                near,
+                distance,
+                gap,
+            };
+
+            let r = measure(&gpu, 256, 256, &make(true))?;
+            let c = measure(&gpu, 256, 256, &make(false))?;
+
+            println!(
+                "{distance:>12.0e} {gap:>10.0} {:>12.3} {:>12.3} {:>10.3}",
+                r.near_wins,
+                c.near_wins,
+                depth::resolvable_gap(distance)
+            );
+        }
+    }
+
+    // Знімок найцікавішого випадку: там, де reversed-Z ще тримає, а
+    // звичайна проєкція вже ні.
+    let shown = measure(
+        &gpu,
+        480,
+        270,
+        &Setup {
+            reversed: true,
+            near,
+            distance: 1e7,
+            gap: 1.0,
+        },
+    )?;
+    shown
+        .shot
+        .write_png(std::path::Path::new("build/f3_reversed.png"))?;
+    println!("\nзнімок: build/f3_reversed.png (10⁷ м, зазор 1 м, reversed-Z)");
+
+    Ok(())
 }

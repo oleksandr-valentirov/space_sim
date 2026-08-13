@@ -18,6 +18,8 @@
 //! виглядає так само.
 
 pub mod app;
+pub mod depth;
+pub mod depth_probe;
 pub mod frame;
 pub mod gpu;
 pub mod shot;

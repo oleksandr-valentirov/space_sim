@@ -52,12 +52,6 @@ impl Shot {
 
 /// Малює один кадр у текстуру й читає його назад.
 pub fn take(gpu: &Gpu, width: u32, height: u32) -> Result<Shot, String> {
-    // Рядок у буфері має бути кратним 256 байтам. Замість вимагати «зручний»
-    // розмір кадру, дописуємо доповнення й зрізаємо його при читанні:
-    // інакше знімок 1920×1080 просто не зробити.
-    let unpadded = width * 4;
-    let padded = unpadded.div_ceil(256) * 256;
-
     let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("shot"),
         size: wgpu::Extent3d {
@@ -74,13 +68,6 @@ pub fn take(gpu: &Gpu, width: u32, height: u32) -> Result<Shot, String> {
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-    let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("shot readback"),
-        size: (padded * height) as u64,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-
     let mut encoder = gpu
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -89,9 +76,37 @@ pub fn take(gpu: &Gpu, width: u32, height: u32) -> Result<Shot, String> {
 
     Frame::new(&gpu.device, FORMAT).draw(&mut encoder, &view);
 
+    read_back(gpu, encoder, &texture, width, height)
+}
+
+/// Дописує до `encoder` копіювання текстури в буфер, віддає команди й читає
+/// результат.
+///
+/// Окремо від [`take`], бо кадр буває намальований деінде — наприклад у
+/// [`crate::depth_probe`], де до кольору додається ще й буфер глибини.
+pub fn read_back(
+    gpu: &Gpu,
+    mut encoder: wgpu::CommandEncoder,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+) -> Result<Shot, String> {
+    // Рядок у буфері має бути кратним 256 байтам. Замість вимагати «зручний»
+    // розмір кадру, дописуємо доповнення й зрізаємо його при читанні:
+    // інакше знімок 1920×1080 просто не зробити.
+    let unpadded = width * 4;
+    let padded = unpadded.div_ceil(256) * 256;
+
+    let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("shot readback"),
+        size: (padded * height) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
-            texture: &texture,
+            texture,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
