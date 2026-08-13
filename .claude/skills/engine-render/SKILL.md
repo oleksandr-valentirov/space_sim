@@ -38,8 +38,9 @@ sphere.rs       Mesh: UV-сфера, EARTH_RADIUS_M — позиції в double
 sphere_render.rs пайплайн сфери: вершинний+індексний буфер, reversed-Z, camera-relative щокадру
 flight_probe.rs проліт 10 м → 10⁷ м, виміряне покриття кадру проти asin(R/(R+висота))
 trajectory.rs   Sample, MU, rotating_position — halo-орбіта з фікстури, звірена з C-оракулом
+live.rs         прогноз через core-rs: Propagator ланками по буферу, Земля й Місяць з ефемериди (H5)
 trajectory_render.rs пайплайн лінії: дві точки входу (geocentric/rotating), geocentric anchor
-main.rs         CLI: --shot, --frames, --vsync/--no-vsync, --depth-probe, --flight-probe, --trajectory-probe, --width/--height
+main.rs         CLI: --shot, --frames, --vsync/--no-vsync, --depth-probe, --flight-probe, --trajectory-probe, --live-probe, --width/--height
 ```
 
 `tools/gpu-probe` і `tools/slang-probe` — окремі бінарники, розвідки
@@ -143,8 +144,13 @@ PROJECT.md §7 рішення 1: світові координати нікол�
 ## F6 — траєкторії в обертовій системі: що виміряно
 
 Halo-орбіта з C4 (`data/fixture/halo_inertial.csv`, урізаний експорт
-`ex_trajectory`, ROADMAP C6) — рушій не лінкує `core-rs` (окреме, більше
-рішення), тож дані приходять фікстурою, як `earth_moon.eph`.
+`ex_trajectory`, ROADMAP C6) — на момент F6 рушій не лінкував `core-rs`, тож
+дані приходили фікстурою, як `earth_moon.eph`.
+
+⚠ **З H5 рушій лінкує `core-rs`** (`live.rs`). Фікстура лишилась, але вже як
+**еталон**: `engine/tests/live.rs` кладе поруч траєкторію, пораховану зараз,
+і міряє, як довго вони тримаються разом (кілометр розбіжності через 30.7
+доби, темп ×763 за оберт проти ×594 з монодромної матриці C3).
 `engine::trajectory::rotating_position` (Rust, `double`) звірена з
 C-оракулом (`sx,sy,sz` з фікстури, `frame_from_inertial`) на всіх 1345
 семплах: **найгірша розбіжність 3.48·10⁻⁷**.
@@ -191,7 +197,8 @@ cargo run -p engine -- --shot build/f.png    # знімок без вікна �
 cargo run -p engine -- --depth-probe         # таблиця роздільності глибини, reversed-Z проти звичайної
 cargo run -p engine --example f4             # camera-relative розвідка (F4)
 cargo run -p engine -- --flight-probe        # проліт 10 м → 10⁷ м над сферою (F5)
-cargo run -p engine -- --trajectory-probe    # halo-орбіта, два фрейми (F6)
+cargo run -p engine -- --trajectory-probe    # halo-орбіта з фікстури, два фрейми (F6)
+cargo run -p engine -- --live-probe          # та сама орбіта, порахована зараз (H5)
 cargo test -p engine                         # tests/camera.rs, tests/depth.rs, tests/shot.rs, tests/sphere.rs, tests/trajectory_render.rs
 cargo run -q -p gpu-probe                    # адаптери й bindless-фічі на цій машині
 ```
@@ -204,9 +211,9 @@ cargo run -q -p gpu-probe                    # адаптери й bindless-фі
 - Сфера, траєкторія чи планета (M4) стали вмістом `Frame`/`app.rs`, а не
   окремим шляхом — онови розділи «Сфера F5…» і «F6…», таблицю структури,
   і перемір `--perf-probe` тоді нарешті покаже вартість сцени.
-- Рушій почав лінкувати `core-rs` (FFI до фізики напряму, не через
-  фікстуру) — онови коментар у `trajectory.rs` й `data/fixture/README.md`
-  про те, чому дані досі йдуть фікстурою.
+- З'явився інтерактивний кадр (depth-текстура через resize, керована
+  камера, сфера чи планета як вміст `Frame`) — онови «Два шляхи до одного
+  кадру» і перемір `--perf-probe`: досі він міряє трикутник F2.
 - Хтось з'ясував причину пастки з `mix()` у вершинній стадії (F6) — це
   або баг ACO, який варто зареєструвати вище, або власна помилка, яку
   варто виправити на місці й прибрати обхід двома точками входу.

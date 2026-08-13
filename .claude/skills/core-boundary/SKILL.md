@@ -5,22 +5,29 @@ description: Межа C↔Rust — /core-sys (сирі FFI-декларації)
 
 # core-boundary
 
-Етап D (ROADMAP.md) закритий: `core-sys/build.rs` збирає `/core` крейтом
-`cc`, перші три функції межі оголошені вручну й звірені з C бітово,
-`core-rs` дає RAII + `Result`. Це **єдине місце в усьому проєкті з нашим
+Етапи D і H (ROADMAP.md) закриті: `core-sys/build.rs` збирає `/core` крейтом
+`cc`, функції межі оголошені вручну й звірені з C бітово, `core-rs` дає
+RAII + `Result`, і рушій уже цим користується (`engine::live`, H5). Це **єдине місце в усьому проєкті з нашим
 `unsafe`** (CLAUDE.md, інваріант 1; сторонні `-sys`-крейти — виняток).
 
 ## Поточний стан межі — не плутати зі скетчем із PROJECT.md §5
 
-PROJECT.md §5 описує **цільовий** C API (~20 функцій: `prop_run`,
-`lambert_solve`, `frame_to_rotating` тощо) — це план, не поточний стан.
-**Реально оголошено і обгорнуто на сьогодні лише три функції:**
+PROJECT.md §5 описує **цільовий** C API (~20 функцій) — це план, не поточний
+стан. **Реально оголошено й обгорнуто на сьогодні шість функцій:**
 
 ```rust
 // core-sys/src/lib.rs — сирі декларації, extern "C", без жодного unsafe-блоку
 pub fn eph_load(path: *const c_char, out: *mut *mut EphemerisCtx) -> CoreResult;
 pub fn eph_free(ctx: *mut EphemerisCtx);
 pub fn eph_body_state(ctx: *const EphemerisCtx, body: c_int, t: f64, out: *mut State) -> CoreResult;
+
+// ROADMAP H3. Типи поруч: PropagatorCtx (непрозорий), PropConfig, CoreEvent,
+// і три переліки як c_int з константами — з тієї ж причини, що CoreResult.
+pub fn prop_create(eph: *const EphemerisCtx, cfg: *const PropConfig,
+                   out: *mut *mut PropagatorCtx) -> CoreResult;
+pub fn prop_free(p: *mut PropagatorCtx);
+pub fn prop_run(/* 12 аргументів: буфер від Rust, out_cap/out_count,
+                   out_final, out_stop, out_event, in_out_step */) -> CoreResult;
 ```
 
 ```rust
@@ -33,12 +40,31 @@ impl Ephemeris {
 // Drop викликає eph_free рівно раз; unsafe impl Send + Sync (обґрунтування —
 // коментар над імпл-блоком: eph_body_state бере const-вказівник, немає
 // статиків і кешу в ephemeris.c/cheb.c).
+
+pub struct Propagator { /* Arc<Ephemeris> + приватний *mut PropagatorCtx */ }
+impl Propagator {
+    pub fn new(eph: Arc<Ephemeris>, cfg: PropConfig) -> Result<Propagator>;
+    pub fn run(&mut self, initial: &State, t_end: f64, events: &[Event],
+               samples: &mut [State], step: &mut f64) -> Result<Run>;
+}
+// Ефемерида — Arc, НЕ лайфтайм (CLAUDE.md: жодних лайфтаймів у структурах);
+// Send є, Sync свідомо немає — контекст у C несе липкий прапорець помилки.
 ```
 
-Усе інше з `core/*.h` (`cr3bp_*`, `dop853_integrate*`, `halo_correct`,
-`shoot_multiple`, `station_keep`, `field_*`, ...) **існує в C, але не має
-FFI-декларації**. Якщо задача вимагає викликати щось із них із Rust —
-це нова робота на межі, а не пошук наявної функції.
+Три речі про `Propagator::run`, які легко зламати назад:
+
+- **Порожній зріз `samples` = «без семплування»**, і це перекладається
+  явно: порожній зріз у Rust — вирівняний висячий вказівник, а не нуль, і
+  C вважає буфер без місця помилкою викликача.
+- **`step` треба повертати назад тим самим.** Викинути його — інша
+  траєкторія й усемеро більше кроків (виміряно, `core/test/test_prop.c`).
+- **`Event` — енум, а не структура з `param`**: перицентр із відстанню тут
+  неможливо навіть написати.
+
+Усе інше з `core/*.h` (`cr3bp_*`, `halo_correct`, `shoot_multiple`,
+`station_keep`, `lambert_solve`, `porkchop_compute`, `target_hit`, ...)
+**існує в C, але не має FFI-декларації**. Якщо задача вимагає викликати щось
+із них із Rust — це нова робота на межі, а не пошук наявної функції.
 
 ## Правила, за якими додається нова функція на межу
 
@@ -56,8 +82,11 @@ FFI-декларації**. Якщо задача вимагає виклика�
 4. **C не виділяє буфери з даними** (CLAUDE.md інваріант 6) — Rust дає
    буфер і розмір, C заповнює й повертає фактичну кількість. Контексти —
    виняток: непрозорі хендли, пари `create`/`free`.
-5. **Жодних колбеків з C у Rust** (інваріант 7) — це вже враховано в
-   дизайні `core/core.h` (події як дані), стосується майбутніх `prop_run`.
+5. **Жодних колбеків з C у Rust** (інваріант 7). Як це виглядає на практиці —
+   готовий прецедент у `prop_run`: подія описується даними (`CoreEvent`),
+   пошук кореня живе в C, керування повертається рівно на події. Колбек
+   усередині C при цьому є (`StepObserver` у `dop853_integrate_obs`) — межу
+   він не перетинає.
 6. Подвійне звільнення й use-after-free мають бути **неможливими за
    конструкцією типів**, не лише «ми обіцяємо їх не робити». Приклад —
    `Ephemeris` не `Copy`/`Clone`, `eph_free` не експортується з `core-rs`.
@@ -76,8 +105,14 @@ FFI-декларації**. Якщо задача вимагає виклика�
 ```sh
 cargo test -p core-sys       # тести FFI + determinism.rs проти core/scenario/golden.txt
 cargo test -p core-rs        # тести обгортки, включно з compile_fail
+cargo test -p engine --test live  # межа з боку споживача (H5)
 cargo run -q --example flags # прапорці з боку cargo — звірка з `make flags`
 ```
+
+**Оракул — `core-sys/oracle.c`**, і кожна нова функція межі має туди
+дописатися: він друкує `%.17g` того, що дає C, а `tests/ffi.rs` звіряє біти
+того ж виклику через FFI. Звірка має зуби — переставлені місцями `tol_m` і
+`h_max_s` у декларації `PropConfig` валять тест одразу (перевірено).
 
 ## Коли оновлювати цей скіл
 
@@ -87,5 +122,6 @@ cargo run -q --example flags # прапорці з боку cargo — звірк
   `cflags.txt`, або з'явився CMake — CLAUDE.md наразі це забороняє,
   якщо стан зміниться, він зміниться свідомо й помітно).
 - Почалась робота над наступним шматком C API з PROJECT.md §5
-  (`prop_run`, `lambert_solve`) — перенеси відповідний рядок із «не має
-  декларації» в таблицю реалізованого.
+  (`lambert_solve`, `porkchop_compute`, `target_hit`, `prop_run_stm`,
+  `eph_body_rotation`) — перенеси відповідний рядок із «не має декларації»
+  в список реалізованого й додай виклик в оракул.
