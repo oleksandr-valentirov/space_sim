@@ -58,11 +58,25 @@ fn main() {
     let compiler = build_library(&core_dir, &flags);
     let scenarios = build_scenarios(&compiler, &core_dir, &out_dir, &flags);
 
+    // Оракул для tests/ffi.rs (ROADMAP D2). Лежить у крейті, а не в
+    // core/scenario/, бо там він змінив би golden.txt: це риштування межі,
+    // а не сценарій детермінізму.
+    let oracle = link(
+        &compiler,
+        &flags,
+        &core_dir,
+        &manifest.join("oracle.c"),
+        &out_dir.join(format!("oracle{}", exe_suffix())),
+        &out_dir.join("libcore.a"),
+    );
+
     watch(&core_dir);
+    println!("cargo:rerun-if-changed=oracle.c");
 
     // Тест не має вгадувати, де що лежить, і не має другої копії прапорців.
     println!("cargo:rustc-env=CORE_CFLAGS={}", flags.join(" "));
     println!("cargo:rustc-env=CORE_SCENARIO_DIR={}", scenarios.display());
+    println!("cargo:rustc-env=CORE_ORACLE={}", oracle.display());
     println!("cargo:rustc-env=CORE_REPO_ROOT={}", root.display());
 }
 
@@ -164,33 +178,55 @@ fn build_scenarios(
     fs::create_dir_all(&bin_dir).expect("не створюється каталог для сценаріїв");
 
     let lib = out_dir.join("libcore.a");
-    let exe_suffix = env::var("CARGO_CFG_TARGET_OS")
-        .map(|os| if os == "windows" { ".exe" } else { "" })
-        .unwrap_or_default();
 
     for src in sources(&scenario_dir) {
         let stem = src.file_stem().unwrap().to_string_lossy().to_string();
-        let exe = bin_dir.join(format!("{stem}{exe_suffix}"));
-
-        let mut cmd = Command::new(tool.path());
-        cmd.args(flags)
-            .arg("-I")
-            .arg(core_dir)
-            .arg("-o")
-            .arg(&exe)
-            .arg(&src)
-            .arg(&lib);
-
-        let status = cmd
-            .status()
-            .unwrap_or_else(|e| panic!("не запускається {:?}: {e}", tool.path()));
-
-        if !status.success() {
-            panic!("сценарій {stem} не зібрався: {cmd:?}");
-        }
+        let exe = bin_dir.join(format!("{stem}{}", exe_suffix()));
+        link(tool, flags, core_dir, &src, &exe, &lib);
     }
 
     bin_dir
+}
+
+/// Лінкує одну програму на C проти вже зібраної `libcore.a`.
+///
+/// **Без `-lm` і це головне.** Лінкування саме по собі є перевіркою того, що
+/// в рантаймову зону не просочилася тригонометрія: `sin` чи `pow` тут просто
+/// не знайдуть символу. Дешевша й раніша перевірка за «поліцію libm», і вона
+/// тримається сама, без окремого скрипта.
+fn link(
+    tool: &cc::Tool,
+    flags: &[String],
+    core_dir: &Path,
+    src: &Path,
+    exe: &Path,
+    lib: &Path,
+) -> PathBuf {
+    let mut cmd = Command::new(tool.path());
+    cmd.args(flags)
+        .arg("-I")
+        .arg(core_dir)
+        .arg("-o")
+        .arg(exe)
+        .arg(src)
+        .arg(lib);
+
+    let status = cmd
+        .status()
+        .unwrap_or_else(|e| panic!("не запускається {:?}: {e}", tool.path()));
+
+    if !status.success() {
+        panic!("{} не зібрався: {cmd:?}", src.display());
+    }
+
+    exe.to_path_buf()
+}
+
+fn exe_suffix() -> &'static str {
+    match env::var("CARGO_CFG_TARGET_OS").as_deref() {
+        Ok("windows") => ".exe",
+        _ => "",
+    }
 }
 
 /// Файли `.c` каталогу, відсортовані.
