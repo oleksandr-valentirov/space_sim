@@ -188,7 +188,7 @@ fn run_depth_probe() -> Result<(), String> {
 /// 30 fps (33.3 мс) для кількох роздільностей. Метод і його межі — див.
 /// `engine::perf_probe`.
 fn run_perf_probe() -> Result<(), String> {
-    use engine::perf_probe::measure;
+    use engine::perf_probe::{camera_pass_ms, measure};
 
     const FRAMES: u32 = 300;
     const BUDGET_60: f64 = 1000.0 / 60.0;
@@ -196,8 +196,19 @@ fn run_perf_probe() -> Result<(), String> {
 
     let gpu = Gpu::new(wgpu::Instance::default(), None)?;
     println!("адаптер: {}\n", gpu.describe());
+    // Профіль друкується поруч із числами, і це не косметика: вимір
+    // CPU-зв'язаний, а між debug і release тут тринадцятикратна різниця в
+    // часі кадру. Число без профілю непорівнянне з жодним іншим.
+    let profile = if cfg!(debug_assertions) {
+        "debug (cargo run)"
+    } else {
+        "release (cargo run --release)"
+    };
     println!(
-        "{FRAMES} кадрів на роздільність, синхронний submit+poll (верхня межа, не конвеєр).\n"
+        "{FRAMES} кадрів на роздільність, синхронний submit+poll (верхня межа, не конвеєр).\n\
+         профіль: {profile}\n\
+         сцена: сфера радіуса Землі, 8385 вершин / 16384 трикутники, \
+         camera-relative щокадру\n"
     );
     println!(
         "{:>10} {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>9}",
@@ -219,6 +230,14 @@ fn run_perf_probe() -> Result<(), String> {
             stats.headroom_ms(BUDGET_30),
         );
     }
+
+    // Окремо — частина кадру, про яку заздалегідь відомо, що вона тимчасова.
+    let pass_ms = camera_pass_ms(200);
+    println!(
+        "\nCPU, camera-relative на 8385 вершин: {pass_ms:.3} мс на кадр \
+         ({:.0}% бюджету 60 Hz). M4 замінить це зсувом по патчах.",
+        100.0 * pass_ms / BUDGET_60
+    );
 
     Ok(())
 }

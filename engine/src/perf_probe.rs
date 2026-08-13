@@ -27,6 +27,7 @@ use std::time::Instant;
 use crate::frame::{self, Frame};
 use crate::gpu::Gpu;
 use crate::shot;
+use crate::sphere;
 
 /// Кадрів для розігріву перед виміром — компіляція шейдера й перший
 /// алокований конвеєр драйвера мають встигнути один раз, поза виміром.
@@ -52,6 +53,45 @@ impl Stats {
     pub fn headroom_ms(&self, budget_ms: f64) -> f64 {
         budget_ms - self.mean_ms
     }
+}
+
+/// Скільки коштує сам прохід camera-relative по вершинах меша, без GPU.
+///
+/// Міряється окремо, бо це єдина частина кадру, про яку заздалегідь відомо,
+/// що вона тимчасова: `Frame` перераховує позиції всіх вершин у `double`
+/// щокадру (ROADMAP F5, I1), а M4 замінить це зсувом по патчах. Загальний
+/// час кадру цього не показує — там воно змішане з синхронізацією й
+/// растеризацією, і на швидкій машині одне тоне в іншому.
+///
+/// Повертає мілісекунди на один прохід.
+pub fn camera_pass_ms(passes: u32) -> f64 {
+    let mesh = sphere::generate(sphere::EARTH_RADIUS_M, 64, 128);
+    let camera = frame::default_camera();
+    let mut bytes: Vec<u8> = Vec::with_capacity(mesh.positions.len() * 12);
+
+    // Розігрів: перший прохід платить за сторінки пам'яті під `bytes`.
+    for _ in 0..2 {
+        bytes.clear();
+        for &p in &mesh.positions {
+            for value in camera.relative(p) {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+    }
+
+    let start = Instant::now();
+    for _ in 0..passes {
+        bytes.clear();
+        for &p in &mesh.positions {
+            for value in camera.relative(p) {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+    }
+    // Щоб оптимізатор не викинув цикл цілком.
+    assert_eq!(bytes.len(), mesh.positions.len() * 12);
+
+    start.elapsed().as_secs_f64() * 1000.0 / f64::from(passes)
 }
 
 /// Проганяє `frames` кадрів `width`×`height` без вікна й повертає статистику
