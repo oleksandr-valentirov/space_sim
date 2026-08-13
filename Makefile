@@ -60,19 +60,29 @@ $(error У прапорцях немає -ffp-contract=off. Без нього к
 платформах — PROJECT.md §4.)
 endif
 
-# Дві бібліотеки — це і є межа детермінізму, виражена в графі збірки:
+# Три бібліотеки — це і є межа детермінізму, виражена в графі збірки:
 #
-#   libcore.a          core/*.c        РАНТАЙМ. libm заборонений, -lm не
-#                                      лінкується взагалі. Другий рубіж
-#                                      захисту після make check-libm.
-#   libcore_offline.a  core/offline/*.c КУКЕР. libm дозволений, лінкується
-#                                      з -lm. Сюди йде все, що рахується
-#                                      наперед і потрапляє в білд ассетом.
+#   libcore.a           core/*.c          РАНТАЙМ, пропагація. libm
+#                                         заборонений, -lm не лінкується
+#                                         взагалі. Другий рубіж захисту
+#                                         після make check-libm.
+#   libcore_offline.a   core/offline/*.c  КУКЕР. libm дозволений, лінкується
+#                                         з -lm. Не рантайм: рахується раз на
+#                                         машині розробника, у гру їде ассет.
+#   libcore_planning.a  core/planning/*.c РАНТАЙМ, планування. libm
+#                                         дозволений (PROJECT.md §4: межа
+#                                         детермінізму — по пропагації, не по
+#                                         плануванню). scripts/check_no_libm.sh
+#                                         свідомо перевіряє лише build/core
+#                                         верхнього рівня, тому цей підкаталог
+#                                         під поліцію libm не підпадає.
 #
 # Сценарії детермінізму лінкуються ТІЛЬКИ з libcore.a і без -lm: якщо туди
-# просочиться тригонометрія, лінкування впаде. Тести лінкуються з обома.
+# просочиться тригонометрія, лінкування впаде. Тести лінкуються з усіма
+# трьома.
 LDLIBS :=
 LDLIBS_OFFLINE := -lm
+LDLIBS_PLANNING := -lm
 
 # MinGW дописує .exe до виконуваних файлів незалежно від -o, тож без цього
 # make вважав би цілі непобудованими й перезбирав усе щоразу. MSYS2 успадковує
@@ -85,12 +95,16 @@ endif
 BUILD := build
 LIB   := $(BUILD)/libcore.a
 LIB_OFFLINE := $(BUILD)/libcore_offline.a
+LIB_PLANNING := $(BUILD)/libcore_planning.a
 
 CORE_SRC := $(sort $(wildcard core/*.c))
 CORE_OBJ := $(patsubst core/%.c,$(BUILD)/core/%.o,$(CORE_SRC))
 
 OFFLINE_SRC := $(sort $(wildcard core/offline/*.c))
 OFFLINE_OBJ := $(patsubst core/offline/%.c,$(BUILD)/core/offline/%.o,$(OFFLINE_SRC))
+
+PLANNING_SRC := $(sort $(wildcard core/planning/*.c))
+PLANNING_OBJ := $(patsubst core/planning/%.c,$(BUILD)/core/planning/%.o,$(PLANNING_SRC))
 
 # $(sort) не для краси: порядок сценаріїв визначає порядок рядків у actual.txt,
 # а $(wildcard) не гарантує сталого порядку. Без сортування звірка з еталоном
@@ -121,7 +135,7 @@ ACTUAL   := $(BUILD)/scenario/actual.txt
 .PHONY: all test unit check-libm determinism determinism-bless hashes cook \
         csv plots bench flags clean
 
-all: $(LIB) $(LIB_OFFLINE)
+all: $(LIB) $(LIB_OFFLINE) $(LIB_PLANNING)
 
 $(BUILD)/core/%.o: core/%.c
 	@mkdir -p $(dir $@)
@@ -131,6 +145,10 @@ $(BUILD)/core/offline/%.o: core/offline/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Icore -Icore/offline -c $< -o $@
 
+$(BUILD)/core/planning/%.o: core/planning/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Icore -Icore/planning -c $< -o $@
+
 $(LIB): $(CORE_OBJ)
 	@mkdir -p $(dir $@)
 	$(AR) rcs $@ $^
@@ -139,10 +157,14 @@ $(LIB_OFFLINE): $(OFFLINE_OBJ)
 	@mkdir -p $(dir $@)
 	$(AR) rcs $@ $^
 
-$(BUILD)/test/%$(EXE): core/test/%.c $(LIB) $(LIB_OFFLINE)
+$(LIB_PLANNING): $(PLANNING_OBJ)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Icore -Icore/offline -o $@ $< \
-		$(LIB_OFFLINE) $(LIB) $(LDLIBS_OFFLINE)
+	$(AR) rcs $@ $^
+
+$(BUILD)/test/%$(EXE): core/test/%.c $(LIB) $(LIB_OFFLINE) $(LIB_PLANNING)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Icore -Icore/offline -Icore/planning -o $@ $< \
+		$(LIB_OFFLINE) $(LIB_PLANNING) $(LIB) $(LDLIBS_OFFLINE)
 
 # Кукер: офлайновий, libm дозволений.
 $(BUILD)/cook/%$(EXE): core/cook/%.c $(LIB) $(LIB_OFFLINE)
