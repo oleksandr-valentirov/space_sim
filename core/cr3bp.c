@@ -34,6 +34,52 @@ double cr3bp_jacobi(Vec3d r, Vec3d v, double mu)
     return 2.0 * cr3bp_potential(r, mu) - vec3_norm_sq(v);
 }
 
+#define ZVC_SCAN_SAMPLES 400
+#define ZVC_BISECT_ITERATIONS 60
+
+static double two_omega_minus_c(Vec3d r, double mu, double c)
+{
+    return 2.0 * cr3bp_potential(r, mu) - c;
+}
+
+CoreResult cr3bp_zvc_radius(double mu, double c, Vec3d from, Vec3d dir_unit,
+                            double r_max, double *r_out)
+{
+    if (r_out == NULL || !(r_max > 0.0)) {
+        return CORE_ERR_INVALID_ARG;
+    }
+
+    double step = r_max / (double)ZVC_SCAN_SAMPLES;
+    double prev_r = 0.0;
+    int sign_prev = two_omega_minus_c(from, mu, c) < 0.0;
+
+    for (int i = 1; i <= ZVC_SCAN_SAMPLES; i++) {
+        double r = step * (double)i;
+        Vec3d p = vec3_add_scaled(from, dir_unit, r);
+        int sign = two_omega_minus_c(p, mu, c) < 0.0;
+
+        if (sign != sign_prev) {
+            double lo = prev_r, hi = r;
+            for (int k = 0; k < ZVC_BISECT_ITERATIONS; k++) {
+                double mid = 0.5 * (lo + hi);
+                Vec3d pm = vec3_add_scaled(from, dir_unit, mid);
+                if ((two_omega_minus_c(pm, mu, c) < 0.0) == sign_prev) {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            *r_out = 0.5 * (lo + hi);
+            return CORE_OK;
+        }
+
+        prev_r = r;
+        sign_prev = sign;
+    }
+
+    return CORE_ERR_TOLERANCE_NOT_MET;
+}
+
 void accel_cr3bp(double t, Vec3d r, Vec3d v, void *ctx, Vec3d *a_out)
 {
     (void)t;

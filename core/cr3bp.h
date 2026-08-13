@@ -43,6 +43,30 @@ double cr3bp_potential(Vec3d r, double mu);
  * every digit it loses was lost by the numerics. */
 double cr3bp_jacobi(Vec3d r, Vec3d v, double mu);
 
+/* Zero-velocity curve: the boundary of the region a Jacobi constant c makes
+ * unreachable (PROJECT.md section 7, "Карта - це наша графіка"; ROADMAP.md
+ * G4). v^2 = 2*Omega - c, so v^2 < 0 - impossible - exactly where
+ * 2*Omega(r) < c: that inequality, not any curve-tracing, is the whole
+ * physics here. This function finds where it turns into an equality along
+ * one ray, which is what a caller sweeping many rays needs to draw the
+ * boundary as a polyline.
+ *
+ * Scans from `from` outward along dir_unit (a unit vector - the caller
+ * turns an angle into one with the one cos/sin pair this file cannot have,
+ * CLAUDE.md invariant 3) for the first r in (0, r_max] where the sign of
+ * 2*Omega(from + r*dir_unit) - c changes, then bisects it. Plain bisection,
+ * not Newton, on purpose: cr3bp_lagrange below already makes the case for
+ * it in this file - this runs a handful of times per rendered curve, never
+ * in a hot loop, and cannot diverge.
+ *
+ * Returns CORE_ERR_INVALID_ARG for r_max <= 0. Returns
+ * CORE_ERR_TOLERANCE_NOT_MET if the whole ray from `from` to
+ * `from + r_max * dir_unit` stays on one side of the boundary - at this c,
+ * the region along that ray is either entirely forbidden or entirely open,
+ * which is itself the topology answer for that ray. */
+CoreResult cr3bp_zvc_radius(double mu, double c, Vec3d from, Vec3d dir_unit,
+                            double r_max, double *r_out);
+
 /* Lagrange points, 1 to 5.
  *
  * L4 and L5 are exact: the equilateral points at (1/2 - mu, +-sqrt(3)/2, 0).

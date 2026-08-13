@@ -42,6 +42,26 @@ int main(void)
         core_hash_f64(&h, cr3bp_jacobi(point, vec3_zero(), mu));
     }
 
+    /* The zero-velocity curve (ROADMAP G4) exercises the other bisection in
+     * this file: scan-then-bisect along a ray, rather than cr3bp_lagrange's
+     * bisect-on-the-axis. */
+    {
+        Vec3d l1;
+        if (cr3bp_lagrange(mu, 1, &l1) != CORE_OK) {
+            return 1;
+        }
+        double c1 = cr3bp_jacobi(l1, vec3_zero(), mu);
+
+        double r;
+        CoreResult zr = cr3bp_zvc_radius(mu, c1 + opaque(0.01), vec3_zero(),
+                                         vec3(opaque(1.0), 0.0, 0.0),
+                                         opaque(0.95), &r);
+        if (zr != CORE_OK) {
+            return 1;
+        }
+        core_hash_f64(&h, r);
+    }
+
     /* An orbit that stays bounded but wanders, integrated in legs so the
      * step carried between calls is hashed too. */
     State s = {

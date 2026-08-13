@@ -144,6 +144,50 @@ int main(void)
         CHECK(lowest < c[1] + 1e-3);
     }
 
+    /* Zero-velocity curve (ROADMAP G4), built on the same L1 pinch fact
+     * rather than a new unverified number: scanning from the barycenter
+     * toward the secondary, the boundary must sit before L1 when the gate is
+     * shut (c above c[1]), must not exist at all along that ray when the
+     * gate is open (c below c[1] - min(2*Omega) there never dips to c, so
+     * nothing crosses), and must approach L1 as c approaches c[1] from
+     * above, at the sqrt(delta) rate a quadratic minimum implies. */
+    {
+        double c1 = cr3bp_jacobi(lagrange[1], vec3_zero(), mu);
+        Vec3d origin = vec3_zero();
+        Vec3d toward_secondary = vec3(1.0, 0.0, 0.0);
+        double r_max = 0.95; /* short of the secondary at 1 - mu = 0.9878... */
+
+        double r_shut;
+        CoreResult shut = cr3bp_zvc_radius(mu, c1 + 0.01, origin,
+                                           toward_secondary, r_max, &r_shut);
+        CHECK(shut == CORE_OK);
+        CHECK(r_shut > 0.0);
+        CHECK(r_shut < lagrange[1].x);
+
+        double r_open;
+        CoreResult open = cr3bp_zvc_radius(mu, c1 - 0.01, origin,
+                                           toward_secondary, r_max, &r_open);
+        CHECK(open == CORE_ERR_TOLERANCE_NOT_MET);
+
+        double r_a, r_b;
+        CHECK(cr3bp_zvc_radius(mu, c1 + 0.01, origin, toward_secondary,
+                               r_max, &r_a) == CORE_OK);
+        CHECK(cr3bp_zvc_radius(mu, c1 + 0.0001, origin, toward_secondary,
+                               r_max, &r_b) == CORE_OK);
+        double gap_a = lagrange[1].x - r_a;
+        double gap_b = lagrange[1].x - r_b;
+        CHECK(gap_a > 0.0);
+        CHECK(gap_b > 0.0);
+        CHECK(gap_b < gap_a);
+        /* delta shrank 100x; a quadratic minimum predicts the gap shrinks
+         * about sqrt(100) = 10x. Measured: 10.46. Loose bracket, not a
+         * precise law - this is a topology sanity check, not a new
+         * integrator being validated. */
+        double ratio = gap_a / gap_b;
+        CHECK(ratio > 4.0);
+        CHECK(ratio < 25.0);
+    }
+
     /* The Coriolis term is real, and this is the assertion that would fail if
      * accel_cr3bp quietly ignored its velocity argument - which is the whole
      * reason AccelFunc carries one (PROJECT.md section 4). */
