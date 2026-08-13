@@ -7,13 +7,14 @@
 use std::sync::Arc;
 
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
-use crate::camera::Camera;
-use crate::frame::{self, Frame};
+use crate::frame::Frame;
 use crate::gpu::Gpu;
+use crate::orbit::Orbit;
 
 pub struct Options {
     pub width: u32,
@@ -64,7 +65,18 @@ struct State {
     config: wgpu::SurfaceConfiguration,
     gpu: Gpu,
     frame: Frame,
-    camera: Camera,
+
+    /// Камера й те, чим гравець її рухає. Позиція виводиться з кутів і
+    /// висоти щокадру, тож тут не накопичується нічого, що могло б сповзти
+    /// (`crate::orbit`).
+    orbit: Orbit,
+
+    /// Ліва кнопка тримається — тягнемо камеру.
+    dragging: bool,
+    /// Де курсор був минулого разу; різниця й є зсув. `None` — курсор ще не
+    /// з'являвся у вікні або щойно повернувся, і зсув порахувати нема від
+    /// чого.
+    cursor: Option<(f64, f64)>,
 }
 
 pub fn run(options: Options) -> Result<(), String> {
@@ -105,6 +117,12 @@ impl ApplicationHandler for App {
                     state.config.format,
                     state.config.present_mode
                 );
+                println!(
+                    "камера: тягніть лівою кнопкою — обертання, колесо — висота \
+                     (від {:.0} м до {:.0e} м), Esc — вихід",
+                    crate::orbit::MIN_ALTITUDE_M,
+                    crate::orbit::MAX_ALTITUDE_M
+                );
                 self.state = Some(state);
             }
             Err(e) => {
@@ -122,7 +140,52 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
 
+            WindowEvent::KeyboardInput { event, .. } => {
+                if event.state.is_pressed() && event.logical_key == Key::Named(NamedKey::Escape) {
+                    event_loop.exit();
+                }
+            }
+
             WindowEvent::Resized(size) => state.resize(size.width, size.height),
+
+            // Керування камерою. Вікно лише перекладає події в числа —
+            // що з них виходить, вирішує `orbit`, і саме тому воно
+            // перевіряється без вікна й без GPU.
+            WindowEvent::MouseInput {
+                state: button_state,
+                button: MouseButton::Left,
+                ..
+            } => {
+                state.dragging = button_state == ElementState::Pressed;
+                if !state.dragging {
+                    state.cursor = None;
+                }
+            }
+
+            WindowEvent::CursorLeft { .. } => state.cursor = None,
+
+            WindowEvent::CursorMoved { position, .. } => {
+                let now = (position.x, position.y);
+                if state.dragging {
+                    // Перший рух після натискання не має від чого рахувати
+                    // зсув: без цього камера смикалася б на всю відстань від
+                    // попереднього положення курсора.
+                    if let Some(was) = state.cursor {
+                        state.orbit.drag(now.0 - was.0, now.1 - was.1);
+                    }
+                }
+                state.cursor = Some(now);
+            }
+
+            WindowEvent::MouseWheel { delta, .. } => {
+                let notches = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(y),
+                    // Тачпад дає пікселі. Півсотні на клац — щоб один рух
+                    // пальцем не пролітав три порядки висоти.
+                    MouseScrollDelta::PixelDelta(p) => p.y / 50.0,
+                };
+                state.orbit.zoom(notches);
+            }
 
             WindowEvent::RedrawRequested => {
                 if let Err(e) = state.draw() {
@@ -229,7 +292,9 @@ impl State {
             config,
             gpu,
             frame,
-            camera: frame::default_camera(),
+            orbit: Orbit::default(),
+            dragging: false,
+            cursor: None,
         })
     }
 
@@ -295,7 +360,7 @@ impl State {
             &view,
             self.config.width,
             self.config.height,
-            &self.camera,
+            &self.orbit.camera(),
         );
 
         self.gpu.queue.submit([encoder.finish()]);

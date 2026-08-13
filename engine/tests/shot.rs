@@ -11,6 +11,7 @@
 
 use engine::frame::{self, Frame};
 use engine::gpu::Gpu;
+use engine::orbit::Orbit;
 use engine::shot::{self, Shot};
 use engine::{flight_probe, sphere};
 
@@ -41,12 +42,17 @@ fn coverage(shot: &Shot) -> f64 {
     lit as f64 / (u64::from(shot.width) * u64::from(shot.height)) as f64
 }
 
-/// Скільки кадру мала б зайняти планета з висоти за замовчуванням.
-fn expected(width: u32, height: u32) -> f64 {
-    let distance = sphere::EARTH_RADIUS_M + frame::DEFAULT_ALTITUDE_M;
+/// Скільки кадру мала б зайняти планета з висоти `altitude`.
+fn expected_at(altitude: f64, width: u32, height: u32) -> f64 {
+    let distance = sphere::EARTH_RADIUS_M + altitude;
     let half_angle = (sphere::EARTH_RADIUS_M / distance).asin();
     flight_probe::expected_coverage(half_angle, f64::from(width) / f64::from(height))
-        .expect("диск цілком у кадрі на цій висоті — інакше формула не визначена")
+        .expect("формула визначена лише коли диск цілком у кадрі або кадр цілком у диску")
+}
+
+/// Те саме з висоти за замовчуванням.
+fn expected(width: u32, height: u32) -> f64 {
+    expected_at(frame::DEFAULT_ALTITUDE_M, width, height)
 }
 
 #[test]
@@ -147,4 +153,78 @@ fn one_frame_draws_into_two_different_sizes() {
             "{width}×{height}: покриття {measured:.4} проти аналітичних {analytic:.4}"
         );
     }
+}
+
+/// Камера справді керує тим, що намальовано.
+///
+/// Тести `orbit` доводять арифметику без GPU; цей доводить, що вона доїжджає
+/// до кадру. Оракул той самий — покриття проти `asin(R/(R+висота))`, — тож
+/// перевіряється не «картинка змінилася», а «змінилася рівно так, як
+/// зобов'язана».
+#[test]
+fn the_camera_moves_the_frame_it_draws() {
+    let Some(gpu) = gpu() else { return };
+
+    let mut frame = Frame::new(&gpu, shot::FORMAT);
+    let mut orbit = Orbit::default();
+
+    let far = draw(&gpu, &mut frame, &orbit.camera());
+    let far_coverage = coverage(&far);
+
+    // Обертання не має міняти покриття взагалі: сфера з усіх боків однакова.
+    // Це найдешевша перевірка того, що обертання не потягло за собою
+    // висоту чи проєкцію.
+    orbit.drag(300.0, 120.0);
+    let turned = draw(&gpu, &mut frame, &orbit.camera());
+    assert!(
+        (coverage(&turned) - far_coverage).abs() < 0.005,
+        "обертання змінило покриття: {:.4} проти {far_coverage:.4}",
+        coverage(&turned)
+    );
+
+    // А наближення — має, і рівно на стільки, скільки каже геометрія.
+    for _ in 0..11 {
+        orbit.zoom(1.0);
+    }
+    let near = draw(&gpu, &mut frame, &orbit.camera());
+    let measured = coverage(&near);
+    let analytic = expected_at(orbit.altitude(), SIZE, SIZE);
+
+    assert!(
+        measured > far_coverage + 0.1,
+        "наближення нічого не змінило: {measured:.4} проти {far_coverage:.4}"
+    );
+    assert!(
+        (measured - analytic).abs() < 0.015,
+        "з висоти {:.3e} м покриття {measured:.4} проти аналітичних {analytic:.4}",
+        orbit.altitude()
+    );
+}
+
+/// Один кадр `SIZE`×`SIZE` у текстуру й назад.
+fn draw(gpu: &Gpu, frame: &mut Frame, camera: &engine::camera::Camera) -> Shot {
+    let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("camera test"),
+        size: wgpu::Extent3d {
+            width: SIZE,
+            height: SIZE,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: shot::FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let mut encoder = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("camera test"),
+        });
+    frame.draw(gpu, &mut encoder, &view, SIZE, SIZE, camera);
+
+    shot::read_back(gpu, encoder, &texture, SIZE, SIZE).expect("кадр мав прочитатися назад")
 }
