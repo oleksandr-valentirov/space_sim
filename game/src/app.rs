@@ -1,12 +1,22 @@
-//! Вікно рушія: цикл подій для зондів (ROADMAP F1, I2).
+//! Вікно гри (ROADMAP J1).
 //!
-//! Кадр береться з [`crate::frame`], той самий, що йде у знімок. Поверхня й
-//! усе, що з нею буває, живуть у [`crate::window`] — з J1 циклів подій два,
-//! і саме поверхню дублювати не можна.
+//! Цикл подій тут власний, а не позичений у `engine::app`, і це не
+//! дублювання, а межа: гра володіє світом і часом (PROJECT.md §6), рушій —
+//! ні. Спільним лишається все, де можна помилитися мовчки: поверхня та її
+//! стани живуть в `engine::window::Target`, кадр — в `engine::frame::Frame`,
+//! камера — в `engine::orbit`.
 //!
-//! Тут малюється сцена з самою планетою: гра має власний цикл, бо володіє
-//! світом і часом (PROJECT.md §6), а цей лишається тим, чим був, — способом
-//! подивитися на рендер без гри.
+//! Порядок кадру такий, яким він лишиться й після J4, коли світ поїде у свою
+//! нитку:
+//!
+//!   1. посунути світ уперед — тік із бюджетом у ланках;
+//!   2. взяти незмінний зріз — снапшот;
+//!   3. перекласти зріз у сцену;
+//!   4. намалювати.
+//!
+//! Різниця буде лише в тому, що крок 1 робитиме інша нитка, а крок 2 стане
+//! `load_full()`. Саме тому вони вже розділені: межа, проведена після появи
+//! потоку, проходить там, де зручно потоку.
 
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -14,25 +24,33 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::WindowId;
 
-use crate::frame::Frame;
-use crate::gpu::Gpu;
-use crate::orbit::Orbit;
-use crate::scene::Scene;
-use crate::window::{self, Target};
+use engine::frame::Frame;
+use engine::gpu::Gpu;
+use engine::orbit::Orbit;
+use engine::window::{self, Target};
+
+use crate::mission;
+use crate::view;
+use crate::world::World;
+
+/// Скільки ланок дозволено порахувати за один кадр.
+///
+/// Не оптимізація, а стеля затримки: тік не має права тримати кадр довше, ніж
+/// на цю роботу. Число мале навмисно — прогноз росте на очах, і видно, що
+/// траєкторія рахується ланками, а не з'являється цілою.
+///
+/// Скільки ланок устигнеться, залежить від машини; **де** вони закінчаться —
+/// ні (CLAUDE.md, інваріант 9). Тому міняти це число безпечно: воно не
+/// впливає на числа.
+const LEGS_PER_FRAME: usize = 2;
 
 pub struct Options {
     pub width: u32,
     pub height: u32,
-
     /// Скільки кадрів намалювати й вийти. `None` — доки не закриють.
-    ///
-    /// Існує заради перевірки: запуск, який сам завершується, можна ганяти
-    /// в скрипті й у CI, а «відкрилось вікно, подивіться» — не можна.
     pub frames: Option<u32>,
-
-    /// Чекати на вертикальну синхронізацію. Чому це прапорець і чим воно
-    /// колись зависало — [`crate::window::Options::vsync`].
     pub vsync: bool,
+    pub asset: std::path::PathBuf,
 }
 
 impl Default for Options {
@@ -42,6 +60,7 @@ impl Default for Options {
             height: 720,
             frames: None,
             vsync: true,
+            asset: mission::default_asset(),
         }
     }
 }
@@ -49,7 +68,6 @@ impl Default for Options {
 struct App {
     options: Options,
     drawn: u32,
-    resized_once: bool,
     state: Option<State>,
     error: Option<String>,
 }
@@ -58,17 +76,10 @@ struct State {
     target: Target,
     gpu: Gpu,
     frame: Frame,
-
-    /// Камера й те, чим гравець її рухає. Позиція виводиться з кутів і
-    /// висоти щокадру, тож тут не накопичується нічого, що могло б сповзти
-    /// (`crate::orbit`).
     orbit: Orbit,
+    world: World,
 
-    /// Ліва кнопка тримається — тягнемо камеру.
     dragging: bool,
-    /// Де курсор був минулого разу; різниця й є зсув. `None` — курсор ще не
-    /// з'являвся у вікні або щойно повернувся, і зсув порахувати нема від
-    /// чого.
     cursor: Option<(f64, f64)>,
 }
 
@@ -79,7 +90,6 @@ pub fn run(options: Options) -> Result<(), String> {
     let mut app = App {
         options,
         drawn: 0,
-        resized_once: false,
         state: None,
         error: None,
     };
@@ -104,11 +114,10 @@ impl ApplicationHandler for App {
             Ok(state) => {
                 println!("адаптер: {}", state.gpu.describe());
                 println!("поверхня: {}", state.target.describe());
+                println!("ассет: {}", self.options.asset.display());
                 println!(
-                    "камера: тягніть лівою кнопкою — обертання, колесо — висота \
-                     (від {:.0} м до {:.0e} м), Esc — вихід",
-                    crate::orbit::MIN_ALTITUDE_M,
-                    crate::orbit::MAX_ALTITUDE_M
+                    "камера: тягніть лівою кнопкою — обертання, колесо — висота, \
+                     Esc — вихід"
                 );
                 self.state = Some(state);
             }
@@ -135,9 +144,6 @@ impl ApplicationHandler for App {
 
             WindowEvent::Resized(size) => state.target.resize(&state.gpu, size.width, size.height),
 
-            // Керування камерою. Вікно лише перекладає події в числа —
-            // що з них виходить, вирішує `orbit`, і саме тому воно
-            // перевіряється без вікна й без GPU.
             WindowEvent::MouseInput {
                 state: button_state,
                 button: MouseButton::Left,
@@ -154,9 +160,6 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved { position, .. } => {
                 let now = (position.x, position.y);
                 if state.dragging {
-                    // Перший рух після натискання не має від чого рахувати
-                    // зсув: без цього камера смикалася б на всю відстань від
-                    // попереднього положення курсора.
                     if let Some(was) = state.cursor {
                         state.orbit.drag(now.0 - was.0, now.1 - was.1);
                     }
@@ -167,8 +170,6 @@ impl ApplicationHandler for App {
             WindowEvent::MouseWheel { delta, .. } => {
                 let notches = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(y),
-                    // Тачпад дає пікселі. Півсотні на клац — щоб один рух
-                    // пальцем не пролітав три порядки висоти.
                     MouseScrollDelta::PixelDelta(p) => p.y / 50.0,
                 };
                 state.orbit.zoom(notches);
@@ -183,20 +184,18 @@ impl ApplicationHandler for App {
 
                 self.drawn += 1;
 
-                // Зміна розміру посеред обмеженого прогону — щоб той шлях
-                // теж був пройдений, а не лише відкриття вікна. Саме на ньому
-                // ламається surface, і ламається мовчки.
                 if let Some(limit) = self.options.frames {
-                    if !self.resized_once && self.drawn == limit / 2 {
-                        self.resized_once = true;
-
-                        let (width, height) = (self.options.width / 2, self.options.height / 2);
-                        println!("зміна розміру: {width}×{height}");
-                        state.target.request_size(&state.gpu, width, height);
-                    }
-
                     if self.drawn >= limit {
-                        println!("намальовано кадрів: {}", self.drawn);
+                        println!(
+                            "намальовано кадрів: {}, семплів прогнозу: {}",
+                            self.drawn,
+                            state
+                                .world
+                                .vessels()
+                                .iter()
+                                .map(|v| v.trajectory.sample_count())
+                                .sum::<usize>()
+                        );
                         event_loop.exit();
                         return;
                     }
@@ -222,9 +221,9 @@ impl State {
             },
         )?;
 
-        // Пайплайн прив'язаний до формату цілі, тож будується після того, як
-        // формат обрано, і переживає зміни розміру — вони формату не чіпають.
         let frame = Frame::new(&gpu, target.format());
+        let world = mission::world(&options.asset)
+            .map_err(|e| format!("світ не будується ({}): {e}", options.asset.display()))?;
 
         target.window().request_redraw();
 
@@ -232,13 +231,17 @@ impl State {
             target,
             gpu,
             frame,
-            orbit: Orbit::default(),
+            orbit: Orbit::at_altitude(mission::CAMERA_ALTITUDE_M),
+            world,
             dragging: false,
             cursor: None,
         })
     }
 
     fn draw(&mut self) -> Result<(), String> {
+        self.world.tick(LEGS_PER_FRAME);
+        let snapshot = self.world.snapshot();
+
         let Some(surface) = self.target.acquire(&self.gpu)? else {
             return Ok(());
         };
@@ -251,7 +254,7 @@ impl State {
             .gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("frame"),
+                label: Some("game frame"),
             });
 
         self.frame.draw(
@@ -260,12 +263,10 @@ impl State {
             &view,
             self.target.width(),
             self.target.height(),
-            &Scene::new(self.orbit.camera()),
+            &view::build(&snapshot, self.orbit.camera()),
         );
 
         self.gpu.queue.submit([encoder.finish()]);
-        // У wgpu 30 показ кадру перейшов на чергу: раніше це був метод самої
-        // текстури.
         self.gpu.queue.present(surface);
         Ok(())
     }

@@ -1,0 +1,19 @@
+[package]
+name = "game"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+# Гра володіє світом і часом; рушій малює те, що їй показати
+# (PROJECT.md §6). Залежність однобічна й лишиться такою: `engine` про
+# `game` не знає нічого.
+core-rs = { path = "../core-rs" }
+engine = { path = "../engine" }
+
+wgpu = "30"
+winit = "0.30"
+
+[lints]
+workspace = true

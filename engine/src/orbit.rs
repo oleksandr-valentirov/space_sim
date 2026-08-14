@@ -64,6 +64,19 @@ impl Default for Orbit {
 }
 
 impl Orbit {
+    /// Той самий погляд, але з іншої висоти.
+    ///
+    /// Потрібно тому, хто малює не саму планету: halo-орбіта біля L2 лежить за
+    /// 4.5·10⁸ м від Землі, і з висоти за замовчуванням (10⁷ м) її в кадрі
+    /// немає взагалі. Висота затискається тими самими межами, що й колесо —
+    /// інакше це був би обхідний шлях повз них, а не конструктор.
+    pub fn at_altitude(altitude: f64) -> Orbit {
+        Orbit {
+            altitude: altitude.clamp(MIN_ALTITUDE_M, MAX_ALTITUDE_M),
+            ..Orbit::default()
+        }
+    }
+
     pub fn altitude(&self) -> f64 {
         self.altitude
     }

@@ -9,6 +9,7 @@ use std::path::Path;
 
 use crate::frame::{self, Frame};
 use crate::gpu::Gpu;
+use crate::scene::Scene;
 
 /// Формат цілі. Не sRGB навмисно: у знімку хочемо ті самі байти, які
 /// поклали, без перетворення на шляху, — інакше звірка кольору
@@ -55,6 +56,16 @@ impl Shot {
 /// Камера — [`frame::default_camera`]: той самий погляд, що й у вікні при
 /// старті, тож знімок показує саме те, що показало б вікно.
 pub fn take(gpu: &Gpu, width: u32, height: u32) -> Result<Shot, String> {
+    take_scene(gpu, width, height, &Scene::new(frame::default_camera()))
+}
+
+/// Те саме, але для сцени, яку зібрав хтось інший.
+///
+/// Це шлях гри до PNG (ROADMAP J1), і він існує з тієї самої причини, що й
+/// сам знімок: «вікно відкрилось» не є перевіркою того, що гра щось
+/// намалювала. Кадр той самий, [`Frame`] той самий; різниця лише в тому, хто
+/// склав сцену.
+pub fn take_scene(gpu: &Gpu, width: u32, height: u32, scene: &Scene) -> Result<Shot, String> {
     let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("shot"),
         size: wgpu::Extent3d {
@@ -77,14 +88,7 @@ pub fn take(gpu: &Gpu, width: u32, height: u32) -> Result<Shot, String> {
             label: Some("shot"),
         });
 
-    Frame::new(gpu, FORMAT).draw(
-        gpu,
-        &mut encoder,
-        &view,
-        width,
-        height,
-        &frame::default_camera(),
-    );
+    Frame::new(gpu, FORMAT).draw(gpu, &mut encoder, &view, width, height, scene);
 
     read_back(gpu, encoder, &texture, width, height)
 }

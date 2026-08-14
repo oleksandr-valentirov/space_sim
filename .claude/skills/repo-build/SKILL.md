@@ -28,9 +28,9 @@ Rust) **обидва** читають [core/cflags.txt](../../core/cflags.txt) �
 
 [Cargo.toml](../../Cargo.toml) — члени додаються **в міру появи коду**,
 не наперед (порожній крейт у `members` ламає збірку без користі).
-Поточний склад: `core-sys`, `core-rs`, `engine`, `tools/gpu-probe`,
-`tools/slang-probe`. `game/` і `tools/` (окрім двох розвідок вище) — ще
-порожні, у workspace не додані.
+Поточний склад: `core-sys`, `core-rs`, `engine`, `game`,
+`tools/gpu-probe`, `tools/slang-probe`. `tools/` (окрім двох розвідок
+вище) — ще порожній, у workspace не доданий.
 
 `rust-version = "1.87"` — вимога `wgpu` 30. Канал — **stable**, не
 закріплена патч-версія: відтворюваність проєкту живе в хешах сценаріїв
@@ -54,6 +54,8 @@ make flags                         # прапорці ядра з боку Makef
 
 cargo build --workspace            # усе, включно з C через build.rs
 cargo test --workspace
+cargo run -p game                  # гра: вікно
+cargo run -p game -- --shot build/j1.png   # гра: кадр у PNG, без вікна
 cargo clippy --all-targets -- -D warnings   # той самий гейт, що в CI
 cargo run -q --example flags       # ті самі прапорці, з боку cargo — має збігатися з `make flags`
 ```

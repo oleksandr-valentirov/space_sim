@@ -28,10 +28,12 @@ depth-текстура через resize), **I2** (орбітальна каме
 
 ```
 gpu.rs          Gpu { instance, adapter, device, queue } — один на процес
-frame.rs        Frame — сфера радіуса Землі, власна depth-текстура (переслідує розмір цілі), камера аргументом (I1)
+scene.rs        Scene { camera, polylines } — уся межа рушій↔гра (J1)
+window.rs       Target: вікно, поверхня, resize/resync/acquire — спільне для обох циклів подій (J1)
+frame.rs        Frame — сфера радіуса Землі, ламані сцени, власна depth-текстура (переслідує розмір цілі), Scene аргументом (I1, J1)
 orbit.rs        орбітальна камера: yaw/pitch/висота в double, позиція виводиться щокадру; без winit і GPU (I2)
-app.rs          вікно (winit), surface, цикл подій, resize, миша й колесо → orbit
-shot.rs         кадр → текстура → буфер → PNG, read_back() — спільний з depth_probe, sphere_render
+app.rs          цикл подій ЗОНДІВ рушія (у гри свій); миша й колесо → orbit
+shot.rs         кадр → текстура → буфер → PNG; take_scene() — шлях гри, read_back() — спільний з depth_probe, sphere_render
 depth.rs        reversed-Z: формат, COMPARE, CLEAR, матриці, resolvable_gap()
 depth_probe.rs  вимірювач роздільності глибини (два квади, частка кадру де ближчий виграв)
 camera.rs       Camera: double на CPU, camera-relative на кожну вершину, звуження в f32 — останній крок
@@ -47,6 +49,26 @@ main.rs         CLI: --shot, --frames, --vsync/--no-vsync, --depth-probe, --flig
 
 `tools/gpu-probe` і `tools/slang-probe` — окремі бінарники, розвідки
 (ROADMAP P0/P1), у гру не йдуть.
+
+## Рушій не знає про гру (J1)
+
+`frame::Frame::draw` бере `scene::Scene` — камеру й ламані у світових
+координатах — і більше нічого. Про апарати, плани й час не знає: їх
+перекладає `game::view` (PROJECT.md §6). Залежність однобічна,
+`engine` ніколи не залежить від `game`.
+
+Наслідки, які легко порушити випадково:
+
+- **Ламані йдуть тим самим camera-relative, що вершини сфери** — віднімання
+  й поворот у `double`, звуження в `f32` останнім кроком. Окремий шлях
+  (як `view_offset` у `trajectory_render`) дав би тремтіння на 4·10⁸ м.
+- **Колір ламаної — атрибут вершини, не uniform.** Ламаних кілька, а всі
+  записи в чергу відбуваються ДО проходу: з uniform виграв би останній.
+- **Один `draw` на ламану.** `LineStrip` з'єднав би кінець однієї з
+  початком наступної.
+- **Циклів подій два**, і в кожного свій `ApplicationHandler`. Спільне —
+  `window::Target`: саме там три випадки, кожен з яких колись зависав
+  намертво без жодної помилки.
 
 ⚠ **Застаріло з I1: сферу перенесено у `Frame`, і саме вона тепер іде у
 вікно.** `sphere_render` лишився окремим шляхом для `flight_probe` — він

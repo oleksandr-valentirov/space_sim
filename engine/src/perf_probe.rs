@@ -26,6 +26,7 @@ use std::time::Instant;
 
 use crate::frame::{self, Frame};
 use crate::gpu::Gpu;
+use crate::scene::Scene;
 use crate::shot;
 use crate::sphere;
 
@@ -98,7 +99,10 @@ pub fn camera_pass_ms(passes: u32) -> f64 {
 /// часу кадру в мілісекундах.
 pub fn measure(gpu: &Gpu, width: u32, height: u32, frames: u32) -> Result<Stats, String> {
     let mut frame = Frame::new(gpu, shot::FORMAT);
-    let camera = frame::default_camera();
+    // Сцена без ламаних: вимір лишається порівнюваним із числами I3, де їх
+    // ще не було. Коли прогноз стане частиною сцени, це буде окремий рядок
+    // таблиці, а не тихо інше число в тому самому (скіл `perf-probe`).
+    let scene = Scene::new(frame::default_camera());
 
     // COPY_SRC свідомо відсутній: цей вимір не читає пікселі назад, а
     // читання назад — окрема вартість, якої немає в реальному кадрі
@@ -128,7 +132,7 @@ pub fn measure(gpu: &Gpu, width: u32, height: u32, frames: u32) -> Result<Stats,
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("perf probe"),
             });
-        frame.draw(gpu, &mut encoder, &view, width, height, &camera);
+        frame.draw(gpu, &mut encoder, &view, width, height, &scene);
         gpu.queue.submit([encoder.finish()]);
 
         gpu.device
