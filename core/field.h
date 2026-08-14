@@ -106,28 +106,21 @@ void accel_field(double t, Vec3d r, Vec3d v, void *ctx, Vec3d *a_out);
  * none. That absence is worth stating, because the CR3BP version does have
  * one and the two are easy to confuse.
  *
- * POINT MASSES ONLY, and it refuses rather than approximates: given a
- * context with harmonics set, this sets `failed` and writes zeros instead
- * of linearising only part of the force it was asked about. The reason is
- * the one in the header comment above - an answer that looks like a state
- * transition matrix and does not match the trajectory actually propagated
- * is worse than no answer, and this file already takes that position about
- * a failed ephemeris lookup.
- *
- * The missing piece is the Hessian of the Pines recursion, which is real
- * work with its own tests rather than a line to add here; it belongs with
- * prop_run_stm in ROADMAP K8. Until then a caller wanting an STM uses a
- * context without harmonics, and gets an STM that honestly describes that
- * field. */
+ * Harmonics included since ROADMAP K8b. Between K4 and K8a this refused
+ * outright rather than linearise a field it could only half describe -
+ * the Hessian of the Pines recursion did not exist yet, and a matrix that
+ * looks like a state transition matrix while matching some other
+ * trajectory is worse than no matrix. harmonics_gradient is that missing
+ * piece; the refusal is gone because the reason for it is. */
 void accel_field_var(double t, const Vec3d *r, const Vec3d *v, int n_blocks,
                      void *ctx, Vec3d *a_out);
 
 /* Gradient of the acceleration at r, row-major 3x3 and symmetric. Public
  * because it is the piece worth testing on its own.
  *
- * Point masses only, refusing on a harmonic context exactly as
- * accel_field_var does - it is the function accel_field_var refuses
- * through. */
+ * Includes each body's harmonic term where the asset gives it one, so
+ * this stays the exact derivative of accel_field rather than the
+ * derivative of a simpler field that happens to share its name. */
 void field_gradient(double t, Vec3d r, const FieldCtx *ctx, double g[9]);
 
 #endif /* CORE_FIELD_H */

@@ -134,14 +134,6 @@ void field_gradient(double t, Vec3d r, const FieldCtx *ctx, double g[9])
         g[k] = 0.0;
     }
 
-    /* Refused, not approximated - see field.h. Linearising the point-mass
-     * part of a field that also has harmonics in it would produce a
-     * plausible matrix describing a trajectory nobody is flying. */
-    if (c->n_harmonic > 0) {
-        c->failed = 1;
-        return;
-    }
-
     for (int i = 0; i < c->n_bodies; i++) {
         Vec3d d;
         if (!offset_to_body(c, i, t, r, &d)) {
@@ -172,6 +164,29 @@ void field_gradient(double t, Vec3d r, const FieldCtx *ctx, double g[9])
         g[1] += b * d.x * d.y;
         g[2] += b * d.x * d.z;
         g[5] += b * d.y * d.z;
+
+        /* And the body's shape, where it has one (ROADMAP K8b). No sign to
+         * get wrong here even though the point-mass block above has one:
+         * that one differentiates through d = R - r, while
+         * harmonics_gradient is already a derivative with respect to the
+         * vessel's own position relative to the body, which is what
+         * accel_field passes it.
+         *
+         * Upper triangle only, matching the block above - the matrix comes
+         * back symmetric to the bit, so taking its lower half would add the
+         * same numbers in a different order. */
+        if (c->harmonics[i].degree >= 2) {
+            double hg[9];
+            harmonics_gradient(&c->harmonics[i], vec3_neg(d), mu, hg);
+
+            g[0] += hg[0];
+            g[4] += hg[4];
+            g[8] += hg[8];
+
+            g[1] += hg[1];
+            g[2] += hg[2];
+            g[5] += hg[5];
+        }
     }
 
     g[3] = g[1];
@@ -183,18 +198,6 @@ void accel_field_var(double t, const Vec3d *r, const Vec3d *v, int n_blocks,
                      void *ctx, Vec3d *a_out)
 {
     FieldCtx *c = (FieldCtx *)ctx;
-
-    /* Checked before block 0 rather than letting field_gradient refuse
-     * below, so the refusal is total: half an answer - a reference
-     * trajectory carrying harmonics with perturbations that do not - is
-     * the mismatch this is meant to prevent, not a milder version of it. */
-    if (c->n_harmonic > 0) {
-        c->failed = 1;
-        for (int b = 0; b < n_blocks; b++) {
-            a_out[b] = vec3_zero();
-        }
-        return;
-    }
 
     accel_field(t, r[0], v[0], ctx, &a_out[0]);
 

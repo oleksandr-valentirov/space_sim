@@ -81,6 +81,22 @@ static inline int harmonics_index(int n, int m)
 void harmonics_accel(const HarmonicsField *field, Vec3d r, double mu,
                      Vec3d *a_out);
 
+/* Gradient of that acceleration - equivalently the Hessian of the
+ * potential below - row-major 3x3 and symmetric to the bit (ROADMAP K8a).
+ *
+ *     g_out[i * 3 + j] = d a_i / d x_j
+ *
+ * This is what a state transition matrix needs to describe a vessel flying
+ * through a non-spherical field. Without it, field.c had to refuse to
+ * linearise such a field at all rather than hand back a matrix matching
+ * some other trajectory (core/field.h).
+ *
+ * Traceless away from the source, since each term is a solid harmonic and
+ * satisfies Laplace's equation - a property worth knowing because it makes
+ * a free and quite sharp self-check. */
+void harmonics_gradient(const HarmonicsField *field, Vec3d r, double mu,
+                        double g_out[9]);
+
 /* The potential U such that harmonics_accel computes +grad(U) (PROJECT.md
  * section 4's sign convention: U = mu/r + perturbations, acceleration is the
  * plain gradient, not its negative - matching accel_field's point-mass term

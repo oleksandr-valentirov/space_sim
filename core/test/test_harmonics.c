@@ -291,9 +291,105 @@ static void test_gradient_matches_finite_difference(void)
     }
 }
 
+/* harmonics_gradient (ROADMAP K8a), three ways.
+ *
+ * Central differences of harmonics_accel are the decisive one: that
+ * function is already pinned to the closed-form J2 field and to the
+ * textbook Legendre functions above, so agreeing with its derivative is
+ * agreeing with something external. Symmetry and tracelessness cost
+ * nothing and catch different mistakes - a transposed index and a wrong
+ * coefficient in one of the five groups respectively. */
+static void test_gradient_matches_finite_difference_of_accel(void)
+{
+    double mu = 3.986004418e14;
+
+    HarmonicsField field = { 0 };
+    field.degree = 4;
+    field.re = 6378136.3;
+    field.c[harmonics_index(2, 0)] = -1.08262668e-3;
+    field.c[harmonics_index(2, 2)] = 1.57e-6;
+    field.s[harmonics_index(2, 2)] = -9.0e-7;
+    field.c[harmonics_index(3, 1)] = 2.19e-6;
+    field.s[harmonics_index(3, 1)] = 2.68e-7;
+    field.c[harmonics_index(4, 3)] = -5.4e-7;
+    field.s[harmonics_index(4, 3)] = 1.5e-7;
+
+    Vec3d points[4] = {
+        vec3(6.9e6, 1.2e6, 3.1e6),
+        vec3(-2.0e6, -6.5e6, 1.0e6),
+        vec3(3.0e6, 3.0e6, 6.0e6),
+        vec3(0.0, 0.0, 7.2e6),          /* the pole, where A' and A'' matter */
+    };
+
+    double h = 50.0; /* metres */
+
+    for (int p = 0; p < 4; p++) {
+        Vec3d r = points[p];
+
+        double g[9];
+        harmonics_gradient(&field, r, mu, g);
+
+        /* Symmetric to the bit, by construction rather than by rounding. */
+        CHECK_BITS_EQ(g[1], g[3]);
+        CHECK_BITS_EQ(g[2], g[6]);
+        CHECK_BITS_EQ(g[5], g[7]);
+
+        /* Laplace. Scaled by the size of the diagonal, since the trace is
+         * a cancellation of three large numbers. */
+        double trace = g[0] + g[4] + g[8];
+        double scale = fabs(g[0]) + fabs(g[4]) + fabs(g[8]);
+        CHECK(scale > 0.0);
+        CHECK(fabs(trace) < 1e-10 * scale);
+
+        for (int j = 0; j < 3; j++) {
+            Vec3d rp = r, rm = r;
+            double *pp = j == 0 ? &rp.x : (j == 1 ? &rp.y : &rp.z);
+            double *pm = j == 0 ? &rm.x : (j == 1 ? &rm.y : &rm.z);
+            *pp += h;
+            *pm -= h;
+
+            Vec3d ap, am;
+            harmonics_accel(&field, rp, mu, &ap);
+            harmonics_accel(&field, rm, mu, &am);
+
+            double numeric[3] = {
+                (ap.x - am.x) / (2.0 * h),
+                (ap.y - am.y) / (2.0 * h),
+                (ap.z - am.z) / (2.0 * h),
+            };
+
+            for (int i = 0; i < 3; i++) {
+                double want = g[i * 3 + j];
+                double got = numeric[i];
+                double ref = fabs(want) > 0.0 ? fabs(want) : 1.0;
+                CHECK(fabs(got - want) < 1e-6 * ref);
+            }
+        }
+    }
+}
+
+/* A field below degree 2 has no gradient to give, and says so with zeros
+ * rather than with whatever was in the caller's array. */
+static void test_gradient_of_disabled_field_is_zero(void)
+{
+    HarmonicsField field = { 0 };
+    field.degree = 0;
+
+    double g[9];
+    for (int k = 0; k < 9; k++) {
+        g[k] = 1.0;
+    }
+    harmonics_gradient(&field, vec3(7.0e6, 1.0e6, 2.0e6), 3.986e14, g);
+    for (int k = 0; k < 9; k++) {
+        CHECK(g[k] == 0.0);
+    }
+}
+
 int main(void)
 {
     test_disabled_field_is_zero();
+    test_gradient_of_disabled_field_is_zero();
+    test_gradient_matches_finite_difference_of_accel();
     test_legendre_matches_textbook();
     test_j2_matches_closed_form();
     test_zonal_field_is_axisymmetric();

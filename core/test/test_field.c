@@ -278,11 +278,10 @@ int main(void)
      * symmetry to hide a transposed index. Measured agreement better than
      * 1e-6 relative.
      *
-     * Point masses only, and since K4b that has to be asked for: the asset
-     * now carries Earth's shape, so a field built from it refuses to
-     * linearise (field.h). This is the whole of what K8's Pines Hessian
-     * buys - until it exists, every STM in this codebase describes a
-     * rounder Earth than the one the vessel flies past. */
+     * Point masses here on purpose, and only here: this block checks the
+     * point-mass block of field_gradient against its own finite
+     * differences, and the harmonic one is checked the same way further
+     * down. Splitting them means a failure names which half is wrong. */
     {
         FieldCtx field;
         CHECK(field_all_bodies(eph, &field) == CORE_OK);
@@ -339,11 +338,14 @@ int main(void)
     /* The STM of a vessel trajectory, by finite differences. Same method as
      * core/test/test_stm.c, in metres this time: the perturbation is 1 km and
      * the integrator tolerance 1e-3 m, so the noise floor of the measurement
-     * is around 1e-6 relative. Point masses only, for the reason above. */
+     * is around 1e-6 relative.
+     *
+     * Over the asset's real field, harmonics included - which is the point
+     * of K8b: before it, this had to drop the Earth's shape to get an STM
+     * at all. */
     {
         FieldCtx field;
         CHECK(field_all_bodies(eph, &field) == CORE_OK);
-        field_clear_harmonics(&field);
 
         State earth;
         CHECK(eph_body_state(eph, EARTH, t_begin, &earth) == CORE_OK);
@@ -485,39 +487,86 @@ int main(void)
         CHECK(plain.failed == 0 && oblate.failed == 0);
     }
 
-    /* An STM over a harmonic field is refused, not approximated (ROADMAP
-     * K4). The Hessian of the Pines recursion is K8; until it exists, a
-     * matrix describing only the point-mass part of a field the vessel is
-     * not flying in would be the plausible-and-wrong answer this file
-     * refuses everywhere else. */
+    /* An STM over a harmonic field, which K4 refused and K8b can answer.
+     *
+     * The check that matters is not that it returns something: it is that
+     * the gradient is the derivative of the acceleration the vessel is
+     * actually flying under, harmonics and all. Central differences of
+     * accel_field over the real asset field say so. */
     {
         FieldCtx oblate;
         CHECK(field_all_bodies(eph, &oblate) == CORE_OK);
         CHECK(oblate.n_harmonic == 1);
 
+        State earth;
+        CHECK(eph_body_state(eph, EARTH, t_begin, &earth) == CORE_OK);
+
+        /* Close enough to the Earth that its shape is a real part of the
+         * gradient rather than a rounding detail. */
+        Vec3d r = vec3(earth.r.x + 7.1e6, earth.r.y + 1.3e6,
+                       earth.r.z + 2.7e6);
+
         double g[9];
-        for (int k = 0; k < 9; k++) {
-            g[k] = 1.0;
-        }
-        field_gradient(t_begin, vec3(1.0e9, 2.0e9, 3.0e8), &oblate, g);
-        CHECK(oblate.failed == 1);
-        for (int k = 0; k < 9; k++) {
-            CHECK(g[k] == 0.0);
+        field_gradient(t_begin, r, &oblate, g);
+        CHECK(oblate.failed == 0);
+
+        const double eps = 20.0;
+        for (int j = 0; j < 3; j++) {
+            Vec3d rp = r, rm = r;
+            double *pp = j == 0 ? &rp.x : (j == 1 ? &rp.y : &rp.z);
+            double *pm = j == 0 ? &rm.x : (j == 1 ? &rm.y : &rm.z);
+            *pp += eps;
+            *pm -= eps;
+
+            Vec3d ap, am;
+            accel_field(t_begin, rp, vec3_zero(), &oblate, &ap);
+            accel_field(t_begin, rm, vec3_zero(), &oblate, &am);
+
+            double numeric[3] = {
+                (ap.x - am.x) / (2.0 * eps),
+                (ap.y - am.y) / (2.0 * eps),
+                (ap.z - am.z) / (2.0 * eps),
+            };
+
+            for (int i = 0; i < 3; i++) {
+                double want = g[i * 3 + j];
+                CHECK(fabs(numeric[i] - want) < 1e-5 * fabs(want));
+            }
         }
 
-        /* Total, including block 0: half an answer is the mismatch this
-         * guards against, not a milder form of it. */
-        FieldCtx again;
-        CHECK(field_all_bodies(eph, &again) == CORE_OK);
+        /* Symmetric to the bit, still - the harmonic block adds only the
+         * upper triangle, like the point-mass one. */
+        CHECK_BITS_EQ(g[1], g[3]);
+        CHECK_BITS_EQ(g[2], g[6]);
+        CHECK_BITS_EQ(g[5], g[7]);
 
-        Vec3d in_r[2] = { vec3(1.0e9, 2.0e9, 3.0e8), vec3(1.0e3, 0.0, 0.0) };
+        /* And the harmonic part is a real contribution at this altitude,
+         * not a term that rounds away: compare against the same gradient
+         * with the shape removed. */
+        FieldCtx plain;
+        CHECK(field_all_bodies(eph, &plain) == CORE_OK);
+        field_clear_harmonics(&plain);
+
+        double gp[9];
+        field_gradient(t_begin, r, &plain, gp);
+
+        double diff = 0.0, scale = 0.0;
+        for (int k = 0; k < 9; k++) {
+            diff += fabs(g[k] - gp[k]);
+            scale += fabs(gp[k]);
+        }
+        CHECK(diff > 1e-4 * scale);
+
+        /* accel_field_var no longer refuses, and its perturbation blocks
+         * are that same gradient applied - so an STM built on it describes
+         * the field the vessel flies in. */
+        Vec3d in_r[2] = { r, vec3(1.0e3, 0.0, 0.0) };
         Vec3d in_v[2] = { vec3_zero(), vec3_zero() };
-        Vec3d out[2] = { vec3(9.0, 9.0, 9.0), vec3(9.0, 9.0, 9.0) };
-
-        accel_field_var(t_begin, in_r, in_v, 2, &again, out);
-        CHECK(again.failed == 1);
-        CHECK(vec3_norm(out[0]) == 0.0);
-        CHECK(vec3_norm(out[1]) == 0.0);
+        Vec3d out[2];
+        accel_field_var(t_begin, in_r, in_v, 2, &oblate, out);
+        CHECK(oblate.failed == 0);
+        CHECK(vec3_norm(out[0]) > 0.0);
+        CHECK(fabs(out[1].x - (g[0] * 1.0e3)) < 1e-12 * fabs(g[0] * 1.0e3));
     }
 
     /* Running off the end of the ephemeris sets the flag rather than

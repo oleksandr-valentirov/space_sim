@@ -132,18 +132,13 @@ int main(void)
         return 1;
     }
 
-    /* Point masses, explicitly (ROADMAP K4b).
-     *
-     * Everything below goes through accel_field_var, and since the asset
-     * began carrying Earth's shape that refuses to linearise - there is no
-     * Pines Hessian until K8. Without this line the refusal arrives as
-     * zero acceleration, multiple shooting converges beautifully on a
-     * straight line, and this scenario hashes it: a determinism check that
-     * reproduces the same nonsense on every platform.
-     *
-     * Clearing keeps the scenario measuring what it was written to measure.
-     * The check below is what makes that a statement rather than a hope. */
-    field_clear_harmonics(&field);
+    /* The asset's own field, harmonics and all (ROADMAP K8b). Between K4b
+     * and K8a this had to be cleared: accel_field_var refused to linearise
+     * a harmonic field, the refusal arrived as zero acceleration, multiple
+     * shooting converged beautifully on a straight line, and this scenario
+     * hashed it - a determinism check reproducing identical nonsense on
+     * every platform. The field.failed check at the end is what turned
+     * that from a hope into a statement, and it stays. */
 
     ShootingConfig shoot = { 0 };
     shoot.tol_m = opaque(1e-2);

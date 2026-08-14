@@ -46,10 +46,14 @@ static void build_ri(double x, double y, int degree, double *rr, double *ii)
     }
 }
 
-/* A_nm(u) and Ad_nm(u) = dA_nm/du, built together: the general branch of Ad
- * needs A one degree down, not Ad, so splitting the two triangles into
- * separate passes would mean computing A twice. */
-static void build_legendre(double u, int degree, double *a, double *ad)
+/* A_nm(u) and its derivatives in u, built together: the general branch of
+ * each needs the one below it, so splitting the triangles into separate
+ * passes would mean recomputing the lower ones.
+ *
+ * add may be NULL - only harmonics_gradient wants the second derivative,
+ * and the acceleration is the hot path. */
+static void build_legendre(double u, int degree, double *a, double *ad,
+                           double *add)
 {
     double df = 1.0; /* running (2m-1)!!; 1 for m=0 by convention */
 
@@ -59,10 +63,17 @@ static void build_legendre(double u, int degree, double *a, double *ad)
         }
         a[harmonics_index(m, m)] = df;
         ad[harmonics_index(m, m)] = 0.0; /* sectorial term is a constant in u */
+        if (add != NULL) {
+            add[harmonics_index(m, m)] = 0.0;
+        }
 
         if (m + 1 <= degree) {
             a[harmonics_index(m + 1, m)] = u * (double)(2 * m + 1) * df;
             ad[harmonics_index(m + 1, m)] = (double)(2 * m + 1) * df;
+            if (add != NULL) {
+                /* Linear in u, so the second derivative vanishes here too. */
+                add[harmonics_index(m + 1, m)] = 0.0;
+            }
         }
 
         for (int n = m + 2; n <= degree; n++) {
@@ -79,6 +90,21 @@ static void build_legendre(double u, int degree, double *a, double *ad)
                 ((double)(2 * n - 1) * a1 + u * (double)(2 * n - 1) * ad1 -
                  (double)(n + m - 1) * ad2) /
                 (double)(n - m);
+
+            if (add != NULL) {
+                /* And again, product rule on the same term: the derivative
+                 * of (2n-1)*a1 + u*(2n-1)*ad1 is 2*(2n-1)*ad1 +
+                 * u*(2n-1)*add1. Differentiated from the recursion rather
+                 * than looked up, the same choice ad above records. */
+                double add1 = add[harmonics_index(n - 1, m)];
+                double add2 = add[harmonics_index(n - 2, m)];
+
+                add[harmonics_index(n, m)] =
+                    (2.0 * (double)(2 * n - 1) * ad1 +
+                     u * (double)(2 * n - 1) * add1 -
+                     (double)(n + m - 1) * add2) /
+                    (double)(n - m);
+            }
         }
     }
 }
@@ -111,7 +137,7 @@ void harmonics_accel(const HarmonicsField *field, Vec3d r, double mu,
 
     double a_leg[HARMONICS_MAX_COEFFS];
     double ad_leg[HARMONICS_MAX_COEFFS];
-    build_legendre(u, degree, a_leg, ad_leg);
+    build_legendre(u, degree, a_leg, ad_leg, NULL);
 
     double re_pow[HARMONICS_MAX_DEGREE + 1];
     re_pow[0] = 1.0;
@@ -169,6 +195,160 @@ void harmonics_accel(const HarmonicsField *field, Vec3d r, double mu,
     *a_out = acc;
 }
 
+/* Second derivatives of the same sum (ROADMAP K8a).
+ *
+ * Written per term as K r^-(p+2) times a bracket, exactly as the first
+ * derivatives are K r^-(p+1) times theirs. Differentiating
+ *
+ *     dT/dx_i = K r^-(p+1) [ -p n_i A g + A' w_i g + r A g_i ]
+ *
+ * once more and collecting by which factor of A survives gives five
+ * groups, where n_i = x_i/r are the direction cosines, w_i = d_iz - u n_i
+ * (so that r du/dx_i = w_i), g_i = dg/dx_i and G_ij = d^2 g/dx_i dx_j:
+ *
+ *   A   g   [ p(p+2) n_i n_j - p d_ij ]
+ *   A'  g   [ -(p+1)(n_i w_j + n_j w_i) - u(d_ij - n_i n_j) ]
+ *   A'' g   [ w_i w_j ]
+ *   A       [ -p r (n_i g_j + n_j g_i) + r^2 G_ij ]
+ *   A'      [ r (w_i g_j + w_j g_i) ]
+ *
+ * Every group is symmetric in i and j by its own shape, which is the first
+ * reason to arrange it this way: the symmetry of the result is a property
+ * of the derivation rather than something enforced afterwards. The second
+ * is that each group is homogeneous of the same degree in r, so a term
+ * that came out with the wrong power of r shows up as a dimensional
+ * mismatch rather than as a small error.
+ *
+ * Checked three ways in core/test/test_harmonics.c, and the third is the
+ * one that would catch an algebra slip the other two could share: against
+ * central differences of harmonics_accel, which is itself already pinned
+ * to the closed-form J2 field. The other two - symmetry, and a trace that
+ * vanishes because every solid harmonic satisfies Laplace's equation away
+ * from its source - are free and need no reference at all. */
+void harmonics_gradient(const HarmonicsField *field, Vec3d r, double mu,
+                        double g_out[9])
+{
+    for (int k = 0; k < 9; k++) {
+        g_out[k] = 0.0;
+    }
+
+    int degree = field->degree;
+    if (degree < 2) {
+        return;
+    }
+    degree = clamp_degree(degree);
+
+    double rad = vec3_norm(r);
+    double r_inv = 1.0 / rad;
+    double u = r.z * r_inv;
+
+    double dir[3] = { r.x * r_inv, r.y * r_inv, u };
+    double w[3] = { -u * dir[0], -u * dir[1], 1.0 - u * u };
+
+    double rr[HARMONICS_MAX_DEGREE + 1];
+    double ii[HARMONICS_MAX_DEGREE + 1];
+    build_ri(r.x, r.y, degree, rr, ii);
+
+    double a_leg[HARMONICS_MAX_COEFFS];
+    double ad_leg[HARMONICS_MAX_COEFFS];
+    double add_leg[HARMONICS_MAX_COEFFS];
+    build_legendre(u, degree, a_leg, ad_leg, add_leg);
+
+    double re_pow[HARMONICS_MAX_DEGREE + 1];
+    re_pow[0] = 1.0;
+    for (int n = 1; n <= degree; n++) {
+        re_pow[n] = re_pow[n - 1] * field->re;
+    }
+
+    /* One power further than the acceleration's table: p + 2. */
+    int max_power = 2 * degree + 3;
+    double r_inv_pow[2 * HARMONICS_MAX_DEGREE + 4];
+    r_inv_pow[0] = 1.0;
+    for (int k = 1; k <= max_power; k++) {
+        r_inv_pow[k] = r_inv_pow[k - 1] * r_inv;
+    }
+
+    for (int n = 2; n <= degree; n++) {
+        for (int m = 0; m <= n; m++) {
+            int idx = harmonics_index(n, m);
+            double c = field->c[idx];
+            double sv = field->s[idx];
+            if (c == 0.0 && sv == 0.0) {
+                continue;
+            }
+
+            double av = a_leg[idx];
+            double adv = ad_leg[idx];
+            double addv = add_leg[idx];
+            double gv = c * rr[m] + sv * ii[m];
+
+            int p = n + 1 + m;
+            double coef = mu * re_pow[n] * r_inv_pow[p + 2];
+
+            /* dg/dx_i: nonzero only in x and y, and only from m >= 1. */
+            double gi[3] = { 0.0, 0.0, 0.0 };
+            if (m > 0) {
+                double h1 = c * rr[m - 1] + sv * ii[m - 1];
+                double h2 = sv * rr[m - 1] - c * ii[m - 1];
+                gi[0] = (double)m * h1;
+                gi[1] = (double)m * h2;
+            }
+
+            /* d^2 g/dx_i dx_j, from m >= 2. Harmonic in two dimensions -
+             * G_xx + G_yy is identically zero - which is where the trace
+             * check below gets part of its bite. */
+            double g_xx = 0.0, g_xy = 0.0, g_yy = 0.0;
+            if (m > 1) {
+                double k1 = c * rr[m - 2] + sv * ii[m - 2];
+                double k2 = sv * rr[m - 2] - c * ii[m - 2];
+                double mm = (double)m * (double)(m - 1);
+                g_xx = mm * k1;
+                g_xy = mm * k2;
+                g_yy = -mm * k1;
+            }
+
+            /* Upper triangle only, mirrored after the loop. Not for speed:
+             * n_i w_j + n_j w_i evaluated in the two orders differs in the
+             * last bit, and a caller entitled to a symmetric matrix would
+             * be quietly wrong - the same reasoning field_gradient records
+             * for its own outer product. */
+            for (int i = 0; i < 3; i++) {
+                for (int j = i; j < 3; j++) {
+                    double d_ij = (i == j) ? 1.0 : 0.0;
+
+                    double sym_nw = dir[i] * w[j] + dir[j] * w[i];
+                    double sym_ng = dir[i] * gi[j] + dir[j] * gi[i];
+                    double sym_wg = w[i] * gi[j] + w[j] * gi[i];
+
+                    double gij = 0.0;
+                    if (i == 0 && j == 0) {
+                        gij = g_xx;
+                    } else if (i == 0 && j == 1) {
+                        gij = g_xy;
+                    } else if (i == 1 && j == 1) {
+                        gij = g_yy;
+                    }
+
+                    double term =
+                        av * gv * ((double)p * (double)(p + 2) * dir[i] * dir[j]
+                                   - (double)p * d_ij)
+                      + adv * gv * (-(double)(p + 1) * sym_nw
+                                    - u * (d_ij - dir[i] * dir[j]))
+                      + addv * gv * w[i] * w[j]
+                      + av * (-(double)p * rad * sym_ng + rad * rad * gij)
+                      + adv * rad * sym_wg;
+
+                    g_out[i * 3 + j] += coef * term;
+                }
+            }
+        }
+    }
+
+    g_out[3] = g_out[1];
+    g_out[6] = g_out[2];
+    g_out[7] = g_out[5];
+}
+
 void harmonics_potential(const HarmonicsField *field, Vec3d r, double mu,
                          double *u_out)
 {
@@ -194,7 +374,7 @@ void harmonics_potential(const HarmonicsField *field, Vec3d r, double mu,
      * harmonics.h). */
     double a_leg[HARMONICS_MAX_COEFFS];
     double ad_leg[HARMONICS_MAX_COEFFS];
-    build_legendre(u, degree, a_leg, ad_leg);
+    build_legendre(u, degree, a_leg, ad_leg, NULL);
 
     double re_pow[HARMONICS_MAX_DEGREE + 1];
     re_pow[0] = 1.0;
