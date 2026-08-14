@@ -187,6 +187,14 @@ DEP := $(CORE_OBJ:.o=.d) $(OFFLINE_OBJ:.o=.d) $(PLANNING_OBJ:.o=.d) \
        $(patsubst core/bench/%.c,$(BUILD)/bench/%.d,$(BENCH_SRC)) \
        $(patsubst core/scenario/%.c,$(BUILD)/scenario/%.d,$(SCEN_SRC))
 
+# Ціль за замовчуванням — явно, ДО `-include` нижче. Без цього голий `make`
+# нічого не збирав: `-include` вносить правила з .d-файлів раніше, ніж
+# з'явиться `all:`, і перше правило звідти (`build/core/accel.o`) ставало
+# ціллю за замовчуванням. Тобто `make` мовчки казав «up to date», не
+# зібравши нічого, — а перевірки, які потім бачили стару бібліотеку,
+# перевіряли не той код.
+.DEFAULT_GOAL := all
+
 -include $(DEP)
 
 .PHONY: all test unit check-libm determinism determinism-bless hashes cook \
