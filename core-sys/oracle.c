@@ -127,6 +127,23 @@ static int propagate(const EphemerisCtx *eph)
     printf("run %zu %d %d %.17g\n", n, (int)stop, event, step);
     print_state("end", &final_state);
 
+    /* Та сама ланка, але з матрицею переходу (ROADMAP K8). Друкується і
+     * кінцевий стан, і крок: обіцянка межі в тому, що це бітово те саме,
+     * що дав би prop_run, тож звірка мусить бачити обидва. */
+    step = 0.0;
+    double phi[36];
+    if (prop_run_stm(p, &vessel, VESSEL_T0 + 0.5 * DAY, &final_state, phi,
+                     &step) != CORE_OK) {
+        prop_free(p);
+        return 0;
+    }
+
+    printf("stmrun %.17g\n", step);
+    print_state("stmend", &final_state);
+    for (int i = 0; i < 36; i++) {
+        printf("stm %d %.17g\n", i, phi[i]);
+    }
+
     prop_free(p);
     return 1;
 }

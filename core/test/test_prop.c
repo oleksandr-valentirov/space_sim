@@ -23,6 +23,7 @@
 #include "field.h"
 #include "integrator.h"
 #include "prop.h"
+#include "stm.h"
 #include "test.h"
 
 #include <math.h>
@@ -673,6 +674,123 @@ int main(void)
         CHECK(prop_run(q, &ecc, t_far, &ev, PROP_MAX_EVENTS + 1, NULL, 0, &n,
                        &final_state, &stop, &event, &step)
               == CORE_ERR_INVALID_ARG);
+
+        prop_free(q);
+    }
+
+    /* prop_run_stm (ROADMAP K8), and the promise that makes it usable.
+     *
+     * The matrix is only worth having if it belongs to the trajectory the
+     * vessel actually flies. That holds by construction rather than by
+     * tolerance - core/dop853.c reads block 0 alone when it decides a step,
+     * so the six variational blocks travel the same step sequence without
+     * influencing it - and this is where that gets measured instead of
+     * believed. */
+    {
+        PropConfig cfg_stm = config(H_MAX);
+        PropagatorCtx *q = NULL;
+        CHECK(prop_create(eph, &cfg_stm, &q) == CORE_OK);
+
+        State start = vessel_at(eph, t0, 1.0);
+        double t_stop = t0 + 0.5 * DAY;
+
+        State plain_final;
+        size_t n = 0;
+        CoreStopReason stop;
+        int event = 0;
+        double plain_step = 0.0;
+        CHECK(prop_run(q, &start, t_stop, NULL, 0, NULL, 0, &n, &plain_final,
+                       &stop, &event, &plain_step) == CORE_OK);
+        CHECK(stop == CORE_STOP_T_END);
+
+        State stm_final;
+        double phi[STM_SIZE];
+        double stm_step = 0.0;
+        CHECK(prop_run_stm(q, &start, t_stop, &stm_final, phi, &stm_step)
+              == CORE_OK);
+
+        /* Bit-identical, position, velocity and the step left behind. The
+         * step matters as much as the state: it is what the next call
+         * continues with, and a run that agreed on the state while leaving
+         * a different step would diverge from the following leg onwards. */
+        CHECK_BITS_EQ(stm_final.r.x, plain_final.r.x);
+        CHECK_BITS_EQ(stm_final.r.y, plain_final.r.y);
+        CHECK_BITS_EQ(stm_final.r.z, plain_final.r.z);
+        CHECK_BITS_EQ(stm_final.v.x, plain_final.v.x);
+        CHECK_BITS_EQ(stm_final.v.y, plain_final.v.y);
+        CHECK_BITS_EQ(stm_final.v.z, plain_final.v.z);
+        CHECK_BITS_EQ(stm_step, plain_step);
+
+        /* And the matrix is the real derivative of that trajectory, by
+         * central differences through prop_run itself - so this compares
+         * the STM against the propagator a caller would actually use, not
+         * against a second copy of the same integration. */
+        const double eps_r = 1.0e3;
+        const double eps_v = 1.0e-3;
+
+        double worst = 0.0, biggest = 0.0;
+
+        for (int j = 0; j < 6; j++) {
+            double eps = j < 3 ? eps_r : eps_v;
+
+            State plus = start, minus = start;
+            double *pp[6] = { &plus.r.x, &plus.r.y, &plus.r.z,
+                              &plus.v.x, &plus.v.y, &plus.v.z };
+            double *pm[6] = { &minus.r.x, &minus.r.y, &minus.r.z,
+                              &minus.v.x, &minus.v.y, &minus.v.z };
+            *pp[j] += eps;
+            *pm[j] -= eps;
+
+            State end_plus, end_minus;
+            double h = 0.0;
+            CHECK(prop_run(q, &plus, t_stop, NULL, 0, NULL, 0, &n, &end_plus,
+                           &stop, &event, &h) == CORE_OK);
+            h = 0.0;
+            CHECK(prop_run(q, &minus, t_stop, NULL, 0, NULL, 0, &n, &end_minus,
+                           &stop, &event, &h) == CORE_OK);
+
+            double a[6] = { end_plus.r.x, end_plus.r.y, end_plus.r.z,
+                            end_plus.v.x, end_plus.v.y, end_plus.v.z };
+            double b[6] = { end_minus.r.x, end_minus.r.y, end_minus.r.z,
+                            end_minus.v.x, end_minus.v.y, end_minus.v.z };
+
+            for (int i = 0; i < 6; i++) {
+                double numeric = (a[i] - b[i]) / (2.0 * eps);
+                double d = fabs(numeric - phi[i * 6 + j]);
+                if (d > worst) {
+                    worst = d;
+                }
+                if (fabs(numeric) > biggest) {
+                    biggest = fabs(numeric);
+                }
+            }
+        }
+
+        CHECK(biggest > 1.0);
+        CHECK(worst < 1e-5 * biggest);
+        printf("  stm matches finite differences to %.2g of %.4g\n",
+               worst, biggest);
+
+        /* Arguments checked, including the one that is easy to forget. */
+        CHECK(prop_run_stm(NULL, &start, t_stop, &stm_final, phi, &stm_step)
+              == CORE_ERR_INVALID_ARG);
+        CHECK(prop_run_stm(q, &start, t_stop, &stm_final, NULL, &stm_step)
+              == CORE_ERR_INVALID_ARG);
+        CHECK(prop_run_stm(q, &start, t_stop, &stm_final, phi, NULL)
+              == CORE_ERR_INVALID_ARG);
+
+        /* Past the end of the EPHEMERIS - t_span_end, not the run's own
+         * t_end, which is a day short of it and perfectly legal. Getting
+         * that wrong is how the first version of this check passed while
+         * asserting nothing.
+         *
+         * The field returns zero acceleration out there and sets its sticky
+         * flag; without the check in prop_run_stm the caller would get
+         * CORE_OK, a plausible trajectory of a vessel that felt no gravity,
+         * and a matrix describing it. */
+        double far_step = 0.0;
+        CHECK(prop_run_stm(q, &start, t_span_end + DAY, &stm_final, phi,
+                           &far_step) == CORE_ERR_INVALID_ARG);
 
         prop_free(q);
     }

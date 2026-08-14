@@ -179,7 +179,7 @@ fn the_handle_can_be_shared_between_threads() {
 
 use std::sync::Arc;
 
-use core_rs::{Event, Integrator, PropConfig, Propagator, State, Stop};
+use core_rs::{Event, Integrator, PropConfig, Propagator, State, Stm, Stop, STM_LEN};
 
 const VESSEL_T0: f64 = DAY;
 const VESSEL_DX: f64 = 42_164.0e3;
@@ -454,4 +454,83 @@ fn creating_and_dropping_repeatedly_is_clean() {
         let mut samples = [State::default(); 8];
         let _ = prop.run(&start, VESSEL_T0 + 600.0, &[], &mut samples, &mut step);
     }
+}
+
+/// `run_stm` (ROADMAP K8): матриця приходить, і траєкторія при цьому та сама.
+///
+/// Друге твердження — головне. Матриця варта чогось лише тоді, коли вона
+/// належить траєкторії, якою апарат справді летить; звірка бітова, бо
+/// «приблизно та сама» тут нічого не значила б.
+#[test]
+fn the_stm_run_is_the_same_trajectory() {
+    let eph = Arc::new(load());
+    let start = vessel(&eph);
+    let mut prop = Propagator::new(eph, config()).unwrap();
+
+    let t_end = VESSEL_T0 + 0.25 * DAY;
+
+    let mut plain_step = 0.0;
+    let plain = prop
+        .run(&start, t_end, &[], &mut [], &mut plain_step)
+        .unwrap();
+
+    let mut stm_step = 0.0;
+    let (final_state, phi) = prop.run_stm(&start, t_end, &mut stm_step).unwrap();
+
+    for (a, b) in [
+        (final_state.r.x, plain.final_state.r.x),
+        (final_state.r.y, plain.final_state.r.y),
+        (final_state.r.z, plain.final_state.r.z),
+        (final_state.v.x, plain.final_state.v.x),
+        (final_state.v.y, plain.final_state.v.y),
+        (final_state.v.z, plain.final_state.v.z),
+    ] {
+        assert_eq!(a.to_bits(), b.to_bits(), "траєкторія мусить бути та сама");
+    }
+    assert_eq!(
+        stm_step.to_bits(),
+        plain_step.to_bits(),
+        "крок, який лишається на наступну ланку, теж"
+    );
+
+    // Матриця осмислена: не одинична, не порожня, і індексується так, як
+    // обіцяно. Без цього все вище звірялося б із нулями.
+    assert_eq!(phi.as_slice().len(), STM_LEN);
+    let off_diagonal: f64 = (0..6)
+        .flat_map(|i| (0..6).map(move |j| (i, j)))
+        .filter(|(i, j)| i != j)
+        .map(|(i, j)| phi.get(i, j).abs())
+        .sum();
+    assert!(off_diagonal > 1.0, "STM виглядає одиничною");
+
+    // get(row, col) читає той самий елемент, що й сирий зріз - інакше
+    // транспонування пройшло б непоміченим.
+    for i in 0..6 {
+        for j in 0..6 {
+            assert_eq!(phi.get(i, j).to_bits(), phi.as_slice()[i * 6 + j].to_bits());
+        }
+    }
+}
+
+/// Та сама відмова, що в `run`: за межами ассета це помилка, а не матриця
+/// для апарата, який не відчув тяжіння.
+#[test]
+fn an_stm_run_past_the_asset_is_an_error() {
+    let eph = Arc::new(load());
+    let start = vessel(&eph);
+    let mut prop = Propagator::new(eph, config()).unwrap();
+
+    let mut step = 0.0;
+    assert_eq!(
+        prop.run_stm(&start, 200.0 * DAY, &mut step).err(),
+        Some(CoreError::InvalidArg)
+    );
+}
+
+/// `Stm::get` поза 6×6 — це помилка програміста, і вона мусить бути гучною.
+#[test]
+#[should_panic(expected = "STM 6x6")]
+fn indexing_the_stm_out_of_range_panics() {
+    let phi = Stm([0.0; STM_LEN]);
+    let _ = phi.get(6, 0);
 }

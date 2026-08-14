@@ -13,7 +13,7 @@ RAII + `Result`, і рушій уже цим користується (`engine::
 ## Поточний стан межі — не плутати зі скетчем із PROJECT.md §5
 
 PROJECT.md §5 описує **цільовий** C API (~20 функцій) — це план, не поточний
-стан. **Реально оголошено й обгорнуто на сьогодні шість функцій:**
+стан. **Реально оголошено й обгорнуто на сьогодні сім функцій:**
 
 ```rust
 // core-sys/src/lib.rs — сирі декларації, extern "C", без жодного unsafe-блоку
@@ -28,6 +28,13 @@ pub fn prop_create(eph: *const EphemerisCtx, cfg: *const PropConfig,
 pub fn prop_free(p: *mut PropagatorCtx);
 pub fn prop_run(/* 12 аргументів: буфер від Rust, out_cap/out_count,
                    out_final, out_stop, out_event, in_out_step */) -> CoreResult;
+
+// ROADMAP K8c. Та сама інтеграція з матрицею переходу; out_stm — 36 f64
+// від Rust. Траєкторія БІТОВО та сама, що в prop_run (контролер кроку в
+// dop853.c читає лише блок 0) — виміряно на всіх трьох рівнях.
+pub fn prop_run_stm(p: *mut PropagatorCtx, initial: *const State, t_end: f64,
+                    out_final: *mut State, out_stm: *mut f64,
+                    in_out_step: *mut f64) -> CoreResult;
 ```
 
 ```rust
@@ -46,7 +53,12 @@ impl Propagator {
     pub fn new(eph: Arc<Ephemeris>, cfg: PropConfig) -> Result<Propagator>;
     pub fn run(&mut self, initial: &State, t_end: f64, events: &[Event],
                samples: &mut [State], step: &mut f64) -> Result<Run>;
+    pub fn run_stm(&mut self, initial: &State, t_end: f64,
+                   step: &mut f64) -> Result<(State, Stm)>;   // K8c
 }
+// Stm — обгортка над [f64; 36] з get(row, col), а не голий масив: транспонована
+// матриця переходу цілком правдоподібна, і помилка проявилась би як дивна
+// корекція, не як падіння.
 // Ефемерида — Arc, НЕ лайфтайм (CLAUDE.md: жодних лайфтаймів у структурах);
 // Send є, Sync свідомо немає — контекст у C несе липкий прапорець помилки.
 ```
@@ -62,7 +74,8 @@ impl Propagator {
   неможливо навіть написати.
 
 Усе інше з `core/*.h` (`cr3bp_*`, `halo_correct`, `shoot_multiple`,
-`station_keep`, `lambert_solve`, `porkchop_compute`, `target_hit`, ...)
+`station_keep`, `lambert_solve`, `porkchop_compute`, `target_hit`,
+`eph_body_harmonics`, ...)
 **існує в C, але не має FFI-декларації**. Якщо задача вимагає викликати щось
 із них із Rust — це нова робота на межі, а не пошук наявної функції.
 
@@ -122,6 +135,5 @@ cargo run -q --example flags # прапорці з боку cargo — звірк
   `cflags.txt`, або з'явився CMake — CLAUDE.md наразі це забороняє,
   якщо стан зміниться, він зміниться свідомо й помітно).
 - Почалась робота над наступним шматком C API з PROJECT.md §5
-  (`lambert_solve`, `porkchop_compute`, `target_hit`, `prop_run_stm`,
-  `eph_body_rotation`) — перенеси відповідний рядок із «не має декларації»
+  (`lambert_solve`, `porkchop_compute`, `target_hit`, `eph_body_rotation`) — перенеси відповідний рядок із «не має декларації»
   в список реалізованого й додай виклик в оракул.

@@ -19,9 +19,9 @@ use std::path::Path;
 use std::process::Command;
 
 use core_sys::{
-    eph_body_state, eph_free, eph_load, prop_create, prop_free, prop_run, CoreEvent, CoreResult,
-    EphemerisCtx, PropConfig, PropagatorCtx, State, CORE_ERR_INVALID_ARG, CORE_EVENT_PERIAPSIS,
-    CORE_INTEG_DOP853, CORE_OK, CORE_STOP_EVENT,
+    eph_body_state, eph_free, eph_load, prop_create, prop_free, prop_run, prop_run_stm, CoreEvent,
+    CoreResult, EphemerisCtx, PropConfig, PropagatorCtx, State, CORE_ERR_INVALID_ARG,
+    CORE_EVENT_PERIAPSIS, CORE_INTEG_DOP853, CORE_OK, CORE_STOP_EVENT,
 };
 
 const ORACLE: &str = env!("CORE_ORACLE");
@@ -371,6 +371,60 @@ fn propagation_matches_the_c_oracle_bit_for_bit() {
         assert_eq!(run.values[2] as i32, event);
         assert_eq!(run.values[3].to_bits(), step.to_bits(), "крок після події");
         same_bits(&oracle_ends[1].state(0), &final_state, "стан на події");
+
+        // --- prop_run_stm (ROADMAP K8) --------------------------------
+        //
+        // Дві різні заяви, і друга не випливає з першої: що межа доносить
+        // 36 чисел матриці без перестановок, і що траєкторія при цьому
+        // бітово та сама, що дав би prop_run.
+        let oracle_stm_run = tagged(&records, "stmrun");
+        let oracle_stm_end = tagged(&records, "stmend");
+        let oracle_stm = tagged(&records, "stm");
+
+        assert_eq!(oracle_stm_run.len(), 1);
+        assert_eq!(oracle_stm_end.len(), 1);
+        assert_eq!(oracle_stm.len(), 36, "матриця мусить бути 6x6");
+
+        let mut stm_final = State::default();
+        let mut phi = [0.0f64; 36];
+        let mut stm_step = 0.0f64;
+
+        let result = prop_run_stm(
+            p,
+            &vessel,
+            VESSEL_T0 + 0.5 * DAY,
+            &mut stm_final,
+            phi.as_mut_ptr(),
+            &mut stm_step,
+        );
+        assert_eq!(result, CORE_OK);
+
+        assert_eq!(
+            oracle_stm_run[0].values[0].to_bits(),
+            stm_step.to_bits(),
+            "крок після прогону з матрицею"
+        );
+        same_bits(&oracle_stm_end[0].state(0), &stm_final, "кінцевий стан STM");
+
+        // Порядок елементів — рядково-мажорний, і оракул несе індекс у
+        // кожному рядку, тож перестановка рядків з стовпцями впала б тут,
+        // а не проявилась як дивна корекція через півроку.
+        for (k, record) in oracle_stm.iter().enumerate() {
+            assert_eq!(record.values[0] as usize, k, "порядок елементів STM");
+            assert_eq!(
+                record.values[1].to_bits(),
+                phi[k].to_bits(),
+                "елемент STM {k}"
+            );
+        }
+
+        // Матриця не одинична й не порожня — інакше все вище звірялося б із
+        // нулями й проходило б на будь-якій помилці.
+        let off_diagonal: f64 = (0..36)
+            .filter(|k| k / 6 != k % 6)
+            .map(|k| phi[k].abs())
+            .sum();
+        assert!(off_diagonal > 1.0, "STM виглядає одиничною: {phi:?}");
 
         prop_free(p);
         eph_free(ctx);

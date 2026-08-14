@@ -224,4 +224,37 @@ CoreResult prop_run(PropagatorCtx *p, const State *initial, double t_end,
                     State *out_final, CoreStopReason *out_stop, int *out_event,
                     double *in_out_step);
 
+/* The same integration, carrying the state transition matrix with it
+ * (ROADMAP K8, PROJECT.md section 5).
+ *
+ * out_stm is row-major 6x6, d y(t_end) / d y(initial), state ordered
+ * (x, y, z, vx, vy, vz) - see core/stm.h, which is what does the work here.
+ * This is what differential correction asks for in M3 and what pushes a
+ * covariance forward in M6.
+ *
+ * THE TRAJECTORY IS THE SAME ONE. Not approximately, not to within the
+ * tolerance: prop_run and prop_run_stm over the same interval, from the
+ * same state and the same carried step, produce bit-identical results. The
+ * reason is in core/dop853.c and is worth knowing rather than trusting -
+ * the step controller's error norm reads block 0 alone, so the six
+ * variational blocks ride the step sequence without ever voting on it.
+ * core/test/test_prop.c measures this rather than assuming it.
+ *
+ * That is CLAUDE.md invariant 5 at the point where it is easiest to lose:
+ * a planner that corrects a manoeuvre using a matrix belonging to a
+ * slightly different trajectory would aim at where the vessel is not.
+ *
+ * No events and no sample buffer, and neither is an oversight. This
+ * answers "where does a change at the start end up at t_end", which is a
+ * question about one leg with two ends; an event would end the leg
+ * somewhere the caller did not ask about, and the matrix would then
+ * describe a different interval than the caller believes. A caller wanting
+ * both flies prop_run to find the event, then prop_run_stm over the leg it
+ * defines.
+ *
+ * in_out_step behaves exactly as in prop_run, and for the same reason. */
+CoreResult prop_run_stm(PropagatorCtx *p, const State *initial, double t_end,
+                        State *out_final, double out_stm[36],
+                        double *in_out_step);
+
 #endif /* CORE_PROP_H */

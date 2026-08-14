@@ -2,6 +2,7 @@
 
 #include "field.h"
 #include "integrator.h"
+#include "stm.h"
 
 #include <stdlib.h>
 
@@ -471,5 +472,55 @@ CoreResult prop_run(PropagatorCtx *p, const State *initial, double t_end,
     *out_stop = CORE_STOP_EVENT;
     *out_event = best_index;
 
+    return CORE_OK;
+}
+
+CoreResult prop_run_stm(PropagatorCtx *p, const State *initial, double t_end,
+                        State *out_final, double out_stm[STM_SIZE],
+                        double *in_out_step)
+{
+    if (p == NULL || initial == NULL || out_final == NULL ||
+        out_stm == NULL || in_out_step == NULL) {
+        return CORE_ERR_INVALID_ARG;
+    }
+    if (*in_out_step < 0.0) {
+        return CORE_ERR_INVALID_ARG;
+    }
+
+    /* Identical to prop_run's, field for field. Sharing the lines would mean
+     * a helper that takes a context and returns a config, which is more
+     * machinery than the four assignments are worth; what matters is that
+     * the two never differ, and that is what the bit-equality test in
+     * core/test/test_prop.c is for. */
+    Dop853Config dcfg;
+    dcfg.tol_m = p->cfg.tol_m;
+    dcfg.h_init = 0.0;
+    dcfg.h_min = 0.0;
+    dcfg.h_max = p->cfg.h_max_s;
+    dcfg.max_steps = p->cfg.max_steps;
+
+    Dop853State st;
+    st.h = *in_out_step;
+    st.n_accepted = 0;
+    st.n_rejected = 0;
+    st.n_evals = 0;
+
+    p->field.failed = 0;
+
+    CoreResult res = stm_integrate(accel_field_var, &p->field, initial, t_end,
+                                   &dcfg, &st, out_final, out_stm);
+    if (res != CORE_OK) {
+        return res;
+    }
+
+    /* The same check prop_run makes, and for the same reason: the field
+     * returns zero acceleration outside the ephemeris span, which would be a
+     * plausible trajectory of a vessel that felt no gravity - and a matrix
+     * describing it. */
+    if (p->field.failed) {
+        return CORE_ERR_INVALID_ARG;
+    }
+
+    *in_out_step = st.h;
     return CORE_OK;
 }
