@@ -9,10 +9,12 @@
 # на одній машині шукається набагато дешевше за розбіжність Linux/Windows,
 # і ловить ту саму причину — тож нехай падає раніше й ближче.
 #
-# Windows іде через MSYS2, а не MSVC. На M0 збірка — це Makefile, `nm` і `sh`,
-# і MSYS2 дає їх усі. MSVC з'явиться на M1 разом з `cargo` і крейтом `cc`
-# (ROADMAP D1), і тоді ж доведеться звірити його прапорці з core/cflags.txt —
-# це вже записано як борг у ROADMAP A1.
+# Windows іде через MSYS2, а не MSVC. Збірка тут — це Makefile, `nm` і `sh`,
+# і MSYS2 дає їх усі; той самий UCRT64-gcc збирає ядро й під `cargo`. MSVC не
+# підтримується свідомо: core/cflags.txt написаний під gcc, і
+# `core-sys/build.rs` на MSVC падає з поясненням, а не збирає щось інше мовчки.
+# Тому на Windows тулчейн Rust — x86_64-pc-windows-gnu, і ставить його крок
+# «Rust (windows-gnu)» нижче.
 #
 # Якщо перший запуск розійдеться, порядок пошуку — у ROADMAP C5:
 #   1. прапорці справді однакові (`make flags` у логах нижче);
@@ -71,6 +73,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: MSYS2
+        id: msys2
         if: runner.os == 'Windows'
         uses: msys2/setup-msys2@v2
         with:
@@ -96,6 +99,43 @@ jobs:
             sed
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-binutils
+
+      # Тулчейн Rust для Windows — gnu, не MSVC. Той самий рецепт, яким борг
+      # D1 закривали на реальній машині розробника; тут він лише переїхав
+      # у раннер.
+      #
+      # Тулчейн вибирається через RUSTUP_TOOLCHAIN, а не `rustup default` і
+      # не `rustup override set`. Причина — старшинство: `default` програє
+      # rust-toolchain.toml (той каже `channel = "stable"`, що на Windows
+      # розгорнеться в msvc), а каталожний override і файл змагаються за
+      # правилом, яке доводиться пам'ятати. Змінна оточення старша за обидва,
+      # тож тут нічого пам'ятати не треба. Помилка в цьому виборі не була б
+      # тихою — build.rs упав би повідомленням про MSVC, — але впала б за три
+      # кроки від причини.
+      #
+      # ucrt64\bin у PATH — щоб `cc` і лінкер gnu-цілі взяли ТОЙ САМИЙ gcc,
+      # яким збирає `make` двома кроками нижче. Інакше звірялися б хеші двох
+      # різних збірок ядра, і їхній збіг не доводив би нічого про cargo.
+      #
+      # ⚠ Оболонка тут pwsh, а не msys2: rustup і cargo — рідні для Windows,
+      #   і тягнути їх у msys2-шелл довелося б через path-type: inherit, що
+      #   міняє PATH усім крокам, включно з тими, які зараз працюють.
+      #   Літерал у `shell:` дозволений — не дозволений там КОНТЕКСТ
+      #   (`${{ matrix.shell }}`), про що сказано вище коло defaults.
+      - name: Rust (windows-gnu)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          RUSTUP_TOOLCHAIN: stable-x86_64-pc-windows-gnu
+        run: |
+          $ucrt = "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin"
+          # GITHUB_PATH діє на НАСТУПНІ кроки, тож для власного `gcc --version`
+          # нижче PATH треба поправити ще й тут.
+          $ucrt | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          $env:PATH = "$ucrt;$env:PATH"
+          rustup toolchain install stable-x86_64-pc-windows-gnu
+          rustc -vV
+          gcc --version
 
       # Прапорці в лог, до будь-якої збірки. Розбіжність хешів починають
       # шукати саме тут, і мати їх у логах кожного джоба економить один цикл.
@@ -165,10 +205,8 @@ jobs:
       # CC передається той самий, що і в make: на linux-clang ядро для cargo
       # теж збере clang, і розбіжність gcc/clang усередині cargo впаде тут.
       #
-      # Windows пропущено свідомо, а не забуто. Тулчейн Rust за замовчуванням
-      # там MSVC, а core/cflags.txt написаний під gcc — потрібен
-      # x86_64-pc-windows-gnu. Це записано боргом у ROADMAP D1; джоб
-      # windows-mingw поки що перевіряє тільки збірку через make.
+      # Windows має власну пару кроків нижче — інша оболонка й вужчий набір
+      # крейтів. Чому саме так, сказано там.
       # Програмний Vulkan для тестів рушія: без адаптера вони пропускаються,
       # а мовчазний пропуск — це зелений тест, який нічого не перевіряє.
       # macOS має Metal сам.
@@ -194,6 +232,39 @@ jobs:
         env:
           CC: ${{ matrix.cc }}
         run: cargo test --release
+
+      # Те саме на Windows — але ТІЛЬКИ core-sys і core-rs, і це не економія
+      # часу.
+      #
+      # Перевіряється рівно одне твердження, і воно живе в цих двох крейтах:
+      # ядро, зібране крейтом `cc` на Windows, дає ті самі хеші, що еталон.
+      # `game` притягнув би `engine`, тобто wgpu і winit, а тести рушія без
+      # адаптера мовчки пропускаються — зелений тест, який нічого не
+      # перевіряє, гірший за свою відсутність (та сама причина, з якої вище
+      # ставиться Mesa). Програмний D3D12 сюди — окреме рішення, не це.
+      #
+      # Той самий поділ, що в кроці Valgrind нижче, і з тієї ж причини: межа
+      # C↔Rust — єдине, що на цій платформі ще не було перевірене під cargo.
+      #
+      # Двома кроками, а не одним, як і на решті платформ: у червоному логу
+      # має бути видно, debug чи release.
+      - name: Cargo determinism (windows-gnu)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CC: ${{ matrix.cc }}
+          RUSTUP_TOOLCHAIN: stable-x86_64-pc-windows-gnu
+        run: |
+          cargo run -q -p core-sys --example flags
+          cargo test -p core-sys -p core-rs
+
+      - name: Cargo determinism (windows-gnu, release)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CC: ${{ matrix.cc }}
+          RUSTUP_TOOLCHAIN: stable-x86_64-pc-windows-gnu
+        run: cargo test --release -p core-sys -p core-rs
 
       - name: Clippy
         if: matrix.name == 'linux-gcc'
