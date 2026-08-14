@@ -38,6 +38,30 @@ CoreResult field_all_but(const EphemerisCtx *eph, int excluded, FieldCtx *out)
     return CORE_OK;
 }
 
+CoreResult field_set_harmonics(FieldCtx *ctx, int body,
+                               const HarmonicsField *field)
+{
+    if (ctx == NULL || field == NULL) {
+        return CORE_ERR_INVALID_ARG;
+    }
+    if (field->degree < 2 || !(field->re > 0.0)) {
+        return CORE_ERR_INVALID_ARG;
+    }
+
+    for (int i = 0; i < ctx->n_bodies; i++) {
+        if (ctx->body[i] == body) {
+            ctx->has_harmonics = 1;
+            ctx->harmonics_slot = i;
+            ctx->harmonics = *field;
+            return CORE_OK;
+        }
+    }
+
+    /* Not a body this context sums over - see the header for why silence
+     * would be the wrong answer. */
+    return CORE_ERR_INVALID_ARG;
+}
+
 /* Position of body index b at t, and the vector from r to it. Returns 0 and
  * trips the failure flag if the ephemeris cannot answer. */
 static int offset_to_body(FieldCtx *c, int b, double t, Vec3d r, Vec3d *out)
@@ -58,6 +82,7 @@ void accel_field(double t, Vec3d r, Vec3d v, void *ctx, Vec3d *a_out)
 
     FieldCtx *c = (FieldCtx *)ctx;
     Vec3d sum = vec3_zero();
+    Vec3d harmonic = vec3_zero();
 
     /* Index order, always. A reordering here is a different trajectory
      * (vec3.h), and this is the sum most likely to be "optimised" later by
@@ -74,6 +99,24 @@ void accel_field(double t, Vec3d r, Vec3d v, void *ctx, Vec3d *a_out)
         double inv_r3 = 1.0 / (r2 * rn);
 
         sum = vec3_add_scaled(sum, d, eph_body_mu(c->eph, c->body[i]) * inv_r3);
+
+        /* Computed inside the loop to reuse d rather than look the body's
+         * state up a second time - the ephemeris evaluation is the
+         * expensive part here, not the arithmetic. Accumulated separately
+         * and added once at the end so the point-mass sum keeps exactly the
+         * association it had before K4: with no harmonics set, this
+         * function is bit-for-bit what it was.
+         *
+         * harmonics_accel wants the vessel relative to the body, which is
+         * -d; the pole is assumed along z, as field.h explains. */
+        if (c->has_harmonics && i == c->harmonics_slot) {
+            harmonics_accel(&c->harmonics, vec3_neg(d),
+                            eph_body_mu(c->eph, c->body[i]), &harmonic);
+        }
+    }
+
+    if (c->has_harmonics) {
+        sum = vec3_add(sum, harmonic);
     }
 
     *a_out = sum;
@@ -88,6 +131,14 @@ void field_gradient(double t, Vec3d r, const FieldCtx *ctx, double g[9])
 
     for (int k = 0; k < 9; k++) {
         g[k] = 0.0;
+    }
+
+    /* Refused, not approximated - see field.h. Linearising the point-mass
+     * part of a field that also has harmonics in it would produce a
+     * plausible matrix describing a trajectory nobody is flying. */
+    if (c->has_harmonics) {
+        c->failed = 1;
+        return;
     }
 
     for (int i = 0; i < c->n_bodies; i++) {
@@ -130,13 +181,25 @@ void field_gradient(double t, Vec3d r, const FieldCtx *ctx, double g[9])
 void accel_field_var(double t, const Vec3d *r, const Vec3d *v, int n_blocks,
                      void *ctx, Vec3d *a_out)
 {
+    FieldCtx *c = (FieldCtx *)ctx;
+
+    /* Checked before block 0 rather than letting field_gradient refuse
+     * below, so the refusal is total: half an answer - a reference
+     * trajectory carrying harmonics with perturbations that do not - is
+     * the mismatch this is meant to prevent, not a milder version of it. */
+    if (c->has_harmonics) {
+        c->failed = 1;
+        for (int b = 0; b < n_blocks; b++) {
+            a_out[b] = vec3_zero();
+        }
+        return;
+    }
+
     accel_field(t, r[0], v[0], ctx, &a_out[0]);
 
     if (n_blocks < 2) {
         return;
     }
-
-    FieldCtx *c = (FieldCtx *)ctx;
 
     double g[9];
     field_gradient(t, r[0], c, g);

@@ -62,6 +62,24 @@ $(error У прапорцях немає -ffp-contract=off. Без нього к
 платформах — PROJECT.md §4.)
 endif
 
+# Залежності від заголовків. НЕ впливають на арифметику: -MMD -MP лише
+# просять компілятор виписати побічний файл .d зі списком включених
+# заголовків, кодогенерацію вони не чіпають. Тому їх тут, а не в
+# core/cflags.txt — той файл лишається єдиним джерелом прапорців, які
+# визначають числа.
+#
+# Навіщо: без цього зміна .h не перезбирала нічого, бо в правилах стояли
+# лише .c. Спіймано на ROADMAP K4 — у FieldCtx додалося поле, field.c
+# перезібрався, prop.c ні, і два об'єктні файли розійшлися в sizeof тієї
+# самої структури. Це не дало неправильних чисел, це зруйнувало купу
+# (malloc(): invalid size), тобто найгучніший з можливих проявів; тихий
+# прояв тієї ж помилки — трохи інші числа — був би незрівнянно гіршим.
+#
+# Той самий клас діри, що вже описаний у ROADMAP D1 для watch() у
+# build.rs, і з тією ж мораллю: перевірка, яка існує заради ловіння тихих
+# змін, сама мусить бачити всі свої входи.
+DEPFLAGS := -MMD -MP
+
 # Три бібліотеки — це і є межа детермінізму, виражена в графі збірки:
 #
 #   libcore.a           core/*.c          РАНТАЙМ, пропагація. libm
@@ -158,6 +176,19 @@ ACTUAL   := $(BUILD)/scenario/actual.txt
 # пропускала б найтихішу з них.
 FIXTURE  := $(wildcard data/fixture/*.eph)
 
+# Файли залежностей, які виписав -MMD. Кожен перелічує заголовки, від яких
+# залежить його ціль, у синтаксисі make. `-include` мовчить, коли їх ще
+# немає (перша збірка), а -MP додає фіктивні цілі для самих заголовків, щоб
+# видалення чи перейменування .h не ламало збірку помилкою «немає правила».
+DEP := $(CORE_OBJ:.o=.d) $(OFFLINE_OBJ:.o=.d) $(PLANNING_OBJ:.o=.d) \
+       $(patsubst core/test/%.c,$(BUILD)/test/%.d,$(TEST_SRC)) \
+       $(patsubst core/cook/%.c,$(BUILD)/cook/%.d,$(COOK_SRC)) \
+       $(patsubst core/export/%.c,$(BUILD)/export/%.d,$(EXPORT_SRC)) \
+       $(patsubst core/bench/%.c,$(BUILD)/bench/%.d,$(BENCH_SRC)) \
+       $(patsubst core/scenario/%.c,$(BUILD)/scenario/%.d,$(SCEN_SRC))
+
+-include $(DEP)
+
 .PHONY: all test unit check-libm determinism determinism-bless hashes cook \
         csv plots bench flags clean
 
@@ -165,11 +196,11 @@ all: $(LIB) $(LIB_OFFLINE) $(LIB_PLANNING)
 
 $(BUILD)/core/%.o: core/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Icore -c $< -o $@
+	$(CC) $(CFLAGS) $(DEPFLAGS) -Icore -c $< -o $@
 
 $(BUILD)/core/offline/%.o: core/offline/%.c $(ANCHOR_STAMP)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(OFFLINE_DEFS) -Icore -Icore/offline -c $< -o $@
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(OFFLINE_DEFS) -Icore -Icore/offline -c $< -o $@
 
 # Без цього `make cook ANCHOR_BARYCENTRE=0` після звичайного `make` нічого б
 # не перезібрав: make не бачить значень змінних, лише файли. Ім'я штампа
@@ -183,7 +214,7 @@ $(ANCHOR_STAMP):
 
 $(BUILD)/core/planning/%.o: core/planning/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Icore -Icore/planning -c $< -o $@
+	$(CC) $(CFLAGS) $(DEPFLAGS) -Icore -Icore/planning -c $< -o $@
 
 $(LIB): $(CORE_OBJ)
 	@mkdir -p $(dir $@)
@@ -199,13 +230,13 @@ $(LIB_PLANNING): $(PLANNING_OBJ)
 
 $(BUILD)/test/%$(EXE): core/test/%.c $(LIB) $(LIB_OFFLINE) $(LIB_PLANNING)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Icore -Icore/offline -Icore/planning -o $@ $< \
+	$(CC) $(CFLAGS) $(DEPFLAGS) -Icore -Icore/offline -Icore/planning -o $@ $< \
 		$(LIB_OFFLINE) $(LIB_PLANNING) $(LIB) $(LDLIBS_OFFLINE)
 
 # Кукер: офлайновий, libm дозволений.
 $(BUILD)/cook/%$(EXE): core/cook/%.c $(LIB) $(LIB_OFFLINE)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Icore -Icore/offline -o $@ $< \
+	$(CC) $(CFLAGS) $(DEPFLAGS) -Icore -Icore/offline -o $@ $< \
 		$(LIB_OFFLINE) $(LIB) $(LDLIBS_OFFLINE)
 
 # Експортери CSV. Лінкуються як тести, з обома бібліотеками й -lm: це
@@ -214,14 +245,14 @@ $(BUILD)/cook/%$(EXE): core/cook/%.c $(LIB) $(LIB_OFFLINE)
 # немає libm» дають сценарії нижче — дублювати її тут нічого не додає.
 $(BUILD)/export/%$(EXE): core/export/%.c core/export/csv.c $(LIB) $(LIB_OFFLINE)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Icore -Icore/offline -Icore/export -o $@ \
+	$(CC) $(CFLAGS) $(DEPFLAGS) -Icore -Icore/offline -Icore/export -o $@ \
 		$< core/export/csv.c $(LIB_OFFLINE) $(LIB) $(LDLIBS_OFFLINE)
 
 # Без libcore_offline.a і без -lm: лінкування тут — жива перевірка того,
 # що в рантаймовій частині немає libm.
 $(BUILD)/scenario/%$(EXE): core/scenario/%.c $(LIB)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Icore -o $@ $< $(LIB) $(LDLIBS)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -Icore -o $@ $< $(LIB) $(LDLIBS)
 
 # Той самий рантаймовий libcore.a, без -lm: бенчмарк заявляє, що міряє
 # пропускну здатність деталізованої фізики (CLAUDE.md, інваріант 3 — жодного
@@ -229,7 +260,7 @@ $(BUILD)/scenario/%$(EXE): core/scenario/%.c $(LIB)
 # а не просто оптимізм.
 $(BUILD)/bench/%$(EXE): core/bench/%.c $(LIB)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Icore -o $@ $< $(LIB) $(LDLIBS)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -Icore -o $@ $< $(LIB) $(LDLIBS)
 
 # --- Перевірки -------------------------------------------------------------
 
