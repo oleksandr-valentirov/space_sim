@@ -803,6 +803,10 @@ int main(void)
      * area flies a measurably different trajectory, and that the vessel does
      * not leak from one run into the next through the shared context. */
     {
+        PropagatorCtx *q = NULL;
+        PropConfig c = config(H_MAX);
+        CHECK(prop_create(eph, &c, &q) == CORE_OK);
+
         VesselParams sail = { 1000.0, 20.0, 1.3 };
         VesselParams none = { 1000.0, 0.0, 1.3 };
 
@@ -813,17 +817,17 @@ int main(void)
         double step;
 
         step = 0.0;
-        CHECK(prop_run(p, &start, NULL, t_end, NULL, 0, NULL, 0, &n,
+        CHECK(prop_run(q, &start, NULL, t_end, NULL, 0, NULL, 0, &n,
                        &final_none, &stop, &event, &step) == CORE_OK);
 
         /* A vessel with no area is the massless particle, to the bit. */
         step = 0.0;
-        CHECK(prop_run(p, &start, &none, t_end, NULL, 0, NULL, 0, &n,
+        CHECK(prop_run(q, &start, &none, t_end, NULL, 0, NULL, 0, &n,
                        &final_zero, &stop, &event, &step) == CORE_OK);
         CHECK(same_state(&final_zero, &final_none));
 
         step = 0.0;
-        CHECK(prop_run(p, &start, &sail, t_end, NULL, 0, NULL, 0, &n,
+        CHECK(prop_run(q, &start, &sail, t_end, NULL, 0, NULL, 0, &n,
                        &final_sail, &stop, &event, &step) == CORE_OK);
 
         /* Printed rather than merely bounded, because the size of it is
@@ -844,7 +848,7 @@ int main(void)
          * exactly what keeping the vessel out of PropConfig was meant to
          * prevent. */
         step = 0.0;
-        CHECK(prop_run(p, &start, NULL, t_end, NULL, 0, NULL, 0, &n,
+        CHECK(prop_run(q, &start, NULL, t_end, NULL, 0, NULL, 0, &n,
                        &final_again, &stop, &event, &step) == CORE_OK);
         CHECK(same_state(&final_again, &final_none));
 
@@ -854,9 +858,11 @@ int main(void)
         double phi[STM_SIZE];
         State stm_final;
         double stm_step = 0.0;
-        CHECK(prop_run_stm(p, &start, &sail, t_end, &stm_final, phi, &stm_step)
+        CHECK(prop_run_stm(q, &start, &sail, t_end, &stm_final, phi, &stm_step)
               == CORE_OK);
         CHECK(same_state(&stm_final, &final_sail));
+
+        prop_free(q);
     }
 
     /* prop_free(NULL) is allowed - Drop on the Rust side frees without
