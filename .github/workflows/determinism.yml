@@ -179,6 +179,33 @@ jobs:
           CC: ${{ matrix.cc }}
         run: make asan
 
+      # Ті самі юніт-тести під valgrind, і це НЕ дубль кроку вище.
+      #
+      # ASan не бачить читання неініціалізованої пам'яті — взагалі. Помилка
+      # K7b була саме такою: `test_target` збирав FieldCtx руками й лишав
+      # більшу частину структури тим, що було на стеку. `make test` зелений,
+      # `make asan` зелений, обидва лінукси зелені — і сегфолт на
+      # windows-mingw, за три кроки від причини. Valgrind називає її першим
+      # рядком: «Conditional jump depends on uninitialised value(s) at
+      # accel_field (field.c:303)».
+      #
+      # Одна платформа достатня з тієї ж причини, що й для ASan: чи
+      # проявиться така помилка, залежить від того, що лежало на стеку, а
+      # valgrind цього не питає.
+      #
+      # Валгріндовий крок нижче (межа C↔Rust) свідомо дивиться лише на
+      # core-sys і core-rs — на пам'ять, яку виділяє межа. Юніт-тести на C
+      # він не бачив ніколи, і це та сама діра, яку `make asan` закрив
+      # наполовину.
+      - name: Valgrind (C unit tests)
+        if: matrix.name == 'linux-gcc'
+        env:
+          CC: ${{ matrix.cc }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y valgrind
+          make valgrind
+
       # Експортери CSV — тільки зібрати й запустити, і ЦЕ НЕ ЧАСТИНА ГЕЙТА.
       # Їхній вивід між платформами не звіряється й звірятися не може: друк
       # double у десятковий текст — справа libc, а не IEEE (core/export/csv.h).

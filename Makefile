@@ -14,6 +14,8 @@
 #   make test             усі перевірки: libm, юніт-тести, детермінізм
 #   make unit             лише юніт-тести
 #   make asan             ті самі юніт-тести під ASan+UBSan (помилки пам'яті)
+#   make valgrind         ті самі юніт-тести під valgrind (неініціалізована
+#                         пам'ять — того ASan не бачить)
 #   make check-libm       лише «поліція libm» (ROADMAP A2)
 #   make determinism      звірити хеші сценаріїв з еталонними
 #   make determinism-bless оновити еталонні хеші (робити свідомо!)
@@ -198,8 +200,8 @@ DEP := $(CORE_OBJ:.o=.d) $(OFFLINE_OBJ:.o=.d) $(PLANNING_OBJ:.o=.d) \
 
 -include $(DEP)
 
-.PHONY: all test unit asan check-libm determinism determinism-bless hashes cook \
-        csv plots bench flags clean
+.PHONY: all test unit asan valgrind check-libm determinism determinism-bless \
+        hashes cook csv plots bench flags clean
 
 all: $(LIB) $(LIB_OFFLINE) $(LIB_PLANNING)
 
@@ -338,6 +340,33 @@ asan: $(ASAN_BIN)
 	if [ $$fail -ne 0 ]; then echo "ASAN/UBSAN ПРОВАЛЕНО"; exit 1; fi; \
 	echo ""; \
 	echo "asan: помилок пам'яті немає"
+
+# Ті самі юніт-тести під valgrind. НЕ входить у `make test`: це перевірка
+# пам'яті, а не чисел, і вона повільна (близько шести хвилин проти секунд).
+#
+# Навіщо ОКРЕМО від `make asan`, коли обидва про пам'ять: ASan не бачить
+# читання неініціалізованої пам'яті взагалі. Саме такою була помилка K7b —
+# `test_target` збирав FieldCtx руками й лишав більшу частину структури тим,
+# що було на стеку. ASan локально був зелений, `make test` теж, і впало це
+# аж на windows-mingw у CI, за три кроки від причини. Valgrind показує її
+# першим же рядком, з назвою функції й номером рядка.
+#
+# --leak-check=no свідомо: юніт-тести не звільняють усе, що виділяють, і
+# робити з цього червоне означало б привчити себе ігнорувати червоне (той
+# самий аргумент, яким workflow пояснює, чому valgrind не ганяють по рушію).
+# Ціль тут — неініціалізовані читання й недозволені доступи.
+VALGRIND ?= valgrind
+
+valgrind: $(TEST_BIN)
+	@fail=0; \
+	for t in $(TEST_BIN); do \
+		echo "== $$t"; \
+		$(VALGRIND) --quiet --leak-check=no --error-exitcode=9 $$t \
+			> /dev/null || fail=1; \
+	done; \
+	if [ $$fail -ne 0 ]; then echo "VALGRIND ПРОВАЛЕНО"; exit 1; fi; \
+	echo ""; \
+	echo "valgrind: неініціалізованих читань і помилок пам'яті немає"
 
 $(ACTUAL): $(SCEN_BIN) $(FIXTURE)
 	@mkdir -p $(dir $@)

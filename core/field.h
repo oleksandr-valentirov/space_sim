@@ -126,6 +126,25 @@ CoreResult field_all_bodies(const EphemerisCtx *eph, FieldCtx *out);
  * acceleration the cooker integrated it under. */
 CoreResult field_all_but(const EphemerisCtx *eph, int excluded, FieldCtx *out);
 
+/* Drop one more body from a context already built.
+ *
+ * Exists because field_all_but excludes exactly one, and a caller needing two
+ * used to assemble the struct by hand - the fields are public, so it could.
+ * That was a latent bug from the moment this struct grew anything beyond a
+ * body list: a hand-built context left the harmonics, radii, fluxes and
+ * counts as whatever was on the stack, and it survived only because the
+ * garbage happened to be harmless. K7b added an atmosphere and a layer count
+ * to the same struct, and the garbage stopped being harmless - on Windows,
+ * where it crashed, and silently everywhere else.
+ *
+ * So this is not a convenience. It is the same move that deleted
+ * field_set_harmonics: remove the way to get it wrong rather than document
+ * the way to get it right.
+ *
+ * A body index the context does not carry is not an error - it is already
+ * excluded, which is what the caller wanted. */
+void field_exclude(FieldCtx *ctx, int body);
+
 /* Drop every harmonic term, leaving point masses.
  *
  * Exists for measurement, not for configuration: it is how a test says

@@ -80,6 +80,46 @@ CoreResult field_all_but(const EphemerisCtx *eph, int excluded, FieldCtx *out)
     return CORE_OK;
 }
 
+void field_exclude(FieldCtx *ctx, int body)
+{
+    if (ctx == NULL) {
+        return;
+    }
+
+    int out = 0;
+    for (int i = 0; i < ctx->n_bodies; i++) {
+        if (ctx->body[i] == body) {
+            continue;
+        }
+        if (out != i) {
+            ctx->body[out] = ctx->body[i];
+            ctx->harmonics[out] = ctx->harmonics[i];
+            ctx->radius[out] = ctx->radius[i];
+            ctx->flux[out] = ctx->flux[i];
+            ctx->atmosphere[out] = ctx->atmosphere[i];
+        }
+        out++;
+    }
+    ctx->n_bodies = out;
+
+    /* Recounted rather than decremented, so that adding a fifth per-body
+     * array later means adding it to the loop above and nothing else. */
+    ctx->n_harmonic = 0;
+    ctx->n_emitter = 0;
+    ctx->n_atmosphere = 0;
+    for (int i = 0; i < ctx->n_bodies; i++) {
+        if (ctx->harmonics[i].degree >= 2) {
+            ctx->n_harmonic++;
+        }
+        if (ctx->flux[i] > 0.0) {
+            ctx->n_emitter++;
+        }
+        if (ctx->atmosphere[i].n_layers > 0) {
+            ctx->n_atmosphere++;
+        }
+    }
+}
+
 void field_clear_harmonics(FieldCtx *ctx)
 {
     if (ctx == NULL) {

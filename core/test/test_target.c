@@ -73,18 +73,18 @@ int main(void)
      * gravity is singular at zero distance. This is also the physically
      * right patched-conic scope - a departing or arriving body's own
      * gravity well is a separate phase this test does not model, same as
-     * lambert_solve never sees it either. field_all_but excludes only one,
-     * so the context is built directly (its fields are public, core/field.h). */
+     * lambert_solve never sees it either.
+     *
+     * Built and then narrowed, never assembled by hand. This block used to
+     * set four fields directly and leave the rest of FieldCtx as whatever
+     * was on the stack - which worked until K7b put an atmosphere and a
+     * layer count in there, and then crashed on Windows. field_exclude
+     * exists so that the question does not come up again; core/field.h has
+     * the whole story. */
     FieldCtx field;
-    field.eph = eph;
-    field.failed = 0;
-    field.n_bodies = 0;
-    for (int i = 0; i < eph_body_count(eph); i++) {
-        if (i == EARTH || i == VENUS) {
-            continue;
-        }
-        field.body[field.n_bodies++] = i;
-    }
+    CHECK(field_all_but(eph, EARTH, &field) == CORE_OK);
+    field_exclude(&field, VENUS);
+    CHECK(field.n_bodies == eph_body_count(eph) - 2);
 
     Dop853Config icfg = { 0 };
     icfg.tol_m = 1.0; /* metre - same order as the ephemeris fit itself (data/fixture/README.md) */
