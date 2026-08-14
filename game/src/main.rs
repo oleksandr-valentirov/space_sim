@@ -32,6 +32,7 @@ fn main() {
             "--frames" => options.frames = Some(parse(&value("--frames"), "--frames")),
             "--asset" => options.asset = PathBuf::from(value("--asset")),
             "--day" => day = Some(parse_f64(&value("--day"), "--day")),
+            "--demo-plan" => options.demo_plan = true,
             "--width" => options.width = parse(&value("--width"), "--width"),
             "--height" => options.height = parse(&value("--height"), "--height"),
             "--vsync" => {
@@ -71,6 +72,7 @@ const HELP: &str = "\
   --frames <N>    намалювати N кадрів і вийти (вимикає vsync)
   --asset <файл>  ефемерида; типово data/fixture/earth_moon.eph
   --day <N>       зупинити курсор на добі N місії (для --shot); типово кінець
+  --demo-plan     додати показовий маневр на 10-й добі (ROADMAP J3)
   --vsync         чекати на вертикальну синхронізацію
   --no-vsync      не чекати
   --width <px>    ширина, типово 1280
@@ -90,8 +92,7 @@ fn take_shot(
     let gpu = Gpu::new(wgpu::Instance::default(), None)?;
     println!("адаптер: {}", gpu.describe());
 
-    let mut world = mission::world(&options.asset)
-        .map_err(|e| format!("світ не будується ({}): {e}", options.asset.display()))?;
+    let mut world = app::build_world(options)?;
     // Секунда «реального» часу на крок: курсор усе одно впирається в
     // горизонт, тобто темп задає інтегратор, а не це число.
     let steps = match day {

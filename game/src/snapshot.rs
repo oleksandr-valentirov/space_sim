@@ -14,6 +14,7 @@ use core_rs::{CoreError, State};
 
 use crate::clock::Stall;
 use crate::leg::Leg;
+use crate::plan::Plan;
 use crate::world::VesselId;
 
 pub struct VesselSnapshot {
@@ -31,6 +32,12 @@ pub struct VesselSnapshot {
 
     /// Де апарат **зараз** — інтерпольовано в момент `WorldSnapshot::t`.
     pub state: State,
+
+    /// План, за яким ця траєкторія порахована.
+    ///
+    /// Клонується цілком, а не ділиться `Arc`: план — це кілька десятків
+    /// байтів на маневр, а не мегабайти семплів (CLAUDE.md: клонуй вільно).
+    pub plan: Plan,
 
     /// Кінець порахованого: стан, з якого прогноз продовжиться.
     pub tip: State,

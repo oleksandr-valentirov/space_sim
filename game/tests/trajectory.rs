@@ -127,10 +127,10 @@ fn legs_stitch_without_seams() {
 
         assert_eq!(
             before.t1.to_bits(),
-            after.t0.to_bits(),
+            after.entry.t.to_bits(),
             "між ланками розрив: {} проти {}",
             before.t1,
-            after.t0
+            after.entry.t
         );
 
         let last = before.samples.last().expect("ланка не порожня");

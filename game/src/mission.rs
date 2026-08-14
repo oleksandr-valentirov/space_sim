@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 
 use core_rs::{CoreError, Integrator, PropConfig, State};
 
-use crate::world::World;
+use crate::plan::{Frame, Manoeuvre, Plan};
+use crate::world::{VesselId, World, EARTH};
 
 /// Ассет ефемериди, від кореня репозиторію.
 pub const ASSET: &str = "data/fixture/earth_moon.eph";
@@ -73,6 +74,36 @@ pub fn config() -> PropConfig {
 /// з тих самих бітів.
 pub fn start() -> State {
     engine::live::fixture_start()
+}
+
+/// План на показ: одне гальмування на десятій добі.
+///
+/// Існує заради того, щоб маневр було **видно**, а не лише виміряно в
+/// тестах. Число обране так, щоб різниця читалася оком: 12 м/с проти
+/// швидкості порядку 200 м/с на цій орбіті — це помітно, а на нестійкій
+/// halo-орбіті з множником 594 за оберт (C3) за місяць виростає в мільйони
+/// кілометрів.
+///
+/// Це не частина місії: [`world`] лишається без плану, інакше J1-порівняння
+/// з прогоном H5 перестало б мати сенс.
+pub fn demo_plan(start_t: f64) -> Plan {
+    let mut plan = Plan::new();
+    plan.insert(Manoeuvre {
+        t: start_t + 10.0 * 86400.0,
+        dv: [-12.0, 0.0, 0.0],
+        frame: Frame::Vnb { body: EARTH },
+    });
+    plan
+}
+
+/// Той самий світ, але з [`demo_plan`].
+pub fn world_with_demo_plan(asset: &Path) -> Result<World, CoreError> {
+    let mut world = world(asset)?;
+    let start = start();
+    world
+        .commit_plan(VesselId(0), demo_plan(start.t))
+        .expect("демо-план цілком у майбутньому");
+    Ok(world)
 }
 
 /// Світ з одним апаратом, готовий до першого тіку.

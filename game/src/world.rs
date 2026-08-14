@@ -25,6 +25,7 @@ use core_rs::{CoreError, Ephemeris, PropConfig, Propagator, State};
 
 use crate::clock::{Clock, Stall};
 use crate::leg::{Leg, Sample, Trajectory};
+use crate::plan::Plan;
 use crate::snapshot::{VesselSnapshot, WorldSnapshot};
 
 /// Індекси тіл у порядку кукера (`core/cook/cook_fixture.c`).
@@ -67,8 +68,18 @@ pub struct Vessel {
     pub tip: State,
     /// Крок інтегратора, з яким продовжувати. Йде в сейв (PROJECT.md §4).
     pub tip_step: f64,
-    /// Докуди рахувати. J1: кінець місії; J3: наступний маневр.
+    /// Кінець місії: далі не рахуємо взагалі.
     pub horizon_end: f64,
+
+    /// План маневрів. Порожній — вільний політ.
+    pub plan: Plan,
+    /// Скільки маневрів плану вже вшито в траєкторію.
+    ///
+    /// Індекс, а не час: порівнювати часи довелося б із точністю, якої в
+    /// плаваючої коми немає, а лічильник каже це однозначно. Після
+    /// каскадного перерахунку він перераховується з нуля
+    /// ([`World::commit_plan`]).
+    pub applied: usize,
 
     pub trajectory: Trajectory,
 
@@ -89,6 +100,19 @@ impl Vessel {
             && self.trajectory.legs_after(cursor) < LEAD_LEGS
     }
 
+    /// Докуди інтегрувати наступною ланкою.
+    ///
+    /// Наступний незастосований маневр або кінець місії — і ніколи не
+    /// курсор (CLAUDE.md, інваріант 9). Саме тут план перетворюється на
+    /// послідовність викликів `prop_run`: кожен сегмент між маневрами
+    /// проходиться ланками, а межа сегмента стає `t_end`.
+    fn next_boundary(&self) -> f64 {
+        match self.plan.get(self.applied) {
+            Some(m) if m.t < self.horizon_end => m.t,
+            _ => self.horizon_end,
+        }
+    }
+
     /// Докуди пораховано.
     fn computed_to(&self) -> f64 {
         self.trajectory.computed_to()
@@ -107,6 +131,21 @@ pub struct World {
     /// Скільки разів світ змінювався. Читач снапшоту з нього бачить, що
     /// картинка нова, не порівнюючи вміст.
     version: u64,
+    /// Скільки ланок пораховано за весь час. Не статистика: цим міряється
+    /// вартість каскадного перерахунку (`tests/plan.rs`).
+    legs_computed: u64,
+}
+
+/// Чому план не прийнято.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanRejected {
+    NoSuchVessel,
+    /// Зміна торкається моменту, який курсор уже пройшов.
+    ///
+    /// Це не обмеження зручності, а те, на чому стоїть недоторканність
+    /// історії: правити можна лише майбутнє, отже переписуються лише ланки
+    /// прогнозу (PROJECT.md §6).
+    InThePast,
 }
 
 /// Що зробив один тік.
@@ -129,6 +168,7 @@ impl World {
             vessels: Vec::new(),
             clock: Clock::new(epoch, warp),
             version: 0,
+            legs_computed: 0,
         })
     }
 
@@ -142,6 +182,8 @@ impl World {
             // переноситься те, що лишив попередній (`core/prop.h`).
             tip_step: 0.0,
             horizon_end,
+            plan: Plan::new(),
+            applied: 0,
             trajectory: Trajectory::new(start),
             failed: None,
         });
@@ -155,6 +197,60 @@ impl World {
 
     pub fn version(&self) -> u64 {
         self.version
+    }
+
+    /// Скільки ланок пораховано за весь час життя світу.
+    pub fn legs_computed(&self) -> u64 {
+        self.legs_computed
+    }
+
+    /// Приймає новий план для апарата й перераховує лише те, що після зміни.
+    ///
+    /// Повертає момент, з якого перерахунок почався, або `None`, якщо план не
+    /// змінився.
+    ///
+    /// **Історія тут не переписується — і не тому, що ми обережні.** Правки в
+    /// минулому відхиляються, тож усе, що курсор уже пройшов, за побудовою
+    /// лежить у ланках, яких зміна не торкається.
+    pub fn commit_plan(&mut self, id: VesselId, plan: Plan) -> Result<Option<f64>, PlanRejected> {
+        let cursor = self.clock.t();
+        let vessel = self
+            .vessels
+            .get_mut(id.0 as usize)
+            .ok_or(PlanRejected::NoSuchVessel)?;
+
+        let Some(from) = vessel.plan.diverges_from(&plan) else {
+            return Ok(None);
+        };
+        if from <= cursor {
+            return Err(PlanRejected::InThePast);
+        }
+
+        let restart = vessel.trajectory.truncate_after(from);
+        vessel.tip = restart.state;
+        vessel.tip_step = restart.step;
+        vessel.plan = plan;
+        // Новий план — нова спроба: попередній міг упертися в межу ассета
+        // саме тим маневром, який щойно прибрали.
+        vessel.failed = None;
+
+        // Маневри, раніші за точку перезапуску, вже вшиті в збережені семпли.
+        // Той, що припадає рівно на неї, — ні: ланка закінчується станом ДО
+        // імпульсу, а сам імпульс жив у `tip`, який ми щойно перезаписали.
+        vessel.applied = 0;
+        while let Some(m) = vessel.plan.get(vessel.applied).copied() {
+            if m.t < vessel.tip.t {
+                vessel.applied += 1;
+            } else if m.t == vessel.tip.t {
+                // Сам інкремент робить `apply_manoeuvre`.
+                apply_manoeuvre(&self.eph, vessel);
+            } else {
+                break;
+            }
+        }
+
+        self.version += 1;
+        Ok(Some(from))
     }
 
     pub fn clock(&self) -> &Clock {
@@ -220,9 +316,16 @@ impl World {
                     continue;
                 }
 
-                self.extend(index);
-                done.legs += 1;
-                worked = true;
+                // Рахується поступ, а не спроба. Без цієї різниці апарат, який
+                // чомусь не рухається, крутив би цикл вічно — і не впав би, а
+                // завис, що набагато гірше. У правильному коді такого не буває
+                // (`extend` завжди або додає ланку, або виконує маневр), тож
+                // це сторож, а не механізм. Знайдено перевіркою зубів:
+                // вимкнений маневр перетворював прогін на вічний цикл.
+                if self.extend(index) {
+                    done.legs += 1;
+                    worked = true;
+                }
             }
 
             // Нікому не було чого рахувати — бюджет не витрачаємо на порожні
@@ -284,18 +387,19 @@ impl World {
         }
     }
 
-    /// Одна ланка одного апарата.
-    fn extend(&mut self, index: usize) {
+    /// Одна ланка одного апарата. Повертає, чи був поступ.
+    fn extend(&mut self, index: usize) -> bool {
         let vessel = &mut self.vessels[index];
 
         let mut buffer = vec![State::default(); LEG];
-        let t0 = vessel.tip.t;
+        let entry = vessel.tip;
+        let boundary = vessel.next_boundary();
 
-        // t_end з місії, не з годинника. Ланка закінчиться або тут, або на
-        // заповненому буфері — обидві межі відтворювані.
+        // t_end з плану або з місії, не з годинника. Ланка закінчиться або
+        // тут, або на заповненому буфері — обидві межі відтворювані.
         let run = match self.prop.run(
             &vessel.tip,
-            vessel.horizon_end,
+            boundary,
             &[],
             &mut buffer,
             &mut vessel.tip_step,
@@ -303,7 +407,7 @@ impl World {
             Ok(run) => run,
             Err(e) => {
                 vessel.failed = Some(e);
-                return;
+                return false;
             }
         };
 
@@ -318,20 +422,44 @@ impl World {
                 (Ok(earth), Ok(moon)) => (earth, moon),
                 (Err(e), _) | (_, Err(e)) => {
                     vessel.failed = Some(e);
-                    return;
+                    return false;
                 }
             };
             samples.push(Sample { state, earth, moon });
         }
 
         vessel.tip = run.final_state;
-        vessel.trajectory.push(Leg {
-            t0,
-            t1: run.final_state.t,
-            step_out: vessel.tip_step,
-            samples,
-            stop: run.stop,
-        });
+
+        // Ланка без жодного семпла буває рівно в одному випадку: два маневри
+        // в один момент, коли `prop_run` не має куди інтегрувати. Зберігати
+        // її нема сенсу, а зламала б вона багато — від інтерполяції до
+        // порівняння меж.
+        let mut progressed = false;
+        if !samples.is_empty() {
+            self.legs_computed += 1;
+            progressed = true;
+            vessel.trajectory.push(Leg {
+                entry,
+                t1: run.final_state.t,
+                step_out: vessel.tip_step,
+                samples,
+                stop: run.stop,
+            });
+        }
+
+        // Дійшли рівно до маневру — виконуємо його. Порівняння точне, і це
+        // не необережність: `prop.c` пише `t_end` у кінцевий стан дослівно й
+        // саме за цією рівністю відрізняє `CORE_STOP_T_END`.
+        if run.stop == core_rs::Stop::ReachedEnd {
+            if let Some(m) = vessel.plan.get(vessel.applied) {
+                if m.t == vessel.tip.t {
+                    apply_manoeuvre(&self.eph, vessel);
+                    progressed = true;
+                }
+            }
+        }
+
+        progressed
     }
 
     /// Незмінний зріз світу для читачів.
@@ -358,6 +486,7 @@ impl World {
                     // бачили б два різні «зараз» в одному кадрі.
                     state: v.trajectory.state_at(t),
                     legs: v.trajectory.share(),
+                    plan: v.plan.clone(),
                     tip: v.tip,
                     computed_to: v.computed_to(),
                     failed: v.failed,
@@ -365,6 +494,36 @@ impl World {
                 .collect(),
         }
     }
+}
+
+/// Виконує наступний незастосований маневр над `vessel.tip`.
+///
+/// Вільна функція, а не метод: їй потрібні водночас ефемерида світу й
+/// мутабельний апарат, а це два поля однієї структури.
+///
+/// Помилка ефемериди тут не губиться, а зупиняє апарат: маневр, виконаний з
+/// фреймом «нуль», був би тихо не тим маневром.
+fn apply_manoeuvre(eph: &Ephemeris, vessel: &mut Vessel) {
+    let Some(m) = vessel.plan.get(vessel.applied).copied() else {
+        return;
+    };
+
+    let body = match m.frame_body() {
+        Some(id) => match eph.body_state(id, vessel.tip.t) {
+            Ok(state) => Some(state),
+            Err(e) => {
+                vessel.failed = Some(e);
+                return;
+            }
+        },
+        None => None,
+    };
+
+    let dv = m.dv_inertial(&vessel.tip, body.as_ref());
+    vessel.tip.v.x += dv[0];
+    vessel.tip.v.y += dv[1];
+    vessel.tip.v.z += dv[2];
+    vessel.applied += 1;
 }
 
 fn position(eph: &Ephemeris, body: i32, t: f64) -> Result<[f64; 3], CoreError> {

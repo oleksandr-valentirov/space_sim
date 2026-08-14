@@ -63,6 +63,8 @@ pub struct Options {
     pub frames: Option<u32>,
     pub vsync: bool,
     pub asset: std::path::PathBuf,
+    /// Додати демонстраційний маневр (`mission::demo_plan`).
+    pub demo_plan: bool,
 }
 
 impl Default for Options {
@@ -73,6 +75,7 @@ impl Default for Options {
             frames: None,
             vsync: true,
             asset: mission::default_asset(),
+            demo_plan: false,
         }
     }
 }
@@ -97,6 +100,17 @@ struct State {
 
     dragging: bool,
     cursor: Option<(f64, f64)>,
+}
+
+/// Світ за опціями — спільне для вікна й для знімка.
+pub fn build_world(options: &Options) -> Result<World, String> {
+    let build = if options.demo_plan {
+        mission::world_with_demo_plan
+    } else {
+        mission::world
+    };
+    build(&options.asset)
+        .map_err(|e| format!("світ не будується ({}): {e}", options.asset.display()))
 }
 
 pub fn run(options: Options) -> Result<(), String> {
@@ -258,8 +272,7 @@ impl State {
         )?;
 
         let frame = Frame::new(&gpu, target.format());
-        let world = mission::world(&options.asset)
-            .map_err(|e| format!("світ не будується ({}): {e}", options.asset.display()))?;
+        let world = build_world(options)?;
 
         target.window().request_redraw();
 
