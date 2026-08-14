@@ -1,9 +1,9 @@
-//! Розвідка U1a: чи малює `egui-wgpu` у звичайну текстуру без вікна.
+//! Інтерфейс у кадрі: розвідка U1a і провід U1b.
 //!
-//! Від цієї відповіді залежить уся перевірка етапу U (ROADMAP-UI.md, правило
-//! 3): якщо інтерфейс можна намалювати лише в поверхню вікна, то жодна панель
-//! ніколи не потрапить у знімок, і «UI перевіряється без вікна» доведеться
-//! викреслити разом із половиною оракулів.
+//! Питання, на якому стоїть уся перевірка етапу U (ROADMAP-UI.md, правило 3):
+//! чи малює `egui-wgpu` у звичайну текстуру без вікна. Якщо ні — жодна панель
+//! ніколи не потрапить у знімок, і «UI перевіряється без вікна» довелося б
+//! викреслити разом із половиною оракулів етапу.
 //!
 //! Тверджень тут два, і **обидва обов'язкові**:
 //!
@@ -17,13 +17,17 @@
 //! зелена не тому, що код працює.
 
 use engine::egui;
-use engine::egui_wgpu;
 use engine::frame::{self, Frame};
 use engine::gpu::Gpu;
 use engine::scene::Scene;
 use engine::shot::{self, Shot};
+use engine::ui::{Ui, Viewport};
 
 const SIZE: u32 = 256;
+
+/// Розмір із перевірки U1b — той, у якому міряється й час кадру.
+const WIDE: u32 = 1280;
+const TALL: u32 = 720;
 
 fn gpu() -> Option<Gpu> {
     // Пропуск гучний і названий — як у решті тестів рушія: мовчазний пропуск
@@ -37,17 +41,12 @@ fn gpu() -> Option<Gpu> {
     }
 }
 
-/// Кадр сцени, а поверх нього — те, що намалює `build` в egui.
-///
-/// Порядок саме такий, як вимагає U1b: прохід egui **останній**, у ту саму
-/// текстуру, `load` замість `clear`, без глибини. Кадр малює сцену, потім
-/// поверх неї — інтерфейс.
-fn draw_with_ui(gpu: &Gpu, build: impl FnMut(&mut egui::Ui)) -> Shot {
+fn target(gpu: &Gpu, width: u32, height: u32) -> (wgpu::Texture, wgpu::TextureView) {
     let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("ui probe"),
         size: wgpu::Extent3d {
-            width: SIZE,
-            height: SIZE,
+            width,
+            height,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
@@ -58,7 +57,14 @@ fn draw_with_ui(gpu: &Gpu, build: impl FnMut(&mut egui::Ui)) -> Shot {
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
 
+/// Кадр сцени, а поверх нього — те, що намалює `build`.
+///
+/// Порядок саме той, який задає U1b: сцена, потім інтерфейс, в одну текстуру.
+fn draw_with_ui(gpu: &Gpu, width: u32, height: u32, build: impl FnMut(&mut egui::Ui)) -> Shot {
+    let (texture, view) = target(gpu, width, height);
     let mut encoder = gpu
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -67,107 +73,25 @@ fn draw_with_ui(gpu: &Gpu, build: impl FnMut(&mut egui::Ui)) -> Shot {
 
     let mut scene_frame = Frame::new(gpu, shot::FORMAT);
     let scene = Scene::new(frame::default_camera());
-    scene_frame.draw(gpu, &mut encoder, &view, SIZE, SIZE, &scene);
+    scene_frame.draw(gpu, &mut encoder, &view, width, height, &scene);
 
-    // Ввід синтетичний: жодного вікна, жодного `egui-winit`. Саме так етап U
-    // і збирається перевіряти кліки — правило 3.
-    let context = egui::Context::default();
-    let input = egui::RawInput {
-        screen_rect: Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(SIZE as f32, SIZE as f32),
-        )),
-        ..Default::default()
-    };
-
-    let output = context.run_ui(input, build);
-    let primitives = context.tessellate(output.shapes, output.pixels_per_point);
-
-    let mut renderer = egui_wgpu::Renderer::new(
-        &gpu.device,
-        shot::FORMAT,
-        egui_wgpu::RendererOptions {
-            msaa_samples: 1,
-            depth_stencil_format: None,
-            // Дизеринг додав би шум у пікселі, тобто зробив би «бітово те
-            // саме» недосяжним навіть там, де нічого не намальовано.
-            dithering: false,
-            predictable_texture_filtering: true,
-        },
-    );
-
-    // Одна текстура може приїхати кількома клаптями за кадр — звідси
-    // внутрішній цикл; egui так довантажує атлас шрифта частинами.
-    //
-    // І це треба робити навіть тоді, коли не намальовано нічого: порожній
-    // контекст усе одно віддає атлас шрифта, а `TexturesDelta` падає в
-    // `Drop`, якщо її не застосували. Тобто «нічого не намальовано» і
-    // «нічого не приїхало» — різні речі, і egui наполягає на різниці.
-    let mut deltas = output.textures_delta;
-    for (id, patches) in &deltas.set {
-        for patch in patches {
-            renderer.update_texture(&gpu.device, &gpu.queue, *id, patch);
-        }
-    }
-
-    let descriptor = egui_wgpu::ScreenDescriptor {
-        size_in_pixels: [SIZE, SIZE],
-        pixels_per_point: 1.0,
-    };
-    renderer.update_buffers(
-        &gpu.device,
-        &gpu.queue,
+    let mut interface = Ui::new(gpu, shot::FORMAT);
+    let viewport = Viewport::new(width, height, 1.0);
+    interface.draw(
+        gpu,
         &mut encoder,
-        &primitives,
-        &descriptor,
+        &view,
+        viewport,
+        viewport.quiet_input(),
+        build,
     );
 
-    {
-        let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("egui"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            multiview_mask: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-        renderer.render(&mut pass.forget_lifetime(), &primitives, &descriptor);
-    }
-
-    for id in &deltas.free {
-        renderer.free_texture(id);
-    }
-    deltas.clear();
-
-    shot::read_back(gpu, encoder, &texture, SIZE, SIZE).expect("кадр мав прочитатися назад")
+    shot::read_back(gpu, encoder, &texture, width, height).expect("кадр мав прочитатися назад")
 }
 
-/// Кадр без жодного проходу egui — те, що малює рушій сьогодні.
-fn draw_plain(gpu: &Gpu) -> Shot {
-    let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("ui probe: без egui"),
-        size: wgpu::Extent3d {
-            width: SIZE,
-            height: SIZE,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: shot::FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-
+/// Той самий кадр без жодного проходу egui — те, що малює рушій сьогодні.
+fn draw_plain(gpu: &Gpu, width: u32, height: u32) -> Shot {
+    let (texture, view) = target(gpu, width, height);
     let mut encoder = gpu
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -176,9 +100,15 @@ fn draw_plain(gpu: &Gpu) -> Shot {
 
     let mut scene_frame = Frame::new(gpu, shot::FORMAT);
     let scene = Scene::new(frame::default_camera());
-    scene_frame.draw(gpu, &mut encoder, &view, SIZE, SIZE, &scene);
+    scene_frame.draw(gpu, &mut encoder, &view, width, height, &scene);
 
-    shot::read_back(gpu, encoder, &texture, SIZE, SIZE).expect("кадр мав прочитатися назад")
+    shot::read_back(gpu, encoder, &texture, width, height).expect("кадр мав прочитатися назад")
+}
+
+/// Прямокутник у лівому верхньому куті, у пікселях цілі.
+fn panel(ui: &mut egui::Ui, width: f32, height: f32, colour: egui::Color32) {
+    let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
+    ui.painter().rect_filled(rect, 0.0, colour);
 }
 
 /// Порожній інтерфейс не міняє кадру жодним бітом.
@@ -186,8 +116,8 @@ fn draw_plain(gpu: &Gpu) -> Shot {
 fn an_empty_context_changes_nothing() {
     let Some(gpu) = gpu() else { return };
 
-    let plain = draw_plain(&gpu);
-    let with_ui = draw_with_ui(&gpu, |_| {});
+    let plain = draw_plain(&gpu, SIZE, SIZE);
+    let with_ui = draw_with_ui(&gpu, SIZE, SIZE, |_| {});
 
     assert_eq!(
         plain.pixels, with_ui.pixels,
@@ -205,24 +135,21 @@ fn an_empty_context_changes_nothing() {
 fn a_panel_lands_where_it_was_put() {
     let Some(gpu) = gpu() else { return };
 
-    let plain = draw_plain(&gpu);
-    let with_ui = draw_with_ui(&gpu, |ui| {
-        let rect = egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(SIZE as f32 / 2.0, SIZE as f32 / 2.0),
+    let plain = draw_plain(&gpu, SIZE, SIZE);
+    let with_ui = draw_with_ui(&gpu, SIZE, SIZE, |ui| {
+        panel(
+            ui,
+            SIZE as f32 / 2.0,
+            SIZE as f32 / 2.0,
+            egui::Color32::from_rgb(255, 0, 255),
         );
-        ui.painter()
-            .rect_filled(rect, 0.0, egui::Color32::from_rgb(255, 0, 255));
     });
 
-    // Усередині панелі: пурпуровий поверх усього, що там було.
     let inside = with_ui.pixel(SIZE / 4, SIZE / 4);
+    let was = plain.pixel(SIZE / 4, SIZE / 4);
     assert_ne!(
         [inside[0], inside[1], inside[2]],
-        {
-            let p = plain.pixel(SIZE / 4, SIZE / 4);
-            [p[0], p[1], p[2]]
-        },
+        [was[0], was[1], was[2]],
         "піксель усередині панелі не змінився — egui-wgpu не намалював нічого"
     );
     // Звіряється переважання каналу, а не точний колір: ціль знімка лінійна,
@@ -242,4 +169,85 @@ fn a_panel_lands_where_it_was_put() {
             "піксель ({x}, {y}) поза панеллю змінився"
         );
     }
+}
+
+/// Перевірка U1b дослівно: 1280×720, одна панель, піксель усередині — її,
+/// піксель поза нею — небо.
+///
+/// «Небо» тут не будь-що інше, а саме [`frame::CLEAR_BYTES`]: кут кадру з
+/// висоти за замовчуванням лежить поза диском планети (це вже виміряно в
+/// `shot.rs`), тож у ньому має бути колір очищення й нічого більше. Панель
+/// зелена — канал, якого немає ні у фону, ні в планети.
+#[test]
+fn a_panel_covers_the_sky_and_only_it() {
+    let Some(gpu) = gpu() else { return };
+
+    let with_ui = draw_with_ui(&gpu, WIDE, TALL, |ui| {
+        panel(ui, 300.0, 200.0, egui::Color32::from_rgb(0, 255, 0));
+    });
+
+    let inside = with_ui.pixel(150, 100);
+    assert!(
+        inside[1] > inside[0] && inside[1] > inside[2],
+        "усередині панелі мав переважати зелений, а вийшло {inside:?}"
+    );
+
+    let outside = with_ui.pixel(WIDE - 2, 2);
+    assert_eq!(
+        [outside[0], outside[1], outside[2]],
+        frame::CLEAR_BYTES,
+        "піксель поза панеллю мав лишитися небом"
+    );
+}
+
+/// Масштаб — це масштаб, а не зміна розміру цілі.
+///
+/// Та сама панель у точках при `scale = 2.0` займає вдвічі більше пікселів.
+/// Перевірка дешева, а ловить помилку, яка інакше знаходиться очима на
+/// екрані з високим DPI — і лише в того, у кого такий екран є.
+#[test]
+fn the_scale_factor_scales() {
+    let Some(gpu) = gpu() else { return };
+
+    let (texture, view) = target(&gpu, SIZE, SIZE);
+    let mut encoder = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("scale"),
+        });
+
+    let mut scene_frame = Frame::new(&gpu, shot::FORMAT);
+    let scene = Scene::new(frame::default_camera());
+    scene_frame.draw(&gpu, &mut encoder, &view, SIZE, SIZE, &scene);
+
+    let mut interface = Ui::new(&gpu, shot::FORMAT);
+    let viewport = Viewport::new(SIZE, SIZE, 2.0);
+    interface.draw(
+        &gpu,
+        &mut encoder,
+        &view,
+        viewport,
+        viewport.quiet_input(),
+        |ui| panel(ui, 32.0, 32.0, egui::Color32::from_rgb(0, 255, 0)),
+    );
+
+    let doubled = shot::read_back(&gpu, encoder, &texture, SIZE, SIZE).expect("кадр мав читатися");
+
+    // 32 точки при масштабі 2 — це 64 пікселі. Дивимось у піксель 40: він
+    // усередині подвоєної панелі й поза одинарною.
+    let inside = doubled.pixel(40, 40);
+    assert!(
+        inside[1] > inside[0] && inside[1] > inside[2],
+        "піксель (40, 40) мав бути всередині подвоєної панелі, а вийшло {inside:?}"
+    );
+
+    let single = draw_with_ui(&gpu, SIZE, SIZE, |ui| {
+        panel(ui, 32.0, 32.0, egui::Color32::from_rgb(0, 255, 0))
+    });
+    let same_pixel = single.pixel(40, 40);
+    assert_ne!(
+        [inside[0], inside[1], inside[2]],
+        [same_pixel[0], same_pixel[1], same_pixel[2]],
+        "масштаб нічого не змінив — 32 точки лишились 32 пікселями"
+    );
 }

@@ -95,10 +95,32 @@ pub fn camera_pass_ms(passes: u32) -> f64 {
     start.elapsed().as_secs_f64() * 1000.0 / f64::from(passes)
 }
 
+/// Що малюється поверх сцени в замірі.
+///
+/// Інтерфейс — істотна нова вартість (ROADMAP-UI.md, U1b), і міряти його
+/// треба **тим самим прогоном**, а не окремим: різні прогони на одній машині
+/// різняться більше, ніж коштує панель.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Overlay {
+    /// Кадр без проходу egui — те, чим міряні всі числа до U1b.
+    None,
+    /// Прохід egui є, але порожній: ціна самого проводу.
+    EmptyUi,
+    /// Прохід egui з панеллю — ціна проводу разом із чимось намальованим.
+    Panel,
+}
+
 /// Проганяє `frames` кадрів `width`×`height` без вікна й повертає статистику
 /// часу кадру в мілісекундах.
-pub fn measure(gpu: &Gpu, width: u32, height: u32, frames: u32) -> Result<Stats, String> {
+pub fn measure(
+    gpu: &Gpu,
+    width: u32,
+    height: u32,
+    frames: u32,
+    overlay: Overlay,
+) -> Result<Stats, String> {
     let mut frame = Frame::new(gpu, shot::FORMAT);
+    let mut interface = crate::ui::Ui::new(gpu, shot::FORMAT);
     // Сцена без ламаних: вимір лишається порівнюваним із числами I3, де їх
     // ще не було. Коли прогноз стане частиною сцени, це буде окремий рядок
     // таблиці, а не тихо інше число в тому самому (скіл `perf-probe`).
@@ -133,6 +155,36 @@ pub fn measure(gpu: &Gpu, width: u32, height: u32, frames: u32) -> Result<Stats,
                 label: Some("perf probe"),
             });
         frame.draw(gpu, &mut encoder, &view, width, height, &scene);
+
+        if overlay != Overlay::None {
+            let viewport = crate::ui::Viewport::new(width, height, 1.0);
+            interface.draw(
+                gpu,
+                &mut encoder,
+                &view,
+                viewport,
+                viewport.quiet_input(),
+                |ui| {
+                    if overlay == Overlay::Panel {
+                        // Стільки ж, скільки займе панель часу з U2b:
+                        // прямокутник і рядок тексту, тобто і геометрія,
+                        // і вибірка з атласа шрифта.
+                        let rect =
+                            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 180.0));
+                        ui.painter()
+                            .rect_filled(rect, 0.0, egui::Color32::from_rgb(20, 24, 28));
+                        ui.painter().text(
+                            egui::pos2(16.0, 16.0),
+                            egui::Align2::LEFT_TOP,
+                            "MET 000d 00:00:00",
+                            egui::FontId::monospace(14.0),
+                            egui::Color32::from_rgb(180, 220, 255),
+                        );
+                    }
+                },
+            );
+        }
+
         gpu.queue.submit([encoder.finish()]);
 
         gpu.device

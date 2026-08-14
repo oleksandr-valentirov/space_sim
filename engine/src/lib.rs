@@ -49,4 +49,5 @@ pub mod sphere;
 pub mod sphere_render;
 pub mod trajectory;
 pub mod trajectory_render;
+pub mod ui;
 pub mod window;

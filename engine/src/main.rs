@@ -188,7 +188,7 @@ fn run_depth_probe() -> Result<(), String> {
 /// 30 fps (33.3 мс) для кількох роздільностей. Метод і його межі — див.
 /// `engine::perf_probe`.
 fn run_perf_probe() -> Result<(), String> {
-    use engine::perf_probe::{camera_pass_ms, measure};
+    use engine::perf_probe::{camera_pass_ms, measure, Overlay};
 
     const FRAMES: u32 = 300;
     const BUDGET_60: f64 = 1000.0 / 60.0;
@@ -211,24 +211,33 @@ fn run_perf_probe() -> Result<(), String> {
          camera-relative щокадру\n"
     );
     println!(
-        "{:>10} {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>9}",
-        "розд.", "min мс", "mean мс", "p95 мс", "max мс", "fps", "запас60", "запас30"
+        "{:>10} {:>10} {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>9}",
+        "розд.", "інтерфейс", "min мс", "mean мс", "p95 мс", "max мс", "fps", "запас60", "запас30"
     );
 
+    // Три рядки на роздільність в одному прогоні, а не три прогони: різниця
+    // між прогонами на одній машині більша за те, що коштує панель.
     for (width, height) in [(1280, 720), (1920, 1080)] {
-        let stats = measure(&gpu, width, height, FRAMES)?;
-        println!(
-            "{:>5}×{:<4} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.1} {:>+9.3} {:>+9.3}",
-            width,
-            height,
-            stats.min_ms,
-            stats.mean_ms,
-            stats.p95_ms,
-            stats.max_ms,
-            stats.fps(),
-            stats.headroom_ms(BUDGET_60),
-            stats.headroom_ms(BUDGET_30),
-        );
+        for (overlay, label) in [
+            (Overlay::None, "немає"),
+            (Overlay::EmptyUi, "порожній"),
+            (Overlay::Panel, "панель"),
+        ] {
+            let stats = measure(&gpu, width, height, FRAMES, overlay)?;
+            println!(
+                "{:>5}×{:<4} {:>10} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.1} {:>+9.3} {:>+9.3}",
+                width,
+                height,
+                label,
+                stats.min_ms,
+                stats.mean_ms,
+                stats.p95_ms,
+                stats.max_ms,
+                stats.fps(),
+                stats.headroom_ms(BUDGET_60),
+                stats.headroom_ms(BUDGET_30),
+            );
+        }
     }
 
     // Окремо — частина кадру, про яку заздалегідь відомо, що вона тимчасова.
