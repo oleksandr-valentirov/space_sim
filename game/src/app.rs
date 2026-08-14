@@ -18,6 +18,8 @@
 //! `load_full()`. Саме тому вони вже розділені: межа, проведена після появи
 //! потоку, проходить там, де зручно потоку.
 
+use std::time::Instant;
+
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -29,6 +31,7 @@ use engine::gpu::Gpu;
 use engine::orbit::Orbit;
 use engine::window::{self, Target};
 
+use crate::clock::Stall;
 use crate::mission;
 use crate::view;
 use crate::world::World;
@@ -43,6 +46,15 @@ use crate::world::World;
 /// ні (CLAUDE.md, інваріант 9). Тому міняти це число безпечно: воно не
 /// впливає на числа.
 const LEGS_PER_FRAME: usize = 2;
+
+/// Стеля на `dt` одного кадру, секунди реального часу.
+///
+/// Потрібна не заради плавності, а проти одного випадку: вікно згорнули на
+/// хвилину, і перший же кадр після повернення попросив би курсор пройти
+/// хвилину × warp. Час у нього однаково впреться в горизонт, тобто зламатися
+/// нічого не може, — але гра стрибнула б на тижні вперед від того, що
+/// користувач перемкнув вкладку. Чверть секунди — це чотири кадри бюджету.
+const MAX_FRAME_DT: f64 = 0.25;
 
 pub struct Options {
     pub width: u32,
@@ -78,6 +90,10 @@ struct State {
     frame: Frame,
     orbit: Orbit,
     world: World,
+
+    /// Коли малювали попередній кадр. Єдине місце в грі, яке читає годинник
+    /// операційної системи: далі йде вже `dt` аргументом (`crate::clock`).
+    last_frame: Instant,
 
     dragging: bool,
     cursor: Option<(f64, f64)>,
@@ -116,9 +132,10 @@ impl ApplicationHandler for App {
                 println!("поверхня: {}", state.target.describe());
                 println!("ассет: {}", self.options.asset.display());
                 println!(
-                    "камера: тягніть лівою кнопкою — обертання, колесо — висота, \
-                     Esc — вихід"
+                    "камера: тягніть лівою кнопкою — обертання, колесо — висота\n\
+                     час: пробіл — пауза, «.» і «,» — warp удвічі, Esc — вихід"
                 );
+                state.report_time();
                 self.state = Some(state);
             }
             Err(e) => {
@@ -137,8 +154,26 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => event_loop.exit(),
 
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state.is_pressed() && event.logical_key == Key::Named(NamedKey::Escape) {
-                    event_loop.exit();
+                if !event.state.is_pressed() {
+                    return;
+                }
+                match event.logical_key.as_ref() {
+                    Key::Named(NamedKey::Escape) => event_loop.exit(),
+                    Key::Named(NamedKey::Space) => {
+                        state.world.clock_mut().toggle_pause();
+                        state.report_time();
+                    }
+                    // Warp множиться, а не додається: від 1 до 10⁷ сім
+                    // порядків (`crate::clock`).
+                    Key::Character(".") => {
+                        state.world.clock_mut().scale_warp(2.0);
+                        state.report_time();
+                    }
+                    Key::Character(",") => {
+                        state.world.clock_mut().scale_warp(0.5);
+                        state.report_time();
+                    }
+                    _ => {}
                 }
             }
 
@@ -196,6 +231,7 @@ impl ApplicationHandler for App {
                                 .map(|v| v.trajectory.sample_count())
                                 .sum::<usize>()
                         );
+                        state.report_time();
                         event_loop.exit();
                         return;
                     }
@@ -233,13 +269,37 @@ impl State {
             frame,
             orbit: Orbit::at_altitude(mission::CAMERA_ALTITUDE_M),
             world,
+            last_frame: Instant::now(),
             dragging: false,
             cursor: None,
         })
     }
 
+    /// Друкує стан годинника. UI тут поки що — це stdout: `egui` приходить
+    /// разом із флайт-планером (M3), і заводити його заради двох чисел
+    /// означало б вирішувати наперед, як виглядатиме те, чого ще немає.
+    fn report_time(&self) {
+        let clock = self.world.clock();
+        let day = (clock.t() - mission::start().t) / 86400.0;
+        println!(
+            "  доба {day:.2} з {:.2}, warp ×{:.0}{}",
+            mission::DAYS,
+            clock.warp(),
+            match clock.stall() {
+                Some(Stall::Paused) => " (пауза)",
+                Some(Stall::Horizon) => " (упирається в горизонт)",
+                Some(Stall::MissionEnd) => " (місія скінчилася)",
+                None => "",
+            }
+        );
+    }
+
     fn draw(&mut self) -> Result<(), String> {
-        self.world.tick(LEGS_PER_FRAME);
+        let now = Instant::now();
+        let dt = now.duration_since(self.last_frame).as_secs_f64();
+        self.last_frame = now;
+
+        self.world.step(dt.min(MAX_FRAME_DT), LEGS_PER_FRAME);
         let snapshot = self.world.snapshot();
 
         let Some(surface) = self.target.acquire(&self.gpu)? else {

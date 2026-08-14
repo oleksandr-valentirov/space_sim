@@ -17,6 +17,7 @@ use game::{app, mission, view};
 fn main() {
     let mut options = app::Options::default();
     let mut shot_path: Option<PathBuf> = None;
+    let mut day: Option<f64> = None;
     let mut vsync_asked = false;
 
     let mut args = std::env::args().skip(1);
@@ -30,6 +31,7 @@ fn main() {
             "--shot" => shot_path = Some(PathBuf::from(value("--shot"))),
             "--frames" => options.frames = Some(parse(&value("--frames"), "--frames")),
             "--asset" => options.asset = PathBuf::from(value("--asset")),
+            "--day" => day = Some(parse_f64(&value("--day"), "--day")),
             "--width" => options.width = parse(&value("--width"), "--width"),
             "--height" => options.height = parse(&value("--height"), "--height"),
             "--vsync" => {
@@ -55,7 +57,7 @@ fn main() {
     }
 
     let result = match shot_path {
-        Some(path) => take_shot(&path, &options),
+        Some(path) => take_shot(&path, &options, day),
         None => app::run(options),
     };
 
@@ -68,23 +70,37 @@ const HELP: &str = "\
   --shot <файл>   намалювати повний прогноз у PNG, без вікна
   --frames <N>    намалювати N кадрів і вийти (вимикає vsync)
   --asset <файл>  ефемерида; типово data/fixture/earth_moon.eph
+  --day <N>       зупинити курсор на добі N місії (для --shot); типово кінець
   --vsync         чекати на вертикальну синхронізацію
   --no-vsync      не чекати
   --width <px>    ширина, типово 1280
   --height <px>   висота, типово 720";
 
-/// Знімок повністю порахованої місії.
+/// Знімок місії, доведеної до кінця.
 ///
-/// Тікає до кінця, а не N разів: знімок існує, щоб на нього дивитися й
-/// звіряти, і половина траєкторії в ньому означала б, що дивимось на швидкість
-/// машини, а не на прогноз.
-fn take_shot(path: &std::path::Path, options: &app::Options) -> Result<(), String> {
+/// Проганяється до кінця, а не N кадрів: знімок існує, щоб на нього дивитися
+/// й звіряти, і половина місії в ньому означала б, що дивимось на швидкість
+/// машини, а не на прогноз. Курсор при цьому теж доходить до кінця, тож на
+/// картинці все — історія; де саме він стоїть, показує `--frames`.
+fn take_shot(
+    path: &std::path::Path,
+    options: &app::Options,
+    day: Option<f64>,
+) -> Result<(), String> {
     let gpu = Gpu::new(wgpu::Instance::default(), None)?;
     println!("адаптер: {}", gpu.describe());
 
     let mut world = mission::world(&options.asset)
         .map_err(|e| format!("світ не будується ({}): {e}", options.asset.display()))?;
-    let ticks = world.run_to_horizon(8);
+    // Секунда «реального» часу на крок: курсор усе одно впирається в
+    // горизонт, тобто темп задає інтегратор, а не це число.
+    let steps = match day {
+        // Курсор ведеться тим самим `step`, що й у вікні, а не ставиться
+        // напряму: інакше знімок показував би стан, у який гра потрапити не
+        // може.
+        Some(day) => world.run_to_day(mission::start().t + day * 86400.0, 1.0, 8),
+        None => world.run_to_end(1.0, 8),
+    };
 
     let snapshot = world.snapshot();
     for vessel in &snapshot.vessels {
@@ -99,7 +115,10 @@ fn take_shot(path: &std::path::Path, options: &app::Options) -> Result<(), Strin
             }
         );
     }
-    println!("тіків: {ticks}");
+    println!(
+        "кроків: {steps}, курсор на добі {:.2}",
+        (snapshot.t - mission::start().t) / 86400.0
+    );
 
     let camera = engine::orbit::Orbit::at_altitude(mission::CAMERA_ALTITUDE_M).camera();
     let scene = view::build(&snapshot, camera);
@@ -114,6 +133,11 @@ fn take_shot(path: &std::path::Path, options: &app::Options) -> Result<(), Strin
         options.height
     );
     Ok(())
+}
+
+fn parse_f64(text: &str, name: &str) -> f64 {
+    text.parse()
+        .unwrap_or_else(|_| fail(&format!("{name}: '{text}' не є числом")))
 }
 
 fn parse(text: &str, name: &str) -> u32 {

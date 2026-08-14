@@ -59,12 +59,29 @@ pub struct Leg {
 /// `Arc` на ланку, а не на всю траєкторію: снапшот копіює вектор вказівників,
 /// а не мегабайти семплів, і ланка, яку вже хтось малює, переживе публікацію
 /// наступної.
-#[derive(Default)]
 pub struct Trajectory {
+    /// Стан, з якого все почалося.
+    ///
+    /// Лежить окремо, бо в ланках його немає: `prop_run` не семплює початкову
+    /// точку. Без нього траєкторія не мала б власного першого вузла — а він
+    /// потрібен і інтерполяції на найпершому відрізку, і сейву (J6), і
+    /// каскадному перерахунку, коли правка викидає геть усі ланки (J3).
+    start: State,
     legs: Vec<Arc<Leg>>,
 }
 
 impl Trajectory {
+    pub fn new(start: State) -> Trajectory {
+        Trajectory {
+            start,
+            legs: Vec::new(),
+        }
+    }
+
+    pub fn start(&self) -> State {
+        self.start
+    }
+
     pub fn push(&mut self, leg: Leg) {
         self.legs.push(Arc::new(leg));
     }
@@ -89,5 +106,113 @@ impl Trajectory {
     /// Час останнього семпла, якщо він є.
     pub fn end(&self) -> Option<f64> {
         self.legs.last().map(|leg| leg.t1)
+    }
+
+    /// Докуди пораховано. Для порожньої траєкторії — момент старту.
+    pub fn computed_to(&self) -> f64 {
+        self.end().unwrap_or(self.start.t)
+    }
+
+    /// Скільки ланок закінчуються пізніше за `t`.
+    ///
+    /// Це і є міра «наскільки прогноз попереду курсора», і міряється вона
+    /// ланками, а не секундами: секунди на ланку залежать від того, як густо
+    /// інтегратор ставить кроки, тобто від самої траєкторії.
+    pub fn legs_after(&self, t: f64) -> usize {
+        // Ланки впорядковані за часом, тож перша з `t1 > t` відсікає хвіст.
+        self.legs.len() - self.legs.partition_point(|leg| leg.t1 <= t)
+    }
+
+    /// Стан у момент `t` — інтерполяцією Ерміта між сусідніми семплами.
+    ///
+    /// Кубічний Ерміт, а не лінійна інтерполяція, і це не про красу: у нас на
+    /// кожному вузлі є **і** позиція, **і** швидкість, тобто кубіка визначена
+    /// точно, без жодного припущення. Лінійна інтерполяція між кроками
+    /// завдовжки в години зрізала б кути орбіти на кілометри.
+    ///
+    /// За межами порахованого віддає крайню точку, а не `None`: курсор туди
+    /// й не пускають (`clock::Clock::advance`), і повертати «немає стану» в
+    /// момент, коли апарат очевидно десь є, означало б змусити кожного
+    /// викликача вигадувати, що з цим робити.
+    pub fn state_at(&self, t: f64) -> State {
+        if t <= self.start.t || self.legs.is_empty() {
+            return self.start;
+        }
+
+        let leg_index = self.legs.partition_point(|leg| leg.t1 < t);
+        let Some(leg) = self.legs.get(leg_index) else {
+            // Пізніше за все пораховане.
+            return self
+                .legs
+                .last()
+                .and_then(|leg| leg.samples.last())
+                .map_or(self.start, |s| s.state);
+        };
+
+        let index = leg.samples.partition_point(|s| s.state.t < t);
+        let Some(after) = leg.samples.get(index) else {
+            // Ланка закінчується раніше за t лише якщо вона порожня, а таких
+            // ми не зберігаємо (`world::World::extend`).
+            return self.start;
+        };
+
+        let before = if index > 0 {
+            leg.samples[index - 1].state
+        } else if leg_index > 0 {
+            self.legs[leg_index - 1]
+                .samples
+                .last()
+                .map_or(self.start, |s| s.state)
+        } else {
+            self.start
+        };
+
+        hermite(&before, &after.state, t)
+    }
+}
+
+/// Кубічний Ерміт по позиції й швидкості.
+///
+/// Швидкість — похідна тієї самої кубіки, а не окремо інтерпольована: інакше
+/// намальована позиція й показана швидкість описували б різні рухи.
+fn hermite(a: &State, b: &State, t: f64) -> State {
+    let h = b.t - a.t;
+    if h <= 0.0 {
+        return *a;
+    }
+
+    let s = (t - a.t) / h;
+    let s2 = s * s;
+    let s3 = s2 * s;
+
+    let p0 = 2.0 * s3 - 3.0 * s2 + 1.0;
+    let m0 = s3 - 2.0 * s2 + s;
+    let p1 = -2.0 * s3 + 3.0 * s2;
+    let m1 = s3 - s2;
+
+    let dp0 = 6.0 * s2 - 6.0 * s;
+    let dm0 = 3.0 * s2 - 4.0 * s + 1.0;
+    let dp1 = -6.0 * s2 + 6.0 * s;
+    let dm1 = 3.0 * s2 - 2.0 * s;
+
+    let axis = |r0: f64, v0: f64, r1: f64, v1: f64| -> (f64, f64) {
+        (
+            p0 * r0 + m0 * h * v0 + p1 * r1 + m1 * h * v1,
+            (dp0 * r0 + dm0 * h * v0 + dp1 * r1 + dm1 * h * v1) / h,
+        )
+    };
+
+    let (x, vx) = axis(a.r.x, a.v.x, b.r.x, b.v.x);
+    let (y, vy) = axis(a.r.y, a.v.y, b.r.y, b.v.y);
+    let (z, vz) = axis(a.r.z, a.v.z, b.r.z, b.v.z);
+
+    State {
+        r: core_rs::Vec3d { x, y, z },
+        v: core_rs::Vec3d {
+            x: vx,
+            y: vy,
+            z: vz,
+        },
+        t,
     }
 }

@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 use core_rs::{CoreError, Ephemeris, PropConfig, Propagator, State};
 
+use crate::clock::{Clock, Stall};
 use crate::leg::{Leg, Sample, Trajectory};
 use crate::snapshot::{VesselSnapshot, WorldSnapshot};
 
@@ -41,6 +42,18 @@ pub const MOON: i32 = 4;
 /// різним розміром ланки, і рівність бітова. Однакові числа тут зробили б цю
 /// перевірку тавтологією.
 pub const LEG: usize = 256;
+
+/// Скільки ланок прогнозу тримати попереду курсора.
+///
+/// Це і є вся політика горизонту, і вона в **ланках**, а не в секундах —
+/// інакше `t_end` походив би від часу, і частота кадрів упливла б у числа
+/// (CLAUDE.md, інваріант 9). Скільки це діб, залежить від того, як густо
+/// інтегратор ставить кроки: на цій орбіті ланка в 256 семплів — близько
+/// одинадцяти діб, тобто чотири ланки дають місяць видимого прогнозу.
+///
+/// Змінити це число безпечно: воно вирішує, скільки прогнозу існує, і ніколи
+/// — які в нього числа.
+pub const LEAD_LEGS: usize = 4;
 
 /// Індекс апарата у `Vec<Vessel>` (CLAUDE.md: індекси замість посилань).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -66,9 +79,19 @@ pub struct Vessel {
 }
 
 impl Vessel {
-    /// Чи є ще що рахувати.
-    fn wants_work(&self) -> bool {
-        self.failed.is_none() && self.tip.t < self.horizon_end
+    /// Чи є ще що рахувати при курсорі в `cursor`.
+    ///
+    /// Три умови, і кожна вимикає роботу з іншої причини: апарат зламався,
+    /// місія скінчилася, або прогнозу вже достатньо далеко попереду.
+    fn wants_work(&self, cursor: f64) -> bool {
+        self.failed.is_none()
+            && self.tip.t < self.horizon_end
+            && self.trajectory.legs_after(cursor) < LEAD_LEGS
+    }
+
+    /// Докуди пораховано.
+    fn computed_to(&self) -> f64 {
+        self.trajectory.computed_to()
     }
 }
 
@@ -79,6 +102,8 @@ pub struct World {
     /// `Sync`, тож належить рівно одній нитці — тій, що кличе `tick`.
     prop: Propagator,
     vessels: Vec<Vessel>,
+    /// Курсор часу. Пишеться лише тут (PROJECT.md §6).
+    clock: Clock,
     /// Скільки разів світ змінювався. Читач снапшоту з нього бачить, що
     /// картинка нова, не порівнюючи вміст.
     version: u64,
@@ -94,7 +119,7 @@ pub struct Tick {
 }
 
 impl World {
-    pub fn new(asset: &Path, cfg: PropConfig) -> Result<World, CoreError> {
+    pub fn new(asset: &Path, cfg: PropConfig, epoch: f64, warp: f64) -> Result<World, CoreError> {
         let eph = Arc::new(Ephemeris::load(asset)?);
         let prop = Propagator::new(eph.clone(), cfg)?;
 
@@ -102,6 +127,7 @@ impl World {
             eph,
             prop,
             vessels: Vec::new(),
+            clock: Clock::new(epoch, warp),
             version: 0,
         })
     }
@@ -116,7 +142,7 @@ impl World {
             // переноситься те, що лишив попередній (`core/prop.h`).
             tip_step: 0.0,
             horizon_end,
-            trajectory: Trajectory::default(),
+            trajectory: Trajectory::new(start),
             failed: None,
         });
         self.version += 1;
@@ -131,12 +157,57 @@ impl World {
         self.version
     }
 
+    pub fn clock(&self) -> &Clock {
+        &self.clock
+    }
+
+    pub fn clock_mut(&mut self) -> &mut Clock {
+        &mut self.clock
+    }
+
+    /// Один крок світу: спершу порахувати, потім рушити час.
+    ///
+    /// Порядок саме такий, і він не косметичний. Спершу курсор означало б, що
+    /// на високому warp час упирається в горизонт, який цього ж кадру мав би
+    /// вирости, — гра «затиналася» б через кадр при цілком достатній
+    /// пропускній здатності.
+    ///
+    /// `dt_wall` — секунди реального часу, аргументом. Світ не читає годинник
+    /// сам, і саме тому цю функцію можна прогнати з будь-якою послідовністю
+    /// кадрів і звірити біти (`tests/time.rs`).
+    pub fn step(&mut self, dt_wall: f64, budget: usize) -> Tick {
+        let done = self.tick(budget);
+
+        let cursor_limit = self
+            .vessels
+            .iter()
+            .filter(|v| v.failed.is_none())
+            .map(Vessel::computed_to)
+            .fold(f64::INFINITY, f64::min);
+
+        let mission_end = self
+            .vessels
+            .iter()
+            .filter(|v| v.failed.is_none())
+            .map(|v| v.horizon_end)
+            .fold(f64::NEG_INFINITY, f64::max);
+
+        // Світ без живих апаратів не має чим обмежувати курсор — і не має
+        // куди його вести. Хай стоїть.
+        if cursor_limit.is_finite() {
+            self.clock.advance(dt_wall, cursor_limit, mission_end);
+        }
+
+        done
+    }
+
     /// Тягне горизонт уперед, не більше ніж `budget` ланок.
     ///
     /// По колу між апаратами: інакше перший у списку з'їдав би весь бюджет,
     /// і дев'ятий апарат гравця не рахувався б ніколи.
     pub fn tick(&mut self, budget: usize) -> Tick {
         let mut done = Tick::default();
+        let cursor = self.clock.t();
 
         while done.legs < budget {
             let mut worked = false;
@@ -145,7 +216,7 @@ impl World {
                 if done.legs >= budget {
                     break;
                 }
-                if !self.vessels[index].wants_work() {
+                if !self.vessels[index].wants_work(cursor) {
                     continue;
                 }
 
@@ -164,23 +235,51 @@ impl World {
         if done.legs > 0 {
             self.version += 1;
         }
-        done.pending = self.vessels.iter().any(Vessel::wants_work);
+        done.pending = self.vessels.iter().any(|v| v.wants_work(cursor));
         done
     }
 
-    /// Тікає, доки є що рахувати. Повертає кількість тіків.
+    /// Те саме, але до заданого моменту, а не до кінця місії.
     ///
-    /// Це не ігровий режим, а зручність для того, кому потрібен увесь прогноз
-    /// одразу: знімка без вікна й тестів. У вікні тік викликають по кадру.
-    pub fn run_to_horizon(&mut self, budget: usize) -> usize {
-        let mut ticks = 0;
+    /// Курсор ведеться тим самим `step`, а не ставиться присвоєнням: стан, у
+    /// який гра не може потрапити грою, не варто вміти показувати.
+    pub fn run_to_day(&mut self, until: f64, dt_wall: f64, budget: usize) -> usize {
+        let mut steps = 0;
+        while self.clock.t() < until {
+            let before = self.clock.t();
+            let done = self.step(dt_wall, budget);
+            steps += 1;
+
+            if self.clock.stall() == Some(Stall::MissionEnd) {
+                break;
+            }
+            if done.legs == 0 && self.clock.t() == before {
+                break;
+            }
+        }
+        steps
+    }
+
+    /// Проганяє місію до кінця: рахує й веде курсор, доки той не стане.
+    ///
+    /// Це не ігровий режим, а зручність для того, кому потрібна вся місія
+    /// одразу: знімка без вікна й тестів. `dt_wall` тут великий навмисно —
+    /// час усе одно впирається в горизонт, і саме так перевіряється, що
+    /// впирається він правильно.
+    pub fn run_to_end(&mut self, dt_wall: f64, budget: usize) -> usize {
+        let mut steps = 0;
         loop {
-            let done = self.tick(budget);
-            ticks += 1;
-            // `legs == 0` — сторож проти вічного циклу: якщо апарат уперся в
-            // помилку, `pending` стане хибним, але покладатися варто на обидва.
-            if !done.pending || done.legs == 0 {
-                return ticks;
+            let before = self.clock.t();
+            let done = self.step(dt_wall, budget);
+            steps += 1;
+
+            if self.clock.stall() == Some(Stall::MissionEnd) {
+                return steps;
+            }
+            // Сторож проти вічного циклу: ніхто нічого не порахував і час не
+            // зрушив — далі не зрушить теж.
+            if done.legs == 0 && self.clock.t() == before {
+                return steps;
             }
         }
     }
@@ -241,16 +340,26 @@ impl World {
     /// яким його публікуватиме `arc-swap` у J4, і саме тому будується він тут,
     /// а не в рендері — щоб межа існувала до того, як з'явиться нитка.
     pub fn snapshot(&self) -> WorldSnapshot {
+        let t = self.clock.t();
+
         WorldSnapshot {
             version: self.version,
+            t,
+            warp: self.clock.warp(),
+            stall: self.clock.stall(),
             vessels: self
                 .vessels
                 .iter()
                 .map(|v| VesselSnapshot {
                     id: v.id,
                     name: v.name.clone(),
+                    // Інтерполяція робиться тут, а не в рендері, і це не
+                    // економія: два споживачі, кожен зі своїм `state_at`,
+                    // бачили б два різні «зараз» в одному кадрі.
+                    state: v.trajectory.state_at(t),
                     legs: v.trajectory.share(),
                     tip: v.tip,
+                    computed_to: v.computed_to(),
                     failed: v.failed,
                 })
                 .collect(),

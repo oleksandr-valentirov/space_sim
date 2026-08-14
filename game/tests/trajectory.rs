@@ -28,7 +28,7 @@ fn samples(snapshot: &WorldSnapshot) -> Vec<game::leg::Sample> {
 
 fn finished_world() -> World {
     let mut world = mission::world(&mission::default_asset()).expect("світ будується");
-    world.run_to_horizon(8);
+    world.run_to_end(1.0, 8);
     world
 }
 
@@ -81,25 +81,21 @@ fn the_game_computes_what_the_direct_run_computes() {
 
 /// Скільки роботи за тік — не впливає на числа взагалі.
 ///
-/// Це J1-версія головної перевірки J2. Там роль бюджету гратиме частота
-/// кадрів; тут вона вже грає ту саму роль, тільки без годинника, і саме тому
-/// цю перевірку варто мати до того, як час з'явиться: якщо вона впаде тоді,
-/// підозрюваних буде двоє.
+/// Бюджет ланок — це те, чим кадр обмежує затримку; він вирішує, **коли**
+/// шматок прогнозу з'явиться, і ніколи — які в нього числа. Пара до цього —
+/// `tests/time.rs`, де те саме перевіряється з боку годинника.
 #[test]
 fn the_size_of_a_tick_does_not_change_the_numbers() {
     let run = |budget: usize| {
         let mut world = mission::world(&mission::default_asset()).expect("світ будується");
-        let ticks = world.run_to_horizon(budget);
-        (ticks, samples(&world.snapshot()))
+        world.run_to_end(1.0, budget);
+        samples(&world.snapshot())
     };
 
-    let (slow_ticks, slow) = run(1);
-    let (fast_ticks, fast) = run(1000);
+    let slow = run(1);
+    let fast = run(1000);
 
-    assert!(
-        slow_ticks > fast_ticks,
-        "по одній ланці за тік мало вийти більше тіків: {slow_ticks} проти {fast_ticks}"
-    );
+    assert!(!slow.is_empty(), "нічого не пораховано");
     assert_eq!(slow.len(), fast.len(), "різна кількість семплів");
 
     for (i, (a, b)) in slow.iter().zip(fast.iter()).enumerate() {

@@ -58,7 +58,7 @@ fn the_prediction_appears_in_the_frame_and_only_when_it_exists() {
         .expect("кадр");
     let empty_lit = lit(&empty);
 
-    world.run_to_horizon(8);
+    world.run_to_end(1.0, 8);
     let full = shot::take_scene(&gpu, SIZE, SIZE, &view::build(&world.snapshot(), camera()))
         .expect("кадр");
     let full_lit = lit(&full);
@@ -88,7 +88,7 @@ fn the_camera_moves_the_prediction_too() {
     let Some(gpu) = gpu() else { return };
 
     let mut world = mission::world(&mission::default_asset()).expect("світ будується");
-    world.run_to_horizon(8);
+    world.run_to_end(1.0, 8);
     let snapshot = world.snapshot();
 
     let mut orbit = Orbit::at_altitude(mission::CAMERA_ALTITUDE_M);
