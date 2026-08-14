@@ -18,6 +18,7 @@ use engine::egui;
 
 use crate::clock::Stall;
 use crate::mission;
+use crate::schedule::{Kind, Marker};
 use crate::sim::Command;
 use crate::snapshot::{VesselSnapshot, WorldSnapshot};
 use crate::text::{tr, Key, Language};
@@ -105,6 +106,68 @@ fn button(ui: &mut egui::Ui, id: &str, label: &str) -> bool {
     ui.interact(drawn.rect, egui::Id::new(id), egui::Sense::click())
         .clicked()
 }
+
+/// Панель розкладу: маркери подій, клік по рядку — перемотати туди
+/// (ROADMAP-UI.md, U3b).
+///
+/// Показуються лише події **попереду курсора**: минуле вже пролетіли, а назад
+/// курсор не ходить (J-етап), тож рядок «перицентр учора» був би кнопкою, яка
+/// завжди відмовляє.
+pub fn schedule_panel(
+    ui: &mut egui::Ui,
+    language: Language,
+    now: f64,
+    markers: &[Marker],
+) -> Vec<Command> {
+    let mut commands = Vec::new();
+
+    ui.heading(tr(language, Key::Schedule));
+
+    let mut shown = 0;
+    for (index, marker) in markers.iter().enumerate() {
+        if marker.t <= now {
+            continue;
+        }
+
+        let name = tr(
+            language,
+            match marker.kind {
+                Kind::Periapsis => Key::Periapsis,
+                Kind::Apoapsis => Key::Apoapsis,
+            },
+        );
+        let label = format!(
+            "{name}: +{:.2} діб, {:.0} км",
+            (marker.t - now) / DAY_S,
+            marker.distance_m / 1000.0
+        );
+
+        // Адреса рядка — його порядковий номер у списку маркерів, а не час:
+        // час — `f64`, і як частина `Id` він перетворив би найменше уточнення
+        // інтерполяції на інший віджет.
+        if button(ui, &format!("{SEEK}{index}"), &label) {
+            commands.push(Command::SeekTo(marker.t));
+        }
+
+        shown += 1;
+        if shown >= MAX_ROWS {
+            break;
+        }
+    }
+
+    if shown == 0 {
+        ui.label(tr(language, Key::NoEvents));
+    }
+
+    commands
+}
+
+/// Префікс адрес рядків розкладу.
+pub const SEEK: &str = "hud.schedule.seek.";
+
+/// Скільки подій показувати. Розклад — це «куди перемотати далі», а не
+/// журнал: перші кілька відповідають на це питання, решта лише займає екран.
+const MAX_ROWS: usize = 6;
 
 /// Числа панелі апарата, зняті зі снапшоту (ROADMAP-UI.md, U2c).
 ///

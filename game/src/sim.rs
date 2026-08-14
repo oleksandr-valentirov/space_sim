@@ -66,6 +66,12 @@ pub enum Command {
     SetWarp(f64),
     ScaleWarp(f64),
     TogglePause,
+    /// Перевести курсор на вже пораховану мить (ROADMAP-UI.md, U3b).
+    ///
+    /// Не `t_end` і не запит на рахунок: якщо туди ще не пораховано, команду
+    /// **відхилять** (`Event::SeekRejected`). Інакше поле вводу в інтерфейсі
+    /// вирішувало б, скільки інтегрувати, — прямо проти інваріанта 9.
+    SeekTo(f64),
     CommitPlan {
         vessel: VesselId,
         plan: Plan,
@@ -84,6 +90,11 @@ pub enum Event {
     PlanCommitted {
         vessel: VesselId,
         from: Option<f64>,
+    },
+    /// Перемотування не прийнято — назад або в непораховане.
+    SeekRejected {
+        t: f64,
+        why: crate::world::SeekRejected,
     },
     PlanRejected {
         vessel: VesselId,
@@ -249,6 +260,11 @@ fn apply(world: &mut World, command: Command, events: &Sender<Event>) {
         Command::SetWarp(warp) => world.clock_mut().set_warp(warp),
         Command::ScaleWarp(factor) => world.clock_mut().scale_warp(factor),
         Command::TogglePause => world.clock_mut().toggle_pause(),
+        Command::SeekTo(t) => {
+            if let Err(why) = world.seek_to(t) {
+                let _ = events.send(Event::SeekRejected { t, why });
+            }
+        }
         Command::Save(path) => {
             let error = save::write_world(world, &path).err();
             let _ = events.send(Event::Saved { error });

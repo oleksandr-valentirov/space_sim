@@ -55,6 +55,15 @@ pub enum Key {
     Failed,
     /// Маневрів у плані більше немає.
     NoBurns,
+
+    /// Заголовок панелі розкладу.
+    Schedule,
+    /// Перицентр.
+    Periapsis,
+    /// Апоцентр.
+    Apoapsis,
+    /// Подій у порахованому ще немає.
+    NoEvents,
 }
 
 /// Мова інтерфейсу. Дві, бо саме дві таблиці й перевіряються.
@@ -93,6 +102,10 @@ fn english(key: Key) -> &'static str {
         Key::ComputedAhead => "computed ahead",
         Key::Failed => "stopped with an error",
         Key::NoBurns => "no burns planned",
+        Key::Schedule => "SCHEDULE",
+        Key::Periapsis => "periapsis",
+        Key::Apoapsis => "apoapsis",
+        Key::NoEvents => "nothing computed yet",
     }
 }
 
@@ -116,12 +129,16 @@ fn ukrainian(key: Key) -> &'static str {
         Key::ComputedAhead => "прогноз уперед",
         Key::Failed => "зупинився помилкою",
         Key::NoBurns => "маневрів немає",
+        Key::Schedule => "РОЗКЛАД",
+        Key::Periapsis => "перицентр",
+        Key::Apoapsis => "апоцентр",
+        Key::NoEvents => "поки що порожньо",
     }
 }
 
 /// Усі ключі — для перевірок і для того, хто колись малюватиме таблицю
 /// перекладу.
-pub const ALL: [Key; 18] = [
+pub const ALL: [Key; 22] = [
     Key::Time,
     Key::Day,
     Key::Warp,
@@ -140,6 +157,10 @@ pub const ALL: [Key; 18] = [
     Key::ComputedAhead,
     Key::Failed,
     Key::NoBurns,
+    Key::Schedule,
+    Key::Periapsis,
+    Key::Apoapsis,
+    Key::NoEvents,
 ];
 
 #[cfg(test)]

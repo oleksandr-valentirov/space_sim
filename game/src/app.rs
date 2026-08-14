@@ -36,6 +36,7 @@ use crate::mission;
 use crate::plan::Manoeuvre;
 use crate::planner::{Planner, Preview, Request};
 use crate::save::{self, Save};
+use crate::schedule;
 use crate::sim::{Command, Event, Sim};
 use crate::text::Language;
 use crate::view;
@@ -420,6 +421,12 @@ impl State {
                 Event::VesselFailed { vessel, error } => {
                     println!("апарат {vessel:?} зупинився: {error}");
                 }
+                // Правило 8 етапу U: відповідь показує панель, а не власне
+                // припущення про успіх. Поки панелі повідомлень немає —
+                // stdout, як і решта подій тут.
+                Event::SeekRejected { t, why } => {
+                    println!("перемотування на {t:.1} відхилено: {why:?}");
+                }
                 Event::PlanRejected { vessel, why } => {
                     println!("план для {vessel:?} відхилено: {why:?}");
                 }
@@ -487,6 +494,13 @@ impl State {
                         if let Some(vessel) = snapshot.vessels.first() {
                             let readout = hud::read_vessel(&snapshot, vessel, radius);
                             hud::vessel_panel(ui, language, &vessel.name, &readout);
+
+                            ui.separator();
+                            // Скан по вже порахованих семплах — нічого не
+                            // озброюється й не інтегрується (U3a).
+                            let markers = schedule::scan(&vessel.legs);
+                            commands
+                                .extend(hud::schedule_panel(ui, language, snapshot.t, &markers));
                         }
                     });
             });

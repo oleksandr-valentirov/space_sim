@@ -295,3 +295,75 @@ fn a_burn_already_flown_is_not_the_next_one() {
     let readout = hud::read_vessel(&world, &world.vessels[0], 6_371_000.0);
     assert_eq!(readout.next_burn_s, None);
 }
+
+/// Клік у рядку розкладу кладе рівно `SeekTo` тієї події (U3b).
+#[test]
+fn a_schedule_row_seeks_to_its_own_event() {
+    use game::schedule::{Kind, Marker};
+
+    let world = snapshot(1000.0, None);
+    let markers = [
+        // Позаду курсора — рядка не буде взагалі: назад курсор не ходить.
+        Marker {
+            kind: Kind::Periapsis,
+            t: world.t - 100.0,
+            distance_m: 7.0e6,
+        },
+        Marker {
+            kind: Kind::Apoapsis,
+            t: world.t + 3600.0,
+            distance_m: 4.2e7,
+        },
+        Marker {
+            kind: Kind::Periapsis,
+            t: world.t + 7200.0,
+            distance_m: 7.1e6,
+        },
+    ];
+
+    let context = egui::Context::default();
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
+
+    let draw = |events: Vec<egui::Event>| -> Vec<Command> {
+        let mut commands = Vec::new();
+        let input = egui::RawInput {
+            screen_rect: Some(screen),
+            events,
+            ..Default::default()
+        };
+        let mut output = context.run_ui(input, |ui| {
+            commands = hud::schedule_panel(ui, Language::English, world.t, &markers);
+        });
+        output.textures_delta.clear();
+        commands
+    };
+
+    draw(Vec::new());
+    assert_eq!(draw(Vec::new()), Vec::new(), "розклад сам нічого не шле");
+
+    // Рядок з індексом 2 — це третій маркер: перший відкинуто як минулий,
+    // але адреса рядка йде за номером у списку, а не за порядком на екрані.
+    let id = egui::Id::new(format!("{}{}", hud::SEEK, 2));
+    let centre = context
+        .read_response(id)
+        .map(|response| response.rect.center())
+        .expect("рядок перицентра має бути намальований");
+
+    let clicked = draw(vec![
+        egui::Event::PointerMoved(centre),
+        egui::Event::PointerButton {
+            pos: centre,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::default(),
+        },
+        egui::Event::PointerButton {
+            pos: centre,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::default(),
+        },
+    ]);
+
+    assert_eq!(clicked, vec![Command::SeekTo(world.t + 7200.0)]);
+}
