@@ -344,7 +344,10 @@ fn a_vessel_with_area_survives_the_save() {
     // Через текст, не через структуру в пам'яті: якби `params` не
     // друкувалося або не читалося назад, саме тут це й видно.
     let text = save.to_text();
-    assert!(text.contains("params"), "площа мала потрапити у файл:\n{text}");
+    assert!(
+        text.contains("params"),
+        "площа мала потрапити у файл:\n{text}"
+    );
 
     let reloaded = Save::from_text(&text).expect("сейв читається");
     assert_eq!(

@@ -460,7 +460,11 @@ fn propagation_matches_the_c_oracle_bit_for_bit() {
         let run = &oracle_srp_run[0];
         assert_eq!(run.values[0] as usize, count, "кількість семплів під SRP");
         assert_eq!(run.values[3].to_bits(), step.to_bits(), "крок під SRP");
-        same_bits(&oracle_srp_end[0].state(0), &srp_final, "кінцевий стан під SRP");
+        same_bits(
+            &oracle_srp_end[0].state(0),
+            &srp_final,
+            "кінцевий стан під SRP",
+        );
 
         // І він таки інший: якби вказівник на апарат нікуди не доходив,
         // усе вище збіглося б з оракулом, який теж нічого не відчув.

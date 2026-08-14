@@ -242,7 +242,14 @@ fn propagation_matches_the_raw_call_bit_for_bit() {
     let mut samples = vec![State::default(); CAP];
     let mut step = 0.0;
     let run = prop
-        .run(&start, None, VESSEL_T0 + 0.5 * DAY, &[], &mut samples, &mut step)
+        .run(
+            &start,
+            None,
+            VESSEL_T0 + 0.5 * DAY,
+            &[],
+            &mut samples,
+            &mut step,
+        )
         .expect("прогін має пройти");
 
     // Сирий шлях, той самий буфер, ті самі числа.
@@ -350,7 +357,14 @@ fn events_come_back_as_events() {
 
     let mut step = 0.0;
     let run = prop
-        .run(&start, None, VESSEL_T0 + 4.0 * DAY, &events, &mut [], &mut step)
+        .run(
+            &start,
+            None,
+            VESSEL_T0 + 4.0 * DAY,
+            &events,
+            &mut [],
+            &mut step,
+        )
         .expect("прогін має пройти");
 
     // Апарат стартує рівно в апоцентрі, тож першим має бути перицентр — це
@@ -430,7 +444,8 @@ fn running_past_the_asset_is_an_error() {
 
     let mut step = 0.0;
     assert_eq!(
-        prop.run(&start, None, 200.0 * DAY, &[], &mut [], &mut step).err(),
+        prop.run(&start, None, 200.0 * DAY, &[], &mut [], &mut step)
+            .err(),
         Some(CoreError::InvalidArg)
     );
 
@@ -453,7 +468,14 @@ fn creating_and_dropping_repeatedly_is_clean() {
         let start = vessel(&eph);
         let mut step = 0.0;
         let mut samples = [State::default(); 8];
-        let _ = prop.run(&start, None, VESSEL_T0 + 600.0, &[], &mut samples, &mut step);
+        let _ = prop.run(
+            &start,
+            None,
+            VESSEL_T0 + 600.0,
+            &[],
+            &mut samples,
+            &mut step,
+        );
     }
 }
 
@@ -591,7 +613,10 @@ fn a_vessel_with_area_feels_the_sun() {
         + (lit.final_state.r.z - none.final_state.r.z).powi(2))
     .sqrt();
     println!("  пів доби під SRP зрушили апарат на {moved:.4} м");
-    assert!(moved > 1.0, "площа мала змінити траєкторію, а зрушила {moved} м");
+    assert!(
+        moved > 1.0,
+        "площа мала змінити траєкторію, а зрушила {moved} м"
+    );
 
     let mut stm_step = 0.0;
     let (stm_final, _) = prop
