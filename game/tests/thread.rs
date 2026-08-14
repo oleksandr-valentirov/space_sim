@@ -29,7 +29,12 @@ const DAY: f64 = 86400.0;
 const PATIENCE: Duration = Duration::from_secs(10);
 
 fn spawn(demo_plan: bool) -> Sim {
-    Sim::spawn(mission::default_asset(), demo_plan).expect("нитка піднімається")
+    let build = if demo_plan {
+        mission::world_with_demo_plan
+    } else {
+        mission::world
+    };
+    Sim::spawn(build(&mission::default_asset()).expect("світ")).expect("нитка піднімається")
 }
 
 /// Крутить нитку на максимальному warp, доки місія не скінчиться.

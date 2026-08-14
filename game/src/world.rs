@@ -231,6 +231,38 @@ impl World {
         id
     }
 
+    /// Апарат із сейву: усе задано явно, нічого не виводиться.
+    ///
+    /// Головна відмінність від [`World::add_planned_vessel`] — `applied`
+    /// **береться**, а не рахується. Маневр рівно в момент `tip` уже
+    /// застосований (його Δv у `tip`), але з чисел цього не видно: стан до й
+    /// після імпульсу мають однаковий час. Вивести його тут означало б
+    /// виконати маневр удруге при кожному завантаженні (`crate::save`).
+    pub fn add_saved_vessel(
+        &mut self,
+        name: &str,
+        tip: State,
+        step: f64,
+        horizon_end: f64,
+        plan: Plan,
+        applied: usize,
+    ) -> VesselId {
+        let id = VesselId(self.vessels.len() as u32);
+        self.vessels.push(Vessel {
+            id,
+            name: name.to_string(),
+            tip,
+            tip_step: step,
+            horizon_end,
+            plan,
+            applied,
+            trajectory: Trajectory::new(tip),
+            failed: None,
+        });
+        self.version += 1;
+        id
+    }
+
     pub fn vessels(&self) -> &[Vessel] {
         &self.vessels
     }

@@ -38,8 +38,8 @@ use arc_swap::ArcSwap;
 use core_rs::CoreError;
 use crossbeam_channel::{Receiver, Sender};
 
-use crate::mission;
 use crate::plan::Plan;
+use crate::save;
 use crate::snapshot::WorldSnapshot;
 use crate::world::{PlanRejected, VesselId, World};
 
@@ -66,13 +66,19 @@ pub enum Command {
     SetWarp(f64),
     ScaleWarp(f64),
     TogglePause,
-    CommitPlan { vessel: VesselId, plan: Plan },
+    CommitPlan {
+        vessel: VesselId,
+        plan: Plan,
+    },
+    /// Записати сейв. Пише **нитка симуляції**, бо світ належить їй; головна
+    /// нитка отримає [`Event::Saved`].
+    Save(PathBuf),
     Shutdown,
 }
 
 /// Що симуляція повідомляє назад. Дискретне — тобто те, чого снапшот не
 /// переносить.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     /// План прийнято; `from` — момент, з якого перераховано.
     PlanCommitted {
@@ -88,6 +94,10 @@ pub enum Event {
     VesselFailed {
         vessel: VesselId,
         error: CoreError,
+    },
+    /// Сейв записано, або не записано — і тоді сказано чому.
+    Saved {
+        error: Option<String>,
     },
 }
 
@@ -109,14 +119,12 @@ pub struct Sim {
 }
 
 impl Sim {
-    /// Піднімає світ і нитку під нього.
+    /// Бере готовий світ і дає йому нитку.
     ///
-    /// Світ будується **тут**, у нитці-викликачі, а не всередині: помилка
-    /// завантаження ассета має долетіти до того, хто її може показати, а не
-    /// вбити нитку, яка ще нікому не відома.
-    pub fn spawn(asset: PathBuf, demo_plan: bool) -> Result<Sim, String> {
-        let mut world = build(&asset, demo_plan)?;
-
+    /// Світ будується **зовні**, у нитці-викликачі: помилка завантаження
+    /// ассета чи сейву має долетіти до того, хто її може показати, а не вбити
+    /// нитку, яка ще нікому не відома.
+    pub fn spawn(mut world: World) -> Result<Sim, String> {
         let eph = world.ephemeris();
         let published = Arc::new(ArcSwap::from_pointee(world.snapshot()));
         let (commands, command_rx) = crossbeam_channel::unbounded();
@@ -170,15 +178,6 @@ impl Drop for Sim {
             let _ = thread.join();
         }
     }
-}
-
-fn build(asset: &std::path::Path, demo_plan: bool) -> Result<World, String> {
-    let build = if demo_plan {
-        mission::world_with_demo_plan
-    } else {
-        mission::world
-    };
-    build(asset).map_err(|e| format!("світ не будується ({}): {e}", asset.display()))
 }
 
 /// Цикл нитки.
@@ -250,6 +249,10 @@ fn apply(world: &mut World, command: Command, events: &Sender<Event>) {
         Command::SetWarp(warp) => world.clock_mut().set_warp(warp),
         Command::ScaleWarp(factor) => world.clock_mut().scale_warp(factor),
         Command::TogglePause => world.clock_mut().toggle_pause(),
+        Command::Save(path) => {
+            let error = save::write_world(world, &path).err();
+            let _ = events.send(Event::Saved { error });
+        }
         Command::CommitPlan { vessel, plan } => {
             let event = match world.commit_plan(vessel, plan) {
                 Ok(from) => Event::PlanCommitted { vessel, from },

@@ -45,7 +45,8 @@ fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
 /// Головна перевірка J5: прев'ю з іншої нитки — це майбутній політ, бітово.
 #[test]
 fn a_preview_is_bit_identical_to_the_flight_that_follows() {
-    let sim = Sim::spawn(mission::default_asset(), false).expect("нитка симуляції");
+    let sim = Sim::spawn(mission::world(&mission::default_asset()).expect("світ"))
+        .expect("нитка симуляції");
 
     // Спершу дати курсору відійти від старту, тоді спинити. Пауза потрібна
     // тесту, а не конструкції: інакше точка перезапуску встигла б утекти в
@@ -205,7 +206,8 @@ fn a_preview_is_bit_identical_to_the_flight_that_follows() {
 /// довільної точки дає правдоподібну криву, яка просто не та.
 #[test]
 fn starting_a_preview_from_the_wrong_step_gives_a_different_line() {
-    let sim = Sim::spawn(mission::default_asset(), false).expect("нитка симуляції");
+    let sim = Sim::spawn(mission::world(&mission::default_asset()).expect("світ"))
+        .expect("нитка симуляції");
     sim.send(Command::TogglePause);
 
     let burn_t = mission::start().t + 30.0 * DAY;
@@ -261,7 +263,8 @@ fn starting_a_preview_from_the_wrong_step_gives_a_different_line() {
 /// завжди останній, і саме він мусить дійти; решта нікому не потрібні.
 #[test]
 fn only_the_latest_request_is_answered() {
-    let sim = Sim::spawn(mission::default_asset(), false).expect("нитка симуляції");
+    let sim = Sim::spawn(mission::world(&mission::default_asset()).expect("світ"))
+        .expect("нитка симуляції");
     sim.send(Command::TogglePause);
 
     let burn_t = mission::start().t + 30.0 * DAY;

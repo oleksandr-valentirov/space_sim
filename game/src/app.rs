@@ -33,6 +33,7 @@ use crate::leg::restart_at;
 use crate::mission;
 use crate::plan::Manoeuvre;
 use crate::planner::{Planner, Preview, Request};
+use crate::save::{self, Save};
 use crate::sim::{Command, Event, Sim};
 use crate::view;
 use crate::world::{World, EARTH};
@@ -46,6 +47,8 @@ pub struct Options {
     pub asset: std::path::PathBuf,
     /// Додати демонстраційний маневр (`mission::demo_plan`).
     pub demo_plan: bool,
+    /// Підняти гру з сейву замість нової місії.
+    pub load: Option<std::path::PathBuf>,
 }
 
 impl Default for Options {
@@ -57,6 +60,7 @@ impl Default for Options {
             vsync: true,
             asset: mission::default_asset(),
             demo_plan: false,
+            load: None,
         }
     }
 }
@@ -90,6 +94,18 @@ struct State {
 
 /// Світ за опціями — спільне для вікна й для знімка.
 pub fn build_world(options: &Options) -> Result<World, String> {
+    if let Some(path) = &options.load {
+        // Ефемерида потрібна сейву готовою: він несе стан і план, але не
+        // ассет (`crate::save`).
+        let eph = core_rs::Ephemeris::load(&options.asset)
+            .map(std::sync::Arc::new)
+            .map_err(|e| format!("ассет не читається ({}): {e}", options.asset.display()))?;
+
+        return Save::read(path)?
+            .into_world(eph, mission::config())
+            .map_err(|e| format!("сейв не піднімається ({}): {e}", path.display()));
+    }
+
     let build = if options.demo_plan {
         mission::world_with_demo_plan
     } else {
@@ -135,7 +151,7 @@ impl ApplicationHandler for App {
                     "камера: тягніть лівою кнопкою — обертання, колесо — висота\n\
                      час: пробіл — пауза, «.» і «,» — warp удвічі\n\
                      план: «p» — показати гальмування через 5 діб, Enter — летіти ним\n\
-                     Esc — вихід"
+                     F5 — зберегти, Esc — вихід"
                 );
                 state.report_time(&state.sim.snapshot());
                 self.state = Some(state);
@@ -172,6 +188,9 @@ impl ApplicationHandler for App {
                     Key::Character("p") => state.ask_for_preview(),
                     // І полетіти цим планом.
                     Key::Named(NamedKey::Enter) => state.commit_preview(),
+                    Key::Named(NamedKey::F5) => {
+                        state.sim.send(Command::Save(save::default_path()));
+                    }
                     _ => {}
                 }
             }
@@ -257,7 +276,7 @@ impl State {
         )?;
 
         let frame = Frame::new(&gpu, target.format());
-        let sim = Sim::spawn(options.asset.clone(), options.demo_plan)?;
+        let sim = Sim::spawn(build_world(options)?)?;
         // Планувальник ділить із симуляцією ассет, але не пропагатор:
         // `Ephemeris` — `Sync`, `Propagator` — ні (D3, H4).
         let planner = Planner::spawn(sim.ephemeris(), mission::config())?;
@@ -366,6 +385,10 @@ impl State {
                 Event::PlanRejected { vessel, why } => {
                     println!("план для {vessel:?} відхилено: {why:?}");
                 }
+                Event::Saved { error } => match error {
+                    Some(e) => println!("сейв не записався: {e}"),
+                    None => println!("сейв: {}", save::default_path().display()),
+                },
                 Event::PlanCommitted { vessel, from } => {
                     println!("план для {vessel:?} прийнято, перерахунок з {from:?}");
                     // Прев'ю стало реальністю — стирати його з кадру.

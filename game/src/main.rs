@@ -18,6 +18,7 @@ fn main() {
     let mut options = app::Options::default();
     let mut shot_path: Option<PathBuf> = None;
     let mut day: Option<f64> = None;
+    let mut save_path: Option<PathBuf> = None;
     let mut vsync_asked = false;
 
     let mut args = std::env::args().skip(1);
@@ -33,6 +34,8 @@ fn main() {
             "--asset" => options.asset = PathBuf::from(value("--asset")),
             "--day" => day = Some(parse_f64(&value("--day"), "--day")),
             "--demo-plan" => options.demo_plan = true,
+            "--load" => options.load = Some(PathBuf::from(value("--load"))),
+            "--save" => save_path = Some(PathBuf::from(value("--save"))),
             "--width" => options.width = parse(&value("--width"), "--width"),
             "--height" => options.height = parse(&value("--height"), "--height"),
             "--vsync" => {
@@ -58,7 +61,7 @@ fn main() {
     }
 
     let result = match shot_path {
-        Some(path) => take_shot(&path, &options, day),
+        Some(path) => take_shot(&path, &options, day, save_path.as_deref()),
         None => app::run(options),
     };
 
@@ -73,6 +76,8 @@ const HELP: &str = "\
   --asset <файл>  ефемерида; типово data/fixture/earth_moon.eph
   --day <N>       зупинити курсор на добі N місії (для --shot); типово кінець
   --demo-plan     додати показовий маневр на 10-й добі (ROADMAP J3)
+  --load <файл>   підняти гру з сейву замість нової місії (ROADMAP J6)
+  --save <файл>   записати сейв після прогону (для --shot); у вікні це F5
   --vsync         чекати на вертикальну синхронізацію
   --no-vsync      не чекати
   --width <px>    ширина, типово 1280
@@ -88,6 +93,7 @@ fn take_shot(
     path: &std::path::Path,
     options: &app::Options,
     day: Option<f64>,
+    save_path: Option<&std::path::Path>,
 ) -> Result<(), String> {
     let gpu = Gpu::new(wgpu::Instance::default(), None)?;
     println!("адаптер: {}", gpu.describe());
@@ -120,6 +126,11 @@ fn take_shot(
         "кроків: {steps}, курсор на добі {:.2}",
         (snapshot.t - mission::start().t) / 86400.0
     );
+
+    if let Some(save_path) = save_path {
+        game::save::write_world(&world, save_path)?;
+        println!("сейв: {}", save_path.display());
+    }
 
     let camera = engine::orbit::Orbit::at_altitude(mission::CAMERA_ALTITUDE_M).camera();
     let scene = view::build(&snapshot, camera);
