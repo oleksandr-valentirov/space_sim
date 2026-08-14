@@ -565,6 +565,103 @@ static void test_high_degree_stays_finite(void)
     CHECK(worst_trace < 1e-12);
 }
 
+
+/* How wrong may the body-fixed frame be? (ROADMAP K5c)
+ *
+ * The lunar field is published in the principal-axis frame; what the asset
+ * carries is the mean IAU model, without physical libration
+ * (core/offline/body_rotation.h). Those are not the same frame, and before
+ * any tesseral term is believed, the cost of that has to be a number.
+ *
+ * The measurement needs no external data, because the field itself answers
+ * it: rotate the evaluation point by an angle, rotate the resulting
+ * acceleration back, and the difference is exactly what a frame wrong by
+ * that angle would produce.
+ *
+ * WHAT IT IS COMPARED AGAINST decides whether the answer means anything.
+ * Not total gravity, which would flatter it by three orders. Not the whole
+ * harmonic signal either, which is dominated by degree 2 and varies on the
+ * scale of the whole body - a frame error barely moves it, and the answer
+ * would say "harmless" about the wrong thing. It is compared against the
+ * MASCON PART: what the high degrees add on top of a low-degree field.
+ * That is what K5 is importing, it varies on the scale of 2*pi*R/n, and it
+ * is therefore the part a rotated frame smears first. */
+static void test_frame_error_sensitivity(void)
+{
+    HarmonicsField full = { 0 };
+    full.degree = HARMONICS_MAX_DEGREE;
+    full.re = 1738000.0;
+
+    /* Kaula-like magnitudes, generated rather than cited - no lunar data is
+     * in the repository until K5e, and the shape of the answer depends on
+     * the spectrum, not on anyone's particular coefficients. */
+    for (int n = 2; n <= full.degree; n++) {
+        for (int m = 0; m <= n; m++) {
+            double v = 1.0e-4 / ((double)n * (double)n);
+            full.c[harmonics_index(n, m)] = (m % 2) ? -v : v;
+            full.s[harmonics_index(n, m)] = (m % 3) ? 0.5 * v : -0.5 * v;
+        }
+    }
+
+    /* The same field truncated to what the old ceiling could carry. The
+     * difference between the two is the thing K5 exists to add. */
+    HarmonicsField low = full;
+    low.degree = 8;
+
+    double mu = 4.9028e12;
+    Vec3d r = vec3(1.6e6, -0.7e6, 0.5e6);   /* ~100 km up, well off the axis */
+
+    Vec3d a_full, a_low;
+    harmonics_accel(&full, r, mu, &a_full);
+    harmonics_accel(&low, r, mu, &a_low);
+
+    double mascons = vec3_norm(vec3_sub(a_full, a_low));
+    CHECK(mascons > 0.0);
+
+    const double ARCSEC = 4.84813681109536e-6;   /* radians, exact by definition */
+    const double angles[3] = { ARCSEC, 60.0 * ARCSEC, 600.0 * ARCSEC };
+    double fraction[3];
+
+    for (int i = 0; i < 3; i++) {
+        double e = angles[i];
+        double c = cos(e), s = sin(e);
+
+        /* Rotate the point into the wrong frame, evaluate, rotate the
+         * answer back: what is left is the error, not the rotation. */
+        Vec3d rp = vec3(c * r.x - s * r.y, s * r.x + c * r.y, r.z);
+        Vec3d ap;
+        harmonics_accel(&full, rp, mu, &ap);
+        Vec3d back = vec3(c * ap.x + s * ap.y, -s * ap.x + c * ap.y, ap.z);
+
+        double err = vec3_norm(vec3_sub(back, a_full));
+        fraction[i] = err / mascons;
+
+        printf("  frame off by %6.0f arcsec: %.3g m/s^2, %.1f%% of the "
+               "mascon signal (%.3g m/s^2)\n",
+               e / ARCSEC, err, 100.0 * fraction[i], mascons);
+    }
+
+    /* Monotone in the angle, which is the check that the harness itself is
+     * sane: a rotation error that did not grow with the rotation would mean
+     * the comparison is measuring noise. */
+    CHECK(fraction[0] < fraction[1] && fraction[1] < fraction[2]);
+
+    /* And it scales with the angle rather than saturating: ten times the
+     * error must cost several times as much, or the harness is reporting
+     * something other than the rotation. */
+    CHECK(fraction[2] > 5.0 * fraction[1]);
+
+    /* THE FINDING, and it went the other way from what K5's plan feared: an
+     * arcminute of frame error - a physical libration's worth, which is
+     * exactly what the mean model leaves out - costs a tenth of a percent
+     * of the mascon signal, and ten arcminutes costs about one percent. The
+     * mean frame is therefore good enough to carry a principal-axis field,
+     * and ROADMAP K5c records what that means for the import. */
+    CHECK(fraction[0] < 1e-3);
+    CHECK(fraction[1] < 0.01);
+    CHECK(fraction[2] < 0.05);
+}
+
 int main(void)
 {
     test_disabled_field_is_zero();
@@ -578,5 +675,6 @@ int main(void)
     test_normalised_matches_the_old_form();
     test_normalisation_matches_factorials();
     test_high_degree_stays_finite();
+    test_frame_error_sensitivity();
     return TEST_RESULT();
 }
