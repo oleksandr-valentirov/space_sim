@@ -4,6 +4,7 @@ sc_correct 25cf066032756923
 sc_cr3bp 1e58b8ae5f6b2a7c
 sc_dop853 8400ba159cae7209
 sc_ephemeris b698d54f42c431e2
+sc_harmonics 05b2cd1ee63ff371
 sc_prop fc2f0b04a4062e06
 sc_richardson 4727f9efe7889769
 sc_rk4 cf327da9e36dc16c
