@@ -25,6 +25,7 @@ use core_sys::{
 };
 
 const ORACLE: &str = env!("CORE_ORACLE");
+const ORACLE_PLANNING: &str = env!("CORE_ORACLE_PLANNING");
 const REPO_ROOT: &str = env!("CORE_REPO_ROOT");
 
 const ASSET: &str = "data/fixture/earth_moon.eph";
@@ -88,10 +89,16 @@ fn same_bits(from_c: &State, from_rust: &State, what: &str) {
 /// `%.17g` однозначно відновлює double, а парсер Rust коректно заокруглює,
 /// тож текст посередині нічого не втрачає — порівнювати можна побітово.
 fn oracle_records() -> Vec<Record> {
-    let output = Command::new(ORACLE)
+    records_from(ORACLE)
+}
+
+/// Те саме для будь-якого оракула. Їх два, і другий не примха: оракул
+/// планування лінкується з `-lm`, а цей — навмисно без неї (build.rs).
+fn records_from(oracle: &str) -> Vec<Record> {
+    let output = Command::new(oracle)
         .current_dir(REPO_ROOT)
         .output()
-        .unwrap_or_else(|e| panic!("не запускається {ORACLE}: {e}"));
+        .unwrap_or_else(|e| panic!("не запускається {oracle}: {e}"));
 
     assert!(
         output.status.success(),
@@ -123,8 +130,8 @@ fn oracle_records() -> Vec<Record> {
 
     assert!(
         !records.is_empty(),
-        "оракул нічого не вивів — порожня звірка мовчки 'проходить', \
-         тому це провал"
+        "оракул {oracle} нічого не вивів — порожня звірка мовчки \
+         'проходить', тому це провал"
     );
 
     records
@@ -595,5 +602,117 @@ fn propagation_matches_the_c_oracle_bit_for_bit() {
 fn freeing_a_null_propagator_is_allowed() {
     unsafe {
         prop_free(std::ptr::null_mut());
+    }
+}
+
+/// Ламберт через межу дає ті самі біти, що з C (ROADMAP L3, борг D1).
+///
+/// **Найтонше місце — структура за значенням.** `lambert_solve` перша на межі
+/// бере `Vec3d` не вказівником: 24 байти, тобто в регістри жодного нашого ABI
+/// вона не влазить і їде через пам'ять. Якби Rust і C розійшлися в тому, як
+/// саме, тест не впав би з помилкою — він повернув би правдоподібні швидкості
+/// для іншої геометрії. Тому звірка бітова, і тому оракул задає точку `r2` з
+/// ненульовим z: помилка, яка плутає порядок полів, на площині xy має шанс
+/// сховатися.
+#[test]
+fn lambert_matches_the_c_oracle_bit_for_bit() {
+    let records = records_from(ORACLE_PLANNING);
+    let solved = tagged(&records, "lam");
+    assert_eq!(
+        solved.len(),
+        2,
+        "оракул планування мав дати дві розв'язані задачі (пряму й зворотну)"
+    );
+
+    // Ті самі числа, що в core-sys/oracle_planning.c. Дублювання свідоме:
+    // тест, який брав би аргументи з виводу оракула, звіряв би оракул сам із
+    // собою і пройшов би навіть тоді, коли Rust передав у C зовсім інше.
+    let r1 = core_sys::Vec3d {
+        x: 1.4959787e11,
+        y: 0.0,
+        z: 0.0,
+    };
+    let r2 = core_sys::Vec3d {
+        x: -1.9e11,
+        y: 1.1e11,
+        z: 8.0e9,
+    };
+    let mu = 1.32712440018e20;
+    let dt = 2.5e7;
+
+    for (i, prograde) in [1, 0].into_iter().enumerate() {
+        let mut v1 = core_sys::Vec3d::default();
+        let mut v2 = core_sys::Vec3d::default();
+
+        let result =
+            unsafe { core_sys::lambert_solve(r1, r2, dt, mu, prograde, 0, &mut v1, &mut v2) };
+        assert_eq!(result, CORE_OK, "prograde = {prograde}");
+
+        let expected = &solved[i].values;
+        let got = [v1.x, v1.y, v1.z, v2.x, v2.y, v2.z];
+
+        for (k, (&c, &rust)) in expected.iter().zip(got.iter()).enumerate() {
+            assert_eq!(
+                c.to_bits(),
+                rust.to_bits(),
+                "prograde = {prograde}, компонента {k}: C дало {c:.17e}, \
+                 Rust {rust:.17e}.\n\
+                 Це передача структури за значенням або порядок аргументів, \
+                 а не фізика."
+            );
+        }
+    }
+}
+
+/// Відмови Ламберта теж перетинають межу як відмови.
+///
+/// Дзеркало до попереднього тесту й окремий сенс: `CoreResult` оголошений як
+/// `c_int` з константами саме тому, що Rust-енум зі значенням поза переліком
+/// був би UB. Це має вартість лише тоді, коли значення справді звіряють.
+#[test]
+fn lambert_refusals_cross_the_boundary() {
+    let records = records_from(ORACLE_PLANNING);
+    let refused = tagged(&records, "lerr");
+    assert_eq!(refused.len(), 2, "оракул мав дати дві відмови");
+
+    let r1 = core_sys::Vec3d {
+        x: 1.4959787e11,
+        y: 0.0,
+        z: 0.0,
+    };
+    let r2 = core_sys::Vec3d {
+        x: -1.9e11,
+        y: 1.1e11,
+        z: 8.0e9,
+    };
+    let opposite = core_sys::Vec3d {
+        x: -r1.x,
+        y: -r1.y,
+        z: -r1.z,
+    };
+    let mu = 1.32712440018e20;
+    let dt = 2.5e7;
+
+    let mut v1 = core_sys::Vec3d::default();
+    let mut v2 = core_sys::Vec3d::default();
+
+    // Багатообертовий випадок: lambert.h каже, що n_revs мусить бути 0.
+    let many_revs = unsafe { core_sys::lambert_solve(r1, r2, dt, mu, 1, 1, &mut v1, &mut v2) };
+    // Вироджена геометрія: r1 і r2 на одній прямій через початок.
+    let collinear =
+        unsafe { core_sys::lambert_solve(r1, opposite, dt, mu, 1, 0, &mut v1, &mut v2) };
+
+    for (label, got, expected) in [
+        ("n_revs = 1", many_revs, refused[0].values[0] as i32),
+        ("колінеарні r1 і r2", collinear, refused[1].values[0] as i32),
+    ] {
+        assert_eq!(
+            got, expected,
+            "{label}: C повернуло {expected}, Rust побачив {got}"
+        );
+        assert_eq!(
+            got, CORE_ERR_INVALID_ARG,
+            "{label}: і це мав бути саме CORE_ERR_INVALID_ARG"
+        );
     }
 }

@@ -16,10 +16,31 @@
 //!    перевіркою D1: `tests/determinism.rs` запускає їх і звіряє вивід із
 //!    `core/scenario/golden.txt` — тим самим еталоном, з яким звіряється
 //!    `make determinism`. Збіг означає, що cargo дав ті самі біти.
+//! 3. `core/planning/*.c` → **окрема** `libcore_planning.a` (ROADMAP L3).
 //!
 //! Сценарії лінкуються з **тими самими** об'єктними файлами, що підуть у
 //! Rust, а не перезбираються окремо. Інакше перевірялися б прапорці, а не
 //! бібліотека, яку насправді використає крейт.
+//!
+//! ## Чому планування — окрема бібліотека, а не ще кілька файлів у `libcore.a`
+//!
+//! `core/planning/` кличе `libm` вільно й свідомо: межа детермінізму проходить
+//! по пропагації, а не по плануванню (PROJECT.md §4), і `Makefile` тримає його
+//! окремою `libcore_planning.a` саме тому. Тут те саме, і не заради симетрії
+//! з `Makefile`.
+//!
+//! Причина конкретна. Сценарії детермінізму й оракул лінкуються з `libcore.a`
+//! **без `-lm`**, і це не оформлення, а перевірка: якщо тригонометрія колись
+//! просочиться в рантаймову зону, лінкування впаде тут і зараз. Кинути
+//! `lambert.c` у той самий архів означає внести в нього `acos`, `sinh` і
+//! `cosh` — і хоч GNU ld витягує з архіву лише потрібні об'єктні файли, тобто
+//! зібралося б усе одно, твердження «цей архів не містить libm» перестало б
+//! бути правдою. Перевірка, яка більше нічого не забороняє, гірша за свою
+//! відсутність.
+//!
+//! Другий наслідок того самого: оракул для планування — **окремий бінарник з
+//! `-lm`**. Наявний `oracle.c` лінкується без libm навмисно, і злити їх
+//! означало б утратити рівно те твердження, заради якого він такий.
 //!
 //! ## Чому `no_default_flags`
 //!
@@ -59,26 +80,57 @@ fn main() {
 
     let compiler = build_library(&core_dir, &flags);
     let scenarios = build_scenarios(&compiler, &core_dir, &out_dir, &flags);
+    build_planning(&core_dir, &flags);
 
     // Оракул для tests/ffi.rs (ROADMAP D2). Лежить у крейті, а не в
     // core/scenario/, бо там він змінив би golden.txt: це риштування межі,
     // а не сценарій детермінізму.
+    //
+    // Без `-lm`, як і сценарії: див. коментар угорі файлу.
     let oracle = link(
         &compiler,
         &flags,
-        &core_dir,
+        std::slice::from_ref(&core_dir),
         &manifest.join("oracle.c"),
         &out_dir.join(format!("oracle{}", exe_suffix())),
-        &out_dir.join("libcore.a"),
+        &[out_dir.join("libcore.a")],
+        &[],
+    );
+
+    // Оракул для планування (ROADMAP L3) — другий бінарник, і саме тому, що
+    // йому потрібен `-lm`. Перший цього не має й не отримає.
+    let oracle_planning = link(
+        &compiler,
+        &flags,
+        &[core_dir.clone(), core_dir.join("planning")],
+        &manifest.join("oracle_planning.c"),
+        &out_dir.join(format!("oracle_planning{}", exe_suffix())),
+        &[
+            out_dir.join("libcore_planning.a"),
+            out_dir.join("libcore.a"),
+        ],
+        &["-lm"],
     );
 
     watch(&core_dir);
     println!("cargo:rerun-if-changed=oracle.c");
+    println!("cargo:rerun-if-changed=oracle_planning.c");
+
+    // Планування кличе libm, і крейт, що його лінкує, мусить її мати. На
+    // glibc 2.34+ вона злита з libc і рядок нічого не змінює; на старших і на
+    // musl — змінює. Windows-gnu має математику в CRT.
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        println!("cargo:rustc-link-lib=m");
+    }
 
     // Тест не має вгадувати, де що лежить, і не має другої копії прапорців.
     println!("cargo:rustc-env=CORE_CFLAGS={}", flags.join(" "));
     println!("cargo:rustc-env=CORE_SCENARIO_DIR={}", scenarios.display());
     println!("cargo:rustc-env=CORE_ORACLE={}", oracle.display());
+    println!(
+        "cargo:rustc-env=CORE_ORACLE_PLANNING={}",
+        oracle_planning.display()
+    );
     println!("cargo:rustc-env=CORE_REPO_ROOT={}", root.display());
 }
 
@@ -164,6 +216,39 @@ fn build_library(core_dir: &Path, flags: &[String]) -> cc::Tool {
     tool
 }
 
+/// `core/planning/*.c` → `libcore_planning.a` (ROADMAP L3).
+///
+/// Ті самі прапорці з `cflags.txt` — детермінізм тут ні до чого, але два
+/// набори прапорців у одному крейті були б двома наборами, які хтось колись
+/// розсинхронить. Різниця з `libcore.a` рівно одна й вона в лінкуванні: цей
+/// архів кличе `libm`, той — ні.
+///
+/// `-Icore/planning` додається лише тут: заголовки планування не потрібні
+/// нікому в рантаймовій зоні, і шлях, який нічого не дає, згодом дає
+/// несподіванку.
+fn build_planning(core_dir: &Path, flags: &[String]) {
+    let planning_dir = core_dir.join("planning");
+
+    let mut build = cc::Build::new();
+    build.no_default_flags(true);
+
+    for flag in flags {
+        build.flag(flag);
+    }
+
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        build.flag("-fPIC");
+    }
+
+    build.include(core_dir);
+    build.include(&planning_dir);
+    for src in sources(&planning_dir) {
+        build.file(src);
+    }
+
+    build.compile("core_planning");
+}
+
 /// `core/scenario/*.c` → виконувані файли.
 ///
 /// Без `libcore_offline.a` і без `-lm`, точно як у `Makefile`: лінкування тут
@@ -175,38 +260,52 @@ fn build_scenarios(tool: &cc::Tool, core_dir: &Path, out_dir: &Path, flags: &[St
     fs::create_dir_all(&bin_dir).expect("не створюється каталог для сценаріїв");
 
     let lib = out_dir.join("libcore.a");
+    let core_owned = core_dir.to_path_buf();
 
     for src in sources(&scenario_dir) {
         let stem = src.file_stem().unwrap().to_string_lossy().to_string();
         let exe = bin_dir.join(format!("{stem}{}", exe_suffix()));
-        link(tool, flags, core_dir, &src, &exe, &lib);
+        link(
+            tool,
+            flags,
+            std::slice::from_ref(&core_owned),
+            &src,
+            &exe,
+            std::slice::from_ref(&lib),
+            &[],
+        );
     }
 
     bin_dir
 }
 
-/// Лінкує одну програму на C проти вже зібраної `libcore.a`.
+/// Лінкує одну програму на C проти вже зібраних архівів.
 ///
-/// **Без `-lm` і це головне.** Лінкування саме по собі є перевіркою того, що
-/// в рантаймову зону не просочилася тригонометрія: `sin` чи `pow` тут просто
-/// не знайдуть символу. Дешевша й раніша перевірка за «поліцію libm», і вона
+/// **`extra` порожній — і це головне.** Для сценаріїв і для `oracle.c` там
+/// немає `-lm`, тож лінкування саме по собі є перевіркою того, що в
+/// рантаймову зону не просочилася тригонометрія: `sin` чи `pow` тут просто не
+/// знайдуть символу. Дешевша й раніша перевірка за «поліцію libm», і вона
 /// тримається сама, без окремого скрипта.
+///
+/// Непорожній `extra` буває рівно в одного викликача — оракула планування, —
+/// і саме тому він окремий бінарник, а не ще один тег у першому.
 fn link(
     tool: &cc::Tool,
     flags: &[String],
-    core_dir: &Path,
+    includes: &[PathBuf],
     src: &Path,
     exe: &Path,
-    lib: &Path,
+    libs: &[PathBuf],
+    extra: &[&str],
 ) -> PathBuf {
     let mut cmd = Command::new(tool.path());
-    cmd.args(flags)
-        .arg("-I")
-        .arg(core_dir)
-        .arg("-o")
-        .arg(exe)
-        .arg(src)
-        .arg(lib);
+    cmd.args(flags);
+
+    for dir in includes {
+        cmd.arg("-I").arg(dir);
+    }
+
+    cmd.arg("-o").arg(exe).arg(src).args(libs).args(extra);
 
     let status = cmd
         .status()
@@ -262,7 +361,11 @@ fn watch(core_dir: &Path) {
         core_dir.join("cflags.txt").display()
     );
 
-    for dir in [core_dir.to_path_buf(), core_dir.join("scenario")] {
+    for dir in [
+        core_dir.to_path_buf(),
+        core_dir.join("scenario"),
+        core_dir.join("planning"),
+    ] {
         println!("cargo:rerun-if-changed={}", dir.display());
 
         let entries = match fs::read_dir(&dir) {
