@@ -6,19 +6,16 @@
 //! стани живуть в `engine::window::Target`, кадр — в `engine::frame::Frame`,
 //! камера — в `engine::orbit`.
 //!
-//! Порядок кадру такий, яким він лишиться й після J4, коли світ поїде у свою
-//! нитку:
+//! Порядок кадру, з J4 остаточний:
 //!
-//!   1. посунути світ уперед — тік із бюджетом у ланках;
-//!   2. взяти незмінний зріз — снапшот;
+//!   1. взяти незмінний зріз — `Sim::snapshot`, рівно один раз;
+//!   2. забрати події, що накопичилися в каналі;
 //!   3. перекласти зріз у сцену;
 //!   4. намалювати.
 //!
-//! Різниця буде лише в тому, що крок 1 робитиме інша нитка, а крок 2 стане
-//! `load_full()`. Саме тому вони вже розділені: межа, проведена після появи
-//! потоку, проходить там, де зручно потоку.
-
-use std::time::Instant;
+//! Світ головна нитка не рахує й не чіпає — вона його **читає**. Усе, що
+//! гравець робить із часом і планом, іде командою в нитку симуляції
+//! (`crate::sim`), а відповідь приходить наступним снапшотом.
 
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -33,28 +30,9 @@ use engine::window::{self, Target};
 
 use crate::clock::Stall;
 use crate::mission;
+use crate::sim::{Command, Event, Sim};
 use crate::view;
 use crate::world::World;
-
-/// Скільки ланок дозволено порахувати за один кадр.
-///
-/// Не оптимізація, а стеля затримки: тік не має права тримати кадр довше, ніж
-/// на цю роботу. Число мале навмисно — прогноз росте на очах, і видно, що
-/// траєкторія рахується ланками, а не з'являється цілою.
-///
-/// Скільки ланок устигнеться, залежить від машини; **де** вони закінчаться —
-/// ні (CLAUDE.md, інваріант 9). Тому міняти це число безпечно: воно не
-/// впливає на числа.
-const LEGS_PER_FRAME: usize = 2;
-
-/// Стеля на `dt` одного кадру, секунди реального часу.
-///
-/// Потрібна не заради плавності, а проти одного випадку: вікно згорнули на
-/// хвилину, і перший же кадр після повернення попросив би курсор пройти
-/// хвилину × warp. Час у нього однаково впреться в горизонт, тобто зламатися
-/// нічого не може, — але гра стрибнула б на тижні вперед від того, що
-/// користувач перемкнув вкладку. Чверть секунди — це чотири кадри бюджету.
-const MAX_FRAME_DT: f64 = 0.25;
 
 pub struct Options {
     pub width: u32,
@@ -92,11 +70,10 @@ struct State {
     gpu: Gpu,
     frame: Frame,
     orbit: Orbit,
-    world: World,
 
-    /// Коли малювали попередній кадр. Єдине місце в грі, яке читає годинник
-    /// операційної системи: далі йде вже `dt` аргументом (`crate::clock`).
-    last_frame: Instant,
+    /// Світ живе у власній нитці; тут лише ручка до неї (`crate::sim`).
+    /// Головна нитка світ не рахує й не чіпає — вона його читає.
+    sim: Sim,
 
     dragging: bool,
     cursor: Option<(f64, f64)>,
@@ -149,7 +126,7 @@ impl ApplicationHandler for App {
                     "камера: тягніть лівою кнопкою — обертання, колесо — висота\n\
                      час: пробіл — пауза, «.» і «,» — warp удвічі, Esc — вихід"
                 );
-                state.report_time();
+                state.report_time(&state.sim.snapshot());
                 self.state = Some(state);
             }
             Err(e) => {
@@ -173,20 +150,13 @@ impl ApplicationHandler for App {
                 }
                 match event.logical_key.as_ref() {
                     Key::Named(NamedKey::Escape) => event_loop.exit(),
-                    Key::Named(NamedKey::Space) => {
-                        state.world.clock_mut().toggle_pause();
-                        state.report_time();
-                    }
+                    // Керування часом — команди в нитку, а не виклики.
+                    // Відповідь прийде наступним снапшотом.
+                    Key::Named(NamedKey::Space) => state.sim.send(Command::TogglePause),
                     // Warp множиться, а не додається: від 1 до 10⁷ сім
                     // порядків (`crate::clock`).
-                    Key::Character(".") => {
-                        state.world.clock_mut().scale_warp(2.0);
-                        state.report_time();
-                    }
-                    Key::Character(",") => {
-                        state.world.clock_mut().scale_warp(0.5);
-                        state.report_time();
-                    }
+                    Key::Character(".") => state.sim.send(Command::ScaleWarp(2.0)),
+                    Key::Character(",") => state.sim.send(Command::ScaleWarp(0.5)),
                     _ => {}
                 }
             }
@@ -235,17 +205,17 @@ impl ApplicationHandler for App {
 
                 if let Some(limit) = self.options.frames {
                     if self.drawn >= limit {
+                        let snapshot = state.sim.snapshot();
                         println!(
                             "намальовано кадрів: {}, семплів прогнозу: {}",
                             self.drawn,
-                            state
-                                .world
-                                .vessels()
+                            snapshot
+                                .vessels
                                 .iter()
-                                .map(|v| v.trajectory.sample_count())
+                                .map(|v| v.sample_count())
                                 .sum::<usize>()
                         );
-                        state.report_time();
+                        state.report_time(&snapshot);
                         event_loop.exit();
                         return;
                     }
@@ -272,7 +242,7 @@ impl State {
         )?;
 
         let frame = Frame::new(&gpu, target.format());
-        let world = build_world(options)?;
+        let sim = Sim::spawn(options.asset.clone(), options.demo_plan)?;
 
         target.window().request_redraw();
 
@@ -281,24 +251,22 @@ impl State {
             gpu,
             frame,
             orbit: Orbit::at_altitude(mission::CAMERA_ALTITUDE_M),
-            world,
-            last_frame: Instant::now(),
+            sim,
             dragging: false,
             cursor: None,
         })
     }
 
-    /// Друкує стан годинника. UI тут поки що — це stdout: `egui` приходить
-    /// разом із флайт-планером (M3), і заводити його заради двох чисел
-    /// означало б вирішувати наперед, як виглядатиме те, чого ще немає.
-    fn report_time(&self) {
-        let clock = self.world.clock();
-        let day = (clock.t() - mission::start().t) / 86400.0;
+    /// Друкує стан годинника зі снапшоту. UI тут поки що — це stdout: `egui`
+    /// приходить разом із флайт-планером (M3), і заводити його заради двох
+    /// чисел означало б вирішувати наперед, як виглядатиме те, чого ще немає.
+    fn report_time(&self, snapshot: &crate::snapshot::WorldSnapshot) {
+        let day = (snapshot.t - mission::start().t) / 86400.0;
         println!(
             "  доба {day:.2} з {:.2}, warp ×{:.0}{}",
             mission::DAYS,
-            clock.warp(),
-            match clock.stall() {
+            snapshot.warp,
+            match snapshot.stall {
                 Some(Stall::Paused) => " (пауза)",
                 Some(Stall::Horizon) => " (упирається в горизонт)",
                 Some(Stall::MissionEnd) => " (місія скінчилася)",
@@ -308,12 +276,24 @@ impl State {
     }
 
     fn draw(&mut self) -> Result<(), String> {
-        let now = Instant::now();
-        let dt = now.duration_since(self.last_frame).as_secs_f64();
-        self.last_frame = now;
+        // Рівно один раз за кадр, і тримається весь кадр: два завантаження
+        // дали б дві різні миті в одній картинці.
+        let snapshot = self.sim.snapshot();
 
-        self.world.step(dt.min(MAX_FRAME_DT), LEGS_PER_FRAME);
-        let snapshot = self.world.snapshot();
+        // Дискретне приходить каналом, а не снапшотом (`crate::sim`).
+        for event in self.sim.events() {
+            match event {
+                Event::VesselFailed { vessel, error } => {
+                    println!("апарат {vessel:?} зупинився: {error}");
+                }
+                Event::PlanRejected { vessel, why } => {
+                    println!("план для {vessel:?} відхилено: {why:?}");
+                }
+                Event::PlanCommitted { vessel, from } => {
+                    println!("план для {vessel:?} прийнято, перерахунок з {from:?}");
+                }
+            }
+        }
 
         let Some(surface) = self.target.acquire(&self.gpu)? else {
             return Ok(());
