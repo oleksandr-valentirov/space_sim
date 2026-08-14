@@ -33,6 +33,38 @@ void nbody_accel(const NBodySystem *sys, const State *states, Vec3d *acc_out)
 
         acc_out[i] = a;
     }
+
+    /* One body's oblateness (ROADMAP K2). d is Earth-relative position taken
+     * straight from the inertial states, which is only correct because K2
+     * assumes the oblate body's pole is fixed along the frame's own z axis -
+     * true by construction for ICRF and Earth's mean equator of J2000, good
+     * to the arcminute over the spans this cooker fits today. A body whose
+     * pole actually moves in this frame needs the rotation K3 will add
+     * before this loop can use it; nothing here does that yet.
+     *
+     * Newton's third law, not assumed but carried through explicitly: the
+     * force on j from the oblate body's field scales with mu_e (it is that
+     * body's field), so the reaction on the oblate body scales the same
+     * acceleration by -mu_j/mu_e to turn "j's acceleration" into "e's",
+     * exactly as nbody_energy's matching potential term requires for the
+     * two to stay consistent. */
+    if (sys->has_j2) {
+        size_t e = (size_t)sys->j2_body;
+
+        for (size_t j = 0; j < sys->n; j++) {
+            if (j == e) {
+                continue;
+            }
+
+            Vec3d d = vec3_sub(states[j].r, states[e].r);
+            Vec3d a_j2;
+            harmonics_accel(&sys->j2_field, d, sys->mu[e], &a_j2);
+
+            acc_out[j] = vec3_add(acc_out[j], a_j2);
+            acc_out[e] = vec3_add_scaled(acc_out[e], a_j2,
+                                         -sys->mu[j] / sys->mu[e]);
+        }
+    }
 }
 
 double nbody_energy(const NBodySystem *sys, const State *states)
@@ -47,6 +79,27 @@ double nbody_energy(const NBodySystem *sys, const State *states)
         for (size_t j = i + 1; j < sys->n; j++) {
             double d = vec3_distance(states[i].r, states[j].r);
             potential -= sys->mu[i] * sys->mu[j] / d;
+        }
+    }
+
+    /* The one potential whose gradient is nbody_accel's J2 term - literally
+     * the same derivation, not a separately-invented energy formula: a_j =
+     * +grad_j U_pines(d) and a_e = -grad_e(mu_j * U_pines(d))/mu_e both fall
+     * out of PE_j2 = -mu_j * U_pines(d), which is why -mu_j * u is what gets
+     * subtracted here. Missing this term would not make the physics wrong,
+     * only this diagnostic - a fixed 2-body energy check would see a drift
+     * that is really just the J2 potential swinging with distance, not the
+     * integrator failing. */
+    if (sys->has_j2) {
+        size_t e = (size_t)sys->j2_body;
+        for (size_t j = 0; j < sys->n; j++) {
+            if (j == e) {
+                continue;
+            }
+            double u;
+            harmonics_potential(&sys->j2_field, vec3_sub(states[j].r, states[e].r),
+                                sys->mu[e], &u);
+            potential -= sys->mu[j] * u;
         }
     }
 

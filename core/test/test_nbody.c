@@ -224,6 +224,106 @@ int main(void)
         CHECK(vec3_norm(out_n[0].r) < 1e-9);
     }
 
+    /* Earth's oblateness (ROADMAP K2), checked as wiring rather than as new
+     * physics - harmonics_accel and harmonics_potential already have their
+     * own tests. What is new here is nbody_accel's reciprocal force and
+     * nbody_energy's matching potential term, and both get checked against
+     * an invariant that does not depend on trusting either formula: the
+     * pair conserves momentum and energy, which it can only do if the
+     * reaction and the potential are the derivative pair they are supposed
+     * to be. */
+    {
+        double mu_earth = 3.98600435436e14;
+        double mu_moon = 4.9028000661e12;
+
+        HarmonicsField field = { 0 };
+        field.degree = 2;
+        field.re = 6378137.0;
+        /* J2 (IERS 2010) from data/horizons/obj_earth.txt. */
+        field.c[harmonics_index(2, 0)] = -1.08262545e-3;
+
+        NBodySystem sys;
+        memset(&sys, 0, sizeof sys);
+        sys.n = 2;
+        sys.mu[0] = mu_earth;
+        sys.mu[1] = mu_moon;
+        sys.has_j2 = 1;
+        sys.j2_body = 0;
+        sys.j2_field = field;
+
+        State states[2];
+        states[0] = (State){ { 0.0, 0.0, 0.0 }, { 0.0, 0.0, 0.0 }, 0.0 };
+        states[1] = (State){ { 3.0e8, 1.0e8, 0.5e8 }, { -30.0, 900.0, 120.0 },
+                             0.0 };
+
+        Vec3d acc_with[2];
+        nbody_accel(&sys, states, acc_with);
+
+        NBodySystem sys_off = sys;
+        sys_off.has_j2 = 0;
+        Vec3d acc_without[2];
+        nbody_accel(&sys_off, states, acc_without);
+
+        Vec3d d = vec3_sub(states[1].r, states[0].r);
+        Vec3d a_j2;
+        harmonics_accel(&field, d, mu_earth, &a_j2);
+
+        /* Composition: the field acting on the Moon is exactly the
+         * point-mass term plus harmonics_accel's own output, bit for bit -
+         * nbody_accel does nothing to it in between. */
+        Vec3d expect_moon = vec3_add(acc_without[1], a_j2);
+        CHECK_BITS_EQ(acc_with[1].x, expect_moon.x);
+        CHECK_BITS_EQ(acc_with[1].y, expect_moon.y);
+        CHECK_BITS_EQ(acc_with[1].z, expect_moon.z);
+
+        /* Reaction on Earth: the same a_j2, scaled by -mu_moon/mu_earth, the
+         * same vec3_add_scaled call nbody.c itself makes - so this is bit
+         * exact too, not merely close. */
+        Vec3d expect_earth = vec3_add_scaled(acc_without[0], a_j2,
+                                             -mu_moon / mu_earth);
+        CHECK_BITS_EQ(acc_with[0].x, expect_earth.x);
+        CHECK_BITS_EQ(acc_with[0].y, expect_earth.y);
+        CHECK_BITS_EQ(acc_with[0].z, expect_earth.z);
+
+        /* Momentum conservation: mu_earth*a_earth + mu_moon*a_moon from the
+         * J2 term alone must vanish, to floating-point rounding rather than
+         * exactly. The tolerance is looser than a round trip through
+         * mu_moon/mu_earth alone would need (that is a few ULP) because
+         * j2_earth is itself a subtraction of two full accelerations
+         * roughly eight orders of magnitude above the reaction it isolates
+         * - Earth's pull from Moon's point mass swamps Earth's pull from
+         * its own J2 reaction - so the cancellation, not the ratio, sets
+         * the noise floor. Measured ~9.5e-11 of scale; a wrong sign or a
+         * wrong mu ratio would fail this by many orders, not by one. */
+        Vec3d j2_earth = vec3_sub(acc_with[0], acc_without[0]);
+        Vec3d j2_moon = vec3_sub(acc_with[1], acc_without[1]);
+        Vec3d net = vec3_add(vec3_scale(j2_earth, mu_earth),
+                             vec3_scale(j2_moon, mu_moon));
+        double scale = mu_moon * vec3_norm(a_j2);
+        CHECK(vec3_norm(net) < 1e-6 * scale);
+
+        /* Energy conservation over an integrated arc: if the reaction were
+         * missing, mistimed or the wrong magnitude, or if nbody_energy's J2
+         * term did not match nbody_accel's, this would drift instead of
+         * holding flat the way every other integrator check in this file
+         * does. */
+        double energy0 = nbody_energy(&sys, states);
+
+        Dop853Config cfg;
+        memset(&cfg, 0, sizeof cfg);
+        cfg.tol_m = 1e-3;
+        cfg.max_steps = 100000;
+
+        Dop853State st;
+        memset(&st, 0, sizeof st);
+        State next[2];
+        CHECK(nbody_integrate(&sys, states, 5.0 * 86400.0, &cfg, &st, next)
+              == CORE_OK);
+
+        double energy1 = nbody_energy(&sys, next);
+        CHECK(fabs((energy1 - energy0) / energy0) < 1e-9);
+    }
+
     /* Sun, Earth and Moon alone: kept as the contrast that makes the point
      * below visible. Measured over ten years: 5.417e9 m against Horizons in
      * the SSB frame, which sounds catastrophic and is not a bug. A wrong frame

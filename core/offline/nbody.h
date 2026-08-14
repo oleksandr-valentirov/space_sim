@@ -15,6 +15,7 @@
 #define CORE_NBODY_H
 
 #include "core.h"
+#include "harmonics.h"
 #include "integrator.h"
 
 #include <stddef.h>
@@ -24,6 +25,17 @@
 typedef struct {
     size_t n;
     double mu[NBODY_MAX];   /* m^3/s^2, in the same order as the states */
+
+    /* Oblateness of at most one body (ROADMAP K2 - J2 of Earth today; a
+     * second slot arrives if and when the Moon's own field does, K5, rather
+     * than being sized for that in advance). has_j2 is 0 whenever a caller
+     * zero-initialises the struct, which every caller does today, so this
+     * is opt-in: a system that never sets it behaves exactly as it did
+     * before K2 existed, bit for bit. j2_body indexes into mu[] and the
+     * state array the same way. */
+    int            has_j2;
+    int            j2_body;
+    HarmonicsField j2_field;
 } NBodySystem;
 
 /* Accelerations of every body from every other.

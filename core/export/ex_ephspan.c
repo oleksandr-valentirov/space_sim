@@ -194,6 +194,16 @@ static int fill_system(NBodySystem *sys)
             return 0;
         }
     }
+
+    /* Same J2 as cook_fixture.c - tracking it deliberately, like BODIES[]
+     * above, because this file exists to measure what the shipped fixture
+     * does (ROADMAP K2). Values cited in cook_fixture.c's own comment. */
+    sys->has_j2 = 1;
+    sys->j2_body = earth_idx;
+    sys->j2_field.degree = 2;
+    sys->j2_field.re = 6378137.0;
+    sys->j2_field.c[harmonics_index(2, 0)] = -1.08262545e-3;
+
     return 1;
 }
 

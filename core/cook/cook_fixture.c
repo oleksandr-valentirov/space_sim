@@ -86,6 +86,24 @@ int main(void)
             fprintf(stderr, "cook: no GM for %s\n", BODIES[i]);
             return 1;
         }
+
+        /* Earth's oblateness (ROADMAP K2). Values are cited, not invented:
+         * data/horizons/obj_earth.txt, "J2 (IERS 2010)" and "Equ. radius,
+         * km". The Moon's own field is not here yet - GRAIL coefficients
+         * are real data to import (K5), not a number to guess, and the
+         * regression this is meant to shrink was already measured (ROADMAP
+         * "Дві розвилки") to be about Earth's J2, not the Moon's.
+         *
+         * The pole is assumed fixed along the frame's z axis - see
+         * nbody.c's comment on has_j2 for what that costs and why it is
+         * acceptable before K3 gives bodies a real orientation. */
+        if (strcmp(BODIES[i], "earth") == 0) {
+            system.has_j2 = 1;
+            system.j2_body = (int)i;
+            system.j2_field.degree = 2;
+            system.j2_field.re = 6378137.0;
+            system.j2_field.c[harmonics_index(2, 0)] = -1.08262545e-3;
+        }
     }
 
     EphBuildConfig cfg;
