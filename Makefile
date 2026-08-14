@@ -13,6 +13,7 @@
 #   make                  зібрати статичну бібліотеку
 #   make test             усі перевірки: libm, юніт-тести, детермінізм
 #   make unit             лише юніт-тести
+#   make asan             ті самі юніт-тести під ASan+UBSan (помилки пам'яті)
 #   make check-libm       лише «поліція libm» (ROADMAP A2)
 #   make determinism      звірити хеші сценаріїв з еталонними
 #   make determinism-bless оновити еталонні хеші (робити свідомо!)
@@ -197,7 +198,7 @@ DEP := $(CORE_OBJ:.o=.d) $(OFFLINE_OBJ:.o=.d) $(PLANNING_OBJ:.o=.d) \
 
 -include $(DEP)
 
-.PHONY: all test unit check-libm determinism determinism-bless hashes cook \
+.PHONY: all test unit asan check-libm determinism determinism-bless hashes cook \
         csv plots bench flags clean
 
 all: $(LIB) $(LIB_OFFLINE) $(LIB_PLANNING)
@@ -287,6 +288,56 @@ unit: $(TEST_BIN)
 		$$t || fail=1; \
 	done; \
 	if [ $$fail -ne 0 ]; then echo "ЮНІТ-ТЕСТИ ПРОВАЛЕНІ"; exit 1; fi
+
+# Ті самі юніт-тести, зібрані з ASan+UBSan. Не входить у `make test` і не
+# входить у гейт детермінізму: це перевірка ПАМ'ЯТІ, а не чисел.
+#
+# Навіщо окремо, коли є valgrind у CI: той ганяється лише по тестових
+# бінарниках core-sys і core-rs (.github/workflows/determinism.yml пояснює,
+# чому саме по них). Юніт-тести на C не перевіряв ніхто, і це вилізло рівно
+# так, як і мало: у test_prop блок K6b пропагував через уже звільнений
+# контекст, glibc віддавав звільнену пам'ять як ні в чому не бувало, обидва
+# лінукси були зелені — і впав лише macOS, сегфолтом, за два кроки від
+# причини. Тут це видно як heap-use-after-free з обома стеками.
+#
+# Три речі, які легко зробити неправильно:
+#
+#   1. -fno-sanitize-recover=all ОБОВ'ЯЗКОВИЙ. UBSan типово друкує
+#      діагностику й ЙДЕ ДАЛІ, лишаючи код виходу нульовим. Без цього
+#      прапорця перевірка зеленіла б, надрукувавши помилку, — тобто була б
+#      гіршою за свою відсутність.
+#   2. Окреме дерево $(ASAN_DIR). Прапорці тут інші, а імена об'єктних
+#      файлів були б ті самі — змішати їх зі звичайною збіркою означало б
+#      лінкувати числа, зібрані невідомо чим. Тому тут не .o, а прямий
+#      прохід від .c до бінарника: перезбирається щоразу, зате переплутати
+#      нічого.
+#   3. -lm лінкується завжди. «Поліція libm» до цієї цілі не застосовна:
+#      тут усе зібрано в один бінарник, і живу перевірку через лінкування
+#      дають сценарії, а не ця ціль.
+ASAN_DIR := $(BUILD)/asan
+ASAN_BIN := $(patsubst core/test/%.c,$(ASAN_DIR)/%$(EXE),$(TEST_SRC))
+ASAN_SRC := $(CORE_SRC) $(OFFLINE_SRC) $(PLANNING_SRC)
+ASAN_FLAGS := -fsanitize=address,undefined -fno-sanitize-recover=all \
+              -fno-omit-frame-pointer
+
+$(ASAN_DIR)/%$(EXE): core/test/%.c $(ASAN_SRC)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(ASAN_FLAGS) $(OFFLINE_DEFS) \
+		-Icore -Icore/offline -Icore/planning -o $@ $< $(ASAN_SRC) \
+		$(LDLIBS_OFFLINE)
+
+# stdout у /dev/null навмисно: що саме тести рахують, уже сказав `make unit`,
+# а тут цікавить лише мовчання санітайзерів. Обидва пишуть у stderr, тож
+# звіт про помилку видно, а сотні рядків діагностики — ні.
+asan: $(ASAN_BIN)
+	@fail=0; \
+	for t in $(ASAN_BIN); do \
+		echo "== $$t"; \
+		$$t > /dev/null || fail=1; \
+	done; \
+	if [ $$fail -ne 0 ]; then echo "ASAN/UBSAN ПРОВАЛЕНО"; exit 1; fi; \
+	echo ""; \
+	echo "asan: помилок пам'яті немає"
 
 $(ACTUAL): $(SCEN_BIN) $(FIXTURE)
 	@mkdir -p $(dir $@)
