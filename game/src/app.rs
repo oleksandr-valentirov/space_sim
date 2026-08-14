@@ -26,15 +26,18 @@ use winit::window::WindowId;
 use engine::frame::Frame;
 use engine::gpu::Gpu;
 use engine::orbit::Orbit;
+use engine::ui::{Ui, Viewport, WindowInput};
 use engine::window::{self, Target};
 
 use crate::clock::Stall;
+use crate::hud;
 use crate::leg::restart_at;
 use crate::mission;
 use crate::plan::Manoeuvre;
 use crate::planner::{Planner, Preview, Request};
 use crate::save::{self, Save};
 use crate::sim::{Command, Event, Sim};
+use crate::text::Language;
 use crate::view;
 use crate::world::{World, EARTH};
 
@@ -77,6 +80,11 @@ struct State {
     gpu: Gpu,
     frame: Frame,
     orbit: Orbit,
+
+    /// Інтерфейс: провід у рушії, віджети тут (ROADMAP-UI.md, U1b).
+    ui: Ui,
+    input: WindowInput,
+    language: Language,
 
     /// Світ живе у власній нитці; тут лише ручка до неї (`crate::sim`).
     /// Головна нитка світ не рахує й не чіпає — вона його читає.
@@ -168,11 +176,18 @@ impl ApplicationHandler for App {
             return;
         };
 
+        // Ввід має власника, і питається це **рівно тут**, до всього іншого
+        // (ROADMAP-UI.md, правило 4 і U1c). `consumed` означає «гра цієї
+        // події не бачить»: клік по кнопці не має заодно крутити камеру.
+        let consumed = state.input.on_window_event(state.target.window(), &event);
+
         match event {
+            // Вихід, зміна розміру й перемальовка не належать нікому: egui їх
+            // теж бачить, але вікно однаково мусить на них відповісти.
             WindowEvent::CloseRequested => event_loop.exit(),
 
             WindowEvent::KeyboardInput { event, .. } => {
-                if !event.state.is_pressed() {
+                if !event.state.is_pressed() || consumed {
                     return;
                 }
                 match event.logical_key.as_ref() {
@@ -202,7 +217,9 @@ impl ApplicationHandler for App {
                 button: MouseButton::Left,
                 ..
             } => {
-                state.dragging = button_state == ElementState::Pressed;
+                // Натискання, що почалося в панелі, світові не належить —
+                // інакше кнопка «пауза» заодно почала б обертати камеру.
+                state.dragging = button_state == ElementState::Pressed && !consumed;
                 if !state.dragging {
                     state.cursor = None;
                 }
@@ -221,6 +238,9 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::MouseWheel { delta, .. } => {
+                if consumed {
+                    return;
+                }
                 let notches = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(y),
                     MouseScrollDelta::PixelDelta(p) => p.y / 50.0,
@@ -276,6 +296,8 @@ impl State {
         )?;
 
         let frame = Frame::new(&gpu, target.format());
+        let ui = Ui::new(&gpu, target.format());
+        let input = WindowInput::new(&ui, target.window());
         let sim = Sim::spawn(build_world(options)?)?;
         // Планувальник ділить із симуляцією ассет, але не пропагатор:
         // `Ephemeris` — `Sync`, `Propagator` — ні (D3, H4).
@@ -287,6 +309,12 @@ impl State {
             target,
             gpu,
             frame,
+            ui,
+            input,
+            // Англійська як основна (ROADMAP-UI.md, правило 7). Перемикача
+            // ще немає — він з'явиться разом із рештою налаштувань, і саме
+            // тому мова вже поле, а не константа в кожному виклику.
+            language: Language::default(),
             orbit: Orbit::at_altitude(mission::CAMERA_ALTITUDE_M),
             sim,
             planner,
@@ -297,9 +325,12 @@ impl State {
         })
     }
 
-    /// Друкує стан годинника зі снапшоту. UI тут поки що — це stdout: `egui`
-    /// приходить разом із флайт-планером (M3), і заводити його заради двох
-    /// чисел означало б вирішувати наперед, як виглядатиме те, чого ще немає.
+    /// Друкує стан годинника зі снапшоту — **для прогонів без очей**.
+    ///
+    /// З U2b те саме показує панель часу (`crate::hud`), і вона тепер
+    /// головна. Цей друк лишається для `--frames N`, який виходить сам і
+    /// нікому нічого не показує: рядок у stdout — єдине, що з такого прогону
+    /// можна прочитати в CI.
     fn report_time(&self, snapshot: &crate::snapshot::WorldSnapshot) {
         let day = (snapshot.t - mission::start().t) / 86400.0;
         println!(
@@ -425,6 +456,33 @@ impl State {
                 self.preview.as_ref().map_or(&[], |p| p.legs.as_slice()),
             ),
         );
+
+        // Інтерфейс — останнім проходом, у ту саму текстуру (U1b). Панель
+        // повертає команди, а не надсилає їх: хто надсилає, той і знає про
+        // канал, а панель знає лише про те, що намальовано.
+        let mut commands = Vec::new();
+        let language = self.language;
+        let viewport = Viewport::new(
+            self.target.width(),
+            self.target.height(),
+            self.target.window().scale_factor() as f32,
+        );
+        let input = self.input.take(self.target.window());
+        let platform = self
+            .ui
+            .draw(&self.gpu, &mut encoder, &view, viewport, input, |ui| {
+                engine::egui::Panel::left("time")
+                    .exact_size(220.0)
+                    .resizable(false)
+                    .show(ui, |ui| {
+                        commands.extend(hud::time_panel(ui, language, &snapshot));
+                    });
+            });
+        self.input.apply(self.target.window(), platform);
+
+        for command in commands {
+            self.sim.send(command);
+        }
 
         self.gpu.queue.submit([encoder.finish()]);
         self.gpu.queue.present(surface);

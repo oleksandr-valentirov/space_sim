@@ -199,3 +199,53 @@ impl Ui {
         output.platform_output
     }
 }
+
+/// Збирач вводу з вікна (ROADMAP-UI.md, U2b).
+///
+/// Обгортка над `egui-winit`, і саме тому гра його не бачить: інтерфейс
+/// приходить із рушія цілком — і малювання, і ввід, — інакше в грі з'явилася б
+/// друга залежність на ту саму бібліотеку, а разом із нею й спосіб отримати
+/// дві її версії.
+///
+/// Тут же й межа знання: `WindowInput` знає про вікно, [`Ui`] — ні. Тому
+/// знімок без вікна лишається можливим і після того, як з'явилось вікно.
+pub struct WindowInput {
+    state: egui_winit::State,
+}
+
+impl WindowInput {
+    pub fn new(ui: &Ui, window: &winit::window::Window) -> WindowInput {
+        WindowInput {
+            state: egui_winit::State::new(
+                ui.context().clone(),
+                egui::ViewportId::ROOT,
+                window,
+                Some(window.scale_factor() as f32),
+                None,
+                None,
+            ),
+        }
+    }
+
+    /// Віддає подію egui й каже, чи вона спожита.
+    ///
+    /// `true` означає «гра цієї події не бачить». Питати треба **до** того, як
+    /// подія піде далі, і рівно в одному місці — правило 4.
+    pub fn on_window_event(
+        &mut self,
+        window: &winit::window::Window,
+        event: &winit::event::WindowEvent,
+    ) -> bool {
+        self.state.on_window_event(window, event).consumed
+    }
+
+    /// Ввід, накопичений з попереднього кадру.
+    pub fn take(&mut self, window: &winit::window::Window) -> egui::RawInput {
+        self.state.take_egui_input(window)
+    }
+
+    /// Те, що egui просить зробити платформу: курсор, буфер обміну.
+    pub fn apply(&mut self, window: &winit::window::Window, output: egui::PlatformOutput) {
+        self.state.handle_platform_output(window, output);
+    }
+}
