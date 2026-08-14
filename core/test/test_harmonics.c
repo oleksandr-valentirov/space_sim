@@ -7,6 +7,7 @@
 #include "test.h"
 
 #include <math.h>
+#include <stdio.h>
 
 static int close_rel(double a, double b, double tol)
 {
@@ -53,7 +54,7 @@ static void test_j2_matches_closed_form(void)
     HarmonicsField field = { 0 };
     field.degree = 2;
     field.re = re;
-    field.c[harmonics_index(2, 0)] = -j2;
+    harmonics_set_unnormalised(&field, 2, 0, -j2, 0.0);
 
     Vec3d points[5] = {
         vec3(7.0e6, 0.0, 0.0),
@@ -82,9 +83,9 @@ static void test_zonal_field_is_axisymmetric(void)
     HarmonicsField field = { 0 };
     field.degree = 4;
     field.re = 6378136.3;
-    field.c[harmonics_index(2, 0)] = -1.08262668e-3;
-    field.c[harmonics_index(3, 0)] = 2.53e-6;
-    field.c[harmonics_index(4, 0)] = 1.62e-6;
+    harmonics_set_unnormalised(&field, 2, 0, -1.08262668e-3, 0.0);
+    harmonics_set_unnormalised(&field, 3, 0, 2.53e-6, 0.0);
+    harmonics_set_unnormalised(&field, 4, 0, 1.62e-6, 0.0);
 
     Vec3d r = vec3(5.1e6, 3.2e6, 2.7e6);
     Vec3d r_rot = vec3(-r.y, r.x, r.z);
@@ -113,10 +114,9 @@ static void test_pole_transverse_accel(void)
     HarmonicsField zonal_and_sectorial = { 0 };
     zonal_and_sectorial.degree = 4;
     zonal_and_sectorial.re = re;
-    zonal_and_sectorial.c[harmonics_index(2, 0)] = -1.08e-3;
-    zonal_and_sectorial.c[harmonics_index(2, 2)] = 1.5e-6;
-    zonal_and_sectorial.s[harmonics_index(2, 2)] = 9.0e-7;
-    zonal_and_sectorial.c[harmonics_index(4, 3)] = 3.0e-7;
+    harmonics_set_unnormalised(&zonal_and_sectorial, 2, 0, -1.08e-3, 0.0);
+    harmonics_set_unnormalised(&zonal_and_sectorial, 2, 2, 1.5e-6, 9.0e-7);
+    harmonics_set_unnormalised(&zonal_and_sectorial, 4, 3, 3.0e-7, 0.0);
 
     Vec3d a;
     harmonics_accel(&zonal_and_sectorial, pole, mu, &a);
@@ -124,8 +124,7 @@ static void test_pole_transverse_accel(void)
     CHECK(a.y == 0.0);
 
     HarmonicsField with_order_one = zonal_and_sectorial;
-    with_order_one.c[harmonics_index(3, 1)] = 4.0e-7;
-    with_order_one.s[harmonics_index(3, 1)] = -2.0e-7;
+    harmonics_set_unnormalised(&with_order_one, 3, 1, 4.0e-7, -2.0e-7);
 
     harmonics_accel(&with_order_one, pole, mu, &a);
     CHECK(a.x != 0.0 || a.y != 0.0);
@@ -216,7 +215,7 @@ static void test_legendre_matches_textbook(void)
             HarmonicsField field = { 0 };
             field.degree = n;
             field.re = re;
-            field.c[harmonics_index(n, m)] = 1.0;
+            harmonics_set_unnormalised(&field, n, m, 1.0, 0.0);
 
             for (int p = 0; p < 3; p++) {
                 Vec3d r = points[p];
@@ -252,13 +251,10 @@ static void test_gradient_matches_finite_difference(void)
     HarmonicsField field = { 0 };
     field.degree = 4;
     field.re = 6378136.3;
-    field.c[harmonics_index(2, 0)] = -1.08262668e-3;
-    field.c[harmonics_index(2, 2)] = 1.57e-6;
-    field.s[harmonics_index(2, 2)] = -9.0e-7;
-    field.c[harmonics_index(3, 1)] = 2.19e-6;
-    field.s[harmonics_index(3, 1)] = 2.68e-7;
-    field.c[harmonics_index(4, 3)] = -5.4e-7;
-    field.s[harmonics_index(4, 3)] = 1.5e-7;
+    harmonics_set_unnormalised(&field, 2, 0, -1.08262668e-3, 0.0);
+    harmonics_set_unnormalised(&field, 2, 2, 1.57e-6, -9.0e-7);
+    harmonics_set_unnormalised(&field, 3, 1, 2.19e-6, 2.68e-7);
+    harmonics_set_unnormalised(&field, 4, 3, -5.4e-7, 1.5e-7);
 
     Vec3d points[3] = {
         vec3(6.9e6, 1.2e6, 3.1e6),
@@ -306,13 +302,10 @@ static void test_gradient_matches_finite_difference_of_accel(void)
     HarmonicsField field = { 0 };
     field.degree = 4;
     field.re = 6378136.3;
-    field.c[harmonics_index(2, 0)] = -1.08262668e-3;
-    field.c[harmonics_index(2, 2)] = 1.57e-6;
-    field.s[harmonics_index(2, 2)] = -9.0e-7;
-    field.c[harmonics_index(3, 1)] = 2.19e-6;
-    field.s[harmonics_index(3, 1)] = 2.68e-7;
-    field.c[harmonics_index(4, 3)] = -5.4e-7;
-    field.s[harmonics_index(4, 3)] = 1.5e-7;
+    harmonics_set_unnormalised(&field, 2, 0, -1.08262668e-3, 0.0);
+    harmonics_set_unnormalised(&field, 2, 2, 1.57e-6, -9.0e-7);
+    harmonics_set_unnormalised(&field, 3, 1, 2.19e-6, 2.68e-7);
+    harmonics_set_unnormalised(&field, 4, 3, -5.4e-7, 1.5e-7);
 
     Vec3d points[4] = {
         vec3(6.9e6, 1.2e6, 3.1e6),
@@ -385,6 +378,193 @@ static void test_gradient_of_disabled_field_is_zero(void)
     }
 }
 
+
+/* ---- The normalised form (ROADMAP K5b) ------------------------------- */
+
+/* What the UNNORMALISED implementation produced, at commit 9319a1d, for the
+ * field and points built in test_normalised_matches_the_old_form below.
+ *
+ * Baked in rather than recomputed, because the code that produced them is
+ * gone - that is the whole nature of this check. Ten numbers per point:
+ * acceleration, potential, and the six independent entries of the Hessian.
+ *
+ * These are NOT a claim about correctness; the closed-form J2 test and the
+ * finite-difference tests are. They are a claim about SAMENESS: the rewrite
+ * was supposed to change how the sum is carried, not what it sums to. */
+static const double UNNORMALISED_FORM[6][10] = {
+    { -0.0016545819668486133, -0.0061372877325799428, -0.0061052368961115296, 13371.594859087543,
+      -2.1941394508590488e-09, 5.1657217258174992e-09, 2.6603252096186363e-09,
+      2.9110262870932189e-09, 4.0678155526450336e-09, -7.1688683623416977e-10
+      },
+    { 0.0035178509730011257, 0.0014757894012059742, 0.0060435803398982274, 9551.7576040487656,
+      2.8527402478135204e-09, -1.9346252616601538e-10, 3.9161165277618134e-09,
+      -3.2090289986553312e-09, -2.1765031769335521e-10, 3.5628875084181001e-10
+      },
+    { -0.003033121801647273, -0.00051128083702517532, 1.4230530750771157e-05, 9377.8659875036901,
+      1.3681013632055947e-09, 4.0539743222894264e-10, -2.9191378382745903e-11,
+      -5.0687092093227773e-10, -1.163534240925517e-11, -8.6123044227331683e-10
+      },
+    { 8.0858274875122166e-05, 9.8949852358596987e-06, 0.021934780000242682, -51181.153333899616,
+      6.2761683735427416e-09, -5.2098956216951971e-12, -5.7755910625087251e-11,
+      6.2579916265959382e-09, -7.0678465970426408e-12, -1.253416000013867e-08
+      },
+    { 0.009681309582263712, -0.0095618132973110687, 0.010788969918120445, -36986.107347124489,
+      1.2408507741442235e-09, 2.4466341105702337e-09, -5.8370512108839509e-09,
+      1.2820511863740919e-09, 5.6252876138264255e-09, -2.5229019605183168e-09
+      },
+    { 0.0081983659759825092, 0.0031382677176791259, -0.0014375668282043349, 19366.573944025655,
+      4.8374254303967845e-09, 3.0732062147150269e-09, -1.2209412319613919e-09,
+      -2.2038353568025608e-09, -4.2193673213054119e-10, -2.6335900735942237e-09
+      },
+};
+
+static void test_normalised_matches_the_old_form(void)
+{
+    HarmonicsField f = { 0 };
+    f.degree = 8;
+    f.re = 6378137.0;
+    harmonics_set_unnormalised(&f, 2, 0, -1.08262668e-3, 0.0);
+    harmonics_set_unnormalised(&f, 2, 2, 1.57e-6, -9.0e-7);
+    harmonics_set_unnormalised(&f, 3, 1, 2.19e-6, 2.68e-7);
+    harmonics_set_unnormalised(&f, 4, 3, -5.4e-7, 1.5e-7);
+    harmonics_set_unnormalised(&f, 6, 6, 2.0e-8, -3.0e-8);
+    harmonics_set_unnormalised(&f, 8, 5, -7.0e-9, 4.0e-9);
+
+    const double points[6][3] = {
+        { 6.9e6, 1.1e6, 2.3e6 },
+        { -4.2e6, 5.5e6, -3.1e6 },
+        { 1.0e7, 0.0, 0.0 },
+        { 0.0, 0.0, 7.0e6 },      /* on the pole: Pines' whole reason to exist */
+        { 2.0e6, -2.0e6, 6.5e6 },
+        { -8.0e6, -1.0e5, 4.0e5 },
+    };
+
+    double mu = 3.986004418e14;
+    double worst = 0.0;
+
+    for (int i = 0; i < 6; i++) {
+        Vec3d r = vec3(points[i][0], points[i][1], points[i][2]);
+
+        Vec3d a;
+        double pot;
+        double g[9];
+        harmonics_accel(&f, r, mu, &a);
+        harmonics_potential(&f, r, mu, &pot);
+        harmonics_gradient(&f, r, mu, g);
+
+        double got[10] = { a.x, a.y, a.z, pot,
+                           g[0], g[1], g[2], g[4], g[5], g[8] };
+
+        for (int k = 0; k < 10; k++) {
+            double want = UNNORMALISED_FORM[i][k];
+            double d = fabs(got[k] - want) / fabs(want);
+            if (d > worst) {
+                worst = d;
+            }
+        }
+    }
+
+    /* Measured 1.74e-15, which is where a difference between two orderings
+     * of the same sum belongs. A bit-for-bit criterion was impossible here
+     * and ROADMAP K5 says why: normalisation multiplies intermediates by
+     * square roots of irrationals, so this is a different sequence of
+     * operations by construction, not the same one rearranged. */
+    printf("  normalised vs unnormalised form: %.3g relative\n", worst);
+    CHECK(worst < 1e-13);
+}
+
+/* N_nm against its own definition, computed with factorials.
+ *
+ * The recursions in harmonics.c exist to avoid those factorials - (n+m)! is
+ * 1e158 at n = m = 50 - so the test computes them the forbidden way at small
+ * degrees, where a double still holds them exactly, and checks the two agree.
+ * A test is allowed libm and lgamma; the core is not. */
+static void test_normalisation_matches_factorials(void)
+{
+    int checked = 0;
+
+    for (int n = 0; n <= 12; n++) {
+        for (int m = 0; m <= n; m++) {
+            double k = (m == 0) ? 1.0 : 2.0;
+            double num = tgamma((double)(n - m) + 1.0);
+            double den = tgamma((double)(n + m) + 1.0);
+            double want = sqrt(num * (2.0 * (double)n + 1.0) * k / den);
+
+            CHECK(close_rel(harmonics_normalisation(n, m), want, 1e-13));
+            checked++;
+        }
+    }
+
+    CHECK(checked == 91);
+
+    /* Out of range answers zero rather than reading past the triangle. */
+    CHECK(harmonics_normalisation(2, 3) == 0.0);
+    CHECK(harmonics_normalisation(-1, 0) == 0.0);
+}
+
+/* Degree 50 at a lunar radius: the case that used to be NaN.
+ *
+ * This is the reason K5b exists, so it is checked as a property rather than
+ * against a reference: every output finite, and the Hessian's trace zero,
+ * which is Laplace's equation and needs no external number at all. A field
+ * that overflowed anywhere in the recursion could not satisfy it. */
+static void test_high_degree_stays_finite(void)
+{
+    HarmonicsField f = { 0 };
+    f.degree = HARMONICS_MAX_DEGREE;
+    f.re = 1738000.0;
+
+    for (int n = 2; n <= f.degree; n++) {
+        for (int m = 0; m <= n; m++) {
+            double v = 1.0e-4 / ((double)n * (double)n);
+            f.c[harmonics_index(n, m)] = (m % 2) ? -v : v;
+            f.s[harmonics_index(n, m)] = (m % 3) ? 0.5 * v : -0.5 * v;
+        }
+    }
+
+    double mu = 4.9028e12;
+
+    const double points[4][3] = {
+        { 1838000.0, 0.0, 0.0 },
+        { 0.0, 0.0, 1838000.0 },   /* over the pole */
+        { 1.0e6, -1.0e6, 1.2e6 },
+        { 1738000.0, 1.0, -1.0 },  /* just off the axis, just above the surface */
+    };
+
+    double worst_trace = 0.0;
+
+    for (int i = 0; i < 4; i++) {
+        Vec3d r = vec3(points[i][0], points[i][1], points[i][2]);
+
+        Vec3d a;
+        double pot;
+        double g[9];
+        harmonics_accel(&f, r, mu, &a);
+        harmonics_potential(&f, r, mu, &pot);
+        harmonics_gradient(&f, r, mu, g);
+
+        CHECK(isfinite(a.x) && isfinite(a.y) && isfinite(a.z));
+        CHECK(isfinite(pot));
+        for (int k = 0; k < 9; k++) {
+            CHECK(isfinite(g[k]));
+        }
+
+        /* Something has to be there, or "finite" would be satisfied by a
+         * silent zero - the failure this test would otherwise miss. */
+        CHECK(vec3_norm(a) > 1e-9);
+
+        double scale = fabs(g[0]) + fabs(g[4]) + fabs(g[8]);
+        double trace = fabs(g[0] + g[4] + g[8]) / scale;
+        if (trace > worst_trace) {
+            worst_trace = trace;
+        }
+    }
+
+    printf("  degree %d at the Moon: finite, worst relative trace %.3g\n",
+           HARMONICS_MAX_DEGREE, worst_trace);
+    CHECK(worst_trace < 1e-12);
+}
+
 int main(void)
 {
     test_disabled_field_is_zero();
@@ -395,5 +575,8 @@ int main(void)
     test_zonal_field_is_axisymmetric();
     test_pole_transverse_accel();
     test_gradient_matches_finite_difference();
+    test_normalised_matches_the_old_form();
+    test_normalisation_matches_factorials();
+    test_high_degree_stays_finite();
     return TEST_RESULT();
 }

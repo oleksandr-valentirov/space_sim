@@ -13,10 +13,17 @@
  * direction cosines s=x/r, t=y/r, u=z/r, none of which is ever divided by,
  * only multiplied.
  *
- * Coefficients are unnormalised C_nm, S_nm - the form the closed-form
- * derivation below and the recursion both use directly. Real gravity models
- * (GRAIL, EGM) publish 4-pi normalised coefficients; converting them is a
- * K5 concern, done once offline when that data is imported, not here.
+ * Coefficients are FULLY NORMALISED (4-pi) C_nm, S_nm since ROADMAP K5b,
+ * where they used to be unnormalised. That is not a change of taste: the
+ * unnormalised form carries factors that overflow a double on their own long
+ * before the coefficients get a chance to be small - see HARMONICS_MAX_DEGREE
+ * below. Real gravity models are published normalised for exactly this
+ * reason, so this is also the form the data arrives in.
+ *
+ * Cited numbers are usually unnormalised (J2 = -C_20 is), and
+ * harmonics_set_unnormalised converts them at the one place each is written.
+ * Nothing multiplies coefficients in-line: a conversion done by hand at four
+ * call sites is a conversion forgotten at the fifth.
  *
  * Everything here is +, -, *, / and sqrt: no trigonometry, so it stays in
  * the deterministic zone (PROJECT.md section 4) and `make check-libm` sees
@@ -27,26 +34,25 @@
 
 #include "vec3.h"
 
-/* Raising this is NOT enough to reach GRAIL degrees, and the first version
- * of this comment claimed otherwise. Measured by raising it to 64 and
- * evaluating: the acceleration goes NaN from about degree 44, because this
- * formulation carries unnormalised quantities that overflow a double on
- * their own - Re^n exceeds DBL_MAX at n = 50 for the Moon's 1738 km
- * radius, and |(x+iy)|^m at m = 49 for a low lunar orbit. Both are
- * properties of the unnormalised form, not of any particular
- * coefficients, and no choice of data avoids them.
+/* Fifty since K5b, eight before it, and the difference is the whole reason
+ * that step exists.
  *
- * Degrees past ~40 need the fully normalised recursion instead, working
- * in (Re/r)^n rather than in Re^n and r^-n separately. That is the real
- * content of K5, ahead of importing anything: the lunar field it wants is
- * published normalised (as every real gravity model is, for exactly this
- * reason) and truncating it to degree 8 to fit here would throw away the
- * mascons that are the point.
+ * The old ceiling was not a matter of array sizes. Measured by raising it
+ * to 64 and evaluating: the acceleration went NaN from about degree 44,
+ * because the unnormalised formulation carried quantities that overflow a
+ * double on their own - Re^n past DBL_MAX at n = 50 for the Moon's 1738 km
+ * radius, |(x+iy)|^m at m = 49 for a low lunar orbit. Neither depends on
+ * the coefficients, so no choice of data avoided them.
  *
- * Eight is what the J2 work of K2 and K4 needs, with room to spare, and
- * the triangular arrays below grow quadratically, so it stays there until
- * the normalised form arrives. */
-#define HARMONICS_MAX_DEGREE 8
+ * The normalised form has no such factor. It carries (Re/r)^n, which is
+ * below one everywhere outside the reference sphere, direction cosines
+ * bounded by one, and normalised A_nm which stay within a few orders of
+ * unity - so the ceiling is now an array-size decision rather than an
+ * arithmetic one. Fifty is what GRAIL's mascons need (ROADMAP K5); the
+ * triangular arrays grow quadratically, and at fifty a HarmonicsField is
+ * about 21 kB, which is why FieldCtx borrows one rather than copying it
+ * (K5a, core/field.h). */
+#define HARMONICS_MAX_DEGREE 50
 #define HARMONICS_MAX_COEFFS \
     ((HARMONICS_MAX_DEGREE + 1) * (HARMONICS_MAX_DEGREE + 2) / 2)
 
@@ -60,7 +66,10 @@
 typedef struct {
     int    degree;                       /* highest n present; < 2 disables the field */
     double re;                           /* reference radius, metres */
-    double c[HARMONICS_MAX_COEFFS];      /* triangular, index harmonics_index(n, m) */
+    /* FULLY NORMALISED, triangular, index harmonics_index(n, m). Write them
+     * through harmonics_set_unnormalised when the source is cited in the
+     * usual unnormalised form. */
+    double c[HARMONICS_MAX_COEFFS];
     double s[HARMONICS_MAX_COEFFS];
 } HarmonicsField;
 
@@ -69,6 +78,29 @@ static inline int harmonics_index(int n, int m)
 {
     return n * (n + 1) / 2 + m;
 }
+
+/* N_nm = sqrt( (n-m)! (2n+1) (2 - delta_0m) / (n+m)! ), the factor relating
+ * the two conventions: A_norm = N_nm * A_unnorm, and therefore
+ * C_norm = C_unnorm / N_nm, since only the product of the two is physical.
+ *
+ * Computed by two short recursions rather than from factorials, which is not
+ * an optimisation: (n+m)! at n = m = 50 is 1e158, and the ratio that survives
+ * it is 1e-78. Forming either factorial first throws the answer away.
+ *
+ * Only sqrt and arithmetic, so this stays inside the deterministic zone and
+ * can be called from anywhere, including at asset load. */
+double harmonics_normalisation(int n, int m);
+
+/* Write one unnormalised pair into a field, converting it (ROADMAP K5b).
+ *
+ * Exists so that the conversion happens in one place rather than at every
+ * site holding a cited number - the cooker's J2, the asset reader, four
+ * tests. Out-of-range (n, m) is ignored rather than being an error: this is
+ * a setter for constants known at the call site, and there is nobody to
+ * report to. Degree is NOT raised as a side effect; the caller says how far
+ * its field goes. */
+void harmonics_set_unnormalised(HarmonicsField *field, int n, int m,
+                                double c, double s);
 
 /* Acceleration at r (metres, body-fixed frame) from every term of degree 2
  * and up. mu is the body's own gravitational parameter - the same one the

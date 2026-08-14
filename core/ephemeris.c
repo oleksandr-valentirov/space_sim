@@ -181,6 +181,23 @@ CoreResult eph_load(const char *path, EphemerisCtx **out)
                 return CORE_ERR_INVALID_ARG;
             }
 
+            /* The file holds UNNORMALISED coefficients - the v5 format was
+             * written before K5b, and this step deliberately does not
+             * recook, so that the hashes it moves are the recursion's doing
+             * and not the asset's. Converted here, once per load, into the
+             * normalised form harmonics.c has taken since. K5e flips the
+             * format itself, because GRAIL arrives normalised and the
+             * round trip through the other convention would be a loss for
+             * nothing. */
+            for (int n = 0; n <= (int)degree; n++) {
+                for (int m = 0; m <= n; m++) {
+                    int idx = harmonics_index(n, m);
+                    double norm = harmonics_normalisation(n, m);
+                    ctx->harmonics[b].c[idx] /= norm;
+                    ctx->harmonics[b].s[idx] /= norm;
+                }
+            }
+
             if (!(ctx->harmonics[b].re > 0.0)) {
                 eph_free(ctx);
                 fclose(f);

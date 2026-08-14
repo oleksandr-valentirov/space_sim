@@ -1,112 +1,200 @@
-/* Pines' recursion (ROADMAP K1). See harmonics.h for the interface and
- * PROJECT.md section 4 for why this exists at all.
+/* Pines' recursion, fully normalised (ROADMAP K1, normalised in K5b). See
+ * harmonics.h for the interface and PROJECT.md section 4 for why this exists.
  *
  * The derivation, since none of it is quoted from a paper without checking:
  *
- * U(x,y,z) = mu * sum_n sum_m (Re/r)^n A_nm(u) [C_nm R_m(s,t) + S_nm I_m(s,t)]
+ * U(x,y,z) = mu/r * sum_n (Re/r)^n sum_m A_nm(u) [C_nm R_m(s,t) + S_nm I_m(s,t)]
  *
  * where s=x/r, t=y/r, u=z/r are direction cosines, R_m+iI_m=(s+it)^m carries
  * the longitude dependence, and A_nm(u) is the associated Legendre function
  * with its singular factor (1-u^2)^(m/2) divided out - the non-singular part
- * Pines works with. Two substitutions turn this into code:
+ * Pines works with. A_nm and the coefficients are both fully normalised, and
+ * only their product appears, so the physics is unchanged by that choice.
  *
- * 1. R_m(s,t) = R_m(x,y) / r^m, where R_m(x,y)+iI_m(x,y) = (x+iy)^m is the
- *    SAME recursion run on (x,y) directly instead of (s,t). That folds the
- *    r^m into the existing r^-(n+1), leaving one power of r per term
- *    (build_ri below), not two.
+ * WHAT NORMALISATION BUYS, and it is not accuracy. The sum above is written
+ * in quantities that are all bounded: (Re/r)^n <= 1 outside the reference
+ * sphere, |R_m|,|I_m| <= 1 because they are powers of a unit vector, and
+ * normalised A_nm grow slowly enough to stay inside a double to degree 50 and
+ * far beyond. The unnormalised form of this same sum multiplies Re^n by
+ * r^-(n+m+1) by (2m-1)!!, each of which overflows on its own around degree
+ * 44-50, and only their product is small. That is why K5b had to come before
+ * any lunar data (harmonics.h).
+ *
+ * Two substitutions turn the sum into code:
+ *
+ * 1. R_m(s,t) is built on the direction cosines directly. An earlier version
+ *    built it on (x,y), which folds one power of r per term into the existing
+ *    r^-(n+1) and saves a multiply - and is exactly the trick that made the
+ *    intermediates unbounded. The cheap form was affordable only while the
+ *    degree was small.
  * 2. A_nm satisfies the standard triangular Legendre recursion with the
  *    (1-u^2)^(m/2) factor removed throughout (build_legendre): the sectorial
- *    term A_mm=(2m-1)!! is a genuine constant (no residual u dependence,
- *    because P_mm is proportional to (1-u^2)^(m/2) exactly), and the general
- *    branch follows by dividing the standard three-term recursion through by
- *    that same factor on all three terms, which share it.
+ *    term is a genuine constant in u (no residual u dependence, because P_mm
+ *    is proportional to (1-u^2)^(m/2) exactly), and the general branch
+ *    follows by dividing the three-term recursion through by that same
+ *    factor, which all three terms share. Normalising multiplies each branch
+ *    by a ratio of N_nm, worked out in build_legendre where it is used.
  *
  * The gradient is the chain rule applied to that sum, term by term, using
- * ds/dx=(1-s^2)/r, du/dx=-su/r and so on, plus d(R_m+iI_m)/dx = m(R_{m-1}+
- * iI_{m-1}) and d(R_m+iI_m)/dy = im(R_{m-1}+iI_{m-1}) from differentiating
- * (x+iy)^m directly. dA_nm/du (Ad_nm here) comes from differentiating the
- * Legendre recursion itself, not a separate identity - one more reason the
- * two triangles are built together in build_legendre. The result, checked
- * against the textbook closed-form J2 acceleration for n=2, m=0 in
- * core/test/test_harmonics.c: it reproduces it exactly, sign included, which
- * is the strongest evidence this is right that does not require trusting the
- * algebra on inspection. */
+ * ds/dx=(1-s^2)/r, du/dx=-su/r and so on, plus d(R_m+iI_m)/ds = m(R_{m-1}+
+ * iI_{m-1}) and the matching one in t. dA_nm/du (Ad_nm here) comes from
+ * differentiating the Legendre recursion itself, not a separate identity -
+ * one more reason the two triangles are built together in build_legendre.
+ * The result, checked against the textbook closed-form J2 acceleration for
+ * n=2, m=0 in core/test/test_harmonics.c: it reproduces it exactly, sign
+ * included, which is the strongest evidence this is right that does not
+ * require trusting the algebra on inspection.
+ *
+ * NOTE ON r < Re. Inside the reference sphere (Re/r)^n grows instead of
+ * shrinking, and at degree 50 it overflows below about a fifth of Re. The
+ * series does not converge there either - it is an exterior solution - so
+ * this is a domain limit rather than a defect of the arithmetic, and it is
+ * far inside any body a vessel can fly around. */
 
 #include "harmonics.h"
 
-/* R_m + i I_m = (x + iy)^m, built on (x, y) directly - see the file comment
- * for why this is not normalised by r here. */
-static void build_ri(double x, double y, int degree, double *rr, double *ii)
+/* R_m + i I_m = (s + it)^m on the direction cosines, so every entry has
+ * modulus at most one - see the file comment for why that matters. */
+static void build_ri(double s, double t, int degree, double *rr, double *ii)
 {
     rr[0] = 1.0;
     ii[0] = 0.0;
     for (int m = 1; m <= degree; m++) {
-        rr[m] = x * rr[m - 1] - y * ii[m - 1];
-        ii[m] = x * ii[m - 1] + y * rr[m - 1];
+        rr[m] = s * rr[m - 1] - t * ii[m - 1];
+        ii[m] = s * ii[m - 1] + t * rr[m - 1];
     }
 }
 
-/* A_nm(u) and its derivatives in u, built together: the general branch of
- * each needs the one below it, so splitting the triangles into separate
- * passes would mean recomputing the lower ones.
+/* Normalised A_nm(u) and its derivatives in u, built together: the general
+ * branch of each needs the one below it, so splitting the triangles into
+ * separate passes would mean recomputing the lower ones.
  *
- * add may be NULL - only harmonics_gradient wants the second derivative,
- * and the acceleration is the hot path. */
+ * The three branches, with N_nm as in harmonics.h and k_m = 2 - delta_0m:
+ *
+ *   sectorial   A_mm     = A_{m-1,m-1} * sqrt( (2m+1) k_m / (2m k_{m-1}) )
+ *   first below A_{n,n-1} = u * sqrt(2n+1) * A_{n-1,n-1}
+ *   general     A_nm     = alpha * u * A_{n-1,m} - beta * A_{n-2,m}
+ *
+ *       alpha = sqrt( (2n+1)(2n-1) / ((n-m)(n+m)) )
+ *       beta  = sqrt( (2n+1)(n+m-1)(n-m-1) / ((2n-3)(n+m)(n-m)) )
+ *
+ * Each is the unnormalised branch multiplied by the ratio of the two N_nm it
+ * connects, with the factorials cancelled by hand before any of them is
+ * evaluated - which is the point: N_nm alone underflows past degree 40, while
+ * every ratio above stays within a factor of a few of one.
+ *
+ * The derivatives are the same three lines differentiated in u, exactly as
+ * the unnormalised version did it. A_mm is constant in u and A_{n,n-1} is
+ * linear, so their second derivatives vanish outright.
+ *
+ * add may be NULL - only harmonics_gradient wants the second derivative, and
+ * the acceleration is the hot path. */
 static void build_legendre(double u, int degree, double *a, double *ad,
                            double *add)
 {
-    double df = 1.0; /* running (2m-1)!!; 1 for m=0 by convention */
+    a[harmonics_index(0, 0)] = 1.0;
+    ad[harmonics_index(0, 0)] = 0.0;
+    if (add != NULL) {
+        add[harmonics_index(0, 0)] = 0.0;
+    }
 
     for (int m = 0; m <= degree; m++) {
         if (m > 0) {
-            df *= (double)(2 * m - 1);
-        }
-        a[harmonics_index(m, m)] = df;
-        ad[harmonics_index(m, m)] = 0.0; /* sectorial term is a constant in u */
-        if (add != NULL) {
-            add[harmonics_index(m, m)] = 0.0;
+            /* k_m / k_{m-1} is 2 when leaving m = 0 and 1 afterwards. */
+            double k_ratio = (m == 1) ? 2.0 : 1.0;
+            double f = sqrt((double)(2 * m + 1) * k_ratio / (double)(2 * m));
+            a[harmonics_index(m, m)] = f * a[harmonics_index(m - 1, m - 1)];
+            ad[harmonics_index(m, m)] = 0.0;
+            if (add != NULL) {
+                add[harmonics_index(m, m)] = 0.0;
+            }
         }
 
         if (m + 1 <= degree) {
-            a[harmonics_index(m + 1, m)] = u * (double)(2 * m + 1) * df;
-            ad[harmonics_index(m + 1, m)] = (double)(2 * m + 1) * df;
+            double f = sqrt((double)(2 * m + 3));
+            a[harmonics_index(m + 1, m)] = u * f * a[harmonics_index(m, m)];
+            ad[harmonics_index(m + 1, m)] = f * a[harmonics_index(m, m)];
             if (add != NULL) {
-                /* Linear in u, so the second derivative vanishes here too. */
                 add[harmonics_index(m + 1, m)] = 0.0;
             }
         }
 
         for (int n = m + 2; n <= degree; n++) {
+            double dn = (double)n;
+            double dm = (double)m;
+
+            double alpha = sqrt((2.0 * dn + 1.0) * (2.0 * dn - 1.0) /
+                                ((dn - dm) * (dn + dm)));
+            double beta = sqrt((2.0 * dn + 1.0) * (dn + dm - 1.0) *
+                               (dn - dm - 1.0) /
+                               ((2.0 * dn - 3.0) * (dn + dm) * (dn - dm)));
+
             double a1 = a[harmonics_index(n - 1, m)];
             double a2 = a[harmonics_index(n - 2, m)];
             double ad1 = ad[harmonics_index(n - 1, m)];
             double ad2 = ad[harmonics_index(n - 2, m)];
 
-            a[harmonics_index(n, m)] =
-                (u * (double)(2 * n - 1) * a1 - (double)(n + m - 1) * a2) /
-                (double)(n - m);
-            /* d/du of the line above, product-ruled on the u*(2n-1)*a1 term. */
+            a[harmonics_index(n, m)] = alpha * u * a1 - beta * a2;
+            /* d/du of the line above, product rule on alpha*u*a1. */
             ad[harmonics_index(n, m)] =
-                ((double)(2 * n - 1) * a1 + u * (double)(2 * n - 1) * ad1 -
-                 (double)(n + m - 1) * ad2) /
-                (double)(n - m);
+                alpha * (a1 + u * ad1) - beta * ad2;
 
             if (add != NULL) {
-                /* And again, product rule on the same term: the derivative
-                 * of (2n-1)*a1 + u*(2n-1)*ad1 is 2*(2n-1)*ad1 +
-                 * u*(2n-1)*add1. Differentiated from the recursion rather
-                 * than looked up, the same choice ad above records. */
                 double add1 = add[harmonics_index(n - 1, m)];
                 double add2 = add[harmonics_index(n - 2, m)];
-
                 add[harmonics_index(n, m)] =
-                    (2.0 * (double)(2 * n - 1) * ad1 +
-                     u * (double)(2 * n - 1) * add1 -
-                     (double)(n + m - 1) * add2) /
-                    (double)(n - m);
+                    alpha * (2.0 * ad1 + u * add1) - beta * add2;
             }
         }
     }
+}
+
+double harmonics_normalisation(int n, int m)
+{
+    if (n < 0 || m < 0 || m > n) {
+        return 0.0;
+    }
+
+    /* Down the diagonal to (m, m), then up the column to (n, m). Both
+     * factors are ratios of consecutive N, so nothing large is ever formed:
+     *
+     *   N_mm / N_{m-1,m-1} = sqrt( (2m+1) k_m / ((2m-1) k_{m-1} 2m (2m-1)) )
+     *   N_nm / N_{n-1,m}   = sqrt( (n-m)(2n+1) / ((n+m)(2n-1)) )
+     */
+    double value = 1.0;
+
+    for (int i = 1; i <= m; i++) {
+        double di = (double)i;
+        double k_ratio = (i == 1) ? 2.0 : 1.0;
+        value *= sqrt((2.0 * di + 1.0) * k_ratio /
+                      ((2.0 * di - 1.0) * 2.0 * di * (2.0 * di - 1.0)));
+    }
+
+    for (int i = m + 1; i <= n; i++) {
+        double di = (double)i;
+        double dm = (double)m;
+        value *= sqrt((di - dm) * (2.0 * di + 1.0) /
+                      ((di + dm) * (2.0 * di - 1.0)));
+    }
+
+    return value;
+}
+
+void harmonics_set_unnormalised(HarmonicsField *field, int n, int m,
+                                double c, double s)
+{
+    if (field == NULL || n < 0 || m < 0 || m > n ||
+        n > HARMONICS_MAX_DEGREE) {
+        return;
+    }
+
+    double norm = harmonics_normalisation(n, m);
+    if (!(norm > 0.0)) {
+        return;
+    }
+
+    field->c[harmonics_index(n, m)] = c / norm;
+    field->s[harmonics_index(n, m)] = s / norm;
 }
 
 static int clamp_degree(int degree)
@@ -133,26 +221,23 @@ void harmonics_accel(const HarmonicsField *field, Vec3d r, double mu,
 
     double rr[HARMONICS_MAX_DEGREE + 1];
     double ii[HARMONICS_MAX_DEGREE + 1];
-    build_ri(r.x, r.y, degree, rr, ii);
+    build_ri(s, t, degree, rr, ii);
 
     double a_leg[HARMONICS_MAX_COEFFS];
     double ad_leg[HARMONICS_MAX_COEFFS];
     build_legendre(u, degree, a_leg, ad_leg, NULL);
 
-    double re_pow[HARMONICS_MAX_DEGREE + 1];
-    re_pow[0] = 1.0;
+    /* One table instead of the two the unnormalised form needed: with R_m
+     * built on the direction cosines, every term carries exactly (Re/r)^n
+     * and a single mu/r^2 out front. */
+    double rho = field->re * r_inv;
+    double rho_pow[HARMONICS_MAX_DEGREE + 1];
+    rho_pow[0] = 1.0;
     for (int n = 1; n <= degree; n++) {
-        re_pow[n] = re_pow[n - 1] * field->re;
+        rho_pow[n] = rho_pow[n - 1] * rho;
     }
 
-    /* Every term needs r^-(p+1) with p = n+1+m <= 2*degree+1, so the table
-     * runs one further than harmonics_potential's. */
-    int max_power = 2 * degree + 2;
-    double r_inv_pow[2 * HARMONICS_MAX_DEGREE + 3];
-    r_inv_pow[0] = 1.0;
-    for (int k = 1; k <= max_power; k++) {
-        r_inv_pow[k] = r_inv_pow[k - 1] * r_inv;
-    }
+    double outer = mu * r_inv * r_inv;
 
     Vec3d acc = vec3_zero();
 
@@ -170,7 +255,7 @@ void harmonics_accel(const HarmonicsField *field, Vec3d r, double mu,
             double g = c * rr[m] + sv * ii[m];
 
             int p = n + 1 + m;
-            double coef = mu * re_pow[n] * r_inv_pow[p + 1];
+            double coef = outer * rho_pow[n];
 
             double dx = -(double)p * s * av * g - u * s * adv * g;
             double dy = -(double)p * t * av * g - u * t * adv * g;
@@ -178,12 +263,15 @@ void harmonics_accel(const HarmonicsField *field, Vec3d r, double mu,
 
             /* Longitude derivative, present only for m >= 1 - see the file
              * comment. At m=0, R_m/I_m are the constants 1/0 with zero
-             * derivative, so this term is correctly absent, not skipped. */
+             * derivative, so this term is correctly absent, not skipped.
+             * The factor of r the unnormalised form carried here cancelled
+             * against the one folded into R_m(x,y); with R_m on direction
+             * cosines there is nothing left to cancel. */
             if (m > 0) {
                 double hx = c * rr[m - 1] + sv * ii[m - 1];
                 double hy = sv * rr[m - 1] - c * ii[m - 1];
-                dx += rad * av * (double)m * hx;
-                dy += rad * av * (double)m * hy;
+                dx += av * (double)m * hx;
+                dy += av * (double)m * hy;
             }
 
             acc.x += coef * dx;
@@ -247,26 +335,24 @@ void harmonics_gradient(const HarmonicsField *field, Vec3d r, double mu,
 
     double rr[HARMONICS_MAX_DEGREE + 1];
     double ii[HARMONICS_MAX_DEGREE + 1];
-    build_ri(r.x, r.y, degree, rr, ii);
+    build_ri(dir[0], dir[1], degree, rr, ii);
 
     double a_leg[HARMONICS_MAX_COEFFS];
     double ad_leg[HARMONICS_MAX_COEFFS];
     double add_leg[HARMONICS_MAX_COEFFS];
     build_legendre(u, degree, a_leg, ad_leg, add_leg);
 
-    double re_pow[HARMONICS_MAX_DEGREE + 1];
-    re_pow[0] = 1.0;
+    double rho = field->re * r_inv;
+    double rho_pow[HARMONICS_MAX_DEGREE + 1];
+    rho_pow[0] = 1.0;
     for (int n = 1; n <= degree; n++) {
-        re_pow[n] = re_pow[n - 1] * field->re;
+        rho_pow[n] = rho_pow[n - 1] * rho;
     }
 
-    /* One power further than the acceleration's table: p + 2. */
-    int max_power = 2 * degree + 3;
-    double r_inv_pow[2 * HARMONICS_MAX_DEGREE + 4];
-    r_inv_pow[0] = 1.0;
-    for (int k = 1; k <= max_power; k++) {
-        r_inv_pow[k] = r_inv_pow[k - 1] * r_inv;
-    }
+    /* One power of r further out than the acceleration, and the r and r^2
+     * that used to sit inside the bracket are gone with the same
+     * cancellation the acceleration records. */
+    double outer = mu * r_inv * r_inv * r_inv;
 
     for (int n = 2; n <= degree; n++) {
         for (int m = 0; m <= n; m++) {
@@ -283,7 +369,7 @@ void harmonics_gradient(const HarmonicsField *field, Vec3d r, double mu,
             double gv = c * rr[m] + sv * ii[m];
 
             int p = n + 1 + m;
-            double coef = mu * re_pow[n] * r_inv_pow[p + 2];
+            double coef = outer * rho_pow[n];
 
             /* dg/dx_i: nonzero only in x and y, and only from m >= 1. */
             double gi[3] = { 0.0, 0.0, 0.0 };
@@ -335,8 +421,8 @@ void harmonics_gradient(const HarmonicsField *field, Vec3d r, double mu,
                       + adv * gv * (-(double)(p + 1) * sym_nw
                                     - u * (d_ij - dir[i] * dir[j]))
                       + addv * gv * w[i] * w[j]
-                      + av * (-(double)p * rad * sym_ng + rad * rad * gij)
-                      + adv * rad * sym_wg;
+                      + av * (-(double)p * sym_ng + gij)
+                      + adv * sym_wg;
 
                     g_out[i * 3 + j] += coef * term;
                 }
@@ -366,7 +452,7 @@ void harmonics_potential(const HarmonicsField *field, Vec3d r, double mu,
 
     double rr[HARMONICS_MAX_DEGREE + 1];
     double ii[HARMONICS_MAX_DEGREE + 1];
-    build_ri(r.x, r.y, degree, rr, ii);
+    build_ri(r.x * r_inv, r.y * r_inv, degree, rr, ii);
 
     /* build_legendre also fills the derivative triangle; unused here, but
      * splitting it into two builders to save that would duplicate the whole
@@ -376,17 +462,11 @@ void harmonics_potential(const HarmonicsField *field, Vec3d r, double mu,
     double ad_leg[HARMONICS_MAX_COEFFS];
     build_legendre(u, degree, a_leg, ad_leg, NULL);
 
-    double re_pow[HARMONICS_MAX_DEGREE + 1];
-    re_pow[0] = 1.0;
+    double rho = field->re * r_inv;
+    double rho_pow[HARMONICS_MAX_DEGREE + 1];
+    rho_pow[0] = 1.0;
     for (int n = 1; n <= degree; n++) {
-        re_pow[n] = re_pow[n - 1] * field->re;
-    }
-
-    int max_power = 2 * degree + 1;
-    double r_inv_pow[2 * HARMONICS_MAX_DEGREE + 2];
-    r_inv_pow[0] = 1.0;
-    for (int k = 1; k <= max_power; k++) {
-        r_inv_pow[k] = r_inv_pow[k - 1] * r_inv;
+        rho_pow[n] = rho_pow[n - 1] * rho;
     }
 
     double sum = 0.0;
@@ -401,10 +481,9 @@ void harmonics_potential(const HarmonicsField *field, Vec3d r, double mu,
             }
 
             double g = c * rr[m] + sv * ii[m];
-            int p = n + 1 + m;
-            sum += re_pow[n] * r_inv_pow[p] * a_leg[idx] * g;
+            sum += rho_pow[n] * a_leg[idx] * g;
         }
     }
 
-    *u_out = mu * sum;
+    *u_out = mu * r_inv * sum;
 }

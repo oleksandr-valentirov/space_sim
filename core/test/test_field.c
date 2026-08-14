@@ -69,7 +69,7 @@ static HarmonicsField earth_j2(void)
     memset(&f, 0, sizeof f);
     f.degree = 2;
     f.re = 6378137.0;
-    f.c[harmonics_index(2, 0)] = -1.08262545e-3;
+    harmonics_set_unnormalised(&f, 2, 0, -1.08262545e-3, 0.0);
     return f;
 }
 

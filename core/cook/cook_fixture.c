@@ -145,7 +145,11 @@ int main(void)
             system.j2_body = (int)i;
             system.j2_field.degree = 2;
             system.j2_field.re = 6378137.0;
-            system.j2_field.c[harmonics_index(2, 0)] = -1.08262545e-3;
+            /* Cited unnormalised, stored normalised (ROADMAP K5b): the
+             * conversion happens in the setter so that no call site owns a
+             * copy of the formula. */
+            harmonics_set_unnormalised(&system.j2_field, 2, 0,
+                                       -1.08262545e-3, 0.0);
         }
     }
 
