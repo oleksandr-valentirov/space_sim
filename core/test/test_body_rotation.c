@@ -15,7 +15,7 @@
 #define CENTURY (36525.0 * DAY)
 #define DEG (3.14159265358979323846 / 180.0)
 
-static int close(double a, double b, double tol)
+static int approx(double a, double b, double tol)
 {
     return fabs(a - b) < tol;
 }
@@ -54,6 +54,26 @@ static double spin_rate(const char *name, double t)
     return acos(cos_angle) / (2.0 * dt);
 }
 
+/* Which way the body turns about its own pole: +1 prograde, -1 retrograde.
+ *
+ * A separate check from spin_rate because that one cannot see it - it
+ * measures an unsigned angle between two directions, so flipping the sign
+ * of the prime-meridian rate would leave it passing. Both bodies modelled
+ * here rotate prograde, and getting that backwards is exactly the kind of
+ * convention error a passive-versus-active rotation matrix invites. */
+static double spin_sense(const char *name, double t)
+{
+    Quat q0, q1;
+    CHECK(body_rotation_of(name, t, &q0) == CORE_OK);
+    CHECK(body_rotation_of(name, t + 60.0, &q1) == CORE_OK);
+
+    Vec3d pole = quat_rotate(q0, vec3(0.0, 0.0, 1.0));
+    Vec3d m0 = quat_rotate(q0, vec3(1.0, 0.0, 0.0));
+    Vec3d m1 = quat_rotate(q1, vec3(1.0, 0.0, 0.0));
+
+    return vec3_dot(vec3_cross(m0, m1), pole);
+}
+
 int main(void)
 {
     /* Unmodelled body: identity, bit for bit - "not modelled" has to read
@@ -75,19 +95,19 @@ int main(void)
         Quat q;
         CHECK(body_rotation_of("earth", t, &q) == CORE_OK);
 
-        CHECK(close(quat_norm_sq(q), 1.0, 1e-9));
+        CHECK(approx(quat_norm_sq(q), 1.0, 1e-9));
 
         Vec3d pole_from_quat = quat_rotate(q, vec3(0.0, 0.0, 1.0));
         Vec3d pole_expected = pole_direction(0.0, -0.641, 90.0, -0.557, t);
-        CHECK(close(pole_from_quat.x, pole_expected.x, 1e-9));
-        CHECK(close(pole_from_quat.y, pole_expected.y, 1e-9));
-        CHECK(close(pole_from_quat.z, pole_expected.z, 1e-9));
+        CHECK(approx(pole_from_quat.x, pole_expected.x, 1e-9));
+        CHECK(approx(pole_from_quat.y, pole_expected.y, 1e-9));
+        CHECK(approx(pole_from_quat.z, pole_expected.z, 1e-9));
     }
 
     /* Earth's sidereal rate, obj_earth.txt: "Rot. Rate (rad/s) =
      * 0.00007292115". 0.3% tolerance: the finite difference sees the pole's
      * own (tiny, centuries-scale) precession too, not only the spin. */
-    CHECK(close(spin_rate("earth", 365.25 * DAY), 0.00007292115,
+    CHECK(approx(spin_rate("earth", 365.25 * DAY), 0.00007292115,
                0.003 * 0.00007292115));
 
     /* Moon: same two checks, obj_moon.txt: "Sid. rot. rate, rad/s =
@@ -97,18 +117,22 @@ int main(void)
         Quat q;
         CHECK(body_rotation_of("moon", t, &q) == CORE_OK);
 
-        CHECK(close(quat_norm_sq(q), 1.0, 1e-9));
+        CHECK(approx(quat_norm_sq(q), 1.0, 1e-9));
 
         Vec3d pole_from_quat = quat_rotate(q, vec3(0.0, 0.0, 1.0));
         Vec3d pole_expected =
             pole_direction(269.9949, 0.0031, 66.5392, 0.0130, t);
-        CHECK(close(pole_from_quat.x, pole_expected.x, 1e-9));
-        CHECK(close(pole_from_quat.y, pole_expected.y, 1e-9));
-        CHECK(close(pole_from_quat.z, pole_expected.z, 1e-9));
+        CHECK(approx(pole_from_quat.x, pole_expected.x, 1e-9));
+        CHECK(approx(pole_from_quat.y, pole_expected.y, 1e-9));
+        CHECK(approx(pole_from_quat.z, pole_expected.z, 1e-9));
     }
 
-    CHECK(close(spin_rate("moon", 365.25 * DAY), 0.0000026617,
+    CHECK(approx(spin_rate("moon", 365.25 * DAY), 0.0000026617,
                0.003 * 0.0000026617));
+
+    /* Both prograde. Measured, not assumed: see spin_sense. */
+    CHECK(spin_sense("earth", 365.25 * DAY) > 0.0);
+    CHECK(spin_sense("moon", 365.25 * DAY) > 0.0);
 
     return TEST_RESULT();
 }

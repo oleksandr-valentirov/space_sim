@@ -131,6 +131,118 @@ static void test_pole_transverse_accel(void)
     CHECK(a.x != 0.0 || a.y != 0.0);
 }
 
+/* A_nm(u) from the textbook, with the singular (1-u^2)^(m/2) factor Pines
+ * divides out already removed - i.e. P_nm(u) / (1-u^2)^(m/2), written out
+ * rather than recursed, so this shares no code with build_legendre.
+ *
+ * Returns NAN for pairs not tabulated here, which the caller skips. */
+static double legendre_a_reference(int n, int m, double u)
+{
+    double u2 = u * u;
+
+    if (n == 2 && m == 0) return (3.0 * u2 - 1.0) / 2.0;
+    if (n == 3 && m == 0) return (5.0 * u2 * u - 3.0 * u) / 2.0;
+    if (n == 4 && m == 0) return (35.0 * u2 * u2 - 30.0 * u2 + 3.0) / 8.0;
+    if (n == 5 && m == 0)
+        return (63.0 * u2 * u2 * u - 70.0 * u2 * u + 15.0 * u) / 8.0;
+    if (n == 6 && m == 0)
+        return (231.0 * u2 * u2 * u2 - 315.0 * u2 * u2 + 105.0 * u2 - 5.0)
+             / 16.0;
+
+    if (n == 2 && m == 1) return 3.0 * u;
+    if (n == 2 && m == 2) return 3.0;
+    if (n == 3 && m == 1) return 1.5 * (5.0 * u2 - 1.0);
+    if (n == 3 && m == 2) return 15.0 * u;
+    if (n == 3 && m == 3) return 15.0;
+    if (n == 4 && m == 1) return 2.5 * (7.0 * u2 * u - 3.0 * u);
+    if (n == 4 && m == 2) return 7.5 * (7.0 * u2 - 1.0);
+    if (n == 4 && m == 3) return 105.0 * u;
+    if (n == 4 && m == 4) return 105.0;
+    if (n == 5 && m == 2) return 52.5 * (3.0 * u2 * u - u);
+    if (n == 5 && m == 5) return 945.0;
+    if (n == 6 && m == 3) return 157.5 * (11.0 * u2 * u - 3.0 * u);
+
+    return NAN;
+}
+
+/* Re[(x + iy)^m], the same quantity build_ri produces, computed here by
+ * plain repeated complex multiplication. */
+static double r_m_reference(double x, double y, int m)
+{
+    double re = 1.0, im = 0.0;
+    for (int k = 0; k < m; k++) {
+        double nr = x * re - y * im;
+        double ni = x * im + y * re;
+        re = nr;
+        im = ni;
+    }
+    return re;
+}
+
+/* The recursion against the textbook, term by term.
+ *
+ * The closed-form J2 test above pins exactly one pair, (2, 0). Every other
+ * (n, m) is checked only for internal consistency by the finite-difference
+ * test below - and an error in build_legendre's general branch would move
+ * the potential and its gradient together, so that test would pass while
+ * both were wrong. This is the check that does not have that blind spot:
+ * a single unit coefficient at a time, and the potential it produces
+ * compared against
+ *
+ *     U = mu * Re^n * r^-(n+1+m) * A_nm(u) * R_m(x, y)
+ *
+ * assembled from the two reference helpers above. Degree 6 rather than 2
+ * because the general branch (n > m+1) is the one with the division in it,
+ * and it only starts being exercised beyond the two base cases. */
+static void test_legendre_matches_textbook(void)
+{
+    double mu = 3.986004418e14;
+    double re = 6378136.3;
+
+    Vec3d points[3] = {
+        vec3(4.0e6, 3.0e6, 2.0e6),
+        vec3(-2.0e6, 5.0e6, -3.0e6),
+        vec3(1.0e6, -1.5e6, 6.5e6),
+    };
+
+    int checked = 0;
+
+    for (int n = 2; n <= 6; n++) {
+        for (int m = 0; m <= n; m++) {
+            if (isnan(legendre_a_reference(n, m, 0.5))) {
+                continue;
+            }
+
+            HarmonicsField field = { 0 };
+            field.degree = n;
+            field.re = re;
+            field.c[harmonics_index(n, m)] = 1.0;
+
+            for (int p = 0; p < 3; p++) {
+                Vec3d r = points[p];
+                double rad = vec3_norm(r);
+                double u = r.z / rad;
+
+                double got;
+                harmonics_potential(&field, r, mu, &got);
+
+                double want = mu * pow(re, n) * pow(rad, -(n + 1 + m))
+                            * legendre_a_reference(n, m, u)
+                            * r_m_reference(r.x, r.y, m);
+
+                CHECK(close_rel(got, want, 1e-12));
+                checked++;
+            }
+        }
+    }
+
+    /* A silently empty loop would "pass" - the same failure mode
+     * scripts/check_no_libm.sh guards against with its own empty check.
+     * 17 tabulated (n, m) pairs at 3 points; this caught an off-by-three
+     * in the first version of that count, which is the point. */
+    CHECK(checked == 51);
+}
+
 /* The general (n, m) check the closed-form J2 comparison above cannot be:
  * central differences of harmonics_potential against harmonics_accel for a
  * field with tesseral terms, the same tool C2b used on the STM. */
@@ -182,6 +294,7 @@ static void test_gradient_matches_finite_difference(void)
 int main(void)
 {
     test_disabled_field_is_zero();
+    test_legendre_matches_textbook();
     test_j2_matches_closed_form();
     test_zonal_field_is_axisymmetric();
     test_pole_transverse_accel();

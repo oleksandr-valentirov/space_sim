@@ -36,11 +36,17 @@ void nbody_accel(const NBodySystem *sys, const State *states, Vec3d *acc_out)
 
     /* One body's oblateness (ROADMAP K2). d is Earth-relative position taken
      * straight from the inertial states, which is only correct because K2
-     * assumes the oblate body's pole is fixed along the frame's own z axis -
-     * true by construction for ICRF and Earth's mean equator of J2000, good
-     * to the arcminute over the spans this cooker fits today. A body whose
-     * pole actually moves in this frame needs the rotation K3 will add
-     * before this loop can use it; nothing here does that yet.
+     * assumes the oblate body's pole is fixed along the frame's own z axis.
+     * That is exact for ICRF at J2000 by construction and decays at 0.557
+     * degrees per century: 6.6 arcsec over the committed 120-day fixture,
+     * 3.3 arcmin over the ten-year ex_ephspan diagnostic.
+     *
+     * What that costs is measured rather than argued (ROADMAP K3a): forcing
+     * the whole ten-year cook through the worst-case 3.3 arcmin tilt moves
+     * the Moon's geocentric error from 3.454e4 m to 3.485e4 m, under 1%.
+     * So the z-axis assumption is not what limits this model, and giving
+     * bodies a real orientation (K3b) is needed for tesseral terms and a
+     * rotating atmosphere, not for the accuracy of the cook.
      *
      * Newton's third law, not assumed but carried through explicitly: the
      * force on j from the oblate body's field scales with mu_e (it is that

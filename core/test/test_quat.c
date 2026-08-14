@@ -9,14 +9,14 @@
 
 #include <math.h>
 
-static int close(double a, double b, double tol)
+static int approx(double a, double b, double tol)
 {
     return fabs(a - b) < tol;
 }
 
 static int vec_close(Vec3d a, Vec3d b, double tol)
 {
-    return close(a.x, b.x, tol) && close(a.y, b.y, tol) && close(a.z, b.z, tol);
+    return approx(a.x, b.x, tol) && approx(a.y, b.y, tol) && approx(a.z, b.z, tol);
 }
 
 int main(void)
@@ -63,7 +63,7 @@ int main(void)
         /* A unit quaternion's rotation preserves length - a check that does
          * not depend on trusting the formula's derivation, only on what a
          * rotation is. */
-        CHECK(close(vec3_norm(forward), vec3_norm(v), 1e-12));
+        CHECK(approx(vec3_norm(forward), vec3_norm(v), 1e-12));
     }
 
     /* quat_rotate's closed form (see quat.h) is derived assuming |q| = 1;
@@ -79,10 +79,10 @@ int main(void)
         Vec3d v = vec3(1.3, -4.2, 2.9);
 
         Vec3d not_normalized = quat_rotate(q, v);
-        CHECK(!close(vec3_norm(not_normalized), vec3_norm(v), 1e-6));
+        CHECK(!approx(vec3_norm(not_normalized), vec3_norm(v), 1e-6));
 
         Vec3d normalized = quat_rotate(quat_normalize(q), v);
-        CHECK(close(vec3_norm(normalized), vec3_norm(v), 1e-12));
+        CHECK(approx(vec3_norm(normalized), vec3_norm(v), 1e-12));
     }
 
     return TEST_RESULT();

@@ -19,7 +19,16 @@
  * silently absent - see body_rotation.c:
  *
  *   - Earth: the file itself documents an error of at least 150 arcseconds
- *     in the prime meridian from this expression alone.
+ *     in the prime meridian from this expression alone. Measured against
+ *     the true Earth Rotation Angle at J2000 (280.4606 deg), what this
+ *     model actually gives is 280.1470 deg - off by 1129 arcsec, 0.31
+ *     degrees, or about 34 km at the equator. "At least 150" is honest and
+ *     is not the number; this is. Harmless for a zonal field, where only
+ *     the pole enters and the meridian cancels, which is every use K2 and
+ *     K4 make of it - and squarely not harmless for the tesseral terms of
+ *     K5 or a rotating atmosphere in K7, which is where a better model
+ *     (IERS, or a cooked series) has to arrive before those can be
+ *     believed.
  *   - Moon: no physical libration (the periodic wobble the full IAU model
  *     corrects for, arcminute scale) - only the mean pole and mean
  *     rotation.
