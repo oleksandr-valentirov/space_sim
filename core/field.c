@@ -292,6 +292,60 @@ static Vec3d srp_total(const FieldCtx *c, const Vec3d *off)
     return sum;
 }
 
+/* The body's orientation at t, or the identity if the asset does not carry
+ * one (ROADMAP K5d).
+ *
+ * A body with no orientation channels reads back as EXACTLY the identity
+ * (core/ephemeris.h), and quat_rotate by the identity returns its argument
+ * unchanged - both cross products vanish and the sum adds a literal zero.
+ * That is what makes this change bit-for-bit invisible for the nine bodies
+ * of the fixture that carry no rotation, which is the oracle K5d is checked
+ * by. The one exception is a coordinate that is exactly -0.0, which comes
+ * back +0.0; no position in this system is.
+ *
+ * A failed lookup is reported the way every other failure here is: the
+ * sticky flag, and an orientation that changes nothing. */
+static Quat body_frame(const FieldCtx *c, int body, double t)
+{
+    Quat q;
+    if (eph_body_orientation(c->eph, body, t, &q) != CORE_OK) {
+        ((FieldCtx *)c)->failed = 1;
+        return quat_identity();
+    }
+    return q;
+}
+
+/* H_inertial = R H_body R^T, in place, for the symmetric 3x3 a harmonic
+ * Hessian is.
+ *
+ * Two passes of quat_rotate rather than one matrix product, because the
+ * rotation is a quaternion and building a matrix from it would be a second
+ * representation to keep in step with quat_rotate. Row i of H R^T is R
+ * applied to row i of H; column j of R M is R applied to column j of M. So
+ * the first pass rotates rows and the second rotates columns, and the
+ * identity quaternion leaves every entry untouched, exactly as it must.
+ *
+ * Symmetry survives because both passes apply the same rotation to a
+ * symmetric matrix; the test checks that rather than assuming it. */
+static void rotate_matrix(Quat q, double m[9])
+{
+    for (int i = 0; i < 3; i++) {
+        Vec3d row = quat_rotate(q, vec3(m[i * 3 + 0], m[i * 3 + 1],
+                                        m[i * 3 + 2]));
+        m[i * 3 + 0] = row.x;
+        m[i * 3 + 1] = row.y;
+        m[i * 3 + 2] = row.z;
+    }
+
+    for (int j = 0; j < 3; j++) {
+        Vec3d col = quat_rotate(q, vec3(m[0 * 3 + j], m[1 * 3 + j],
+                                        m[2 * 3 + j]));
+        m[0 * 3 + j] = col.x;
+        m[1 * 3 + j] = col.y;
+        m[2 * 3 + j] = col.z;
+    }
+}
+
 void accel_field(double t, Vec3d r, Vec3d v, void *ctx, Vec3d *a_out)
 {
     FieldCtx *c = (FieldCtx *)ctx;
@@ -333,10 +387,13 @@ void accel_field(double t, Vec3d r, Vec3d v, void *ctx, Vec3d *a_out)
          * harmonics_accel wants the vessel relative to the body, which is
          * -d; the pole is assumed along z, as field.h explains. */
         if (c->harmonics[i] != NULL && c->harmonics[i]->degree >= 2) {
+            Quat q = body_frame(c, c->body[i], t);
+            Vec3d local = quat_rotate(quat_conjugate(q), vec3_neg(d));
+
             Vec3d term;
-            harmonics_accel(c->harmonics[i], vec3_neg(d),
+            harmonics_accel(c->harmonics[i], local,
                             eph_body_mu(c->eph, c->body[i]), &term);
-            harmonic = vec3_add(harmonic, term);
+            harmonic = vec3_add(harmonic, quat_rotate(q, term));
         }
     }
 
@@ -440,8 +497,12 @@ void field_gradient(double t, Vec3d r, Vec3d v, const FieldCtx *ctx,
          * back symmetric to the bit, so taking its lower half would add the
          * same numbers in a different order. */
         if (c->harmonics[i] != NULL && c->harmonics[i]->degree >= 2) {
+            Quat q = body_frame(c, c->body[i], t);
+            Vec3d local = quat_rotate(quat_conjugate(q), vec3_neg(d));
+
             double hg[9];
-            harmonics_gradient(c->harmonics[i], vec3_neg(d), mu, hg);
+            harmonics_gradient(c->harmonics[i], local, mu, hg);
+            rotate_matrix(q, hg);
 
             g[0] += hg[0];
             g[4] += hg[4];

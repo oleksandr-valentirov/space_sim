@@ -56,6 +56,8 @@ static const EphBodyInfo ALL_BODIES[] = {
 #define SPAN_DAYS 200.0
 
 static const char *PATH = "build/test_field.eph";
+/* A second cook of the same system with no orientation at all (K5d). */
+static const char *PATH_STILL = "build/test_field_still.eph";
 
 static RefSample reference[N_ALL][MAX_SAMPLES];
 static NBodySystem system_config;
@@ -482,9 +484,24 @@ int main(void)
         accel_field(t_begin, r, vec3_zero(), &plain, &a_plain);
         accel_field(t_begin, r, vec3_zero(), &oblate, &a_oblate);
 
+        /* In the body's own frame, which is where a harmonic field lives
+         * (ROADMAP K5d). Before that step this line passed the inertial
+         * vector straight in, because the pole was assumed to lie along the
+         * frame's z axis; now the oracle has to do what field.c does, or it
+         * would be testing the old contract and passing by luck.
+         *
+         * For the Earth the two differ by very little - its pole is along z
+         * to within the precession since J2000 - and that is exactly why
+         * this has to be written out rather than left implicit. For the
+         * Moon, whose pole sits 23.46 degrees off z, the same omission
+         * would be a fifth of a turn. */
+        Quat q;
+        CHECK(eph_body_orientation(eph, EARTH, t_begin, &q) == CORE_OK);
+        Vec3d local = quat_rotate(quat_conjugate(q), vec3_sub(r, earth.r));
+
         Vec3d expected;
-        harmonics_accel(j2, vec3_sub(r, earth.r), eph_body_mu(eph, EARTH),
-                        &expected);
+        harmonics_accel(j2, local, eph_body_mu(eph, EARTH), &expected);
+        expected = quat_rotate(q, expected);
 
         /* Bit-exact against the operation field.c actually performs - the
          * point-mass sum plus this vector, added once at the end.
@@ -1002,6 +1019,80 @@ int main(void)
         accel_field(t_begin, vec3(1.0e9, 0.0, 0.0), vec3_zero(), &field, &a);
         CHECK(field.failed == 1);
         CHECK(vec3_norm(a) > 0.0);
+    }
+
+    /* ---- A body whose asset says nothing about its rotation (K5d) ------ *
+     *
+     * The oracle the step was planned around, and it exists because of K3b:
+     * a body with no orientation channels reads back as EXACTLY the
+     * identity quaternion, and rotating by the identity is the identity in
+     * floating point too - both cross products in quat_rotate vanish and
+     * the sum adds a literal zero. So for such a body the harmonic term
+     * must be bit-for-bit what it was before the frame change, which is
+     * what this checks: the field's answer against a direct, unrotated
+     * harmonics_accel.
+     *
+     * Cooked as a second asset rather than faked, so that "the asset says
+     * nothing" is the asset's own doing. */
+    {
+        EphBuildConfig still = build;
+        still.orient_degree = 0;
+
+        EphBuildReport rep;
+        memset(&rep, 0, sizeof rep);
+        CHECK(eph_build(&system_config, initial, ALL_BODIES, &still,
+                        PATH_STILL, &rep) == CORE_OK);
+        CHECK(rep.max_orient_error_rad == 0.0);
+
+        EphemerisCtx *frozen = NULL;
+        CHECK(eph_load(PATH_STILL, &frozen) == CORE_OK);
+        if (frozen == NULL) {
+            return EXIT_FAILURE;
+        }
+
+        Quat q;
+        CHECK(eph_body_orientation(frozen, EARTH, t_begin, &q) == CORE_OK);
+        CHECK(q.w == 1.0 && q.x == 0.0 && q.y == 0.0 && q.z == 0.0);
+
+        FieldCtx with, without;
+        CHECK(field_all_bodies(frozen, &with) == CORE_OK);
+        CHECK(field_all_bodies(frozen, &without) == CORE_OK);
+        field_clear_harmonics(&without);
+
+        State earth_at;
+        CHECK(eph_body_state(frozen, EARTH, t_begin, &earth_at) == CORE_OK);
+        Vec3d r = vec3(earth_at.r.x + 6.9e6, earth_at.r.y + 1.1e6,
+                       earth_at.r.z + 2.3e6);
+
+        Vec3d a_with, a_without;
+        accel_field(t_begin, r, vec3_zero(), &with, &a_with);
+        accel_field(t_begin, r, vec3_zero(), &without, &a_without);
+
+        Vec3d direct;
+        harmonics_accel(eph_body_harmonics(frozen, EARTH),
+                        vec3_sub(r, earth_at.r), eph_body_mu(frozen, EARTH),
+                        &direct);
+
+        Vec3d recomposed = vec3_add(a_without, direct);
+        CHECK_BITS_EQ(a_with.x, recomposed.x);
+        CHECK_BITS_EQ(a_with.y, recomposed.y);
+        CHECK_BITS_EQ(a_with.z, recomposed.z);
+
+        /* And the Hessian, which travels through rotate_matrix rather than
+         * quat_rotate - the same claim, one function further along. */
+        double gf[9], gd[9];
+        field_gradient(t_begin, r, vec3_zero(), &with, gf, NULL);
+        harmonics_gradient(eph_body_harmonics(frozen, EARTH),
+                           vec3_sub(r, earth_at.r), eph_body_mu(frozen, EARTH),
+                           gd);
+        double gb[9];
+        field_gradient(t_begin, r, vec3_zero(), &without, gb, NULL);
+        for (int k = 0; k < 9; k++) {
+            CHECK_BITS_EQ(gf[k], gb[k] + gd[k]);
+        }
+
+        eph_free(frozen);
+        remove(PATH_STILL);
     }
 
     eph_free(eph);

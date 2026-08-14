@@ -196,13 +196,29 @@ void field_set_density_scale(FieldCtx *ctx, double scale);
  * does sunlight; drag has, and that dependence is why PROJECT.md section 4
  * chose DOP853 over RKN in the first place.
  *
- * FRAME: harmonics are applied with each body's pole assumed to lie along
- * the ephemeris frame's own z axis, exactly as the cooker does (see
- * core/offline/nbody.c) and for the same reason - K3a measured what that
- * costs and it is under 1% of the Moon's error. For a zonal field that is
- * the whole story, since only the pole enters; the prime meridian, whose
- * error is much larger (core/offline/body_rotation.h), cancels. A tesseral
- * field is a different matter and waits for K5.
+ * FRAME: harmonics are evaluated in the BODY'S OWN FRAME since K5d. The
+ * vessel's position is rotated in with the asset's orientation quaternion
+ * and the resulting acceleration rotated back; the Hessian goes through the
+ * same rotation on both sides.
+ *
+ * Until K5d the pole was assumed to lie along the ephemeris frame's z axis,
+ * which K3a had measured as costing under 1% of the Moon's error - true, and
+ * true only for a zonal field, where the meridian cancels and just the pole
+ * enters. It stops being true twice over with a lunar model: the Moon's pole
+ * is 23.46 degrees off z in this frame (measured from the asset), and
+ * tesseral terms notice the meridian. K5c measured what a wrong frame costs
+ * the mascons - ten arcminutes is about 1% of them - so 23 degrees is not a
+ * small correction, it is the difference between a field and noise.
+ *
+ * For the Earth the change is small but not nothing: its pole is along z to
+ * within the precession accumulated since J2000, and using the real one
+ * moves the J2 term by 6.4e-7 of itself.
+ *
+ * THE COOKER STILL ASSUMES z (core/offline/nbody.c). That is a deliberate
+ * inconsistency with a bound rather than an oversight: it applies only to
+ * Earth's degree-2 field, where the difference is the number above, and the
+ * cooker cannot change without recooking the asset - which is K5e's job,
+ * where the lunar model arrives and the recook happens once for both.
  *
  * Drag does NOT make that assumption, and is the first thing here that does
  * not: the air co-rotates with the body, so the wind comes from the body's
