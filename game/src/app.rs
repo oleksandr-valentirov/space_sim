@@ -33,6 +33,7 @@ use crate::clock::Stall;
 use crate::hud;
 use crate::leg::restart_at;
 use crate::mission;
+use crate::node;
 use crate::plan::Manoeuvre;
 use crate::planner::{Planner, Preview, Request};
 use crate::save::{self, Save};
@@ -110,6 +111,17 @@ struct State {
     /// Остання відповідь світу на план — те, що панель показує замість
     /// власного припущення про успіх (правило 8).
     notice: Option<String>,
+
+    /// Вузли чернетки на екрані, пораховані минулим кадром (U4b).
+    ///
+    /// Саме минулим: подія миші приходить між кадрами, а вузли залежать від
+    /// камери й від того, що вже пораховано. Кадр — це і є та мить, коли
+    /// гравець їх бачив.
+    nodes: Vec<node::NodeOnScreen>,
+    /// Схоплена ручка, доки кнопку тримають.
+    grab: Option<node::Grab>,
+    /// Чернетку змінили тягненням — треба попросити прев'ю.
+    draft_changed: bool,
 }
 
 /// Світ за опціями — спільне для вікна й для знімка.
@@ -231,8 +243,20 @@ impl ApplicationHandler for App {
             } => {
                 // Натискання, що почалося в панелі, світові не належить —
                 // інакше кнопка «пауза» заодно почала б обертати камеру.
-                state.dragging = button_state == ElementState::Pressed && !consumed;
-                if !state.dragging {
+                let pressed = button_state == ElementState::Pressed && !consumed;
+
+                // Спершу ручка вузла, і лише потім камера: тягнення за
+                // ручку — це правка плану, а не погляд на нього (U4b).
+                state.grab = None;
+                if pressed {
+                    if let Some(cursor) = state.cursor {
+                        let at = [cursor.0 as f32, cursor.1 as f32];
+                        state.grab = node::pick_handle(&state.nodes, at);
+                    }
+                }
+
+                state.dragging = pressed && state.grab.is_none();
+                if button_state != ElementState::Pressed {
                     state.cursor = None;
                 }
             }
@@ -241,7 +265,18 @@ impl ApplicationHandler for App {
 
             WindowEvent::CursorMoved { position, .. } => {
                 let now = (position.x, position.y);
-                if state.dragging {
+                if let (Some(grab), Some(was)) = (state.grab, state.cursor) {
+                    // Тягнення за ручку править рівно одну компоненту Δv
+                    // схопленої осі — решта не рухається за побудовою (U4b).
+                    let drag = [(now.0 - was.0) as f32, (now.1 - was.1) as f32];
+                    if let Some(node) = state.nodes.iter().find(|n| n.index == grab.node) {
+                        let delta = node::drag_to_delta(node, grab.axis, drag);
+                        if let Some(manoeuvre) = state.draft.manoeuvres.get_mut(grab.node) {
+                            manoeuvre.dv[grab.axis] += delta;
+                            state.draft_changed = true;
+                        }
+                    }
+                } else if state.dragging {
                     if let Some(was) = state.cursor {
                         state.orbit.drag(now.0 - was.0, now.1 - was.1);
                     }
@@ -338,6 +373,9 @@ impl State {
             cursor: None,
             draft: hud::PlanDraft::default(),
             notice: None,
+            nodes: Vec::new(),
+            grab: None,
+            draft_changed: false,
         })
     }
 
@@ -591,6 +629,28 @@ impl State {
         }
         for action in plan_actions {
             self.apply_plan_action(action, &snapshot);
+        }
+
+        // Вузли для наступного кадру: подія миші прийде між кадрами, а
+        // порівнювати їй треба з тим, що гравець бачив (U4b).
+        self.nodes = match snapshot.vessels.first() {
+            Some(vessel) => node::nodes_on_screen(
+                &self.orbit.camera(),
+                engine::frame::FOV_Y,
+                self.target.width(),
+                self.target.height(),
+                vessel,
+                &self.draft.manoeuvres,
+            ),
+            None => Vec::new(),
+        };
+
+        // Тягнення за ручку — така сама правка, як поле в панелі, тож і
+        // відповідь та сама: запит прев'ю (U4a). Один на кадр, а не на
+        // кожну подію миші: скасування між ланками вже задумано під це (J5).
+        if self.draft_changed {
+            self.draft_changed = false;
+            self.apply_plan_action(hud::PlanAction::Preview(self.draft.plan()), &snapshot);
         }
 
         self.gpu.queue.submit([encoder.finish()]);

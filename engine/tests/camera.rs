@@ -9,6 +9,7 @@
 //!      найсильніше формулювання: не «похибка мала», а «відстані немає
 //!      в рівнянні».
 
+use engine::camera::Camera;
 use engine::camera_probe::{sweep_at, ASTRONOMICAL_UNIT};
 use engine::gpu::Gpu;
 
@@ -89,4 +90,37 @@ fn camera_relative_behaves_the_same_eight_orders_apart() {
              відстань до початку координат не має входити в результат"
         );
     }
+}
+
+/// Проєкція в екран: центр екрана, боки й те, що позаду (U4b).
+///
+/// Три твердження, і третє найважливіше: точка позаду камери **не має**
+/// координати на екрані. Без нього піккінг ловив би вузли з протилежного боку
+/// планети — там формула дає цілком правдоподібний піксель.
+#[test]
+fn projecting_to_the_screen_puts_things_where_they_are_seen() {
+    let camera = Camera::look_at([0.0, 0.0, 1000.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+    let fov = std::f64::consts::PI / 3.0;
+    let (w, h) = (800, 600);
+
+    // Точка, на яку камера дивиться, — центр кадру.
+    let centre = camera
+        .to_screen(fov, w, h, [0.0, 0.0, 0.0])
+        .expect("попереду");
+    assert!((centre[0] - 400.0).abs() < 0.5, "x = {}", centre[0]);
+    assert!((centre[1] - 300.0).abs() < 0.5, "y = {}", centre[1]);
+
+    // Зсув угору в світі — це менший `y` на екрані: вісь екрана дивиться вниз.
+    let higher = camera
+        .to_screen(fov, w, h, [0.0, 100.0, 0.0])
+        .expect("попереду");
+    assert!(
+        higher[1] < centre[1],
+        "точка вище мала дати менший y: {} проти {}",
+        higher[1],
+        centre[1]
+    );
+
+    // А те, що позаду, не має екранної координати взагалі.
+    assert!(camera.to_screen(fov, w, h, [0.0, 0.0, 2000.0]).is_none());
 }

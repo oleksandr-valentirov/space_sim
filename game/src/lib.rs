@@ -37,6 +37,7 @@ pub mod clock;
 pub mod hud;
 pub mod leg;
 pub mod mission;
+pub mod node;
 pub mod plan;
 pub mod planner;
 pub mod save;
