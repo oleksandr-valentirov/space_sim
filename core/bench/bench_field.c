@@ -41,6 +41,7 @@
 #include "accel.h"
 #include "ephemeris.h"
 #include "field.h"
+#include "harmonics.h"
 #include "integrator.h"
 
 #include <stdio.h>
@@ -79,6 +80,10 @@ static const Vec3d OFFSET_V = { 0.0, 7.100e3, 3.050e3 };
  * needed to separate terms that differ by tens of per cent. */
 #define BUDGET_S 0.5
 
+/* The degree K5 is aiming the Moon at (PROJECT.md section 4: GRAIL, trimmed
+ * near 50). Nothing computes at that degree yet - see harmonics_scaling. */
+#define K5_DEGREE 50
+
 static double now_s(void)
 {
     struct timespec ts;
@@ -113,6 +118,95 @@ static double time_field(FieldCtx *field, const State *arc, long *calls_out,
     *calls_out = calls;
     *checksum_out = checksum;
     return elapsed * 1e9 / (double)calls;
+}
+
+/* Terms of degree 2 and up - what the recursion walks. Degree 0 is the point
+ * mass and degree 1 vanishes in a centre-of-mass frame (core/harmonics.h). */
+static int harmonics_terms(int degree)
+{
+    return (degree + 1) * (degree + 2) / 2 - 3;
+}
+
+/* How the Pines recursion scales with degree, and what that says about K5.
+ *
+ * The measurement above found harmonics nearly free (+3% for the Earth's J2)
+ * and named the reason: the cost is the ephemeris, not the recursion. That
+ * conclusion has a range of validity, and K5 is outside it - a Moon at
+ * roughly degree 50 walks 1323 terms rather than three, and the term count is
+ * quadratic in degree while everything else in the model is linear in the
+ * number of bodies.
+ *
+ * So the slope is measured here rather than left to be discovered by K5. It
+ * cannot be measured AT degree 50: HARMONICS_MAX_DEGREE is 8 until K5
+ * rewrites the recursion normalised, and the rewrite may move the constant.
+ * What is measured is the shape - cost per term - and the extrapolation is
+ * printed as an extrapolation, in the one place that will produce the real
+ * number the moment the ceiling rises. */
+static void harmonics_scaling(void)
+{
+    static HarmonicsField f;
+    Vec3d r = vec3(4.1e6, 3.2e6, 2.7e6);
+    double mu = 3.986004418e14;
+    double first_ns = 0.0;
+    double last_ns = 0.0;
+    int degree;
+
+    f.re = 6378136.3;
+    for (int i = 0; i < HARMONICS_MAX_COEFFS; i++) {
+        /* Realistic magnitudes; the cost is in the recursion's shape and not
+         * in what the coefficients say. */
+        f.c[i] = 1e-6 / (double)(i + 1);
+        f.s[i] = 5e-7 / (double)(i + 2);
+    }
+
+    printf("\n  Pines recursion by degree (ceiling is %d until K5):\n",
+           HARMONICS_MAX_DEGREE);
+
+    for (degree = 2; degree <= HARMONICS_MAX_DEGREE; degree++) {
+        Vec3d sink = vec3(0.0, 0.0, 0.0);
+        Vec3d probe = r;
+        long calls = 0;
+        double elapsed = 0.0;
+        double start = now_s();
+        double ns;
+
+        f.degree = degree;
+        while (elapsed < BUDGET_S) {
+            for (int i = 0; i < SAMPLES; i++) {
+                Vec3d a;
+                /* Moving the point keeps the call from being hoisted. */
+                probe.x += 1e-9;
+                harmonics_accel(&f, probe, mu, &a);
+                sink = vec3_add(sink, a);
+            }
+            calls += SAMPLES;
+            elapsed = now_s() - start;
+        }
+        ns = elapsed * 1e9 / (double)calls;
+
+        if (degree == 2) {
+            first_ns = ns;
+        }
+        last_ns = ns;
+
+        printf("    degree %2d  terms %4d  %7.1f ns/call  (sink %.3e)\n",
+               degree, harmonics_terms(degree), ns, sink.x);
+    }
+
+    {
+        int first_terms = harmonics_terms(2);
+        int last_terms = harmonics_terms(HARMONICS_MAX_DEGREE);
+        double slope = (last_ns - first_ns)
+                       / (double)(last_terms - first_terms);
+        double base = first_ns - slope * (double)first_terms;
+        int k5_terms = harmonics_terms(K5_DEGREE);
+
+        printf("    fit %.2f ns/term + %.1f ns;"
+               " EXTRAPOLATED to degree %d (%d terms): %.0f ns/call\n",
+               slope, base, K5_DEGREE, k5_terms,
+               base + slope * (double)k5_terms);
+        printf("    not a measurement - see the comment above this table\n");
+    }
 }
 
 static void report(const char *label, double ns, double base, long calls,
@@ -292,6 +386,8 @@ int main(void)
     printf("        %ld calls, checksum %.17g\n", two_calls, two_checksum);
     printf("  the full model costs %.0f times that per evaluation\n",
            ns_full / ns_two);
+
+    harmonics_scaling();
 
     if (field.failed) {
         fprintf(stderr, "bench_field: the field reported a failure\n");
