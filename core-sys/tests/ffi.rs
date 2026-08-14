@@ -282,11 +282,14 @@ fn propagation_matches_the_c_oracle_bit_for_bit() {
         vessel.v.y += VESSEL_VY;
         vessel.v.z += VESSEL_VZ;
 
+        // density_scale = 1 дзеркалить оракул: він теж будує конфігурацію з
+        // одиницею, і саме тому ці два прогони можна порівнювати бітово.
         let cfg = PropConfig {
             integrator: CORE_INTEG_DOP853,
             tol_m: 1e-2,
             h_max_s: 1800.0,
             max_steps: 0,
+            density_scale: 1.0,
         };
 
         let mut p: *mut PropagatorCtx = std::ptr::null_mut();

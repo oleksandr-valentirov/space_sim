@@ -116,6 +116,8 @@ pub type CoreEventKind = c_int;
 pub const CORE_EVENT_PERIAPSIS: CoreEventKind = 0;
 pub const CORE_EVENT_APOAPSIS: CoreEventKind = 1;
 pub const CORE_EVENT_DISTANCE: CoreEventKind = 2;
+/// Висота над поверхнею тіла — над середнім радіусом з ассета (ROADMAP K7c).
+pub const CORE_EVENT_ALTITUDE: CoreEventKind = 3;
 
 /// Скільки подій `prop_run` бере за раз (`PROP_MAX_EVENTS`).
 pub const PROP_MAX_EVENTS: usize = 8;
@@ -133,6 +135,10 @@ pub struct PropConfig {
     pub tol_m: f64,
     pub h_max_s: f64,
     pub max_steps: c_long,
+    /// Множник густини повітря (ROADMAP K7c). **Мусить бути додатним**:
+    /// `prop_create` відмовляє на нулі, а не читає його як одиницю, бо
+    /// незаданe поле — це та сама помилка, що впала на Windows у K7b.
+    pub density_scale: f64,
 }
 
 /// `CoreEvent` з `core/prop.h`: подія, описана даними.

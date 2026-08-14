@@ -215,6 +215,20 @@ pub struct PropConfig {
     pub h_max_s: f64,
     /// Ліміт кроків на **один виклик** `run`. 0 — типовий ліміт ядра.
     pub max_steps: i64,
+    /// Множник густини повітря для всіх апаратів цього пропагатора
+    /// (ROADMAP K7c). Одиниця — профіль, який несе ассет.
+    ///
+    /// Тут, а не у [`VesselParams`], бо описує повітря, а не корабель: два
+    /// апарати на одній ланці летять крізь ту саму атмосферу. Стала на ланку,
+    /// а не функція часу: сонячний цикл — синусоїда з періодом в одинадцять
+    /// років, `libm` у циклі інтегрування заборонений, і де наступний максимум
+    /// — все одно ніхто не скаже. Тож множник рахує гра (майбутня галочка
+    /// «космічна погода»), а ядро його лише застосовує.
+    ///
+    /// **Нуль неприпустимий** — `new` поверне [`CoreError::InvalidArg`].
+    /// Ядро свідомо не читає його як одиницю: незаданe поле має падати гучно
+    /// (`core/prop.h`).
+    pub density_scale: f64,
 }
 
 impl Default for PropConfig {
@@ -226,6 +240,9 @@ impl Default for PropConfig {
             tol_m: 1.0,
             h_max_s: 3600.0,
             max_steps: 0,
+            // Профіль ассета як він є. Множник з'явиться тоді, коли гра
+            // дасть гравцеві вимикач сонячної активності.
+            density_scale: 1.0,
         }
     }
 }
@@ -241,9 +258,17 @@ pub enum Event {
     Periapsis { body: i32 },
     /// Найдальша.
     Apoapsis { body: i32 },
-    /// Задана відстань від **центра** тіла, в обидва боки. Не висота: в ассеті
-    /// лежать ім'я і `mu`, радіуса немає (`core/prop.h`).
+    /// Задана відстань від **центра** тіла, в обидва боки. Сфера впливу або
+    /// кільце зустрічі — це саме відстань від центра, до поверхні вона
+    /// стосунку не має.
     Distance { body: i32, metres: f64 },
+    /// Задана висота над **поверхнею** тіла, в обидва боки (ROADMAP K7c).
+    ///
+    /// Поверхня — середній радіус з ассета, тобто та сама сфера, від якої
+    /// міряє висоти атмосфера. Тіло, розміру якого ассет не називає, дає
+    /// [`CoreError::InvalidArg`] при озброєнні: радіус нуль мовчки зробив би
+    /// із цього [`Event::Distance`]. Нуль як висота дозволений — це поверхня.
+    Altitude { body: i32, metres: f64 },
 }
 
 impl Event {
@@ -261,6 +286,11 @@ impl Event {
             },
             Event::Distance { body, metres } => core_sys::CoreEvent {
                 kind: core_sys::CORE_EVENT_DISTANCE,
+                body_id: body,
+                param: metres,
+            },
+            Event::Altitude { body, metres } => core_sys::CoreEvent {
+                kind: core_sys::CORE_EVENT_ALTITUDE,
                 body_id: body,
                 param: metres,
             },
@@ -433,6 +463,7 @@ impl Propagator {
             tol_m: cfg.tol_m,
             h_max_s: cfg.h_max_s,
             max_steps: cfg.max_steps as std::ffi::c_long,
+            density_scale: cfg.density_scale,
         };
 
         let mut ctx: *mut core_sys::PropagatorCtx = std::ptr::null_mut();

@@ -212,6 +212,7 @@ fn config() -> PropConfig {
         tol_m: 1e-2,
         h_max_s: 1800.0,
         max_steps: 0,
+        density_scale: 1.0,
     }
 }
 
@@ -266,6 +267,7 @@ fn propagation_matches_the_raw_call_bit_for_bit() {
             tol_m: 1e-2,
             h_max_s: 1800.0,
             max_steps: 0,
+            density_scale: 1.0,
         };
         let mut raw_eph: *mut core_sys::EphemerisCtx = std::ptr::null_mut();
         let path = std::ffi::CString::new(fixture().to_str().unwrap()).unwrap();
@@ -378,6 +380,108 @@ fn events_come_back_as_events() {
     let dz = run.final_state.r.z - earth.r.z;
     let r = (dx * dx + dy * dy + dz * dz).sqrt();
     assert!(r < VESSEL_DX, "перицентр має бути ближче за старт: {r} м");
+}
+
+/// Висота доходить як висота, а не як відстань (ROADMAP K7c).
+///
+/// Оракул тут — сама пара подій, без жодного числа про Землю в тесті. Та
+/// сама цифра, подана як висота і як відстань, зупиняє апарат на двох різних
+/// радіусах, і **різниця між ними і є радіус тіла**. Тесту лишається сказати,
+/// що це справді радіус Землі — з точністю до сотні кілометрів, тобто на
+/// рівні факту про світ, а не на рівні числа з ассета.
+///
+/// Якби варіант зліпився з `Event::Distance`, різниця була б нулем.
+#[test]
+fn altitude_is_measured_from_the_surface() {
+    let eph = Arc::new(load());
+    let start = vessel(&eph);
+    let mut prop = Propagator::new(eph.clone(), config()).unwrap();
+
+    const METRES: f64 = 30_000.0e3;
+
+    let radius_at = |run: &core_rs::Run| {
+        let earth = eph.body_state(EARTH, run.final_state.t).unwrap();
+        let dx = run.final_state.r.x - earth.r.x;
+        let dy = run.final_state.r.y - earth.r.y;
+        let dz = run.final_state.r.z - earth.r.z;
+        (dx * dx + dy * dy + dz * dz).sqrt()
+    };
+
+    let mut step = 0.0;
+    let high = prop
+        .run(
+            &start,
+            None,
+            VESSEL_T0 + 4.0 * DAY,
+            &[Event::Altitude {
+                body: EARTH,
+                metres: METRES,
+            }],
+            &mut [],
+            &mut step,
+        )
+        .expect("прогін має пройти");
+    assert_eq!(high.stop, Stop::Event(0));
+
+    let mut step = 0.0;
+    let low = prop
+        .run(
+            &start,
+            None,
+            VESSEL_T0 + 4.0 * DAY,
+            &[Event::Distance {
+                body: EARTH,
+                metres: METRES,
+            }],
+            &mut [],
+            &mut step,
+        )
+        .expect("прогін має пройти");
+    assert_eq!(low.stop, Stop::Event(0));
+
+    // Висоту перетнуто раніше: вона лежить далі від центра.
+    assert!(high.final_state.t < low.final_state.t);
+
+    let radius = radius_at(&high) - radius_at(&low);
+    assert!(
+        radius > 6.3e6 && radius < 6.4e6,
+        "різниця подій має бути радіусом Землі, а вийшло {radius} м"
+    );
+}
+
+/// Від'ємна висота — це помилка знака у викликача, і межа каже про це.
+#[test]
+fn a_negative_altitude_is_refused() {
+    let eph = Arc::new(load());
+    let start = vessel(&eph);
+    let mut prop = Propagator::new(eph, config()).unwrap();
+
+    let mut step = 0.0;
+    let err = prop
+        .run(
+            &start,
+            None,
+            VESSEL_T0 + DAY,
+            &[Event::Altitude {
+                body: EARTH,
+                metres: -1.0,
+            }],
+            &mut [],
+            &mut step,
+        )
+        .expect_err("від'ємна висота має бути відхилена");
+    assert!(matches!(err, CoreError::InvalidArg), "{err:?}");
+}
+
+/// Нульовий множник густини не читається як одиниця (ROADMAP K7c).
+#[test]
+fn a_zero_density_scale_is_refused() {
+    let eph = Arc::new(load());
+    let mut cfg = config();
+    cfg.density_scale = 0.0;
+
+    let err = Propagator::new(eph, cfg).expect_err("нуль має бути відхилений");
+    assert!(matches!(err, CoreError::InvalidArg), "{err:?}");
 }
 
 /// Прогін, порізаний буфером, — та сама траєкторія (CLAUDE.md, інваріант 5),
