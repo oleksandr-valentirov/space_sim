@@ -81,9 +81,43 @@
 
 /* Every major body, in the order and with the parameters cook_fixture.c uses.
  * Diverging from it here would measure this file rather than the fixture. */
-static const char *BODIES[] = {
-    "sun", "mercury", "venus", "earth", "moon",
-    "mars_bary", "jupiter_bary", "saturn_bary", "uranus_bary", "neptune_bary",
+/* Radii and the solar flux are cited, never invented - the rule
+ * data/horizons/README.md states and K2 followed for J2. Each number is the
+ * volumetric mean radius from that body's own already-committed Horizons
+ * page, in metres:
+ *
+ *   sun 695700 km (also the IAU 2015 solar radius), mercury 2439.4,
+ *   venus 6051.84, earth 6371.01, moon 1737.53, mars 3389.92,
+ *   jupiter 69911, saturn 58232, uranus 25362, neptune 24624.
+ *
+ * Mean rather than equatorial, deliberately: this radius draws a shadow, and
+ * a shadow is cast by the whole disc. It is a different number from the
+ * reference radius of the harmonic field below (6378137 m, equatorial), which
+ * is a scale in an expansion rather than a size, and the two must not be
+ * confused into one field.
+ *
+ * The outer four bodies are barycentres, so this is the planet's radius
+ * standing in for the system's. The error is the planet's offset from its own
+ * barycentre - largest for Jupiter, and there it is under a thousandth of the
+ * radius itself.
+ *
+ * The Sun's flux is the "Solar constant (1 AU)" line of obj_sun.txt, 1367.6
+ * W/m^2. Modern total solar irradiance measurements put it near 1361, and
+ * PROJECT.md section 7 quotes that figure for exposure; the half a per cent
+ * between them is far inside the uncertainty of Cr, and citing the file we
+ * committed beats quoting a better number from memory. When the page is
+ * refreshed the number follows it. */
+static const EphBodyInfo BODIES[] = {
+    { "sun",          6.957e8,   1367.6 },
+    { "mercury",      2.4394e6,  0.0 },
+    { "venus",        6.05184e6, 0.0 },
+    { "earth",        6.37101e6, 0.0 },
+    { "moon",         1.73753e6, 0.0 },
+    { "mars_bary",    3.38992e6, 0.0 },
+    { "jupiter_bary", 6.9911e7,  0.0 },
+    { "saturn_bary",  5.8232e7,  0.0 },
+    { "uranus_bary",  2.5362e7,  0.0 },
+    { "neptune_bary", 2.4624e7,  0.0 },
 };
 #define N_BODIES (sizeof BODIES / sizeof BODIES[0])
 
@@ -138,7 +172,7 @@ static int load_fixtures(void)
     char path[128];
 
     for (size_t i = 0; i < N_BODIES; i++) {
-        snprintf(path, sizeof path, "data/horizons/vec_%s.csv", BODIES[i]);
+        snprintf(path, sizeof path, "data/horizons/vec_%s.csv", BODIES[i].name);
         size_t n = 0;
         if (refdata_load_vectors(path, reference[i], MAX_SAMPLES, &n)
             != CORE_OK) {
@@ -153,10 +187,10 @@ static int load_fixtures(void)
             return 0;
         }
 
-        if (strcmp(BODIES[i], "earth") == 0) {
+        if (strcmp(BODIES[i].name, "earth") == 0) {
             earth_idx = (int)i;
         }
-        if (strcmp(BODIES[i], "moon") == 0) {
+        if (strcmp(BODIES[i].name, "moon") == 0) {
             moon_idx = (int)i;
         }
     }
@@ -188,9 +222,9 @@ static int fill_system(NBodySystem *sys)
     sys->n = N_BODIES;
 
     for (size_t i = 0; i < N_BODIES; i++) {
-        sys->mu[i] = refdata_gm_of(gm_table, n_gm, BODIES[i]);
+        sys->mu[i] = refdata_gm_of(gm_table, n_gm, BODIES[i].name);
         if (!(sys->mu[i] > 0.0)) {
-            fprintf(stderr, "ex_ephspan: no GM for %s\n", BODIES[i]);
+            fprintf(stderr, "ex_ephspan: no GM for %s\n", BODIES[i].name);
             return 0;
         }
     }

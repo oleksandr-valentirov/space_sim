@@ -93,6 +93,7 @@ fn a_preview_is_bit_identical_to_the_flight_that_follows() {
         from: restart.state,
         step: restart.step,
         plan: plan.clone(),
+        params: None,
         horizon_end: vessel.horizon_end,
     });
 
@@ -245,6 +246,7 @@ fn starting_a_preview_from_the_wrong_step_gives_a_different_line() {
             from: restart.state,
             step,
             plan: plan.clone(),
+            params: None,
             horizon_end: vessel.horizon_end,
         });
         let mut got = None;
@@ -308,6 +310,7 @@ fn only_the_latest_request_is_answered() {
             from: restart.state,
             step: restart.step,
             plan,
+            params: None,
             horizon_end: vessel.horizon_end,
         });
     }

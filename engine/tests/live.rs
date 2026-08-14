@@ -50,7 +50,7 @@ fn the_live_prediction_tracks_the_reference_and_then_leaves_it() {
 
     for sample in reference.iter().skip(1) {
         let run = prop
-            .run(&state, sample.t, &[], &mut [], &mut step)
+            .run(&state, None, sample.t, &[], &mut [], &mut step)
             .expect("прогін у межах ассета");
         state = run.final_state;
 
@@ -190,7 +190,7 @@ fn a_prediction_and_a_flight_are_the_same_trajectory() {
     let mut flight = Propagator::new(eph.clone(), cfg).expect("пропагатор");
     let mut flight_step = 0.0;
     let flown = flight
-        .run(&start, t_end, &[], &mut [], &mut flight_step)
+        .run(&start, None, t_end, &[], &mut [], &mut flight_step)
         .expect("політ");
 
     // «Прогноз»: ланками по буферу, як його рахуватиме планер.
@@ -202,7 +202,7 @@ fn a_prediction_and_a_flight_are_the_same_trajectory() {
 
     loop {
         let run = predict
-            .run(&state, t_end, &[], &mut buffer, &mut predict_step)
+            .run(&state, None, t_end, &[], &mut buffer, &mut predict_step)
             .expect("ланка прогнозу");
         state = run.final_state;
         legs += 1;

@@ -47,12 +47,20 @@
  *    skipped cells of a porkchop grid (core/planning/porkchop.h) - an expected
  *    outcome reported as data.
  *
- * What is deliberately not here yet: VesselParams (mass, area, cr, cd) from
- * the section 5 sketch. Nothing reads them until SRP and drag arrive at M3.5,
- * and a struct whose every field is ignored is worse than its absence - the
- * caller fills it in, nothing happens, and nothing says so. A vessel is a
- * massless test particle here, which is not an approximation waiting to be
- * improved but the split the architecture rests on (core/field.h). */
+ * VesselParams (core/core.h) arrived with K6b and travels per run rather than
+ * per context, exactly as the section 5 sketch had it. Two reasons, and the
+ * second is the one that decides:
+ *
+ *   - mass changes when fuel burns, and a manoeuvre is a leg boundary, so a
+ *     per-context vessel would mean rebuilding the propagator at every burn;
+ *   - the game owns ONE propagator and flies every vessel through it
+ *     (game/src/world.rs). A vessel in the configuration would make that a
+ *     single spacecraft with several trajectories.
+ *
+ * It may be NULL, and a NULL vessel is a massless test particle in the field
+ * of the bodies - which is not an approximation waiting to be improved but
+ * the split the architecture rests on (core/field.h) for everything except
+ * sunlight. That path is bit-for-bit what this file did before K6b. */
 
 #ifndef CORE_PROP_H
 #define CORE_PROP_H
@@ -215,10 +223,16 @@ void       prop_free(PropagatorCtx *p);
  * When an event fires, the sample past it is replaced by the event state, so
  * the polyline in out_states ends exactly where the run ended.
  *
+ * vessel says how radiation pressure pushes on this spacecraft and may be
+ * NULL; see the head of this file. It is applied for the whole run, so a
+ * burn that changes the mass belongs at a leg boundary, which is where the
+ * plan already puts it.
+ *
  * out_count, out_final, out_stop, out_event and in_out_step are all required;
  * out_states is the only optional one, and events may be NULL with
  * n_events = 0. */
-CoreResult prop_run(PropagatorCtx *p, const State *initial, double t_end,
+CoreResult prop_run(PropagatorCtx *p, const State *initial,
+                    const VesselParams *vessel, double t_end,
                     const CoreEvent *events, size_t n_events,
                     State *out_states, size_t out_cap, size_t *out_count,
                     State *out_final, CoreStopReason *out_stop, int *out_event,
@@ -253,7 +267,8 @@ CoreResult prop_run(PropagatorCtx *p, const State *initial, double t_end,
  * defines.
  *
  * in_out_step behaves exactly as in prop_run, and for the same reason. */
-CoreResult prop_run_stm(PropagatorCtx *p, const State *initial, double t_end,
+CoreResult prop_run_stm(PropagatorCtx *p, const State *initial,
+                        const VesselParams *vessel, double t_end,
                         State *out_final, double out_stm[36],
                         double *in_out_step);
 

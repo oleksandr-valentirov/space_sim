@@ -21,6 +21,30 @@ typedef struct {
     double t;
 } State;
 
+/* What a vessel is, beyond where it is (PROJECT.md section 5, ROADMAP K6b).
+ *
+ * Gravity does not need this - a vessel is a massless test particle in the
+ * field of the bodies, and that is the split the architecture rests on
+ * (core/field.h). Radiation pressure does: the acceleration it produces
+ * scales with Cr*A/m, which is a property of the spacecraft and of nothing
+ * else. So a massless test particle feels no sunlight, and K6 is where this
+ * struct finally had to exist.
+ *
+ * core/prop.h used to explain why it did not: a struct whose every field is
+ * ignored is worse than its absence, because the caller fills it in, nothing
+ * happens, and nothing says so. That argument is why cd, the drag
+ * coefficient of the PROJECT.md sketch, is still not here. It arrives with
+ * K7, together with the atmosphere that reads it.
+ *
+ * Zero mass means "no radiation pressure", not an error: it is what a caller
+ * that has not thought about SRP yet passes, and it reproduces the point-mass
+ * trajectory bit for bit. */
+typedef struct {
+    double mass_kg;
+    double area_m2;   /* cross-section presented to the Sun */
+    double cr;        /* 1 absorbs, 2 reflects; real spacecraft near 1.3 */
+} VesselParams;
+
 typedef enum {
     CORE_OK = 0,
     CORE_ERR_BUFFER_TOO_SMALL,

@@ -140,7 +140,7 @@ fn the_world_flies_the_plan_a_hand_stitched_run_would_fly() {
     for (index, boundary) in boundaries.iter().enumerate() {
         loop {
             let run = prop
-                .run(&state, *boundary, &[], &mut buffer, &mut step)
+                .run(&state, None, *boundary, &[], &mut buffer, &mut step)
                 .expect("прогін");
             theirs.extend_from_slice(&buffer[..run.filled]);
             state = run.final_state;
@@ -410,7 +410,7 @@ fn carrying_the_step_through_a_burn_against_resetting_it() {
         for boundary in [burn_t, end_t] {
             loop {
                 let run = prop
-                    .run(&state, boundary, &[], &mut buffer, &mut step)
+                    .run(&state, None, boundary, &[], &mut buffer, &mut step)
                     .expect("прогін");
                 count += run.filled;
                 state = run.final_state;

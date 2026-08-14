@@ -117,7 +117,7 @@ int main(void)
         CoreStopReason stop;
         int event = -1;
 
-        if (prop_run(p, &vessel, t_end, NULL, 0, samples, CAP, &n, &final_state,
+        if (prop_run(p, &vessel, NULL, t_end, NULL, 0, samples, CAP, &n, &final_state,
                      &stop, &event, &step) != CORE_OK) {
             return 1;
         }
@@ -177,7 +177,7 @@ int main(void)
         CoreStopReason stop;
         int event = -1;
 
-        if (prop_run(p, &ecc, t0 + opaque(4.0 * DAY), evs, 2, samples, CAP, &n,
+        if (prop_run(p, &ecc, NULL, t0 + opaque(4.0 * DAY), evs, 2, samples, CAP, &n,
                      &final_state, &stop, &event, &step) != CORE_OK) {
             return 1;
         }

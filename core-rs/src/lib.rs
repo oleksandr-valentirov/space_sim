@@ -306,6 +306,38 @@ impl Stm {
     }
 }
 
+/// Апарат так, як його бачить модель сил (ROADMAP K6b, `core/core.h`).
+///
+/// Гравітації вона не потрібна: там апарат — безмасова пробна частинка, і це
+/// поділ, на якому стоїть архітектура, а не наближення. Тиску сонячного
+/// світла — потрібна, бо прискорення від нього масштабується на `Cr·A/m`.
+///
+/// Передається **на кожен прогін**, а не в конфігурацію пропагатора: маса
+/// змінюється при горінні, а `/game` тримає один пропагатор на всі апарати
+/// (`game/src/world.rs`) — апарат у конфігурації зробив би з них один
+/// корабель із кількома траєкторіями.
+///
+/// `cd` зі скетчу PROJECT.md §5 з'явиться разом з атмосферою (K7): поле, яке
+/// викликач заповнює, а ядро ігнорує, гірше за його відсутність.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VesselParams {
+    pub mass_kg: f64,
+    /// Площа перерізу, підставлена Сонцю, м².
+    pub area_m2: f64,
+    /// 1 — повне поглинання, 2 — дзеркало; реальні апарати біля 1.3.
+    pub cr: f64,
+}
+
+impl VesselParams {
+    fn raw(&self) -> core_sys::VesselParams {
+        core_sys::VesselParams {
+            mass_kg: self.mass_kg,
+            area_m2: self.area_m2,
+            cr: self.cr,
+        }
+    }
+}
+
 /// Що дав один виклик [`Propagator::run`].
 #[derive(Debug, Clone, Copy)]
 pub struct Run {
@@ -335,7 +367,7 @@ pub struct Run {
 /// let mut step = 0.0;
 /// let vessel = State::default();
 ///
-/// let run = prop.run(&vessel, 86_400.0, &[Event::Periapsis { body: 3 }],
+/// let run = prop.run(&vessel, None, 86_400.0, &[Event::Periapsis { body: 3 }],
 ///                    &mut samples, &mut step)?;
 /// println!("{:?} після {} семплів", run.stop, run.filled);
 /// # Ok::<(), core_rs::CoreError>(())
@@ -352,7 +384,7 @@ pub struct Run {
 /// let mut prop = Propagator::new(eph, PropConfig::default()).unwrap();
 /// drop(prop);
 /// let mut step = 0.0;
-/// let _ = prop.run(&State::default(), 1.0, &[], &mut [], &mut step);
+/// let _ = prop.run(&State::default(), None, 1.0, &[], &mut [], &mut step);
 /// ```
 ///
 /// Звільнити двічі теж нема чим — `prop_free` не реекспортується, поле
@@ -425,15 +457,21 @@ impl Propagator {
     /// значення, яке лишив попередній. Він входить у сейв (PROJECT.md §4), і
     /// це не формальність: викинути його коштує сімдесятикратної роботи й
     /// іншої траєкторії (`core/test/test_prop.c`).
+    ///
+    /// `vessel` — `None` для безмасової пробної частинки, тобто рівно те, що
+    /// цей виклик робив до K6b. З `Some` до сил додається тиск сонячного
+    /// світла з моделлю тіні.
     pub fn run(
         &mut self,
         initial: &State,
+        vessel: Option<&VesselParams>,
         t_end: f64,
         events: &[Event],
         samples: &mut [State],
         step: &mut f64,
     ) -> Result<Run> {
         let raw_events: Vec<core_sys::CoreEvent> = events.iter().map(|e| e.raw()).collect();
+        let raw_vessel = vessel.map(|v| v.raw());
 
         let mut count: usize = 0;
         let mut final_state = State::default();
@@ -456,16 +494,26 @@ impl Propagator {
             raw_events.as_ptr()
         };
 
+        // `None` перекладається в нульовий вказівник, і C читає це як
+        // «безмасова пробна частинка» — той самий прогін, що був до K6b,
+        // біт у біт.
+        let vessel_ptr = raw_vessel
+            .as_ref()
+            .map_or(std::ptr::null(), |v| v as *const _);
+
         // SAFETY: self.ctx отримано з prop_create і ще не звільнено (звільняє
         // лише Drop, а `&mut self` доводить, що його не було). `initial` і
         // `raw_events` живі до кінця виклику й лише читаються. Буфер має рівно
         // `out_cap` елементів `State`, і C обіцяє не писати далі — рівно тому
-        // місткість передається поруч із ним. Решта вказівників — місця під
-        // по одному значенню на стеку.
+        // місткість передається поруч із ним. `raw_vessel` живе на стеку до
+        // кінця виклику й лише читається, а null там — легальне значення,
+        // не помилка. Решта вказівників — місця під по одному значенню на
+        // стеку.
         let code = unsafe {
             core_sys::prop_run(
                 self.ctx,
                 initial,
+                vessel_ptr,
                 t_end,
                 events_ptr,
                 raw_events.len(),
@@ -519,9 +567,19 @@ impl Propagator {
     /// Подій тут немає навмисно: питання стосується однієї ланки з двома
     /// кінцями, і подія обірвала б її там, де викликач не просив. Хто хоче
     /// обох — спершу `run`, щоб знайти подію, потім це на знайденій ланці.
-    pub fn run_stm(&mut self, initial: &State, t_end: f64, step: &mut f64) -> Result<(State, Stm)> {
+    pub fn run_stm(
+        &mut self,
+        initial: &State,
+        vessel: Option<&VesselParams>,
+        t_end: f64,
+        step: &mut f64,
+    ) -> Result<(State, Stm)> {
         let mut final_state = State::default();
         let mut phi = [0.0f64; STM_LEN];
+        let raw_vessel = vessel.map(|v| v.raw());
+        let vessel_ptr = raw_vessel
+            .as_ref()
+            .map_or(std::ptr::null(), |v| v as *const _);
 
         // SAFETY: self.ctx отримано з prop_create і ще не звільнено (звільняє
         // лише Drop, а `&mut self` доводить, що його не було). `initial` живий
@@ -532,6 +590,7 @@ impl Propagator {
             core_sys::prop_run_stm(
                 self.ctx,
                 initial,
+                vessel_ptr,
                 t_end,
                 &mut final_state,
                 phi.as_mut_ptr(),

@@ -321,7 +321,8 @@ void prop_free(PropagatorCtx *p)
     free(p);
 }
 
-CoreResult prop_run(PropagatorCtx *p, const State *initial, double t_end,
+CoreResult prop_run(PropagatorCtx *p, const State *initial,
+                    const VesselParams *vessel, double t_end,
                     const CoreEvent *events, size_t n_events,
                     State *out_states, size_t out_cap, size_t *out_count,
                     State *out_final, CoreStopReason *out_stop, int *out_event,
@@ -387,6 +388,12 @@ CoreResult prop_run(PropagatorCtx *p, const State *initial, double t_end,
      * a context reused for a second run would otherwise report the first
      * run's failure (core/field.h). */
     p->field.failed = 0;
+
+    /* Set every run, including to nothing when vessel is NULL. Leaving the
+     * previous run's vessel in place would make one spacecraft's area push
+     * the next one - the exact hazard that keeping this out of PropConfig
+     * was meant to avoid, reintroduced in the context instead. */
+    field_set_vessel(&p->field, vessel);
 
     /* The baseline every crossing is measured against. Without it the first
      * step would have nothing to disagree with.
@@ -475,7 +482,8 @@ CoreResult prop_run(PropagatorCtx *p, const State *initial, double t_end,
     return CORE_OK;
 }
 
-CoreResult prop_run_stm(PropagatorCtx *p, const State *initial, double t_end,
+CoreResult prop_run_stm(PropagatorCtx *p, const State *initial,
+                        const VesselParams *vessel, double t_end,
                         State *out_final, double out_stm[STM_SIZE],
                         double *in_out_step)
 {
@@ -506,6 +514,7 @@ CoreResult prop_run_stm(PropagatorCtx *p, const State *initial, double t_end,
     st.n_evals = 0;
 
     p->field.failed = 0;
+    field_set_vessel(&p->field, vessel);
 
     CoreResult res = stm_integrate(accel_field_var, &p->field, initial, t_end,
                                    &dcfg, &st, out_final, out_stm);

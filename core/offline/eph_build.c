@@ -30,12 +30,12 @@ static int write_exact(FILE *f, const void *src, size_t n)
 }
 
 CoreResult eph_build(const NBodySystem *sys, const State *initial,
-                     const char *const *names,
+                     const EphBodyInfo *bodies,
                      const EphBuildConfig *cfg,
                      const char *out_path,
                      EphBuildReport *report)
 {
-    if (sys == NULL || initial == NULL || names == NULL || cfg == NULL ||
+    if (sys == NULL || initial == NULL || bodies == NULL || cfg == NULL ||
         out_path == NULL) {
         return CORE_ERR_INVALID_ARG;
     }
@@ -86,7 +86,7 @@ CoreResult eph_build(const NBodySystem *sys, const State *initial,
     for (size_t b = 0; ok && b < n_bodies; b++) {
         char name[EPH_NAME_SIZE];
         memset(name, 0, sizeof name);
-        snprintf(name, sizeof name, "%s", names[b]);
+        snprintf(name, sizeof name, "%s", bodies[b].name);
 
         /* Straight from the system being integrated, never from a second
          * source (ROADMAP K4b). That is the whole point of putting these in
@@ -98,6 +98,8 @@ CoreResult eph_build(const NBodySystem *sys, const State *initial,
 
         ok = write_exact(f, name, sizeof name) &&
              write_exact(f, &sys->mu[b], sizeof sys->mu[b]) &&
+             write_exact(f, &bodies[b].radius_m, sizeof bodies[b].radius_m) &&
+             write_exact(f, &bodies[b].flux_1au, sizeof bodies[b].flux_1au) &&
              write_exact(f, &degree, sizeof degree);
 
         if (ok && degree >= 2u) {

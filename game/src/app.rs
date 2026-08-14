@@ -350,6 +350,7 @@ impl State {
             step: restart.step,
             plan,
             horizon_end: vessel.horizon_end,
+            params: vessel.params,
         });
     }
 

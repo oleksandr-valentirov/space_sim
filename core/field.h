@@ -11,9 +11,10 @@
  * particles in the field those rails describe. Making a vessel pull on a
  * planet would mean the ephemeris depended on the save file.
  *
- * Point masses only for now. Harmonics, SRP and drag arrive at M3.5, and the
- * shape of this interface is what they will extend: the same AccelFunc, the
- * same context, more terms inside.
+ * Point masses were all of it once. Harmonics arrived with K4b and radiation
+ * pressure with K6b, and both went in the way this file expected them to: the
+ * same AccelFunc, the same context, more terms inside. Drag is what is left
+ * (K7), and it will be the first of them to read the velocity argument.
  *
  * ---
  *
@@ -33,6 +34,7 @@
 
 #include "ephemeris.h"
 #include "harmonics.h"
+#include "srp.h"
 #include "vec3.h"
 
 #define FIELD_MAX_BODIES 16
@@ -61,6 +63,31 @@ typedef struct {
     HarmonicsField harmonics[FIELD_MAX_BODIES];
     int            n_harmonic;   /* how many have degree >= 2, for the fast path */
 
+    /* Each body's size and brightness, read from the asset alongside the
+     * harmonics (ROADMAP K6b). Radius 0 means the asset does not say how big
+     * the body is, and such a body occults nothing; flux 0 means it does not
+     * shine, which is every body but one.
+     *
+     * There is no "which body is the Sun" here on purpose. A vessel feels
+     * radiation pressure from every body with a positive flux, summed in
+     * index order like everything else, and shadowed by every other body.
+     * With one star that is one term - and no identity to get wrong. */
+    double radius[FIELD_MAX_BODIES];
+    double flux[FIELD_MAX_BODIES];
+    int    n_emitter;    /* how many have flux > 0, for the fast path */
+
+    /* The vessel's Cr * A / m, m^2/kg. Zero - which is what a caller that
+     * never asks for it gets - means the SRP term is not evaluated at all,
+     * and the trajectory is bit-for-bit the one this file produced before
+     * K6b. Set through field_set_vessel.
+     *
+     * Unlike the harmonics above, this one HAS a setter, and the difference
+     * is not an inconsistency. Coefficients describe the Earth, so letting a
+     * caller supply them would let two callers fly past two different Earths
+     * (K4b). Cr*A/m describes the spacecraft, and two spacecraft differing in
+     * it is the entire point. */
+    double srp_coeff;
+
     /* Sticky: set on the first failed evaluation, never cleared except by the
      * caller. Mutable through a const-free context pointer, which is why the
      * accel functions take void* rather than a const one. */
@@ -83,6 +110,17 @@ CoreResult field_all_but(const EphemerisCtx *eph, int excluded, FieldCtx *out);
  * number to compare against. Flying with it is flying a field the asset
  * does not describe. */
 void field_clear_harmonics(FieldCtx *ctx);
+
+/* Give the field a vessel to push on (ROADMAP K6b).
+ *
+ * Only the product Cr * A / m is kept, because only the product is ever used;
+ * see core/srp.h. A NULL vessel, a non-positive mass or a zero area all mean
+ * "no radiation pressure", which is the state a context starts in.
+ *
+ * Set per run rather than per context: mass changes when fuel burns, and the
+ * one propagator the game owns is shared by every vessel it flies
+ * (core/prop.h). */
+void field_set_vessel(FieldCtx *ctx, const VesselParams *vessel);
 
 /* Sum of mu_i (R_i - r) / |R_i - r|^3 over the context's bodies, in index
  * order, plus each body's harmonic term where the asset gives it one.
@@ -118,9 +156,15 @@ void accel_field_var(double t, const Vec3d *r, const Vec3d *v, int n_blocks,
 /* Gradient of the acceleration at r, row-major 3x3 and symmetric. Public
  * because it is the piece worth testing on its own.
  *
- * Includes each body's harmonic term where the asset gives it one, so
- * this stays the exact derivative of accel_field rather than the
- * derivative of a simpler field that happens to share its name. */
+ * Includes each body's harmonic term where the asset gives it one, and the
+ * smooth part of the radiation pressure term, so this stays the exact
+ * derivative of accel_field rather than the derivative of a simpler field
+ * that happens to share its name.
+ *
+ * "Smooth part" is the one honest gap and core/srp.h holds its measurement:
+ * the shadow fraction is treated as locally constant, because its true
+ * derivative is a spike confined to the penumbra and worth a millionth of
+ * the gravity gradient beside it. */
 void field_gradient(double t, Vec3d r, const FieldCtx *ctx, double g[9]);
 
 #endif /* CORE_FIELD_H */

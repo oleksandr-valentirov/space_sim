@@ -97,7 +97,7 @@ static int propagate(const EphemerisCtx *eph)
     int event = -1;
     double step = 0.0;
 
-    if (prop_run(p, &vessel, VESSEL_T0 + 0.5 * DAY, NULL, 0, samples, CAP, &n,
+    if (prop_run(p, &vessel, NULL, VESSEL_T0 + 0.5 * DAY, NULL, 0, samples, CAP, &n,
                  &final_state, &stop, &event, &step) != CORE_OK) {
         prop_free(p);
         return 0;
@@ -118,7 +118,7 @@ static int propagate(const EphemerisCtx *eph)
     ev.param = 0.0;
 
     step = 0.0;
-    if (prop_run(p, &vessel, VESSEL_T0 + 4.0 * DAY, &ev, 1, NULL, 0, &n,
+    if (prop_run(p, &vessel, NULL, VESSEL_T0 + 4.0 * DAY, &ev, 1, NULL, 0, &n,
                  &final_state, &stop, &event, &step) != CORE_OK) {
         prop_free(p);
         return 0;
@@ -132,7 +132,7 @@ static int propagate(const EphemerisCtx *eph)
      * що дав би prop_run, тож звірка мусить бачити обидва. */
     step = 0.0;
     double phi[36];
-    if (prop_run_stm(p, &vessel, VESSEL_T0 + 0.5 * DAY, &final_state, phi,
+    if (prop_run_stm(p, &vessel, NULL, VESSEL_T0 + 0.5 * DAY, &final_state, phi,
                      &step) != CORE_OK) {
         prop_free(p);
         return 0;
@@ -143,6 +143,25 @@ static int propagate(const EphemerisCtx *eph)
     for (int i = 0; i < 36; i++) {
         printf("stm %d %.17g\n", i, phi[i]);
     }
+
+    /* І та сама ланка з апаратом, який відчуває тиск світла (ROADMAP K6b).
+     * Кожен аргумент межі має бути тут хоч раз ненульовим: `vessel` як
+     * NULL уже надруковано вище, а вказівник, який ніхто не розіменовує,
+     * не довів би, що поля структури оголошені в тому самому порядку. */
+    VesselParams sail;
+    sail.mass_kg = 1000.0;
+    sail.area_m2 = 20.0;
+    sail.cr = 1.3;
+
+    step = 0.0;
+    if (prop_run(p, &vessel, &sail, VESSEL_T0 + 0.5 * DAY, NULL, 0, samples,
+                 CAP, &n, &final_state, &stop, &event, &step) != CORE_OK) {
+        prop_free(p);
+        return 0;
+    }
+
+    printf("srprun %zu %d %d %.17g\n", n, (int)stop, event, step);
+    print_state("srpend", &final_state);
 
     prop_free(p);
     return 1;

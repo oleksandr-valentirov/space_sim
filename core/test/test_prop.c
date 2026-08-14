@@ -128,7 +128,7 @@ static int stitch(PropagatorCtx *p, const State *start, double t_end,
             step = 0.0;
         }
 
-        if (prop_run(p, &s, t_end, NULL, 0, chunk, cap, &n, &final_state,
+        if (prop_run(p, &s, NULL, t_end, NULL, 0, chunk, cap, &n, &final_state,
                      &stop, &event, &step) != CORE_OK) {
             return -1;
         }
@@ -189,7 +189,7 @@ int main(void)
         int event = 0;
         double step = 0.0;
 
-        CHECK(prop_run(p, &start, t_end, NULL, 0, NULL, 0, &n, &final_state,
+        CHECK(prop_run(p, &start, NULL, t_end, NULL, 0, NULL, 0, &n, &final_state,
                        &stop, &event, &step) == CORE_OK);
         CHECK(same_state(&final_state, &direct));
         CHECK(n == 0);
@@ -206,7 +206,7 @@ int main(void)
         int event = 0;
         double step = 0.0;
 
-        CHECK(prop_run(p, &start, t_end, NULL, 0, samples_one, BIG_CAP, &n_one,
+        CHECK(prop_run(p, &start, NULL, t_end, NULL, 0, samples_one, BIG_CAP, &n_one,
                        &final_state, &stop, &event, &step) == CORE_OK);
         CHECK(same_state(&final_state, &direct));
         CHECK(stop == CORE_STOP_T_END);
@@ -327,12 +327,12 @@ int main(void)
         int event = 0;
         double step = 0.0;
 
-        CHECK(prop_run(q, &start, t_span_end + 10.0 * DAY, NULL, 0, NULL, 0, &n,
+        CHECK(prop_run(q, &start, NULL, t_span_end + 10.0 * DAY, NULL, 0, NULL, 0, &n,
                        &final_state, &stop, &event, &step) == CORE_ERR_INVALID_ARG);
 
         /* And the context is not poisoned by it: the sticky flag is cleared
          * at the start of every run, so the next one still works. */
-        CHECK(prop_run(q, &start, t0 + HOUR, NULL, 0, NULL, 0, &n, &final_state,
+        CHECK(prop_run(q, &start, NULL, t0 + HOUR, NULL, 0, NULL, 0, &n, &final_state,
                        &stop, &event, &step) == CORE_OK);
 
         prop_free(q);
@@ -363,16 +363,16 @@ int main(void)
 
         /* A buffer with no room in it: an immediate stop with no progress,
          * which a caller stitching legs would spin on forever. */
-        CHECK(prop_run(q, &start, t_end, NULL, 0, samples_two, 0, &n,
+        CHECK(prop_run(q, &start, NULL, t_end, NULL, 0, samples_two, 0, &n,
                        &final_state, &stop, &event, &step)
               == CORE_ERR_INVALID_ARG);
-        CHECK(prop_run(q, NULL, t_end, NULL, 0, NULL, 0, &n, &final_state,
+        CHECK(prop_run(q, NULL, NULL, t_end, NULL, 0, NULL, 0, &n, &final_state,
                        &stop, &event, &step) == CORE_ERR_INVALID_ARG);
-        CHECK(prop_run(q, &start, t_end, NULL, 0, NULL, 0, &n, &final_state,
+        CHECK(prop_run(q, &start, NULL, t_end, NULL, 0, NULL, 0, &n, &final_state,
                        &stop, &event, NULL) == CORE_ERR_INVALID_ARG);
 
         /* Zero length is a legal request and does nothing. */
-        CHECK(prop_run(q, &start, start.t, NULL, 0, samples_two, BIG_CAP, &n,
+        CHECK(prop_run(q, &start, NULL, start.t, NULL, 0, samples_two, BIG_CAP, &n,
                        &final_state, &stop, &event, &step) == CORE_OK);
         CHECK(n == 0);
         CHECK(stop == CORE_STOP_T_END);
@@ -408,7 +408,7 @@ int main(void)
         int event = 0;
         double step = 0.0;
 
-        CHECK(prop_run(q, &ecc, t_far, &ev, 1, samples_one, BIG_CAP, &n,
+        CHECK(prop_run(q, &ecc, NULL, t_far, &ev, 1, samples_one, BIG_CAP, &n,
                        &final_state, &stop, &event, &step) == CORE_OK);
         CHECK(stop == CORE_STOP_EVENT);
         CHECK(event == 0);
@@ -431,11 +431,11 @@ int main(void)
         CoreStopReason probe_stop;
         int probe_event = 0;
 
-        CHECK(prop_run(q, &ecc, final_state.t - 60.0, NULL, 0, NULL, 0,
+        CHECK(prop_run(q, &ecc, NULL, final_state.t - 60.0, NULL, 0, NULL, 0,
                        &probe_n, &before, &probe_stop, &probe_event,
                        &probe_step) == CORE_OK);
         probe_step = 0.0;
-        CHECK(prop_run(q, &final_state, final_state.t + 60.0, NULL, 0, NULL, 0,
+        CHECK(prop_run(q, &final_state, NULL, final_state.t + 60.0, NULL, 0, NULL, 0,
                        &probe_n, &after, &probe_stop, &probe_event,
                        &probe_step) == CORE_OK);
 
@@ -476,7 +476,7 @@ int main(void)
         int event = 0;
         double step = 0.0;
 
-        CHECK(prop_run(q, &ecc, t_far, &ev, 1, NULL, 0, &n, &final_state,
+        CHECK(prop_run(q, &ecc, NULL, t_far, &ev, 1, NULL, 0, &n, &final_state,
                        &stop, &event, &step) == CORE_OK);
         CHECK(stop == CORE_STOP_EVENT);
 
@@ -508,7 +508,7 @@ int main(void)
         int event = 0;
         double step = 0.0;
 
-        CHECK(prop_run(q, &ecc, t_far, &ev, 1, NULL, 0, &n, &final_state,
+        CHECK(prop_run(q, &ecc, NULL, t_far, &ev, 1, NULL, 0, &n, &final_state,
                        &stop, &event, &step) == CORE_OK);
         CHECK(stop == CORE_STOP_EVENT);
         CHECK(final_state.t > t_peri);
@@ -518,7 +518,7 @@ int main(void)
          * from. */
         State second;
         step = 0.0;
-        CHECK(prop_run(q, &final_state, t_far, &ev, 1, NULL, 0, &n, &second,
+        CHECK(prop_run(q, &final_state, NULL, t_far, &ev, 1, NULL, 0, &n, &second,
                        &stop, &event, &step) == CORE_OK);
 
         double period = second.t - final_state.t;
@@ -554,7 +554,7 @@ int main(void)
 
         /* A buffer of four, which would stop the run long before the event if
          * the event did not come first. */
-        CHECK(prop_run(q, &ecc, t_far, &ev, 1, samples_two, SMALL_CAP, &n,
+        CHECK(prop_run(q, &ecc, NULL, t_far, &ev, 1, samples_two, SMALL_CAP, &n,
                        &final_state, &stop, &event, &step) == CORE_OK);
 
         State earth_at;
@@ -571,7 +571,7 @@ int main(void)
             CHECK(stop == CORE_STOP_BUFFER_FULL);
             for (int leg = 0; leg < 1000 && stop != CORE_STOP_EVENT; leg++) {
                 State s = final_state;
-                CHECK(prop_run(q, &s, t_far, &ev, 1, samples_two, SMALL_CAP,
+                CHECK(prop_run(q, &s, NULL, t_far, &ev, 1, samples_two, SMALL_CAP,
                                &n, &final_state, &stop, &event, &step)
                       == CORE_OK);
             }
@@ -589,7 +589,7 @@ int main(void)
         /* Outbound again, from just after the crossing. */
         State onward;
         step = 0.0;
-        CHECK(prop_run(q, &final_state, t_far, &ev, 1, NULL, 0, &n, &onward,
+        CHECK(prop_run(q, &final_state, NULL, t_far, &ev, 1, NULL, 0, &n, &onward,
                        &stop, &event, &step) == CORE_OK);
         CHECK(stop == CORE_STOP_EVENT);
         CHECK(eph_body_state(eph, EARTH, onward.t, &earth_at) == CORE_OK);
@@ -623,7 +623,7 @@ int main(void)
         int event = 0;
         double step = 0.0;
 
-        CHECK(prop_run(q, &ecc, t_far, evs, 2, NULL, 0, &n, &final_state,
+        CHECK(prop_run(q, &ecc, NULL, t_far, evs, 2, NULL, 0, &n, &final_state,
                        &stop, &event, &step) == CORE_OK);
         CHECK(stop == CORE_STOP_EVENT);
         CHECK(event == 1);
@@ -632,7 +632,7 @@ int main(void)
         /* Carry on, and now the periapsis is the next thing to happen. */
         step = 0.0;
         State next;
-        CHECK(prop_run(q, &final_state, t_far, evs, 2, NULL, 0, &n, &next,
+        CHECK(prop_run(q, &final_state, NULL, t_far, evs, 2, NULL, 0, &n, &next,
                        &stop, &event, &step) == CORE_OK);
         CHECK(stop == CORE_STOP_EVENT);
         CHECK(event == 0);
@@ -659,19 +659,19 @@ int main(void)
         int event = 0;
         double step = 0.0;
 
-        CHECK(prop_run(q, &ecc, t0 + HOUR, &ev, 1, NULL, 0, &n, &final_state,
+        CHECK(prop_run(q, &ecc, NULL, t0 + HOUR, &ev, 1, NULL, 0, &n, &final_state,
                        &stop, &event, &step) == CORE_OK);
         CHECK(stop == CORE_STOP_T_END);
         CHECK(event == -1);
 
         /* Nonsense arguments are refused rather than quietly ignored. */
         CoreEvent bad = { CORE_EVENT_DISTANCE, EARTH, -1.0 };
-        CHECK(prop_run(q, &ecc, t_far, &bad, 1, NULL, 0, &n, &final_state,
+        CHECK(prop_run(q, &ecc, NULL, t_far, &bad, 1, NULL, 0, &n, &final_state,
                        &stop, &event, &step) == CORE_ERR_INVALID_ARG);
         CoreEvent nobody = { CORE_EVENT_PERIAPSIS, 999, 0.0 };
-        CHECK(prop_run(q, &ecc, t_far, &nobody, 1, NULL, 0, &n, &final_state,
+        CHECK(prop_run(q, &ecc, NULL, t_far, &nobody, 1, NULL, 0, &n, &final_state,
                        &stop, &event, &step) == CORE_ERR_INVALID_ARG);
-        CHECK(prop_run(q, &ecc, t_far, &ev, PROP_MAX_EVENTS + 1, NULL, 0, &n,
+        CHECK(prop_run(q, &ecc, NULL, t_far, &ev, PROP_MAX_EVENTS + 1, NULL, 0, &n,
                        &final_state, &stop, &event, &step)
               == CORE_ERR_INVALID_ARG);
 
@@ -699,14 +699,14 @@ int main(void)
         CoreStopReason stop;
         int event = 0;
         double plain_step = 0.0;
-        CHECK(prop_run(q, &start, t_stop, NULL, 0, NULL, 0, &n, &plain_final,
+        CHECK(prop_run(q, &start, NULL, t_stop, NULL, 0, NULL, 0, &n, &plain_final,
                        &stop, &event, &plain_step) == CORE_OK);
         CHECK(stop == CORE_STOP_T_END);
 
         State stm_final;
         double phi[STM_SIZE];
         double stm_step = 0.0;
-        CHECK(prop_run_stm(q, &start, t_stop, &stm_final, phi, &stm_step)
+        CHECK(prop_run_stm(q, &start, NULL, t_stop, &stm_final, phi, &stm_step)
               == CORE_OK);
 
         /* Bit-identical, position, velocity and the step left behind. The
@@ -743,10 +743,10 @@ int main(void)
 
             State end_plus, end_minus;
             double h = 0.0;
-            CHECK(prop_run(q, &plus, t_stop, NULL, 0, NULL, 0, &n, &end_plus,
+            CHECK(prop_run(q, &plus, NULL, t_stop, NULL, 0, NULL, 0, &n, &end_plus,
                            &stop, &event, &h) == CORE_OK);
             h = 0.0;
-            CHECK(prop_run(q, &minus, t_stop, NULL, 0, NULL, 0, &n, &end_minus,
+            CHECK(prop_run(q, &minus, NULL, t_stop, NULL, 0, NULL, 0, &n, &end_minus,
                            &stop, &event, &h) == CORE_OK);
 
             double a[6] = { end_plus.r.x, end_plus.r.y, end_plus.r.z,
@@ -772,11 +772,11 @@ int main(void)
                worst, biggest);
 
         /* Arguments checked, including the one that is easy to forget. */
-        CHECK(prop_run_stm(NULL, &start, t_stop, &stm_final, phi, &stm_step)
+        CHECK(prop_run_stm(NULL, &start, NULL, t_stop, &stm_final, phi, &stm_step)
               == CORE_ERR_INVALID_ARG);
-        CHECK(prop_run_stm(q, &start, t_stop, &stm_final, NULL, &stm_step)
+        CHECK(prop_run_stm(q, &start, NULL, t_stop, &stm_final, NULL, &stm_step)
               == CORE_ERR_INVALID_ARG);
-        CHECK(prop_run_stm(q, &start, t_stop, &stm_final, phi, NULL)
+        CHECK(prop_run_stm(q, &start, NULL, t_stop, &stm_final, phi, NULL)
               == CORE_ERR_INVALID_ARG);
 
         /* Past the end of the EPHEMERIS - t_span_end, not the run's own
@@ -789,10 +789,74 @@ int main(void)
          * CORE_OK, a plausible trajectory of a vessel that felt no gravity,
          * and a matrix describing it. */
         double far_step = 0.0;
-        CHECK(prop_run_stm(q, &start, t_span_end + DAY, &stm_final, phi,
+        CHECK(prop_run_stm(q, &start, NULL, t_span_end + DAY, &stm_final, phi,
                            &far_step) == CORE_ERR_INVALID_ARG);
 
         prop_free(q);
+    }
+
+    /* ---- A vessel that feels sunlight (ROADMAP K6b) --------------------- */
+
+    /* Everything above passes NULL for the vessel, which is what every
+     * caller did before this step existed. The three things worth checking
+     * here are that NULL still means exactly that, that a vessel with an
+     * area flies a measurably different trajectory, and that the vessel does
+     * not leak from one run into the next through the shared context. */
+    {
+        VesselParams sail = { 1000.0, 20.0, 1.3 };
+        VesselParams none = { 1000.0, 0.0, 1.3 };
+
+        State final_none, final_zero, final_sail, final_again;
+        size_t n = 0;
+        CoreStopReason stop;
+        int event = 0;
+        double step;
+
+        step = 0.0;
+        CHECK(prop_run(p, &start, NULL, t_end, NULL, 0, NULL, 0, &n,
+                       &final_none, &stop, &event, &step) == CORE_OK);
+
+        /* A vessel with no area is the massless particle, to the bit. */
+        step = 0.0;
+        CHECK(prop_run(p, &start, &none, t_end, NULL, 0, NULL, 0, &n,
+                       &final_zero, &stop, &event, &step) == CORE_OK);
+        CHECK(same_state(&final_zero, &final_none));
+
+        step = 0.0;
+        CHECK(prop_run(p, &start, &sail, t_end, NULL, 0, NULL, 0, &n,
+                       &final_sail, &stop, &event, &step) == CORE_OK);
+
+        /* Printed rather than merely bounded, because the size of it is
+         * the check. A constant 1.23e-7 m/s^2 for two days is a free-flight
+         * displacement of a*t^2/2 = 1.8 km; an orbit turns most of that into
+         * a shifted ellipse rather than a drift, and what is left is 533 m.
+         * Between the two, which is where it should be. Millimetres would
+         * mean the term is being scaled away somewhere; hundreds of
+         * kilometres would mean it is not radiation pressure. */
+        double moved = vec3_distance(final_sail.r, final_none.r);
+        printf("  two days under SRP move the vessel %.4g m\n", moved);
+        CHECK(moved > 10.0);
+        CHECK(moved < 1900.0);
+
+        /* And back to NULL: the context must not remember the sail. Without
+         * the per-run set in prop_run this is the check that fails, and it
+         * fails as one spacecraft's area pushing the next one - which is
+         * exactly what keeping the vessel out of PropConfig was meant to
+         * prevent. */
+        step = 0.0;
+        CHECK(prop_run(p, &start, NULL, t_end, NULL, 0, NULL, 0, &n,
+                       &final_again, &stop, &event, &step) == CORE_OK);
+        CHECK(same_state(&final_again, &final_none));
+
+        /* The STM path carries it too, and carries it the same way: the
+         * matrix must belong to the trajectory the vessel actually flies,
+         * which is the whole content of K8c. */
+        double phi[STM_SIZE];
+        State stm_final;
+        double stm_step = 0.0;
+        CHECK(prop_run_stm(p, &start, &sail, t_end, &stm_final, phi, &stm_step)
+              == CORE_OK);
+        CHECK(same_state(&stm_final, &final_sail));
     }
 
     /* prop_free(NULL) is allowed - Drop on the Rust side frees without

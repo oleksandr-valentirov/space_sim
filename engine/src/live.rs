@@ -96,7 +96,7 @@ pub fn propagate(start: &State, days: f64, asset: &Path) -> Result<Live, CoreErr
     let mut samples = Vec::new();
 
     loop {
-        let run = prop.run(&state, t_end, &[], &mut buffer, &mut step)?;
+        let run = prop.run(&state, None, t_end, &[], &mut buffer, &mut step)?;
         legs += 1;
 
         for s in &buffer[..run.filled] {

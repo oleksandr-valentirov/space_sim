@@ -15,9 +15,12 @@
 #define MAX_SAMPLES 256
 #define DAY 86400.0
 
-static const char *ALL_BODIES[] = {
-    "sun", "mercury", "venus", "earth", "moon",
-    "mars_bary", "jupiter_bary", "saturn_bary", "uranus_bary", "neptune_bary",
+static const EphBodyInfo ALL_BODIES[] = {
+    { "sun", 0.0, 0.0 },          { "mercury", 0.0, 0.0 },
+    { "venus", 0.0, 0.0 },        { "earth", 0.0, 0.0 },
+    { "moon", 0.0, 0.0 },         { "mars_bary", 0.0, 0.0 },
+    { "jupiter_bary", 0.0, 0.0 }, { "saturn_bary", 0.0, 0.0 },
+    { "uranus_bary", 0.0, 0.0 },  { "neptune_bary", 0.0, 0.0 },
 };
 #define N_ALL (sizeof ALL_BODIES / sizeof ALL_BODIES[0])
 
@@ -46,12 +49,12 @@ static int load_inputs(void)
     }
 
     for (size_t i = 0; i < N_ALL; i++) {
-        snprintf(path, sizeof path, "data/horizons/vec_%s.csv", ALL_BODIES[i]);
+        snprintf(path, sizeof path, "data/horizons/vec_%s.csv", ALL_BODIES[i].name);
         size_t n = 0;
         if (refdata_load_vectors(path, reference[i], MAX_SAMPLES, &n) != CORE_OK) {
             return 0;
         }
-        system_config.mu[i] = refdata_gm_of(gm_table, n_gm, ALL_BODIES[i]);
+        system_config.mu[i] = refdata_gm_of(gm_table, n_gm, ALL_BODIES[i].name);
         initial[i] = reference[i][0].s;
         if (!(system_config.mu[i] > 0.0)) {
             return 0;
@@ -149,9 +152,14 @@ int main(void)
          * The recorded-number version of this check was 27328 and went
          * stale the moment version 2 added that word (ROADMAP K4b), which
          * is exactly the right failure: a format change that did not move
-         * the size would slip past a hardcoded total. */
+         * the size would slip past a hardcoded total. Version 3 moved it
+         * again by two doubles a body, and this check named the two. */
         size_t header = 8 + 4 + 4 + 4 + 4 + 8 + 8 + 8;
-        size_t per_body = EPH_NAME_SIZE + sizeof(double) + sizeof(uint32_t);
+        size_t per_body = EPH_NAME_SIZE
+                        + sizeof(double)      /* mu */
+                        + sizeof(double)      /* mean radius (K6b) */
+                        + sizeof(double)      /* solar flux (K6b) */
+                        + sizeof(uint32_t);   /* harmonic degree */
         size_t coeffs = (size_t)report.intervals * N_ALL * 3u * 14u
                       * sizeof(double);
         CHECK(report.bytes_written == header + N_ALL * per_body + coeffs);
@@ -169,12 +177,20 @@ int main(void)
 
         for (size_t i = 0; i < N_ALL; i++) {
             const char *name = eph_body_name(eph, (int)i);
-            CHECK(name != NULL && strcmp(name, ALL_BODIES[i]) == 0);
+            CHECK(name != NULL && strcmp(name, ALL_BODIES[i].name) == 0);
             CHECK_BITS_EQ(eph_body_mu(eph, (int)i), system_config.mu[i]);
+
+            /* ROADMAP K6b. This system leaves both at zero, which is the
+             * value that means "the asset does not say" - so what is being
+             * checked here is that the reader does not invent one. */
+            CHECK_BITS_EQ(eph_body_radius(eph, (int)i), ALL_BODIES[i].radius_m);
+            CHECK_BITS_EQ(eph_body_flux(eph, (int)i), ALL_BODIES[i].flux_1au);
         }
 
         CHECK(eph_body_name(eph, -1) == NULL);
         CHECK(eph_body_name(eph, (int)N_ALL) == NULL);
+        CHECK_BITS_EQ(eph_body_radius(eph, -1), 0.0);
+        CHECK_BITS_EQ(eph_body_flux(eph, (int)N_ALL), 0.0);
         CHECK_BITS_EQ(eph_body_mu(eph, (int)N_ALL), 0.0);
 
         double t0 = 0.0, t1 = 0.0;

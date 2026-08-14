@@ -10,7 +10,7 @@
  * it follows those rules: opaque handle in a create/free pair, results by
  * return code, outputs through pointers.
  *
- * File format, version 2. All values are little-endian; a sentinel double in
+ * File format, version 3. All values are little-endian; a sentinel double in
  * the header catches a machine where that is not true, along with any other
  * disagreement about how a double is laid out.
  *
@@ -26,6 +26,8 @@
  *   48      variable        per body, in order:
  *                             char   name[32]
  *                             double mu
+ *                             double mean radius, metres, 0 if unknown
+ *                             double solar flux at 1 AU, W/m^2, 0 if dark
  *                             uint32 harmonic degree, 0 for a point mass
  *                             if degree >= 2:
  *                               double reference radius, metres
@@ -43,7 +45,26 @@
  * ассета тіла"), and it has a consequence worth stating: the coefficients
  * written here are the ones the cooker itself integrated the bodies under, so
  * a vessel and the bodies cannot disagree about the shape of the Earth. A
- * caller cannot get that wrong because a caller is no longer asked. */
+ * caller cannot get that wrong because a caller is no longer asked.
+ *
+ * Version 3 added radius and flux (ROADMAP K6b), for the same reason and by
+ * the same argument. A conical shadow needs to know how big the Sun is and
+ * how big the thing in front of it is, and radiation pressure needs to know
+ * how brightly the Sun burns; all three are properties of the system, so they
+ * belong to the file that describes the system.
+ *
+ * The alternative was a header field naming which body is the Sun. Making the
+ * flux per body instead removes the question: a vessel feels radiation
+ * pressure from every body whose flux is positive, which is one body in every
+ * asset we will ever cook, and the code has no notion of "the Sun" to get
+ * wrong. Radius is likewise per body and optional - zero means the asset does
+ * not say, so the body casts no shadow rather than casting one of an invented
+ * size.
+ *
+ * Neither field touches the Chebyshev coefficients, and that is checkable
+ * rather than merely expected: recooking the fixture across this version bump
+ * left every determinism hash where it was and only changed the file's
+ * length. */
 
 #ifndef CORE_EPHEMERIS_H
 #define CORE_EPHEMERIS_H
@@ -55,7 +76,7 @@
 
 #define EPH_MAGIC "SSEPH\0\0\0"
 #define EPH_MAGIC_SIZE 8
-#define EPH_VERSION 2u
+#define EPH_VERSION 3u
 #define EPH_NAME_SIZE 32
 
 typedef struct EphemerisCtx EphemerisCtx;
@@ -69,6 +90,23 @@ void       eph_free(EphemerisCtx *ctx);
 int         eph_body_count(const EphemerisCtx *ctx);
 const char *eph_body_name(const EphemerisCtx *ctx, int body);
 double      eph_body_mu(const EphemerisCtx *ctx, int body);
+
+/* Mean radius in metres, or 0 where the asset does not say (ROADMAP K6b).
+ *
+ * Zero is an answer, not a failure, and it has one consequence: a body of
+ * unknown size occults nothing (core/srp.h). Inventing a size instead would
+ * put a shadow somewhere no data supports, which is the harder error to
+ * notice - a vessel would simply be a little cooler than it should be, for
+ * years.
+ *
+ * This is also the number core/prop.h has been waiting for to turn
+ * CORE_EVENT_DISTANCE into an altitude event, and the one the atmosphere of
+ * K7 will measure its scale height from. */
+double      eph_body_radius(const EphemerisCtx *ctx, int body);
+
+/* Solar irradiance at one astronomical unit from this body, W/m^2, or 0 for
+ * a body that does not shine (ROADMAP K6b). */
+double      eph_body_flux(const EphemerisCtx *ctx, int body);
 
 /* A body's gravity field beyond its point mass, in its own body-fixed frame
  * (ROADMAP K4b). Writes a field with degree 0 - which harmonics_accel treats

@@ -27,9 +27,23 @@
 #define MAX_SAMPLES 256
 #define DAY 86400.0
 
-static const char *ALL_BODIES[] = {
-    "sun", "mercury", "venus", "earth", "moon",
-    "mars_bary", "jupiter_bary", "saturn_bary", "uranus_bary", "neptune_bary",
+/* Radii and the Sun's flux, so this file can exercise the shadow model and
+ * radiation pressure (ROADMAP K6b). The same cited numbers cook_fixture.c
+ * uses; see the comment there for where each comes from. Their presence
+ * changes nothing about the point-mass and harmonic checks below - neither
+ * value enters the cooker's integration, and accel_field only reaches the
+ * SRP term for a vessel that has been given an area. */
+static const EphBodyInfo ALL_BODIES[] = {
+    { "sun",          6.957e8,   1367.6 },
+    { "mercury",      2.4394e6,  0.0 },
+    { "venus",        6.05184e6, 0.0 },
+    { "earth",        6.37101e6, 0.0 },
+    { "moon",         1.73753e6, 0.0 },
+    { "mars_bary",    3.38992e6, 0.0 },
+    { "jupiter_bary", 6.9911e7,  0.0 },
+    { "saturn_bary",  5.8232e7,  0.0 },
+    { "uranus_bary",  2.5362e7,  0.0 },
+    { "neptune_bary", 2.4624e7,  0.0 },
 };
 #define N_ALL (sizeof ALL_BODIES / sizeof ALL_BODIES[0])
 
@@ -71,13 +85,13 @@ static int load_inputs(void)
     }
 
     for (size_t i = 0; i < N_ALL; i++) {
-        snprintf(path, sizeof path, "data/horizons/vec_%s.csv", ALL_BODIES[i]);
+        snprintf(path, sizeof path, "data/horizons/vec_%s.csv", ALL_BODIES[i].name);
         size_t n = 0;
         if (refdata_load_vectors(path, reference[i], MAX_SAMPLES, &n)
             != CORE_OK) {
             return 0;
         }
-        system_config.mu[i] = refdata_gm_of(gm_table, n_gm, ALL_BODIES[i]);
+        system_config.mu[i] = refdata_gm_of(gm_table, n_gm, ALL_BODIES[i].name);
         initial[i] = reference[i][0].s;
         if (!(system_config.mu[i] > 0.0)) {
             return 0;
@@ -567,6 +581,153 @@ int main(void)
         CHECK(oblate.failed == 0);
         CHECK(vec3_norm(out[0]) > 0.0);
         CHECK(fabs(out[1].x - (g[0] * 1.0e3)) < 1e-12 * fabs(g[0] * 1.0e3));
+    }
+
+    /* Radiation pressure, as the field applies it (ROADMAP K6b).
+     *
+     * core/test/test_srp.c already measured the geometry against exact
+     * spherical shadows and the acceleration against hand arithmetic. What
+     * is left for this file is everything about the wiring: that the asset's
+     * flux and radii arrive, that the Sun is found without anyone naming it,
+     * that a vessel with no area changes nothing, and that the shadow of the
+     * Earth actually falls where the Earth is. */
+    {
+        FieldCtx field;
+        CHECK(field_all_bodies(eph, &field) == CORE_OK);
+
+        /* The asset says which body shines; nothing here says "sun". */
+        CHECK(field.n_emitter == 1);
+        CHECK(field.flux[0] == 1367.6);
+        CHECK(field.radius[EARTH] == 6.37101e6);
+
+        State earth, sun;
+        CHECK(eph_body_state(eph, EARTH, t_begin, &earth) == CORE_OK);
+        CHECK(eph_body_state(eph, 0, t_begin, &sun) == CORE_OK);
+
+        /* Sunward of the Earth by 20000 km, so nothing is between the vessel
+         * and the Sun. */
+        Vec3d to_sun = vec3_sub(sun.r, earth.r);
+        double d_sun = vec3_norm(to_sun);
+        Vec3d lit = vec3_add_scaled(earth.r, to_sun, 2.0e7 / d_sun);
+
+        Vec3d a_none;
+        accel_field(t_begin, lit, vec3_zero(), &field, &a_none);
+        CHECK(field.failed == 0);
+
+        /* A vessel with no area is the massless test particle this file has
+         * always propagated - bit for bit, not nearly. */
+        VesselParams empty = { 1000.0, 0.0, 1.3 };
+        field_set_vessel(&field, &empty);
+        Vec3d a_empty;
+        accel_field(t_begin, lit, vec3_zero(), &field, &a_empty);
+        CHECK(vec3_equal_bits(a_none, a_empty));
+
+        /* 20 m^2 on 1000 kg at Cr = 1.3. */
+        VesselParams sail = { 1000.0, 20.0, 1.3 };
+        field_set_vessel(&field, &sail);
+        CHECK(field.srp_coeff == 1.3 * 20.0 / 1000.0);
+
+        Vec3d a_lit;
+        accel_field(t_begin, lit, vec3_zero(), &field, &a_lit);
+
+        /* The difference is the radiation pressure and nothing else, so it
+         * can be compared against the closed form: flux * (AU/d)^2 / c times
+         * Cr*A/m, directed away from the Sun. */
+        Vec3d push = vec3_sub(a_lit, a_none);
+        double ratio = SRP_AU_M / vec3_norm(vec3_sub(sun.r, lit));
+        double want = 1367.6 * ratio * ratio / SRP_C_M_S * field.srp_coeff;
+
+        printf("  srp at the Earth: %.6e m/s^2, %.3e relative to the "
+               "closed form\n", vec3_norm(push),
+               fabs(vec3_norm(push) / want - 1.0));
+
+        /* Measured 2.9e-10, and not tightened past it, because the limit is
+         * the subtraction rather than the model: a 1.2e-7 m/s^2 push is
+         * being isolated from two accelerations near 6e-3, so nearly five
+         * orders of the difference are cancellation and what is left carries
+         * the rounding of a ten-term sum. The same arithmetic the momentum
+         * check of K2 had to allow for. It still discriminates: any real
+         * error - a wrong constant, a missing Cr, kilometres for metres -
+         * moves this by 1e-3 or more. */
+        CHECK(fabs(vec3_norm(push) / want - 1.0) < 1.0e-9);
+
+        /* Away from the Sun: the push and the direction to the Sun point
+         * opposite ways, to within the rounding of a dot product. */
+        double align = vec3_dot(push, to_sun)
+                     / (vec3_norm(push) * vec3_norm(to_sun));
+        CHECK(align < -0.99999999);
+
+        /* The same vessel on the night side, 20000 km behind the Earth, is
+         * in the umbra: the SRP term is gone entirely and what remains is
+         * bit-identical to the vessel with no area at the same place. This
+         * is the check that the shadow is cast by the right body at the
+         * right place - a shadow model wired to the wrong body would leave
+         * a vessel here fully lit. */
+        Vec3d dark = vec3_add_scaled(earth.r, to_sun, -2.0e7 / d_sun);
+
+        field_set_vessel(&field, NULL);
+        Vec3d dark_none;
+        accel_field(t_begin, dark, vec3_zero(), &field, &dark_none);
+
+        field_set_vessel(&field, &sail);
+        Vec3d dark_sail;
+        accel_field(t_begin, dark, vec3_zero(), &field, &dark_sail);
+
+        CHECK(vec3_equal_bits(dark_none, dark_sail));
+        CHECK(field.failed == 0);
+
+        /* And the gradient follows the force. Finite differences of
+         * accel_field itself, with the vessel set on both sides, at a lit
+         * point far from the Earth so that the SRP term is not buried under
+         * a gravity gradient eleven orders larger.
+         *
+         * Compared as a difference of gradients rather than as one gradient:
+         * what is under test is the SRP block, and against the full matrix
+         * it would be invisible. */
+        Vec3d far_lit = vec3_add_scaled(earth.r, to_sun, 3.0e8 / d_sun);
+
+        double g_with[9], g_without[9];
+        field_set_vessel(&field, &sail);
+        field_gradient(t_begin, far_lit, &field, g_with);
+        field_set_vessel(&field, NULL);
+        field_gradient(t_begin, far_lit, &field, g_without);
+
+        double h = 1.0e6;
+        double worst = 0.0;
+        for (int j = 0; j < 3; j++) {
+            Vec3d rp = far_lit, rm = far_lit;
+            double *pj = (j == 0) ? &rp.x : (j == 1) ? &rp.y : &rp.z;
+            double *mj = (j == 0) ? &rm.x : (j == 1) ? &rm.y : &rm.z;
+            *pj += h;
+            *mj -= h;
+
+            Vec3d ap_w, am_w, ap_n, am_n;
+            field_set_vessel(&field, &sail);
+            accel_field(t_begin, rp, vec3_zero(), &field, &ap_w);
+            accel_field(t_begin, rm, vec3_zero(), &field, &am_w);
+            field_set_vessel(&field, NULL);
+            accel_field(t_begin, rp, vec3_zero(), &field, &ap_n);
+            accel_field(t_begin, rm, vec3_zero(), &field, &am_n);
+
+            Vec3d dp = vec3_sub(ap_w, ap_n);
+            Vec3d dm = vec3_sub(am_w, am_n);
+            double fd[3] = {
+                (dp.x - dm.x) / (2.0 * h),
+                (dp.y - dm.y) / (2.0 * h),
+                (dp.z - dm.z) / (2.0 * h),
+            };
+
+            for (int i = 0; i < 3; i++) {
+                double got = g_with[i * 3 + j] - g_without[i * 3 + j];
+                double e = fabs(got - fd[i]) / (fabs(got) + 1.0e-30);
+                if (e > worst) {
+                    worst = e;
+                }
+            }
+        }
+        printf("  srp gradient through the field: %.3e relative\n", worst);
+        CHECK(worst < 1.0e-5);
+        CHECK(field.failed == 0);
     }
 
     /* Running off the end of the ephemeris sets the flag rather than

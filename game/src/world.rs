@@ -21,7 +21,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use core_rs::{CoreError, Ephemeris, PropConfig, Propagator, State};
+use core_rs::{CoreError, Ephemeris, PropConfig, Propagator, State, VesselParams};
 
 use crate::clock::{Clock, Stall};
 use crate::leg::{Leg, Sample, Trajectory};
@@ -82,6 +82,17 @@ pub struct Vessel {
     pub applied: usize,
 
     pub trajectory: Trajectory,
+
+    /// Площа, маса й коефіцієнт відбиття — усе, що потрібно тиску світла
+    /// (ROADMAP K6b). `None` — безмасова пробна частинка, як було до K6b.
+    ///
+    /// Задається при створенні й далі не змінюється. Це не забудькуватість:
+    /// зміна моделі сил на льоту зробила б уже пораховану частину прогнозу
+    /// траєкторією, якою апарат не полетить, тобто вимагала б каскадного
+    /// перерахунку — того самого, що робить правка плану. Площа апарата не
+    /// змінюється, а маса змінюється при горінні, якого імпульсна модель
+    /// маневрів не має.
+    pub params: Option<VesselParams>,
 
     /// Чому горизонт перестав рости. Ядро віддає помилки кодами, і найгірше,
     /// що можна з ними зробити, — впасти: світ лишається валідним, просто
@@ -190,10 +201,16 @@ impl World {
         self.eph.clone()
     }
 
-    pub fn add_vessel(&mut self, name: &str, start: State, horizon_end: f64) -> VesselId {
+    pub fn add_vessel(
+        &mut self,
+        name: &str,
+        start: State,
+        horizon_end: f64,
+        params: Option<VesselParams>,
+    ) -> VesselId {
         // Нуль означає «обери сам» лише на першому виклику; далі переноситься
         // те, що лишив попередній (`core/prop.h`).
-        self.add_planned_vessel(name, start, 0.0, horizon_end, Plan::new())
+        self.add_planned_vessel(name, start, 0.0, horizon_end, Plan::new(), params)
     }
 
     /// Апарат, що продовжує чужий політ: із заданим кроком і вже заданим
@@ -210,6 +227,7 @@ impl World {
         step: f64,
         horizon_end: f64,
         plan: Plan,
+        params: Option<VesselParams>,
     ) -> VesselId {
         let id = VesselId(self.vessels.len() as u32);
         self.vessels.push(Vessel {
@@ -221,6 +239,7 @@ impl World {
             plan,
             applied: 0,
             trajectory: Trajectory::new(start),
+            params,
             failed: None,
         });
 
@@ -238,25 +257,23 @@ impl World {
     /// застосований (його Δv у `tip`), але з чисел цього не видно: стан до й
     /// після імпульсу мають однаковий час. Вивести його тут означало б
     /// виконати маневр удруге при кожному завантаженні (`crate::save`).
-    pub fn add_saved_vessel(
-        &mut self,
-        name: &str,
-        tip: State,
-        step: f64,
-        horizon_end: f64,
-        plan: Plan,
-        applied: usize,
-    ) -> VesselId {
+    ///
+    /// Бере [`crate::save::SavedVessel`] цілком, а не сім аргументів. Ця
+    /// структура вже описує рівно те, що треба відновити, і два списки полів
+    /// поруч розійшлися б мовчки — саме так `params` (K6b) і був би
+    /// загублений при завантаженні.
+    pub fn add_saved_vessel(&mut self, saved: crate::save::SavedVessel) -> VesselId {
         let id = VesselId(self.vessels.len() as u32);
         self.vessels.push(Vessel {
             id,
-            name: name.to_string(),
-            tip,
-            tip_step: step,
-            horizon_end,
-            plan,
-            applied,
-            trajectory: Trajectory::new(tip),
+            name: saved.name,
+            tip: saved.tip,
+            tip_step: saved.step,
+            horizon_end: saved.horizon_end,
+            plan: saved.plan,
+            applied: saved.applied,
+            trajectory: Trajectory::new(saved.tip),
+            params: saved.params,
             failed: None,
         });
         self.version += 1;
@@ -461,6 +478,7 @@ impl World {
         // тут, або на заповненому буфері — обидві межі відтворювані.
         let run = match self.prop.run(
             &vessel.tip,
+            vessel.params.as_ref(),
             boundary,
             &[],
             &mut buffer,
@@ -553,6 +571,7 @@ impl World {
                     tip: v.tip,
                     computed_to: v.computed_to(),
                     horizon_end: v.horizon_end,
+                    params: v.params,
                     failed: v.failed,
                 })
                 .collect(),

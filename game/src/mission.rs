@@ -112,6 +112,10 @@ pub fn world(asset: &Path) -> Result<World, CoreError> {
     // Курсор стартує там, де стартує апарат: епоха ассета — це нуль часу для
     // ефемериди, а не для місії.
     let mut world = World::new(asset, config(), start.t, DEFAULT_WARP)?;
-    world.add_vessel("halo 1151", start, start.t + DAYS * 86400.0);
+    // Без площі: тиск світла (K6b) є в моделі сил, але цей апарат крізь неї
+    // не летить. Halo-орбіта демо підбиралася без нього, і додати його тут
+    // означало б змінити зміст демонстрації під приводом технічного кроку -
+    // це рішення про контент, а не про проводку.
+    world.add_vessel("halo 1151", start, start.t + DAYS * 86400.0, None);
     Ok(world)
 }

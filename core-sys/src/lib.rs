@@ -53,6 +53,24 @@ pub struct State {
     pub t: f64,
 }
 
+/// `VesselParams` з `core/core.h` (ROADMAP K6b).
+///
+/// Гравітації вона не потрібна — апарат там безмасова пробна частинка, і це
+/// не наближення, а поділ, на якому стоїть архітектура. Тиску світла —
+/// потрібна: прискорення від нього масштабується на `Cr·A/m`, тобто на
+/// властивість самого апарата.
+///
+/// `cd` зі скетчу PROJECT.md §5 тут немає навмисно: поки атмосфери немає
+/// (K7), це було б поле, яке викликач заповнює, а ядро ігнорує, і ніщо про
+/// це не скаже.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VesselParams {
+    pub mass_kg: f64,
+    pub area_m2: f64,
+    pub cr: f64,
+}
+
 /// Непрозорий хендл ефемериди.
 ///
 /// Порожнє приватне поле — навмисно: воно робить тип неконструйованим ззовні
@@ -174,6 +192,7 @@ extern "C" {
     pub fn prop_run(
         p: *mut PropagatorCtx,
         initial: *const State,
+        vessel: *const VesselParams,
         t_end: f64,
         events: *const CoreEvent,
         n_events: usize,
@@ -201,9 +220,12 @@ extern "C" {
     /// Подій і буфера семплів тут немає навмисно: питання «куди дійде
     /// зміна початкового стану до `t_end`» стосується однієї ланки з двома
     /// кінцями, а подія обірвала б її там, де викликач не просив.
+    ///
+    /// `vessel` — як у `prop_run`: null означає безмасову пробну частинку.
     pub fn prop_run_stm(
         p: *mut PropagatorCtx,
         initial: *const State,
+        vessel: *const VesselParams,
         t_end: f64,
         out_final: *mut State,
         out_stm: *mut f64,

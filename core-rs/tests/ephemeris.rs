@@ -242,7 +242,7 @@ fn propagation_matches_the_raw_call_bit_for_bit() {
     let mut samples = vec![State::default(); CAP];
     let mut step = 0.0;
     let run = prop
-        .run(&start, VESSEL_T0 + 0.5 * DAY, &[], &mut samples, &mut step)
+        .run(&start, None, VESSEL_T0 + 0.5 * DAY, &[], &mut samples, &mut step)
         .expect("прогін має пройти");
 
     // Сирий шлях, той самий буфер, ті самі числа.
@@ -277,6 +277,7 @@ fn propagation_matches_the_raw_call_bit_for_bit() {
             core_sys::prop_run(
                 raw_prop,
                 &start,
+                std::ptr::null(),
                 VESSEL_T0 + 0.5 * DAY,
                 std::ptr::null(),
                 0,
@@ -327,7 +328,7 @@ fn an_empty_slice_means_no_sampling() {
 
     let mut step = 0.0;
     let run = prop
-        .run(&start, VESSEL_T0 + 0.5 * DAY, &[], &mut [], &mut step)
+        .run(&start, None, VESSEL_T0 + 0.5 * DAY, &[], &mut [], &mut step)
         .expect("прогін без семплів має пройти");
 
     assert_eq!(run.filled, 0);
@@ -349,7 +350,7 @@ fn events_come_back_as_events() {
 
     let mut step = 0.0;
     let run = prop
-        .run(&start, VESSEL_T0 + 4.0 * DAY, &events, &mut [], &mut step)
+        .run(&start, None, VESSEL_T0 + 4.0 * DAY, &events, &mut [], &mut step)
         .expect("прогін має пройти");
 
     // Апарат стартує рівно в апоцентрі, тож першим має бути перицентр — це
@@ -376,7 +377,7 @@ fn stitched_legs_are_the_same_trajectory() {
     let mut whole = Propagator::new(eph.clone(), config()).unwrap();
     let mut step = 0.0;
     let single = whole
-        .run(&start, t_end, &[], &mut [], &mut step)
+        .run(&start, None, t_end, &[], &mut [], &mut step)
         .expect("один прогін");
 
     let mut legs = Propagator::new(eph, config()).unwrap();
@@ -387,7 +388,7 @@ fn stitched_legs_are_the_same_trajectory() {
 
     loop {
         let run = legs
-            .run(&state, t_end, &[], &mut piece, &mut leg_step)
+            .run(&state, None, t_end, &[], &mut piece, &mut leg_step)
             .expect("ланка");
         state = run.final_state;
         n_legs += 1;
@@ -429,14 +430,14 @@ fn running_past_the_asset_is_an_error() {
 
     let mut step = 0.0;
     assert_eq!(
-        prop.run(&start, 200.0 * DAY, &[], &mut [], &mut step).err(),
+        prop.run(&start, None, 200.0 * DAY, &[], &mut [], &mut step).err(),
         Some(CoreError::InvalidArg)
     );
 
     // І контекст не отруєний: наступний прогін у межах ассета проходить.
     let mut step = 0.0;
     assert!(prop
-        .run(&start, VESSEL_T0 + 3600.0, &[], &mut [], &mut step)
+        .run(&start, None, VESSEL_T0 + 3600.0, &[], &mut [], &mut step)
         .is_ok());
 }
 
@@ -452,7 +453,7 @@ fn creating_and_dropping_repeatedly_is_clean() {
         let start = vessel(&eph);
         let mut step = 0.0;
         let mut samples = [State::default(); 8];
-        let _ = prop.run(&start, VESSEL_T0 + 600.0, &[], &mut samples, &mut step);
+        let _ = prop.run(&start, None, VESSEL_T0 + 600.0, &[], &mut samples, &mut step);
     }
 }
 
@@ -471,11 +472,11 @@ fn the_stm_run_is_the_same_trajectory() {
 
     let mut plain_step = 0.0;
     let plain = prop
-        .run(&start, t_end, &[], &mut [], &mut plain_step)
+        .run(&start, None, t_end, &[], &mut [], &mut plain_step)
         .unwrap();
 
     let mut stm_step = 0.0;
-    let (final_state, phi) = prop.run_stm(&start, t_end, &mut stm_step).unwrap();
+    let (final_state, phi) = prop.run_stm(&start, None, t_end, &mut stm_step).unwrap();
 
     for (a, b) in [
         (final_state.r.x, plain.final_state.r.x),
@@ -522,7 +523,7 @@ fn an_stm_run_past_the_asset_is_an_error() {
 
     let mut step = 0.0;
     assert_eq!(
-        prop.run_stm(&start, 200.0 * DAY, &mut step).err(),
+        prop.run_stm(&start, None, 200.0 * DAY, &mut step).err(),
         Some(CoreError::InvalidArg)
     );
 }
@@ -533,4 +534,71 @@ fn an_stm_run_past_the_asset_is_an_error() {
 fn indexing_the_stm_out_of_range_panics() {
     let phi = Stm([0.0; STM_LEN]);
     let _ = phi.get(6, 0);
+}
+
+/// Тиск сонячного світла через обгортку (ROADMAP K6b).
+///
+/// Фізику міряє `core/test/test_srp.c`; тут перевіряється переклад
+/// `Option<&VesselParams>` у вказівник, і три твердження, кожне з яких
+/// ламається окремо:
+///
+/// - `None` і апарат без площі — це те саме, **бітово**: усе, що літало до
+///   K6b, летить так само;
+/// - апарат із площею летить інакше, і на скільки саме — видно;
+/// - `run_stm` несе той самий апарат, тобто матриця належить траєкторії, а
+///   не сусідній (це K8c, перевірене ще раз там, де його найлегше втратити).
+#[test]
+fn a_vessel_with_area_feels_the_sun() {
+    let eph = Arc::new(load());
+    let start = vessel(&eph);
+    let mut prop = Propagator::new(eph, config()).unwrap();
+
+    let t_end = VESSEL_T0 + 0.5 * DAY;
+
+    let bare = core_rs::VesselParams {
+        mass_kg: 1000.0,
+        area_m2: 0.0,
+        cr: 1.3,
+    };
+    let sail = core_rs::VesselParams {
+        mass_kg: 1000.0,
+        area_m2: 20.0,
+        cr: 1.3,
+    };
+
+    let mut step = 0.0;
+    let none = prop
+        .run(&start, None, t_end, &[], &mut [], &mut step)
+        .unwrap();
+
+    let mut step_bare = 0.0;
+    let zero_area = prop
+        .run(&start, Some(&bare), t_end, &[], &mut [], &mut step_bare)
+        .unwrap();
+    assert!(
+        same_bits(&none.final_state, &zero_area.final_state),
+        "апарат без площі — це та сама пробна частинка"
+    );
+    assert_eq!(step.to_bits(), step_bare.to_bits(), "і той самий крок");
+
+    let mut step_sail = 0.0;
+    let lit = prop
+        .run(&start, Some(&sail), t_end, &[], &mut [], &mut step_sail)
+        .unwrap();
+
+    let moved = ((lit.final_state.r.x - none.final_state.r.x).powi(2)
+        + (lit.final_state.r.y - none.final_state.r.y).powi(2)
+        + (lit.final_state.r.z - none.final_state.r.z).powi(2))
+    .sqrt();
+    println!("  пів доби під SRP зрушили апарат на {moved:.4} м");
+    assert!(moved > 1.0, "площа мала змінити траєкторію, а зрушила {moved} м");
+
+    let mut stm_step = 0.0;
+    let (stm_final, _) = prop
+        .run_stm(&start, Some(&sail), t_end, &mut stm_step)
+        .unwrap();
+    assert!(
+        same_bits(&stm_final, &lit.final_state),
+        "матриця мусить належати траєкторії, яку апарат справді летить"
+    );
 }

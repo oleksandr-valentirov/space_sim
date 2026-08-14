@@ -299,6 +299,7 @@ fn propagation_matches_the_c_oracle_bit_for_bit() {
         let result = prop_run(
             p,
             &vessel,
+            std::ptr::null(),
             VESSEL_T0 + 0.5 * DAY,
             std::ptr::null(),
             0,
@@ -347,6 +348,7 @@ fn propagation_matches_the_c_oracle_bit_for_bit() {
         let result = prop_run(
             p,
             &vessel,
+            std::ptr::null(),
             VESSEL_T0 + 4.0 * DAY,
             &ev,
             1,
@@ -392,6 +394,7 @@ fn propagation_matches_the_c_oracle_bit_for_bit() {
         let result = prop_run_stm(
             p,
             &vessel,
+            std::ptr::null(),
             VESSEL_T0 + 0.5 * DAY,
             &mut stm_final,
             phi.as_mut_ptr(),
@@ -417,6 +420,58 @@ fn propagation_matches_the_c_oracle_bit_for_bit() {
                 "елемент STM {k}"
             );
         }
+
+        // --- Апарат, що відчуває тиск світла (ROADMAP K6b) -------------
+        //
+        // Тут перевіряється не фізика — її міряє core/test/test_srp.c, —
+        // а оголошення `VesselParams`: переставлені місцями `area_m2` і
+        // `cr` дали б цілком правдоподібну траєкторію, лише не ту.
+        // Оракул рахує ту саму ланку в C і друкує, що вийшло.
+        let oracle_srp_run = tagged(&records, "srprun");
+        let oracle_srp_end = tagged(&records, "srpend");
+        assert_eq!(oracle_srp_run.len(), 1);
+        assert_eq!(oracle_srp_end.len(), 1);
+
+        let sail = core_sys::VesselParams {
+            mass_kg: 1000.0,
+            area_m2: 20.0,
+            cr: 1.3,
+        };
+
+        let mut srp_final = State::default();
+        step = 0.0;
+        let result = prop_run(
+            p,
+            &vessel,
+            &sail,
+            VESSEL_T0 + 0.5 * DAY,
+            std::ptr::null(),
+            0,
+            samples.as_mut_ptr(),
+            CAP,
+            &mut count,
+            &mut srp_final,
+            &mut stop,
+            &mut event,
+            &mut step,
+        );
+        assert_eq!(result, CORE_OK);
+
+        let run = &oracle_srp_run[0];
+        assert_eq!(run.values[0] as usize, count, "кількість семплів під SRP");
+        assert_eq!(run.values[3].to_bits(), step.to_bits(), "крок під SRP");
+        same_bits(&oracle_srp_end[0].state(0), &srp_final, "кінцевий стан під SRP");
+
+        // І він таки інший: якби вказівник на апарат нікуди не доходив,
+        // усе вище збіглося б з оракулом, який теж нічого не відчув.
+        let moved = ((srp_final.r.x - final_state.r.x).powi(2)
+            + (srp_final.r.y - final_state.r.y).powi(2)
+            + (srp_final.r.z - final_state.r.z).powi(2))
+        .sqrt();
+        assert!(
+            moved > 1.0,
+            "апарат з площею мав полетіти інакше, а зрушив на {moved} м"
+        );
 
         // Матриця не одинична й не порожня — інакше все вище звірялося б із
         // нулями й проходило б на будь-якій помилці.

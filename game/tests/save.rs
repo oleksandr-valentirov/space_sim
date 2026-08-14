@@ -286,3 +286,85 @@ fn a_file_that_is_not_a_save_is_refused() {
     assert!(Save::from_text("").is_err());
     assert!(Save::from_text("space_sim save v1\n").is_err(), "немає 't'");
 }
+
+/// Апарат, що відчуває тиск світла, зберігається й повертається тим самим
+/// апаратом (ROADMAP K6b).
+///
+/// Це та сама перевірка, що й з кроком інтегратора вище, і з тієї ж причини:
+/// площа й маса входять у модель сил, тож сейв, який їх загубив, повертає
+/// корабель, який летить не туди, куди летів збережений. Різниця лише в
+/// тому, що крок було видно в файлі одразу, а це поле легко забути.
+#[test]
+fn a_vessel_with_area_survives_the_save() {
+    use core_rs::VesselParams;
+
+    let sail = VesselParams {
+        mass_kg: 1000.0,
+        area_m2: 20.0,
+        cr: 1.3,
+    };
+
+    let cursor = mission::start().t + 4.0 * 3600.0;
+
+    // Той самий світ, той самий апарат - лише з площею. Будується напряму,
+    // а не через mission::world, бо демо-апарат навмисно летить без неї.
+    let build = || {
+        let mut world = World::new(
+            &mission::default_asset(),
+            mission::config(),
+            mission::start().t,
+            1.0,
+        )
+        .expect("світ будується");
+        world.add_vessel(
+            "sail",
+            mission::start(),
+            mission::start().t + 3.0 * 86400.0,
+            Some(sail),
+        );
+        world
+    };
+
+    let mut plain = build();
+    while plain.clock().t() < cursor + 3600.0 {
+        if plain.step(60.0, 64).legs == 0 {
+            break;
+        }
+    }
+
+    let mut interrupted = build();
+    while interrupted.clock().t() < cursor {
+        if interrupted.step(60.0, 64).legs == 0 {
+            break;
+        }
+    }
+
+    let save = Save::of(&interrupted);
+
+    // Через текст, не через структуру в пам'яті: якби `params` не
+    // друкувалося або не читалося назад, саме тут це й видно.
+    let text = save.to_text();
+    assert!(text.contains("params"), "площа мала потрапити у файл:\n{text}");
+
+    let reloaded = Save::from_text(&text).expect("сейв читається");
+    assert_eq!(
+        reloaded.vessels[0].params,
+        Some(sail),
+        "апарат повернувся іншим кораблем"
+    );
+
+    let mut loaded = reloaded
+        .into_world(interrupted.ephemeris(), mission::config())
+        .expect("світ із сейву");
+    while loaded.clock().t() < cursor + 3600.0 {
+        if loaded.step(60.0, 64).legs == 0 {
+            break;
+        }
+    }
+
+    assert_same(
+        &samples_after(&plain, cursor),
+        &samples_after(&loaded, cursor),
+        "апарат із площею після завантаження",
+    );
+}

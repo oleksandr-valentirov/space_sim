@@ -58,6 +58,10 @@ pub struct Request {
     pub plan: Plan,
     /// Кінець місії апарата — той самий, що в світі.
     pub horizon_end: f64,
+    /// Апарат так, як його бачить модель сил (K6b). Мусить бути той самий,
+    /// що у світі: прев'ю з іншою площею — це лінія, якою апарат не полетить,
+    /// тобто рівно те, чого ця нитка не має права показувати.
+    pub params: Option<core_rs::VesselParams>,
 }
 
 /// Порахований прогноз. Не стан світу: його ніхто нікуди не поклав.
@@ -166,6 +170,7 @@ fn compute(
         request.step,
         request.horizon_end,
         request.plan.clone(),
+        request.params,
     );
 
     loop {

@@ -31,9 +31,12 @@
 #define MAX_SAMPLES 256
 #define DAY 86400.0
 
-static const char *ALL_BODIES[] = {
-    "sun", "mercury", "venus", "earth", "moon",
-    "mars_bary", "jupiter_bary", "saturn_bary", "uranus_bary", "neptune_bary",
+static const EphBodyInfo ALL_BODIES[] = {
+    { "sun", 0.0, 0.0 },          { "mercury", 0.0, 0.0 },
+    { "venus", 0.0, 0.0 },        { "earth", 0.0, 0.0 },
+    { "moon", 0.0, 0.0 },         { "mars_bary", 0.0, 0.0 },
+    { "jupiter_bary", 0.0, 0.0 }, { "saturn_bary", 0.0, 0.0 },
+    { "uranus_bary", 0.0, 0.0 },  { "neptune_bary", 0.0, 0.0 },
 };
 #define N_ALL (sizeof ALL_BODIES / sizeof ALL_BODIES[0])
 
@@ -75,13 +78,13 @@ static int load_inputs(void)
     }
 
     for (size_t i = 0; i < N_ALL; i++) {
-        snprintf(path, sizeof path, "data/horizons/vec_%s.csv", ALL_BODIES[i]);
+        snprintf(path, sizeof path, "data/horizons/vec_%s.csv", ALL_BODIES[i].name);
         size_t n = 0;
         if (refdata_load_vectors(path, reference_data[i], MAX_SAMPLES, &n)
             != CORE_OK) {
             return 0;
         }
-        system_config.mu[i] = refdata_gm_of(gm_table, n_gm, ALL_BODIES[i]);
+        system_config.mu[i] = refdata_gm_of(gm_table, n_gm, ALL_BODIES[i].name);
         initial[i] = reference_data[i][0].s;
     }
 

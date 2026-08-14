@@ -26,13 +26,16 @@ pub fn eph_body_state(ctx: *const EphemerisCtx, body: c_int, t: f64, out: *mut S
 pub fn prop_create(eph: *const EphemerisCtx, cfg: *const PropConfig,
                    out: *mut *mut PropagatorCtx) -> CoreResult;
 pub fn prop_free(p: *mut PropagatorCtx);
-pub fn prop_run(/* 12 аргументів: буфер від Rust, out_cap/out_count,
+// ROADMAP K6b: другий аргумент — `*const VesselParams` (маса, площа, Cr).
+// NULL = безмасова пробна частинка, тобто бітово те, що було до K6b.
+pub fn prop_run(/* 13 аргументів: vessel, буфер від Rust, out_cap/out_count,
                    out_final, out_stop, out_event, in_out_step */) -> CoreResult;
 
 // ROADMAP K8c. Та сама інтеграція з матрицею переходу; out_stm — 36 f64
 // від Rust. Траєкторія БІТОВО та сама, що в prop_run (контролер кроку в
 // dop853.c читає лише блок 0) — виміряно на всіх трьох рівнях.
-pub fn prop_run_stm(p: *mut PropagatorCtx, initial: *const State, t_end: f64,
+pub fn prop_run_stm(p: *mut PropagatorCtx, initial: *const State,
+                    vessel: *const VesselParams, t_end: f64,
                     out_final: *mut State, out_stm: *mut f64,
                     in_out_step: *mut f64) -> CoreResult;
 ```
@@ -51,10 +54,11 @@ impl Ephemeris {
 pub struct Propagator { /* Arc<Ephemeris> + приватний *mut PropagatorCtx */ }
 impl Propagator {
     pub fn new(eph: Arc<Ephemeris>, cfg: PropConfig) -> Result<Propagator>;
-    pub fn run(&mut self, initial: &State, t_end: f64, events: &[Event],
-               samples: &mut [State], step: &mut f64) -> Result<Run>;
-    pub fn run_stm(&mut self, initial: &State, t_end: f64,
-                   step: &mut f64) -> Result<(State, Stm)>;   // K8c
+    pub fn run(&mut self, initial: &State, vessel: Option<&VesselParams>,
+               t_end: f64, events: &[Event], samples: &mut [State],
+               step: &mut f64) -> Result<Run>;
+    pub fn run_stm(&mut self, initial: &State, vessel: Option<&VesselParams>,
+                   t_end: f64, step: &mut f64) -> Result<(State, Stm)>;  // K8c
 }
 // Stm — обгортка над [f64; 36] з get(row, col), а не голий масив: транспонована
 // матриця переходу цілком правдоподібна, і помилка проявилась би як дивна
@@ -63,7 +67,12 @@ impl Propagator {
 // Send є, Sync свідомо немає — контекст у C несе липкий прапорець помилки.
 ```
 
-Три речі про `Propagator::run`, які легко зламати назад:
+Чотири речі про `Propagator::run`, які легко зламати назад:
+
+- **`vessel: None` — це не «за замовчуванням», а «безмасова пробна
+  частинка»** (K6b), і воно бітово дорівнює тому, що було до K6b.
+  Апарат передається **на прогін**, не в конфігурацію: маса змінюється
+  при горінні, а `/game` тримає один пропагатор на всі апарати.
 
 - **Порожній зріз `samples` = «без семплування»**, і це перекладається
   явно: порожній зріз у Rust — вирівняний висячий вказівник, а не нуль, і
@@ -75,7 +84,7 @@ impl Propagator {
 
 Усе інше з `core/*.h` (`cr3bp_*`, `halo_correct`, `shoot_multiple`,
 `station_keep`, `lambert_solve`, `porkchop_compute`, `target_hit`,
-`eph_body_harmonics`, ...)
+`eph_body_harmonics`, `eph_body_radius`, `eph_body_flux`, ...)
 **існує в C, але не має FFI-декларації**. Якщо задача вимагає викликати щось
 із них із Rust — це нова робота на межі, а не пошук наявної функції.
 
@@ -126,6 +135,9 @@ cargo run -q --example flags # прапорці з боку cargo — звірк
 дописатися: він друкує `%.17g` того, що дає C, а `tests/ffi.rs` звіряє біти
 того ж виклику через FFI. Звірка має зуби — переставлені місцями `tol_m` і
 `h_max_s` у декларації `PropConfig` валять тест одразу (перевірено).
+Те саме правило стосується **нового аргументу**, не лише функції: після
+K6b оракул жене ту саму ланку з апаратом, який має площу, бо переставлені
+`area_m2` і `cr` дали б цілком правдоподібну траєкторію, лише не ту.
 
 ## Коли оновлювати цей скіл
 

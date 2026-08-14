@@ -64,6 +64,15 @@ pub struct SavedVessel {
     /// точка перезапуску колись стала пост-імпульсною. Число в файлі знімає
     /// це питання назавжди.
     pub applied: usize,
+
+    /// Площа, маса й коефіцієнт відбиття (ROADMAP K6b).
+    ///
+    /// У сейві не для повноти опису, а тому що без них завантажений апарат
+    /// летів би крізь іншу модель сил, ніж збережений, і траєкторія після
+    /// завантаження розійшлася б з тією, що була до нього — рівно те, чого
+    /// PROJECT.md §4 вимагає не допустити для кроку інтегратора, з тієї ж
+    /// причини й того ж масштабу.
+    pub params: Option<core_rs::VesselParams>,
 }
 
 pub struct Save {
@@ -107,6 +116,7 @@ impl Save {
                             .iter()
                             .take_while(|m| m.t < resume.state.t)
                             .count(),
+                        params: v.params,
                     }
                 })
                 .collect(),
@@ -125,14 +135,7 @@ impl Save {
         let mut world = World::with_ephemeris(eph, cfg, self.t, self.warp)?;
 
         for vessel in self.vessels {
-            world.add_saved_vessel(
-                &vessel.name,
-                vessel.tip,
-                vessel.step,
-                vessel.horizon_end,
-                vessel.plan,
-                vessel.applied,
-            );
+            world.add_saved_vessel(vessel);
         }
 
         Ok(world)
@@ -167,6 +170,18 @@ impl Save {
                 vessel.horizon_end
             );
             let _ = writeln!(out, "  applied {}", vessel.applied);
+            if let Some(p) = vessel.params {
+                let _ = writeln!(
+                    out,
+                    "  params {} {} {} # {:e} kg, {:e} m^2, cr {:e}",
+                    hex(p.mass_kg),
+                    hex(p.area_m2),
+                    hex(p.cr),
+                    p.mass_kg,
+                    p.area_m2,
+                    p.cr
+                );
+            }
             for m in vessel.plan.manoeuvres() {
                 let frame = match m.frame {
                     Frame::Inertial => "inertial".to_string(),
@@ -223,6 +238,7 @@ impl Save {
                     horizon_end: 0.0,
                     plan: Plan::new(),
                     applied: 0,
+                    params: None,
                 }),
                 _ => {
                     let vessel = vessels
@@ -251,6 +267,19 @@ impl Save {
                         }
                         "step" => vessel.step = number(&mut words, "step")?,
                         "horizon_end" => vessel.horizon_end = number(&mut words, "horizon_end")?,
+                        // Відсутній рядок — це `None`, безмасова пробна
+                        // частинка: сейви, написані до K6b, читаються далі
+                        // й означають рівно те, що означали.
+                        "params" => {
+                            let mass_kg = number(&mut words, "params[mass]")?;
+                            let area_m2 = number(&mut words, "params[area]")?;
+                            let cr = number(&mut words, "params[cr]")?;
+                            vessel.params = Some(core_rs::VesselParams {
+                                mass_kg,
+                                area_m2,
+                                cr,
+                            });
+                        }
                         "applied" => {
                             vessel.applied = words
                                 .next()

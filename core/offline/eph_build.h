@@ -15,6 +15,33 @@
 
 #include <stddef.h>
 
+/* What the asset says about a body beyond where it is (ROADMAP K6b).
+ *
+ * The name used to be all of it, passed as a bare array of strings. Radius
+ * and flux arrived together with the shadow model, and putting them in one
+ * struct rather than adding two more parallel arrays is the difference
+ * between a caller listing a body and a caller lining up three arrays and
+ * hoping they agree.
+ *
+ * Both new fields are optional and zero is the "not stated" value for each:
+ * zero radius means the body occults nothing, zero flux that it does not
+ * shine. That is the honest state of most bodies and it is how every test in
+ * core/test builds its list. They are written out rather than left to a
+ * partial initialiser because the core compiles with
+ * -Wmissing-field-initializers as an error - which is the right setting to
+ * have when a struct grows a field, and this struct just did.
+ *
+ * The gravitational parameter is NOT here: it comes from NBodySystem, the
+ * system actually being integrated, and the whole argument of K4b was that
+ * the asset must record what the cooker used rather than a second copy of
+ * it. Radius and flux are different in kind - they change no trajectory in
+ * this file, which is why they can be described here and not there. */
+typedef struct {
+    const char *name;
+    double      radius_m;   /* mean radius; 0 if the data does not say */
+    double      flux_1au;   /* W/m^2 at 1 AU; 0 for a body that is dark */
+} EphBodyInfo;
+
 typedef struct {
     double t_begin;           /* seconds from J2000 TDB */
     double t_end;
@@ -57,9 +84,9 @@ typedef struct {
     double max_fit_error_m;
 } EphBuildReport;
 
-/* names[] must have sys->n entries and match the order of initial[]. */
+/* bodies[] must have sys->n entries and match the order of initial[]. */
 CoreResult eph_build(const NBodySystem *sys, const State *initial,
-                     const char *const *names,
+                     const EphBodyInfo *bodies,
                      const EphBuildConfig *cfg,
                      const char *out_path,
                      EphBuildReport *report);

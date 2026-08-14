@@ -16,6 +16,8 @@ struct EphemerisCtx {
 
     char   (*names)[EPH_NAME_SIZE];
     double  *mu;
+    double  *radius;   /* metres, 0 where the asset does not say */
+    double  *flux;     /* W/m^2 at 1 AU, 0 for a body that does not shine */
     double  *coeffs;   /* [interval][body][component][degree] */
 
     /* One per body, degree 0 where the asset says point mass. Stored
@@ -85,10 +87,13 @@ CoreResult eph_load(const char *path, EphemerisCtx **out)
 
     ctx->names = calloc(n_bodies, sizeof *ctx->names);
     ctx->mu = calloc(n_bodies, sizeof *ctx->mu);
+    ctx->radius = calloc(n_bodies, sizeof *ctx->radius);
+    ctx->flux = calloc(n_bodies, sizeof *ctx->flux);
     ctx->coeffs = calloc(n_coeffs, sizeof *ctx->coeffs);
     ctx->harmonics = calloc(n_bodies, sizeof *ctx->harmonics);
 
-    if (ctx->names == NULL || ctx->mu == NULL || ctx->coeffs == NULL ||
+    if (ctx->names == NULL || ctx->mu == NULL || ctx->radius == NULL ||
+        ctx->flux == NULL || ctx->coeffs == NULL ||
         ctx->harmonics == NULL) {
         eph_free(ctx);
         fclose(f);
@@ -100,12 +105,25 @@ CoreResult eph_load(const char *path, EphemerisCtx **out)
 
         if (!read_exact(f, ctx->names[b], EPH_NAME_SIZE) ||
             !read_exact(f, &ctx->mu[b], sizeof ctx->mu[b]) ||
+            !read_exact(f, &ctx->radius[b], sizeof ctx->radius[b]) ||
+            !read_exact(f, &ctx->flux[b], sizeof ctx->flux[b]) ||
             !read_exact(f, &degree, sizeof degree)) {
             eph_free(ctx);
             fclose(f);
             return CORE_ERR_INVALID_ARG;
         }
         ctx->names[b][EPH_NAME_SIZE - 1] = '\0';
+
+        /* Negative is not "unknown", it is a corrupt file: unknown is zero,
+         * and every reader of these two treats zero as "this body does not
+         * occult" and "this body does not shine". A negative radius would
+         * reach srp_shadow's own guard and be ignored there, and a negative
+         * flux would pull a vessel toward the Sun. */
+        if (ctx->radius[b] < 0.0 || ctx->flux[b] < 0.0) {
+            eph_free(ctx);
+            fclose(f);
+            return CORE_ERR_INVALID_ARG;
+        }
 
         /* Degree 1 is not a point mass and not representable: the degree-1
          * terms vanish only in a frame centred on the body's centre of
@@ -168,6 +186,8 @@ void eph_free(EphemerisCtx *ctx)
     }
     free(ctx->names);
     free(ctx->mu);
+    free(ctx->radius);
+    free(ctx->flux);
     free(ctx->coeffs);
     free(ctx->harmonics);
     free(ctx);
@@ -192,6 +212,22 @@ double eph_body_mu(const EphemerisCtx *ctx, int body)
         return 0.0;
     }
     return ctx->mu[body];
+}
+
+double eph_body_radius(const EphemerisCtx *ctx, int body)
+{
+    if (ctx == NULL || body < 0 || (unsigned)body >= ctx->n_bodies) {
+        return 0.0;
+    }
+    return ctx->radius[body];
+}
+
+double eph_body_flux(const EphemerisCtx *ctx, int body)
+{
+    if (ctx == NULL || body < 0 || (unsigned)body >= ctx->n_bodies) {
+        return 0.0;
+    }
+    return ctx->flux[body];
 }
 
 CoreResult eph_body_harmonics(const EphemerisCtx *ctx, int body,

@@ -10,6 +10,7 @@ sc_quat 0cf6b4dd76bae45b
 sc_richardson 4727f9efe7889769
 sc_rk4 cf327da9e36dc16c
 sc_srp ed15e480b3ed0537
+sc_srpflight 4de143dbc9fe36e3
 sc_stm c2fa6f7a5186dc04
 sc_trajectory e89752e534c06f04
 sc_uncertainty 7dab2ee77e35eff6
