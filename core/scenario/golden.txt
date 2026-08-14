@@ -5,6 +5,7 @@ sc_cr3bp 1e58b8ae5f6b2a7c
 sc_dop853 8400ba159cae7209
 sc_ephemeris 030279d2e82517b7
 sc_harmonics 05b2cd1ee63ff371
+sc_orientation 75906fccc5679798
 sc_prop a06d6bac00307aa9
 sc_quat 0cf6b4dd76bae45b
 sc_richardson 4727f9efe7889769

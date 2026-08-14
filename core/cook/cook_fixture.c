@@ -79,6 +79,15 @@ static const EphBodyInfo BODIES[] = {
 #define INTERVAL_DAYS 8.0
 #define DEGREE 14
 
+/* Orientation needs two and a half times the coefficients position does over
+ * the same interval, and the reason is in core/ephemeris.h: Earth's
+ * quaternion is four full cycles of a wave across eight days, not a curve.
+ * Measured on this very interval, the fit is off by 1.4 radians at degree
+ * 24, by 8.8 m at the equator at 26, by a millimetre at 32, and by a
+ * micrometre here - and the cooker prints the number, so lengthening
+ * INTERVAL_DAYS without raising this cannot pass unnoticed. */
+#define ORIENT_DEGREE 36
+
 static const char *OUT_PATH = "data/fixture/earth_moon.eph";
 
 static RefSample samples[MAX_SAMPLES];
@@ -146,6 +155,7 @@ int main(void)
     cfg.t_end = SPAN_DAYS * DAY;
     cfg.interval_seconds = INTERVAL_DAYS * DAY;
     cfg.degree = DEGREE;
+    cfg.orient_degree = ORIENT_DEGREE;
 
     /* Chosen from the fastest body, not from the size of the system - the
      * lesson of ROADMAP B5 - and tight enough to bind on its own, which is
@@ -173,6 +183,9 @@ int main(void)
     printf("  size      %zu bytes\n", report.bytes_written);
     printf("  steps     %ld\n", report.integrator_steps);
     printf("  fit error %.4g m\n", report.max_fit_error_m);
+    printf("  orient    degree %d, error %.4g rad (%.4g m at Earth's equator)\n",
+           ORIENT_DEGREE, report.max_orient_error_rad,
+           report.max_orient_error_rad * 6378137.0);
 
     return 0;
 }

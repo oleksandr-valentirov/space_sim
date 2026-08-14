@@ -2,6 +2,8 @@
  *
  * Run from the repository root. Writes into build/, which is not tracked. */
 
+#include "body_rotation.h"
+#include "cheb_fit.h"
 #include "eph_build.h"
 #include "ephemeris.h"
 #include "refdata.h"
@@ -27,6 +29,12 @@ static const EphBodyInfo ALL_BODIES[] = {
 #define SPAN_DAYS 60.0
 #define INTERVAL_DAYS 8.0
 #define DEGREE 14
+
+/* Two of the ten bodies above have a rotation model, so this asset carries
+ * orientation for exactly two (ROADMAP K3b). Same degree as the shipped
+ * fixture and for the same measured reason - core/ephemeris.h. */
+#define ORIENT_DEGREE 36
+#define N_ORIENT 2
 
 static const char *PATH_A = "build/test_eph_a.eph";
 static const char *PATH_B = "build/test_eph_b.eph";
@@ -72,6 +80,7 @@ static EphBuildConfig default_config(void)
     cfg.t_end = SPAN_DAYS * DAY;
     cfg.interval_seconds = INTERVAL_DAYS * DAY;
     cfg.degree = DEGREE;
+    cfg.orient_degree = ORIENT_DEGREE;
     cfg.tol_m = 1.0;
     return cfg;
 }
@@ -154,15 +163,38 @@ int main(void)
          * is exactly the right failure: a format change that did not move
          * the size would slip past a hardcoded total. Version 3 moved it
          * again by two doubles a body, and this check named the two. */
-        size_t header = 8 + 4 + 4 + 4 + 4 + 8 + 8 + 8;
+        size_t header = 8 + 4 + 4 + 4 + 4 + 4 + 8 + 8 + 8;
         size_t per_body = EPH_NAME_SIZE
                         + sizeof(double)      /* mu */
                         + sizeof(double)      /* mean radius (K6b) */
                         + sizeof(double)      /* solar flux (K6b) */
+                        + sizeof(uint32_t)    /* orientation flag (K3b) */
                         + sizeof(uint32_t);   /* harmonic degree */
-        size_t coeffs = (size_t)report.intervals * N_ALL * 3u * 14u
+        size_t coeffs = (size_t)report.intervals * N_ALL * 3u * DEGREE
                       * sizeof(double);
-        CHECK(report.bytes_written == header + N_ALL * per_body + coeffs);
+        size_t orient = (size_t)report.intervals * N_ORIENT * 4u * ORIENT_DEGREE
+                      * sizeof(double);
+        CHECK(report.bytes_written == header + N_ALL * per_body + coeffs
+                                    + orient);
+
+        /* Version 4's channels cost more than everything else in the file
+         * put together - 18432 bytes of orientation against 26880 of
+         * position, for two bodies out of ten - which is the price of
+         * fitting a wave with a polynomial. Worth stating next to the
+         * layout, since the obvious way to make it cheaper (fewer
+         * coefficients) is exactly the one that does not work. */
+        CHECK(orient > 0);
+    }
+
+    /* The orientation fit is measured, not assumed: the cooker reports the
+     * worst it saw at the least constrained point of any interval. Measured
+     * 1.97e-14 rad over these sixty days, which is 0.13 micrometres at
+     * Earth's equator; the shipped fixture's hundred and twenty days report
+     * 1.24e-13. The upper bound is what has teeth - degree 24 over this same
+     * interval would report 1.4 rad, and catching that is what it is for. */
+    {
+        CHECK(report.max_orient_error_rad > 0.0);
+        CHECK(report.max_orient_error_rad < 1e-10);
     }
 
     EphemerisCtx *eph = NULL;
@@ -201,6 +233,98 @@ int main(void)
 
     double t_begin = 0.0, t_end = 0.0;
     eph_span(eph, &t_begin, &t_end);
+
+    /* Orientation survives the round trip through the file (ROADMAP K3b).
+     *
+     * The oracle is body_rotation.c itself, which is not circular here: that
+     * side computes a rotation with sin() and cos() at one instant, this side
+     * evaluates four Chebyshev polynomials the cooker fitted through 36 such
+     * instants and renormalises. Every part of the path between them - the
+     * sign chain, the layout, the interval arithmetic, the slot a body's
+     * channels sit in - is what can go wrong, and all of it would show up as
+     * a mismatch here.
+     *
+     * Sampled away from the nodes and away from interval boundaries, since
+     * the fit is exact at its nodes. Measured worst: 1.22e-13 per
+     * component, sampled far more densely than the cooker's own one probe
+     * per interval, which is why it is the larger of the two numbers. */
+    {
+        double worst = 0.0;
+
+        for (size_t i = 0; i < N_ALL; i++) {
+            for (int k = 0; k <= 120; k++) {
+                double t = t_begin + (t_end - t_begin) * (double)k / 120.5;
+
+                Quat from_asset;
+                CHECK(eph_body_orientation(eph, (int)i, t, &from_asset)
+                      == CORE_OK);
+
+                if (!body_rotation_has_model(ALL_BODIES[i].name)) {
+                    /* A body with no model is the identity exactly, not
+                     * approximately: no channels were written for it, so
+                     * there is nothing for a fit to round. */
+                    CHECK_BITS_EQ(from_asset.w, 1.0);
+                    CHECK_BITS_EQ(from_asset.x, 0.0);
+                    CHECK_BITS_EQ(from_asset.y, 0.0);
+                    CHECK_BITS_EQ(from_asset.z, 0.0);
+                    continue;
+                }
+
+                Quat truth;
+                CHECK(body_rotation_of(ALL_BODIES[i].name, t, &truth)
+                      == CORE_OK);
+
+                /* q and -q are the same rotation; the cooker's sign chain
+                 * may have settled on either. */
+                double dot = from_asset.w * truth.w + from_asset.x * truth.x
+                           + from_asset.y * truth.y + from_asset.z * truth.z;
+                double s = dot < 0.0 ? -1.0 : 1.0;
+
+                double d[4] = { from_asset.w - s * truth.w,
+                                from_asset.x - s * truth.x,
+                                from_asset.y - s * truth.y,
+                                from_asset.z - s * truth.z };
+                for (int c = 0; c < 4; c++) {
+                    if (fabs(d[c]) > worst) {
+                        worst = fabs(d[c]);
+                    }
+                }
+
+                /* Unit length is the one invariant four independent fits do
+                 * not preserve on their own, and eph_body_orientation is
+                 * where it is restored. */
+                CHECK(fabs(quat_norm_sq(from_asset) - 1.0) < 1e-15);
+            }
+        }
+
+        CHECK(worst < 1e-11);
+    }
+
+    /* Same refusals as eph_body_state, and for the same reason: a fit
+     * evaluated outside its interval is confident nonsense. "Not modelled"
+     * is not one of them - it is an answer, checked above. */
+    {
+        Quat q;
+        CHECK(eph_body_orientation(eph, 0, t_begin - 1.0, &q)
+              == CORE_ERR_INVALID_ARG);
+        CHECK(eph_body_orientation(eph, 0, t_end + 1.0, &q)
+              == CORE_ERR_INVALID_ARG);
+        CHECK(eph_body_orientation(eph, -1, t_begin, &q)
+              == CORE_ERR_INVALID_ARG);
+        CHECK(eph_body_orientation(eph, (int)N_ALL, t_begin, &q)
+              == CORE_ERR_INVALID_ARG);
+        CHECK(eph_body_orientation(eph, 0, t_begin, NULL)
+              == CORE_ERR_INVALID_ARG);
+        CHECK(eph_body_orientation(NULL, 0, t_begin, &q)
+              == CORE_ERR_INVALID_ARG);
+
+        /* Including for a body that carries no channels: a bad time has to
+         * stay an error for every body, or the caller learns to trust an
+         * answer that was never checked. */
+        CHECK(eph_body_orientation(eph, 6, t_end + 1.0, &q)
+              == CORE_ERR_INVALID_ARG);
+        CHECK(eph_body_orientation(eph, 6, t_end, &q) == CORE_OK);
+    }
 
     /* Against the integrator it was built from. This is looser than the
      * cooker's own fit error and correctly so: the comparison integrates
@@ -369,6 +493,38 @@ int main(void)
         CHECK(memcmp(a, b, na) == 0);
         CHECK(second.bytes_written == report.bytes_written);
         CHECK_BITS_EQ(second.max_fit_error_m, report.max_fit_error_m);
+        CHECK_BITS_EQ(second.max_orient_error_rad, report.max_orient_error_rad);
+    }
+
+    /* An asset built with no orientation at all: every body reads back as
+     * the identity, and the file is smaller by exactly the block that is
+     * missing. This is the configuration every caller written before K3b
+     * still gets, since they memset their config to zero. */
+    {
+        EphBuildConfig none = default_config();
+        none.orient_degree = 0;
+
+        EphBuildReport plain;
+        memset(&plain, 0, sizeof plain);
+        CHECK(eph_build(&system_config, initial, ALL_BODIES, &none, PATH_B,
+                        &plain) == CORE_OK);
+
+        size_t orient = (size_t)report.intervals * N_ORIENT * 4u * ORIENT_DEGREE
+                      * sizeof(double);
+        CHECK(plain.bytes_written + orient == report.bytes_written);
+        CHECK_BITS_EQ(plain.max_orient_error_rad, 0.0);
+
+        EphemerisCtx *bare = NULL;
+        CHECK(eph_load(PATH_B, &bare) == CORE_OK);
+        if (bare != NULL) {
+            Quat q;
+            CHECK(eph_body_orientation(bare, 3, 1234.5, &q) == CORE_OK);
+            CHECK_BITS_EQ(q.w, 1.0);
+            CHECK_BITS_EQ(q.x, 0.0);
+            CHECK_BITS_EQ(q.y, 0.0);
+            CHECK_BITS_EQ(q.z, 0.0);
+            eph_free(bare);
+        }
     }
 
     /* Corrupted files are rejected rather than read as garbage. */
@@ -386,7 +542,26 @@ int main(void)
         /* The sentinel is the guard against a file written by a machine that
          * disagrees about byte order or floating point layout. */
         double wrong_sentinel = 2.0;
-        write_corrupt(PATH_A, PATH_B, 40, &wrong_sentinel, sizeof wrong_sentinel);
+        write_corrupt(PATH_A, PATH_B, 44, &wrong_sentinel, sizeof wrong_sentinel);
+        CHECK(eph_load(PATH_B, &bad) == CORE_ERR_INVALID_ARG);
+
+        /* A header saying there are no orientation coefficients, over bodies
+         * that claim to carry some. Every read after the first such body
+         * would land at the wrong offset, so this is a corrupt file and not
+         * a body to quietly skip. The word at 24 is the orientation degree
+         * (core/ephemeris.h's layout table). */
+        unsigned no_orientation = 0u;
+        write_corrupt(PATH_A, PATH_B, 24, &no_orientation,
+                      sizeof no_orientation);
+        CHECK(eph_load(PATH_B, &bad) == CORE_ERR_INVALID_ARG);
+
+        /* And a flag that is neither 0 nor 1: the reader must not read it as
+         * "true" and carry on. The flag of the first body sits after the
+         * header and that body's name, mu, radius and flux. */
+        unsigned not_a_flag = 7u;
+        write_corrupt(PATH_A, PATH_B,
+                      52 + EPH_NAME_SIZE + 3 * sizeof(double),
+                      &not_a_flag, sizeof not_a_flag);
         CHECK(eph_load(PATH_B, &bad) == CORE_ERR_INVALID_ARG);
 
         /* Truncation: the header promises more coefficients than follow. */
@@ -441,6 +616,20 @@ int main(void)
 
         bad = default_config();
         bad.tol_m = 0.0;
+        CHECK(eph_build(&system_config, initial, ALL_BODIES, &bad, PATH_B, NULL)
+              == CORE_ERR_INVALID_ARG);
+
+        /* One coefficient is not a quaternion channel, it is a constant -
+         * refused rather than written as a rotation that never turns. Zero,
+         * on the other hand, is the legitimate "no orientation" and is
+         * exercised above. */
+        bad = default_config();
+        bad.orient_degree = 1;
+        CHECK(eph_build(&system_config, initial, ALL_BODIES, &bad, PATH_B, NULL)
+              == CORE_ERR_INVALID_ARG);
+
+        bad = default_config();
+        bad.orient_degree = CHEB_FIT_MAX_N + 1;
         CHECK(eph_build(&system_config, initial, ALL_BODIES, &bad, PATH_B, NULL)
               == CORE_ERR_INVALID_ARG);
     }

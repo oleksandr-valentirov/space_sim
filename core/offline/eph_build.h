@@ -46,7 +46,24 @@ typedef struct {
     double t_begin;           /* seconds from J2000 TDB */
     double t_end;
     double interval_seconds;  /* one Chebyshev fit per interval */
-    size_t degree;            /* coefficients per component */
+    size_t degree;            /* coefficients per position component */
+
+    /* Coefficients per quaternion component, or 0 to write no orientation
+     * at all (ROADMAP K3b).
+     *
+     * A separate number from `degree` because it measures something else.
+     * Position over an interval is a gentle curve; orientation over the same
+     * interval is a wave - Earth turns through four full quaternion cycles
+     * in eight days - and a Chebyshev fit follows a wave only once it has
+     * enough coefficients to resolve it. Below that it does not degrade, it
+     * collapses: measured on the fixture's own 8-day interval, degree 24 is
+     * off by 1.4 radians and degree 26 by 4e-7 (8.8 m at the equator).
+     * core/ephemeris.h has the whole ladder.
+     *
+     * Which is also why max_orient_error_rad exists: pick this by measuring,
+     * not by argument, and check it again whenever interval_seconds changes,
+     * because the cliff moves with it. */
+    size_t orient_degree;
 
     /* Integrator tolerance in metres.
      *
@@ -82,6 +99,17 @@ typedef struct {
      * checked at points that are not fit nodes. This is the number that says
      * whether the degree and interval length are adequate. */
     double max_fit_error_m;
+
+    /* The same for orientation, in radians, at the least constrained point
+     * of each interval: an upper bound on the angle between the rotation the
+     * asset gives back and the one body_rotation.c produced. Zero when the
+     * asset carries no orientation.
+     *
+     * Measured as twice the largest quaternion component difference rather
+     * than through an angle: an angle near zero comes out of acos with half
+     * its digits gone, and this number is meant to be believed down to 1e-13
+     * (see EphBuildConfig::orient_degree for what it is guarding against). */
+    double max_orient_error_rad;
 } EphBuildReport;
 
 /* bodies[] must have sys->n entries and match the order of initial[]. */

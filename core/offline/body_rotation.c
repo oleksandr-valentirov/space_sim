@@ -22,10 +22,78 @@ typedef struct {
     double pm0, pm1, pm2; /* prime meridian: pm0 + pm1*d + pm2*d^2 */
 } IauModel;
 
-/* NAIF generic PCK pck00011.tpc - see body_rotation.h for the citation and
- * what each entry leaves out. */
+/* Earth's pole drift, pck00011.tpc BODY399_POLE_RA, degrees per century.
+ * Named because the prime-meridian rate below has to cancel it exactly and
+ * two copies of the same number would eventually stop being the same. */
+#define EARTH_POLE_RA1 (-0.641)
+
+/* Earth's prime meridian, from the Earth Rotation Angle instead of from
+ * pck00011.tpc's approximate expression (ROADMAP K3b).
+ *
+ * ERA is defined (IAU 2000 resolution B1.8, IERS Conventions 2010 eq. 5.15)
+ * as a linear function of UT1:
+ *
+ *     ERA = 2*pi * (0.7790572732640 + 1.00273781191135448 * Tu)
+ *
+ * with Tu in UT1 days from J2000. The classical GMST constant of the same
+ * epoch, 6h41m50.54841s = 100.4606184 degrees at 0h UT1, is the same number
+ * half a turn away, which is the cross-check that this is not a digit
+ * mis-copied from one source.
+ *
+ * Three conversions turn that into the pm0/pm1 of a 3-1-3 sequence, and
+ * each is a place a sign can go wrong, so each is stated:
+ *
+ *   1. ERA is measured from the CIO in the inertial frame; W is measured
+ *      from the node of the body equator on the reference equator, which
+ *      the sequence puts at Omega = 90 + alpha0. Hence the -90.
+ *   2. The node moves, because alpha0 does. W is measured from that moving
+ *      node, so its rate must carry the node's rate back out for the
+ *      meridian's INERTIAL rate to be ERA's - hence the -EARTH_POLE_RA1
+ *      term. Getting this wrong costs 0.641 deg per century, which is why
+ *      test_body_rotation.c checks the meridian a century apart and not
+ *      only at the epoch.
+ *   3. ERA's argument is UT1 and this module's is the ephemeris clock (TDB,
+ *      to within the 1.7 ms of TDB-TT that no part of this matters to).
+ *      TT - UT1 at J2000 is 32.184 (TT-TAI, by definition) + 32 (TAI-UTC,
+ *      the leap second count through 2000) - 0.3554 (UT1-UTC at J2000.0,
+ *      IERS EOP) = 63.8286 s, and a fixed offset in the argument is a fixed
+ *      offset in the angle, so it folds into pm0.
+ *
+ * Held fixed rather than modelled, that last one is also the whole of what
+ * this leaves out; body_rotation.h says how much and why nobody can supply
+ * it. Computed here from the cited constants rather than written out as
+ * 190.1939377471: a derived decimal is a number nobody can check, and this
+ * file is compiled once on one machine, so folding it at compile time costs
+ * nothing that the asset does not already spend on cos(). */
+#define ERA_TURNS_0    0.7790572732640
+#define ERA_TURNS_RATE 1.00273781191135448
+#define EARTH_DELTA_T_S 63.8286
+
+#define EARTH_PM0 (ERA_TURNS_0 * 360.0 - 90.0 \
+                   - ERA_TURNS_RATE * 360.0 * (EARTH_DELTA_T_S / 86400.0))
+#define EARTH_PM1 (ERA_TURNS_RATE * 360.0 - EARTH_POLE_RA1 / 36525.0)
+
+/* What the replaced expression was worth, measured rather than quoted.
+ *
+ * pck00011.tpc gives W = 190.147 + 360.9856235*d, and K3a reported it as
+ * 1129 arcsec from the truth at J2000. That number compared the model, whose
+ * argument is the ephemeris clock, against ERA evaluated as if that clock
+ * were UT1 - two errors added together, the model's own and the 63.8 s the
+ * clocks differ by, which is 960 arcsec of Earth all on its own. On the
+ * clock the expression is actually evaluated on, its error at J2000 is 169
+ * arcsec, which is what the file's own "at least 150 arcseconds" caveat
+ * says it should be.
+ *
+ * The phase was not the larger half anyway. Its rate is 833 arcsec per
+ * century away from ERA's, so the same expression is off by 1004 arcsec at
+ * J2100 and 1842 at J2200 - and a rate error is the one that matters for an
+ * ephemeris asked to cover two hundred years, because it does not stay put. */
+
+/* Poles from NAIF generic PCK pck00011.tpc, Earth's prime meridian from the
+ * ERA above - see body_rotation.h for the citations and what each entry
+ * leaves out. */
 static const IauModel MODELS[] = {
-    { "earth", 0.0, -0.641, 90.0, -0.557, 190.147, 360.9856235, 0.0 },
+    { "earth", 0.0, EARTH_POLE_RA1, 90.0, -0.557, EARTH_PM0, EARTH_PM1, 0.0 },
     { "moon", 269.9949, 0.0031, 66.5392, 0.0130, 38.3213, 13.17635815,
      -1.4e-12 },
 };
@@ -108,19 +176,28 @@ static Quat mat3_to_quat(const double m[9])
     return q;
 }
 
+static const IauModel *model_of(const char *name)
+{
+    for (size_t i = 0; i < N_MODELS; i++) {
+        if (strcmp(MODELS[i].name, name) == 0) {
+            return &MODELS[i];
+        }
+    }
+    return NULL;
+}
+
+int body_rotation_has_model(const char *name)
+{
+    return name != NULL && model_of(name) != NULL;
+}
+
 CoreResult body_rotation_of(const char *name, double t, Quat *out)
 {
     if (name == NULL || out == NULL) {
         return CORE_ERR_INVALID_ARG;
     }
 
-    const IauModel *model = NULL;
-    for (size_t i = 0; i < N_MODELS; i++) {
-        if (strcmp(MODELS[i].name, name) == 0) {
-            model = &MODELS[i];
-            break;
-        }
-    }
+    const IauModel *model = model_of(name);
     if (model == NULL) {
         *out = quat_identity();
         return CORE_OK;

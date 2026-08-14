@@ -10,7 +10,7 @@
  * it follows those rules: opaque handle in a create/free pair, results by
  * return code, outputs through pointers.
  *
- * File format, version 3. All values are little-endian; a sentinel double in
+ * File format, version 4. All values are little-endian; a sentinel double in
  * the header catches a machine where that is not true, along with any other
  * disagreement about how a double is laid out.
  *
@@ -19,22 +19,28 @@
  *   8       4               uint32 version
  *   12      4               uint32 body count
  *   16      4               uint32 interval count
- *   20      4               uint32 coefficients per component
- *   24      8               double first epoch, seconds from J2000 TDB
- *   32      8               double interval length, seconds
- *   40      8               double sentinel, exactly 1.0
- *   48      variable        per body, in order:
+ *   20      4               uint32 coefficients per position component
+ *   24      4               uint32 coefficients per orientation component,
+ *                           0 if no body in this asset carries orientation
+ *   28      8               double first epoch, seconds from J2000 TDB
+ *   36      8               double interval length, seconds
+ *   44      8               double sentinel, exactly 1.0
+ *   52      variable        per body, in order:
  *                             char   name[32]
  *                             double mu
  *                             double mean radius, metres, 0 if unknown
  *                             double solar flux at 1 AU, W/m^2, 0 if dark
+ *                             uint32 1 if this body carries orientation
  *                             uint32 harmonic degree, 0 for a point mass
  *                             if degree >= 2:
  *                               double reference radius, metres
  *                               double C[(d+1)(d+2)/2], triangular
  *                               double S[(d+1)(d+2)/2], same order
- *   ...     8 each          coefficients, ordered
+ *   ...     8 each          position coefficients, ordered
  *                           [interval][body][component x,y,z][coefficient]
+ *   ...     8 each          orientation coefficients, ordered
+ *                           [interval][body carrying one, in body order]
+ *                           [component w,x,y,z][coefficient]
  *
  * Positions only. Velocity is the analytic derivative of the same polynomial,
  * as in SPICE type 2 - see cheb_eval_deriv.
@@ -64,19 +70,47 @@
  * Neither field touches the Chebyshev coefficients, and that is checkable
  * rather than merely expected: recooking the fixture across this version bump
  * left every determinism hash where it was and only changed the file's
- * length. */
+ * length.
+ *
+ * Version 4 added orientation (ROADMAP K3b): a unit quaternion per body per
+ * interval, fitted the same way the position is, carrying the body-fixed
+ * frame the tesseral terms of K5 and the co-rotating atmosphere of K7 will
+ * need. Quaternion rather than matrix because a matrix's nine components,
+ * fitted independently, drift out of orthogonality between the nodes, while
+ * a quaternion's four leave exactly one invariant to restore - and restoring
+ * it is a sqrt, which is inside what the runtime is allowed to compute.
+ *
+ * It has one property the position channels do not, and it is not a detail:
+ * orientation needs FAR more coefficients per interval than position does,
+ * because it oscillates rather than curving. Earth's quaternion turns
+ * through half a turn a day, so over the fixture's 8-day interval it is four
+ * full cycles of a wave, and a polynomial cannot follow a wave it cannot
+ * resolve. Measured, the failure is a cliff and not a slope: degree 24 is
+ * wrong by 1.4 radians, degree 26 by 8.8 m at the equator, degree 32 by a
+ * millimetre and degree 36 by a micrometre. The fixture uses 36; the cooker
+ * measures the error at the least constrained point of every interval and
+ * reports it (EphBuildReport::max_orient_error_rad) precisely because a
+ * degree chosen just past that cliff would look fine until someone
+ * lengthened the interval.
+ *
+ * Bodies with no orientation model carry no channels at all rather than a
+ * constant identity, which is eight of the fixture's ten and about four
+ * fifths of what the block would otherwise cost. They read back as the
+ * identity anyway (eph_body_orientation), so nothing downstream needs to
+ * know which bodies were written. */
 
 #ifndef CORE_EPHEMERIS_H
 #define CORE_EPHEMERIS_H
 
 #include "core.h"
 #include "harmonics.h"
+#include "quat.h"
 
 #include <stddef.h>
 
 #define EPH_MAGIC "SSEPH\0\0\0"
 #define EPH_MAGIC_SIZE 8
-#define EPH_VERSION 3u
+#define EPH_VERSION 4u
 #define EPH_NAME_SIZE 32
 
 typedef struct EphemerisCtx EphemerisCtx;
@@ -120,6 +154,23 @@ CoreResult eph_body_harmonics(const EphemerisCtx *ctx, int body,
 
 /* Covered time span, seconds from J2000 TDB. */
 CoreResult eph_span(const EphemerisCtx *ctx, double *t_begin, double *t_end);
+
+/* Orientation of a body at t: the quaternion rotating a vector's components
+ * from that body's body-fixed frame to the ephemeris frame (quat.h's
+ * convention), read back from the fitted channels and renormalised, since a
+ * polynomial fit is only approximately unit length between its nodes.
+ *
+ * A body the asset carries no orientation for returns the identity and
+ * CORE_OK - "this body's rotation is not modelled" is an answer, the same
+ * way degree 0 is an answer from eph_body_harmonics. Only a bad index, a
+ * NULL out, or a time outside the span are errors.
+ *
+ * The rotation this returns is the one the cooker itself integrated the
+ * bodies under, for the same reason the harmonics are (ROADMAP K4b): a
+ * vessel and the bodies cannot end up disagreeing about which way a planet
+ * is facing. */
+CoreResult eph_body_orientation(const EphemerisCtx *ctx, int body, double t,
+                                Quat *out);
 
 /* Position and velocity of a body. Returns CORE_ERR_INVALID_ARG for an
  * unknown body or a time outside the span: extrapolating a Chebyshev fit

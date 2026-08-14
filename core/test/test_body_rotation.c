@@ -134,5 +134,44 @@ int main(void)
     CHECK(spin_sense("earth", 365.25 * DAY) > 0.0);
     CHECK(spin_sense("moon", 365.25 * DAY) > 0.0);
 
+    /* Earth's prime meridian against the Earth Rotation Angle (ROADMAP K3b).
+     *
+     * Two epochs a century apart, and the second is the one with teeth: the
+     * phase is easy to match and the rate is where the model this replaced
+     * was actually wrong (833 arcsec per century), and where the node-drift
+     * term of body_rotation.c's derivation could still have the wrong sign -
+     * which would show up here as 0.641 degrees, or 2300 arcsec, per
+     * century.
+     *
+     * ERA is restated here from its own definition rather than shared with
+     * the module under test, and the clock conversion with it. Measured: 0.0
+     * arcsec at J2000, 1.7 at J2100, 7.0 at J2200 - a residual that grows
+     * quadratically because it is the pole's own tilt away from z entering
+     * this longitude measurement, not the meridian model drifting. */
+    {
+        double delta_t = 32.184 + 32.0 - 0.3554;   /* TT - UT1 at J2000, s */
+
+        double checks[2] = { 0.0, 36525.0 * DAY };
+        double tolerance[2] = { 2.0, 5.0 };        /* arcseconds */
+
+        for (int i = 0; i < 2; i++) {
+            double t = checks[i];
+            double ut1_days = (t - delta_t) / DAY;
+            double era = 360.0 * (0.7790572732640
+                                  + 1.00273781191135448 * ut1_days);
+
+            Quat q;
+            CHECK(body_rotation_of("earth", t, &q) == CORE_OK);
+            Vec3d m = quat_rotate(q, vec3(1.0, 0.0, 0.0));
+            double model = atan2(m.y, m.x) / DEG;
+
+            double difference = fmod(model - era, 360.0);
+            if (difference > 180.0) difference -= 360.0;
+            if (difference < -180.0) difference += 360.0;
+
+            CHECK(approx(difference * 3600.0, 0.0, tolerance[i]));
+        }
+    }
+
     return TEST_RESULT();
 }
