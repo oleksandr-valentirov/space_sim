@@ -147,23 +147,55 @@ typedef enum {
     /* param metres from the body's centre, crossed in either direction -
      * entering and leaving are both worth stopping for.
      *
-     * Distance from the centre, not altitude, and that is not a simplification
-     * to tidy up later: the asset carries a name and a mu per body and no
-     * radius (core/ephemeris.h). An altitude event would have to invent one.
-     * It becomes altitude the day body radii ship in the asset, which is M4's
-     * business, and the atmosphere boundary the sketch in PROJECT.md section 5
-     * mentions arrives with it. */
+     * Distance from the centre, not altitude, and until K7c that was the only
+     * one on offer: the asset carried a name and a mu per body and no radius,
+     * so an altitude event would have had to invent one. Radii shipped with
+     * asset v3 (K6b), and the altitude event below is what they made possible.
+     * This one stays, and not merely for compatibility - a sphere of influence
+     * or a rendezvous ring is a distance from a centre and has nothing to do
+     * with a surface. */
     CORE_EVENT_DISTANCE = 2,
+
+    /* param metres above the body's surface, crossed in either direction
+     * (ROADMAP K7c). The atmosphere boundary PROJECT.md section 5 sketches,
+     * and the event a re-entry burn is planned against.
+     *
+     * "Surface" is the asset's mean radius (eph_body_radius), a sphere. Not
+     * an ellipsoid and not terrain: the same sphere the atmosphere measures
+     * its own altitudes above (core/field.h), so a vessel that stops at
+     * 100 km stops where the air says 100 km. Note it is NOT the harmonics'
+     * reference radius, which for the Earth is a different number.
+     *
+     * A body whose asset does not say how big it is (radius 0 - nine of the
+     * fixture's ten) is refused with CORE_ERR_INVALID_ARG when the event is
+     * armed. Measuring altitude from a radius of zero would silently turn
+     * this into CORE_EVENT_DISTANCE, and the caller would be told nothing.
+     *
+     * THE BANDED ATMOSPHERE DOES NOT REACH THE ROOT FINDER, and this was the
+     * one thing worth checking before writing it. The table is piecewise and
+     * discontinuous at band boundaries by up to a tenth of a percent (K7a),
+     * and a root search across such a seam would be searching for a zero of a
+     * function that jumps. But this event's g is |r - R| - radius - param:
+     * a distance, which reads no density at all. The seam enters the
+     * trajectory as a small jump in acceleration - in g'' - while Newton here
+     * uses only g and g'. Measured rather than argued: an event armed exactly
+     * on a band base lands as accurately as one armed mid-band
+     * (core/test/test_prop.c). */
+    CORE_EVENT_ALTITUDE = 3,
 } CoreEventKind;
 
-/* Not here yet, and each for a reason rather than for lack of time:
- * SHADOW_ENTRY needs the shadow model that comes with SRP (M3.5), and
- * STATION_RISE needs body rotation matrices, which the asset does not carry
- * yet either. */
+/* Two more are missing, and the reason has changed under them. SHADOW_ENTRY
+ * waited on a shadow model and STATION_RISE on body rotation; K6a shipped the
+ * first (core/srp.h) and K3b the second (eph_body_orientation), so neither is
+ * blocked any more. What neither has is a caller. They arrive with the mission
+ * planner that wants them, on the same rule that kept cd out of VesselParams
+ * until K7b: a value nobody reads is worse than its absence. */
 typedef struct {
     CoreEventKind kind;
     int           body_id;  /* index into the ephemeris */
-    double        param;    /* metres, for CORE_EVENT_DISTANCE; unused else */
+    /* Metres. Distance from the centre for CORE_EVENT_DISTANCE, height above
+     * the surface for CORE_EVENT_ALTITUDE, unused for the apsides. */
+    double        param;
 } CoreEvent;
 
 #define PROP_MAX_EVENTS 8

@@ -71,13 +71,27 @@ static int event_value(Run *run, const CoreEvent *e, const State *s,
     Vec3d d = vec3_sub(s->r, body.r);
     Vec3d dv = vec3_sub(s->v, body.v);
 
-    if (e->kind == CORE_EVENT_DISTANCE) {
+    /* Distance and altitude are one function with one subtraction between
+     * them, and they are written as one on purpose: two copies would be two
+     * root finders to keep in agreement. The radius comes from the asset, so
+     * an altitude here is above the same sphere the atmosphere measures from
+     * (core/field.h) rather than above a number this file chose. */
+    if (e->kind == CORE_EVENT_DISTANCE || e->kind == CORE_EVENT_ALTITUDE) {
         double dist = vec3_norm(d);
-        *g_out = dist - e->param;
+        double surface = e->kind == CORE_EVENT_ALTITUDE
+                             ? eph_body_radius(run->p->field.eph, e->body_id)
+                             : 0.0;
+        *g_out = dist - surface - e->param;
         if (gdot_out != NULL) {
             *gdot_out = dist > 0.0 ? vec3_dot(d, dv) / dist : 0.0;
         }
         if (scale_out != NULL) {
+            /* The distance, not the altitude: a run stopped at 100 km would
+             * otherwise be classified as "at the event" within a nanometre of
+             * the surface and within ten metres at geostationary, i.e. by a
+             * threshold that swings by seven orders with the altitude asked
+             * for. The distance from the centre is the one scale that does
+             * not depend on where the caller drew the line. */
             *scale_out = dist;
         }
         return 1;
@@ -139,6 +153,7 @@ static double past_side(CoreEventKind kind, double gdot)
     case CORE_EVENT_APOAPSIS:
         return -1.0;  /* falling back */
     case CORE_EVENT_DISTANCE:
+    case CORE_EVENT_ALTITUDE:
         /* Whichever way it is being crossed right now. A tangency (gdot = 0)
          * is not a crossing at all, so nothing is snapped. */
         return gdot > 0.0 ? 1.0 : (gdot < 0.0 ? -1.0 : 0.0);
@@ -160,6 +175,7 @@ static int crossed(CoreEventKind kind, double g_prev, double g_now)
     case CORE_EVENT_APOAPSIS:
         return g_prev > 0.0 && g_now <= 0.0;
     case CORE_EVENT_DISTANCE:
+    case CORE_EVENT_ALTITUDE:
         return (g_prev < 0.0) != (g_now < 0.0);
     }
     return 0;
@@ -350,6 +366,23 @@ CoreResult prop_run(PropagatorCtx *p, const State *initial,
         }
         if (events[i].kind == CORE_EVENT_DISTANCE && !(events[i].param > 0.0)) {
             return CORE_ERR_INVALID_ARG;
+        }
+        if (events[i].kind == CORE_EVENT_ALTITUDE) {
+            /* Zero is allowed and means the surface - the event a lithobraking
+             * vessel arrives at, and the one a lander wants. Below it is not:
+             * a negative altitude is a sphere inside the body, which is a
+             * caller having got a sign wrong rather than a place to stop. */
+            if (!(events[i].param >= 0.0)) {
+                return CORE_ERR_INVALID_ARG;
+            }
+            /* The asset does not say how big this body is, so there is no
+             * surface to be above. Refused rather than measured from zero:
+             * a radius of zero would quietly make this a distance event, and
+             * the trajectory would stop nine thousand kilometres from where
+             * the caller meant. */
+            if (!(eph_body_radius(p->field.eph, events[i].body_id) > 0.0)) {
+                return CORE_ERR_INVALID_ARG;
+            }
         }
     }
 

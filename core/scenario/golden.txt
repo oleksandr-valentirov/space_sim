@@ -10,6 +10,7 @@ sc_harmonics 05b2cd1ee63ff371
 sc_orientation 75906fccc5679798
 sc_prop a06d6bac00307aa9
 sc_quat 0cf6b4dd76bae45b
+sc_reentry 2e97b4bb5c7b92e4
 sc_richardson 4727f9efe7889769
 sc_rk4 cf327da9e36dc16c
 sc_srp ed15e480b3ed0537

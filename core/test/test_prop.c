@@ -20,6 +20,7 @@
  *
  * Run from the repository root. */
 
+#include "eph_build.h"
 #include "field.h"
 #include "integrator.h"
 #include "prop.h"
@@ -28,8 +29,13 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 #define ASSET "data/fixture/earth_moon.eph"
+
+/* The one asset this file cooks rather than reads, for the one check the
+ * fixture cannot express: a body with no radius (ROADMAP K7c, section 16). */
+#define PAIR_PATH "build/test_prop_pair.eph"
 
 #define EARTH 3
 
@@ -68,6 +74,35 @@ static Dop853Config direct_config(double h_max_s)
     cfg.tol_m = TOL_M;
     cfg.h_max = h_max_s;
     return cfg;
+}
+
+/* Height above the body's own surface, read the way a caller would read it:
+ * from the asset's radius, not from a number copied into this file. This is
+ * the oracle CORE_EVENT_ALTITUDE is checked against (ROADMAP K7c). */
+static double altitude_at(const EphemerisCtx *eph, const State *s)
+{
+    State earth;
+    if (eph_body_state(eph, EARTH, s->t, &earth) != CORE_OK) {
+        return -1.0e30;
+    }
+    return vec3_distance(s->r, earth.r) - eph_body_radius(eph, EARTH);
+}
+
+/* Propagate until the one armed event fires. Returns 0 if the run ended any
+ * other way, so a test that stops believing the event happened says so. */
+static int fires(PropagatorCtx *p, const State *start, const CoreEvent *ev,
+                 double t_end, State *out)
+{
+    size_t n = 0;
+    CoreStopReason stop = CORE_STOP_T_END;
+    int event = -1;
+    double step = 0.0;
+
+    if (prop_run(p, start, NULL, t_end, ev, 1, NULL, 0, &n, out, &stop, &event,
+                 &step) != CORE_OK) {
+        return 0;
+    }
+    return stop == CORE_STOP_EVENT && event == 0;
 }
 
 static int same_state(const State *a, const State *b)
@@ -676,6 +711,202 @@ int main(void)
               == CORE_ERR_INVALID_ARG);
 
         prop_free(q);
+    }
+
+    /* ---- Altitude (ROADMAP K7c) ----------------------------------------- *
+     *
+     * The same crossing counted from the surface instead of the centre. Three
+     * separate things are being asked here, and only the first is about the
+     * arithmetic:
+     *
+     *   14. it lands where it says it lands, and a band seam of the
+     *       atmosphere table does not disturb it;
+     *   15. it is the distance event with the asset's radius subtracted -
+     *       not a second root finder that happens to agree;
+     *   16. it refuses a body whose size the asset does not state, rather
+     *       than measuring from a radius of zero.
+     *
+     * The orbit is new: everything above flies at geostationary radius, and
+     * an altitude event needs a trajectory that reaches the air. Apoapsis
+     * stays where it was, periapsis goes to 120 km. The speed factor is
+     * derived from the asset's own radius rather than typed in, so recooking
+     * the fixture cannot silently move this geometry. */
+
+    double r_earth = eph_body_radius(eph, EARTH);
+    CHECK(r_earth > 6.0e6 && r_earth < 6.5e6);
+
+    double r_peri = r_earth + 120.0e3;
+    State dive = vessel_at(eph, t0, sqrt(2.0 * r_peri / (ORBIT_R + r_peri)));
+
+    /* 200 km is a base of the USSA-76 table (core/atmosphere.c), i.e. exactly
+     * where the density is discontinuous; 220 km is inside a band. K7a was
+     * caught out by probing on a base - finite differences measured the step
+     * and not the slope - so the same trap is checked for here rather than
+     * argued away. */
+    const double H_SEAM = 200.0e3;
+    const double H_MID = 220.0e3;
+
+    /* 14. Found, and on the altitude asked for. */
+    double t_alt_seam = 0.0;
+    {
+        PropagatorCtx *q = NULL;
+        PropConfig c = config(H_MAX);
+        CHECK(prop_create(eph, &c, &q) == CORE_OK);
+
+        CoreEvent seam = { CORE_EVENT_ALTITUDE, EARTH, H_SEAM };
+        CoreEvent mid = { CORE_EVENT_ALTITUDE, EARTH, H_MID };
+
+        State at_seam, at_mid;
+        CHECK(fires(q, &dive, &seam, t_far, &at_seam));
+        CHECK(fires(q, &dive, &mid, t_far, &at_mid));
+
+        double miss_seam = altitude_at(eph, &at_seam) - H_SEAM;
+        double miss_mid = altitude_at(eph, &at_mid) - H_MID;
+
+        printf("  altitude on a band base missed by %.3g m, mid-band by "
+               "%.3g m\n", miss_seam, miss_mid);
+        CHECK(miss_seam < 1e-3 && miss_seam > -1e-3);
+        CHECK(miss_mid < 1e-3 && miss_mid > -1e-3);
+
+        /* The higher one is crossed first, which is the sanity check that the
+         * vessel is descending and not being found on the way back up. */
+        CHECK(at_mid.t < at_seam.t);
+
+        t_alt_seam = at_seam.t;
+
+        /* Zero is the surface and is allowed. This orbit does not reach it,
+         * so the run ends at t_end - the point being that arming it is not
+         * refused. */
+        CoreEvent surface = { CORE_EVENT_ALTITUDE, EARTH, 0.0 };
+        State ignored;
+        size_t n = 0;
+        CoreStopReason stop = CORE_STOP_EVENT;
+        int event = 0;
+        double step = 0.0;
+        CHECK(prop_run(q, &dive, NULL, t0 + HOUR, &surface, 1, NULL, 0, &n,
+                       &ignored, &stop, &event, &step) == CORE_OK);
+        CHECK(stop == CORE_STOP_T_END);
+
+        /* Below the surface is a caller with a sign error, not a place. */
+        CoreEvent below = { CORE_EVENT_ALTITUDE, EARTH, -1.0 };
+        CHECK(prop_run(q, &dive, NULL, t_far, &below, 1, NULL, 0, &n, &ignored,
+                       &stop, &event, &step) == CORE_ERR_INVALID_ARG);
+
+        prop_free(q);
+    }
+
+    /* 15. The same event as a distance of radius + altitude. Written as one
+     *     function in core/prop.c precisely so this holds; the check is here
+     *     because "one function" is an implementation detail and this is the
+     *     promise made to callers. */
+    {
+        PropagatorCtx *q = NULL;
+        PropConfig c = config(H_MAX);
+        CHECK(prop_create(eph, &c, &q) == CORE_OK);
+
+        CoreEvent dist = { CORE_EVENT_DISTANCE, EARTH, r_earth + H_SEAM };
+        State at_dist;
+        CHECK(fires(q, &dive, &dist, t_far, &at_dist));
+
+        /* Measured: the two agree to the bit, and the bound below is looser
+         * than that on purpose. At the root the agreement is forced - both
+         * forms subtract numbers within a factor of two of each other, where
+         * floating-point subtraction is exact - but the Newton path leading
+         * there passes through distances four times the radius, where
+         * (d - R) - h and d - (R + h) may part by an ULP. So bit equality is
+         * what happens, not what is promised, and pinning it here would make
+         * a future change to the root finder look like a broken contract. */
+        double shift = at_dist.t - t_alt_seam;
+        printf("  altitude %.0f km and distance %.0f km differ by %.3g s\n",
+               H_SEAM / 1000.0, (r_earth + H_SEAM) / 1000.0, shift);
+        CHECK(shift < 1e-6 && shift > -1e-6);
+
+        prop_free(q);
+    }
+
+    /* 16. A body whose size the asset does not state.
+     *
+     * Not reachable through the shipped fixture - every body in it is cited
+     * with a radius (core/cook/cook_fixture.c) - so this cooks a two-body
+     * asset of its own, identical in every respect except that one of the two
+     * has no radius. One field of difference is what makes the refusal a
+     * statement about the radius and not about the body.
+     *
+     * The system is invented rather than read from data/horizons: nothing
+     * here depends on it being a real pair, and a synthetic one cannot drift
+     * out of step with the reference files. */
+    {
+        NBodySystem sys;
+        memset(&sys, 0, sizeof sys);
+        sys.n = 2;
+        sys.mu[0] = 3.986004418e14;
+        sys.mu[1] = 4.9028e12;
+
+        State init[NBODY_MAX];
+        memset(init, 0, sizeof init);
+        init[1].r.x = 3.844e8;
+        init[1].v.y = 1022.0;
+
+        static const EphBodyInfo pair[] = {
+            { "sized", 6.371e6, 0.0, NULL },
+            { "unsized", 0.0, 0.0, NULL },
+        };
+
+        EphBuildConfig bcfg;
+        memset(&bcfg, 0, sizeof bcfg);
+        bcfg.t_begin = 0.0;
+        bcfg.t_end = 8.0 * DAY;
+        bcfg.interval_seconds = 8.0 * DAY;
+        bcfg.degree = 14;
+        bcfg.orient_degree = 0;
+        bcfg.tol_m = 1.0;
+
+        EphBuildReport rep;
+        memset(&rep, 0, sizeof rep);
+        CHECK(eph_build(&sys, init, pair, &bcfg, PAIR_PATH, &rep) == CORE_OK);
+
+        EphemerisCtx *two = NULL;
+        CHECK(eph_load(PAIR_PATH, &two) == CORE_OK);
+        if (two == NULL) {
+            return EXIT_FAILURE;
+        }
+        CHECK(eph_body_radius(two, 0) == 6.371e6);
+        CHECK(eph_body_radius(two, 1) == 0.0);
+
+        PropagatorCtx *q = NULL;
+        PropConfig c = config(H_MAX);
+        CHECK(prop_create(two, &c, &q) == CORE_OK);
+
+        State body;
+        CHECK(eph_body_state(two, 0, 0.0, &body) == CORE_OK);
+        State s = body;
+        s.r.x += 6.771e6;
+        s.v.y += 7672.0;
+
+        State ignored;
+        size_t n = 0;
+        CoreStopReason stop = CORE_STOP_T_END;
+        int event = 0;
+        double step = 0.0;
+
+        CoreEvent sized = { CORE_EVENT_ALTITUDE, 0, 100.0e3 };
+        CoreEvent unsized = { CORE_EVENT_ALTITUDE, 1, 100.0e3 };
+        CoreEvent by_distance = { CORE_EVENT_DISTANCE, 1, 100.0e3 };
+
+        step = 0.0;
+        CHECK(prop_run(q, &s, NULL, 60.0, &sized, 1, NULL, 0, &n, &ignored,
+                       &stop, &event, &step) == CORE_OK);
+        step = 0.0;
+        CHECK(prop_run(q, &s, NULL, 60.0, &unsized, 1, NULL, 0, &n, &ignored,
+                       &stop, &event, &step) == CORE_ERR_INVALID_ARG);
+        /* The same body, by distance, is fine: it is the altitude that has no
+         * meaning here, not the body. */
+        step = 0.0;
+        CHECK(prop_run(q, &s, NULL, 60.0, &by_distance, 1, NULL, 0, &n, &ignored,
+                       &stop, &event, &step) == CORE_OK);
+
+        prop_free(q);
+        eph_free(two);
     }
 
     /* prop_run_stm (ROADMAP K8), and the promise that makes it usable.
