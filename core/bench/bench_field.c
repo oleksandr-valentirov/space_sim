@@ -54,6 +54,7 @@
  * different assets. */
 #define ASSET "data/fixture/earth_moon.eph"
 #define EARTH 3
+#define MOON  4
 
 /* A low orbit, because that is where every term of the model is live at once:
  * harmonics matter, the shadow is crossed, and the air is thick enough to
@@ -386,6 +387,78 @@ int main(void)
     printf("        %ld calls, checksum %.17g\n", two_calls, two_checksum);
     printf("  the full model costs %.0f times that per evaluation\n",
            ns_full / ns_two);
+
+    /* ---- The Moon with its mascons (ROADMAP K5e) ----------------------- *
+     *
+     * Everything above is measured in Earth orbit, where the only harmonic
+     * term is J2 and the harmonics cost is two rows of a recursion. The
+     * lunar model is fifty rows and 1323 terms, and it is the reason the
+     * degree ceiling moved at all, so what it costs a vessel that is
+     * actually near the Moon belongs in the same table rather than in a
+     * commit message.
+     *
+     * The comparison is against the same field with the harmonics dropped -
+     * field_clear_harmonics - so the difference is the lunar model and not
+     * the ten bodies underneath it. */
+    {
+        State moon;
+        if (eph_body_state(eph, MOON, 0.0, &moon) != CORE_OK) {
+            fprintf(stderr, "bench_field: cannot read the Moon\n");
+            eph_free(eph);
+            return 1;
+        }
+
+        double radius = eph_body_radius(eph, MOON) + 100.0e3;
+        double speed = sqrt(eph_body_mu(eph, MOON) / radius);
+
+        static State lunar[SAMPLES];
+        State ls;
+        ls.t = 0.0;
+        ls.r = vec3(moon.r.x + radius * 0.8, moon.r.y + radius * 0.6,
+                    moon.r.z);
+        ls.v = vec3(moon.v.x - speed * 0.6, moon.v.y + speed * 0.8,
+                    moon.v.z);
+
+        FieldCtx lunar_field;
+        if (field_all_bodies(eph, &lunar_field) != CORE_OK) {
+            eph_free(eph);
+            return 1;
+        }
+
+        Dop853Config lcfg;
+        memset(&lcfg, 0, sizeof lcfg);
+        lcfg.tol_m = 1e-3;
+        lcfg.h_max = 10.0;
+        Dop853State lst;
+        memset(&lst, 0, sizeof lst);
+
+        for (int i = 0; i < SAMPLES; i++) {
+            State next;
+            if (dop853_integrate(accel_field, &lunar_field, &ls,
+                                 10.0 * (double)(i + 1), &lcfg, &lst, &next)
+                    != CORE_OK || lunar_field.failed) {
+                fprintf(stderr, "bench_field: cannot build the lunar arc\n");
+                eph_free(eph);
+                return 1;
+            }
+            ls = next;
+            lunar[i] = next;
+        }
+
+        FieldCtx bare_lunar = lunar_field;
+        field_clear_harmonics(&bare_lunar);
+
+        long calls;
+        double sink;
+        double ns_bare = time_field(&bare_lunar, lunar, &calls, &sink);
+        double ns_grail = time_field(&lunar_field, lunar, &calls, &sink);
+
+        printf("\n  100 km over the Moon, degree %d GRAIL field:\n",
+               eph_body_harmonics(eph, MOON)->degree);
+        printf("    point masses only        %8.1f ns\n", ns_bare);
+        printf("    with the lunar field     %8.1f ns   %+.0f%%\n", ns_grail,
+               100.0 * (ns_grail - ns_bare) / ns_bare);
+    }
 
     harmonics_scaling();
 

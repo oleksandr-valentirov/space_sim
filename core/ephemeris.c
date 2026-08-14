@@ -181,23 +181,14 @@ CoreResult eph_load(const char *path, EphemerisCtx **out)
                 return CORE_ERR_INVALID_ARG;
             }
 
-            /* The file holds UNNORMALISED coefficients - the v5 format was
-             * written before K5b, and this step deliberately does not
-             * recook, so that the hashes it moves are the recursion's doing
-             * and not the asset's. Converted here, once per load, into the
-             * normalised form harmonics.c has taken since. K5e flips the
-             * format itself, because GRAIL arrives normalised and the
-             * round trip through the other convention would be a loss for
-             * nothing. */
-            for (int n = 0; n <= (int)degree; n++) {
-                for (int m = 0; m <= n; m++) {
-                    int idx = harmonics_index(n, m);
-                    double norm = harmonics_normalisation(n, m);
-                    ctx->harmonics[b].c[idx] /= norm;
-                    ctx->harmonics[b].s[idx] /= norm;
-                }
-            }
-
+            /* Read as they lie: v6 holds FULLY NORMALISED coefficients,
+             * the same convention harmonics.c works in and the same one
+             * published models arrive in (data/grail/README.md). v5 held
+             * the unnormalised form and this function converted on load;
+             * the version bump exists precisely so that no file can be read
+             * under the wrong convention - the numbers differ by a factor
+             * of sqrt(5) at degree 2, which is not a difference anything
+             * would report as an error. */
             if (!(ctx->harmonics[b].re > 0.0)) {
                 eph_free(ctx);
                 fclose(f);

@@ -107,17 +107,19 @@
  * between them is far inside the uncertainty of Cr, and citing the file we
  * committed beats quoting a better number from memory. When the page is
  * refreshed the number follows it. */
+static HarmonicsField earth_shape;
+
 static const EphBodyInfo BODIES[] = {
-    { "sun",          6.957e8,   1367.6 , NULL },
-    { "mercury",      2.4394e6,  0.0 , NULL },
-    { "venus",        6.05184e6, 0.0 , NULL },
-    { "earth",        6.37101e6, 0.0 , NULL },
-    { "moon",         1.73753e6, 0.0 , NULL },
-    { "mars_bary",    3.38992e6, 0.0 , NULL },
-    { "jupiter_bary", 6.9911e7,  0.0 , NULL },
-    { "saturn_bary",  5.8232e7,  0.0 , NULL },
-    { "uranus_bary",  2.5362e7,  0.0 , NULL },
-    { "neptune_bary", 2.4624e7,  0.0 , NULL },
+    { "sun", 6.957e8, 1367.6, NULL, NULL },
+    { "mercury", 2.4394e6, 0.0, NULL, NULL },
+    { "venus", 6.05184e6, 0.0, NULL, NULL },
+    { "earth", 6.37101e6, 0.0, NULL, NULL },
+    { "moon", 1.73753e6, 0.0, NULL, NULL },
+    { "mars_bary", 3.38992e6, 0.0, NULL, NULL },
+    { "jupiter_bary", 6.9911e7, 0.0, NULL, NULL },
+    { "saturn_bary", 5.8232e7, 0.0, NULL, NULL },
+    { "uranus_bary", 2.5362e7, 0.0, NULL, NULL },
+    { "neptune_bary", 2.4624e7, 0.0, NULL, NULL },
 };
 #define N_BODIES (sizeof BODIES / sizeof BODIES[0])
 
@@ -232,11 +234,16 @@ static int fill_system(NBodySystem *sys)
     /* Same J2 as cook_fixture.c - tracking it deliberately, like BODIES[]
      * above, because this file exists to measure what the shipped fixture
      * does (ROADMAP K2). Values cited in cook_fixture.c's own comment. */
-    sys->has_j2 = 1;
-    sys->j2_body = earth_idx;
-    sys->j2_field.degree = 2;
-    sys->j2_field.re = 6378137.0;
-    sys->j2_field.c[harmonics_index(2, 0)] = -1.08262545e-3;
+    /* The same cited J2 the cooker uses, through the same setter (K5b), and
+     * held at file scope because NBodySystem borrows it (K5e). This
+     * diagnostic deliberately does NOT give the Moon its GRAIL field: it
+     * measures how the asset's accuracy grows with span, and the lunar
+     * mascons move nothing at inter-body distances - adding them would only
+     * make this slower to run and harder to compare with its own history. */
+    earth_shape.degree = 2;
+    earth_shape.re = 6378137.0;
+    harmonics_set_unnormalised(&earth_shape, 2, 0, -1.08262545e-3, 0.0);
+    sys->field[earth_idx] = &earth_shape;
 
     return 1;
 }

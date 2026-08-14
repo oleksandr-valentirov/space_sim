@@ -33,20 +33,24 @@
  * changes nothing about the point-mass and harmonic checks below - neither
  * value enters the cooker's integration, and accel_field only reaches the
  * SRP term for a vessel that has been given an area. */
+/* File scope since K5e: NBodySystem and EphBodyInfo borrow a field
+ * rather than holding one - 21 kB a copy at degree 50. */
+static HarmonicsField earth_shape;
+
 static const EphBodyInfo ALL_BODIES[] = {
-    { "sun",          6.957e8,   1367.6 , NULL },
-    { "mercury",      2.4394e6,  0.0 , NULL },
-    { "venus",        6.05184e6, 0.0 , NULL },
+    { "sun", 6.957e8, 1367.6, NULL, NULL },
+    { "mercury", 2.4394e6, 0.0, NULL, NULL },
+    { "venus", 6.05184e6, 0.0, NULL, NULL },
     /* The Earth is the one body here with air (ROADMAP K7b). It changes
      * nothing above: the cooker does not integrate bodies through their own
      * drag, and accel_field reaches the term only for a vessel given a cd. */
-    { "earth",        6.37101e6, 0.0 , &ATMOSPHERE_EARTH_USSA76 },
-    { "moon",         1.73753e6, 0.0 , NULL },
-    { "mars_bary",    3.38992e6, 0.0 , NULL },
-    { "jupiter_bary", 6.9911e7,  0.0 , NULL },
-    { "saturn_bary",  5.8232e7,  0.0 , NULL },
-    { "uranus_bary",  2.5362e7,  0.0 , NULL },
-    { "neptune_bary", 2.4624e7,  0.0 , NULL },
+    { "earth", 6.37101e6, 0.0, &ATMOSPHERE_EARTH_USSA76, &earth_shape },
+    { "moon", 1.73753e6, 0.0, NULL, NULL },
+    { "mars_bary", 3.38992e6, 0.0, NULL, NULL },
+    { "jupiter_bary", 6.9911e7, 0.0, NULL, NULL },
+    { "saturn_bary", 5.8232e7, 0.0, NULL, NULL },
+    { "uranus_bary", 2.5362e7, 0.0, NULL, NULL },
+    { "neptune_bary", 2.4624e7, 0.0, NULL, NULL },
 };
 #define N_ALL (sizeof ALL_BODIES / sizeof ALL_BODIES[0])
 
@@ -64,7 +68,11 @@ static NBodySystem system_config;
 static State initial[NBODY_MAX];
 
 /* Earth's J2, the same values core/cook/cook_fixture.c cites - so the asset
- * this test cooks for itself has the physics the shipped one has. */
+ * this test cooks for itself has the physics the shipped one has.
+ *
+ * File scope since K5e, because NBodySystem and EphBodyInfo now borrow a
+ * field rather than holding one: 21 kB a copy at degree 50 is not something
+ * to pass around by value. */
 static HarmonicsField earth_j2(void)
 {
     HarmonicsField f;
@@ -106,9 +114,8 @@ static int load_inputs(void)
     /* The cooker's Earth oblateness (ROADMAP K2), matching cook_fixture.c.
      * Without this the asset below would be point-mass only and the K4
      * oracle would have nothing to detect. */
-    system_config.has_j2 = 1;
-    system_config.j2_body = EARTH;
-    system_config.j2_field = earth_j2();
+    earth_shape = earth_j2();
+    system_config.field[EARTH] = &earth_shape;
 
     return 1;
 }

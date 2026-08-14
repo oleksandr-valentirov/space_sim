@@ -50,6 +50,25 @@ typedef struct {
      * a list of ten bodies most of which have no air would be seven and a
      * half kilobytes of zeroes in every translation unit that declares one. */
     const AtmosphereModel *atmosphere;
+
+    /* The body's shape - the field a VESSEL will fly in (ROADMAP K5e). NULL
+     * is a point mass. Fully normalised, like everything since K5b.
+     *
+     * This is where the harmonics come from now, and it used to be
+     * NBodySystem's single j2_field. The move is not tidying: what the
+     * cooker integrates the bodies under and what the asset promises a
+     * vessel are no longer the same object, and pretending otherwise would
+     * have meant either running a degree-50 lunar field on every pair at
+     * every stage - 12 us a call to compute a term worth 4e-10 of the point
+     * mass at that distance - or shipping the Moon as a sphere.
+     *
+     * So the caller hands the truncated copy to NBodySystem::field and the
+     * whole model here, and core/cook/cook_fixture.c is where the two are
+     * built side by side with the measurement that justifies the split.
+     * K4b's rule is unchanged in what it protects: the coefficients are one
+     * set from one source, and the asset still records them rather than a
+     * second opinion. */
+    const HarmonicsField *field;
 } EphBodyInfo;
 
 typedef struct {

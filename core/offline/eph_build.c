@@ -151,8 +151,9 @@ CoreResult eph_build(const NBodySystem *sys, const State *initial,
          * the asset: whatever shape the cooker moved the bodies under is
          * the shape a vessel reading this file will fly in, and there is no
          * arrangement of the code in which the two can differ. */
-        int has = sys->has_j2 && (size_t)sys->j2_body == b;
-        unsigned degree = has ? (unsigned)sys->j2_field.degree : 0u;
+        const HarmonicsField *shape = bodies[b].field;
+        unsigned degree = (shape != NULL && shape->degree >= 2)
+                              ? (unsigned)shape->degree : 0u;
         unsigned has_orientation =
             orient_degree > 0 && body_rotation_has_model(bodies[b].name);
 
@@ -166,27 +167,14 @@ CoreResult eph_build(const NBodySystem *sys, const State *initial,
         if (ok && degree >= 2u) {
             size_t n_terms = (size_t)(degree + 1u) * (degree + 2u) / 2u;
 
-            /* Written UNNORMALISED, which is what the v5 format has always
-             * held and what core/ephemeris.c converts back on load. The
-             * cooker itself works in the normalised form since K5b, like
-             * everything that touches harmonics.c, so the conversion happens
-             * here rather than the format changing meaning under a version
-             * number that did not move. K5e is where the format follows the
-             * code, because GRAIL is published normalised. */
-            double raw_c[HARMONICS_MAX_COEFFS];
-            double raw_s[HARMONICS_MAX_COEFFS];
-            for (int n = 0; n <= sys->j2_field.degree; n++) {
-                for (int m = 0; m <= n; m++) {
-                    int idx = harmonics_index(n, m);
-                    double norm = harmonics_normalisation(n, m);
-                    raw_c[idx] = sys->j2_field.c[idx] * norm;
-                    raw_s[idx] = sys->j2_field.s[idx] * norm;
-                }
-            }
-
-            ok = write_exact(f, &sys->j2_field.re, sizeof sys->j2_field.re) &&
-                 write_exact(f, raw_c, n_terms * sizeof raw_c[0]) &&
-                 write_exact(f, raw_s, n_terms * sizeof raw_s[0]);
+            /* Written exactly as harmonics.c holds them: fully normalised
+             * (v6, ROADMAP K5e). v5 wrote the unnormalised form and the
+             * reader converted; the version bump is what makes it impossible
+             * to read one convention as the other, a mistake worth a factor
+             * of sqrt(5) at degree 2 that nothing downstream could detect. */
+            ok = write_exact(f, &shape->re, sizeof shape->re) &&
+                 write_exact(f, shape->c, n_terms * sizeof shape->c[0]) &&
+                 write_exact(f, shape->s, n_terms * sizeof shape->s[0]);
         }
 
         /* The atmosphere (ROADMAP K7b). Unlike the harmonics above, this is

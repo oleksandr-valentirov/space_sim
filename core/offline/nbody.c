@@ -1,5 +1,8 @@
 #include "nbody.h"
 
+#include "body_rotation.h"
+#include "quat.h"
+
 #include "dop853_coeffs.h"
 
 #include <math.h>
@@ -13,6 +16,31 @@ typedef struct {
     Vec3d dr[NBODY_MAX];
     Vec3d dv[NBODY_MAX];
 } SystemDeriv;
+
+/* The body's orientation at t, or the identity when nothing says otherwise
+ * (ROADMAP K5e).
+ *
+ * The runtime reads this from the asset (core/field.c); the cooker is what
+ * WRITES the asset, so it goes to the model directly. Both end up applying
+ * the same rotation, which is what keeps the field a vessel flies in and the
+ * field the bodies moved under the same field.
+ *
+ * A body with no name, no model, or a failed lookup gets the identity: for a
+ * zonal field on a body whose pole is the frame's z axis - Earth, here -
+ * that is exactly what the assumption used to be, so nothing about the
+ * Earth's contribution changes by more than the precession since J2000. */
+static Quat body_frame_of(const NBodySystem *sys, size_t body, double t)
+{
+    if (sys->name[body] == NULL) {
+        return quat_identity();
+    }
+
+    Quat q;
+    if (body_rotation_of(sys->name[body], t, &q) != CORE_OK) {
+        return quat_identity();
+    }
+    return q;
+}
 
 void nbody_accel(const NBodySystem *sys, const State *states, Vec3d *acc_out)
 {
@@ -54,8 +82,10 @@ void nbody_accel(const NBodySystem *sys, const State *states, Vec3d *acc_out)
      * acceleration by -mu_j/mu_e to turn "j's acceleration" into "e's",
      * exactly as nbody_energy's matching potential term requires for the
      * two to stay consistent. */
-    if (sys->has_j2) {
-        size_t e = (size_t)sys->j2_body;
+    for (size_t e = 0; e < sys->n; e++) {
+        if (sys->field[e] == NULL || sys->field[e]->degree < 2) {
+            continue;
+        }
 
         for (size_t j = 0; j < sys->n; j++) {
             if (j == e) {
@@ -63,8 +93,13 @@ void nbody_accel(const NBodySystem *sys, const State *states, Vec3d *acc_out)
             }
 
             Vec3d d = vec3_sub(states[j].r, states[e].r);
+
+            Quat q = body_frame_of(sys, e, states[e].t);
+            Vec3d local = quat_rotate(quat_conjugate(q), d);
+
             Vec3d a_j2;
-            harmonics_accel(&sys->j2_field, d, sys->mu[e], &a_j2);
+            harmonics_accel(sys->field[e], local, sys->mu[e], &a_j2);
+            a_j2 = quat_rotate(q, a_j2);
 
             acc_out[j] = vec3_add(acc_out[j], a_j2);
             acc_out[e] = vec3_add_scaled(acc_out[e], a_j2,
@@ -96,15 +131,19 @@ double nbody_energy(const NBodySystem *sys, const State *states)
      * only this diagnostic - a fixed 2-body energy check would see a drift
      * that is really just the J2 potential swinging with distance, not the
      * integrator failing. */
-    if (sys->has_j2) {
-        size_t e = (size_t)sys->j2_body;
+    for (size_t e = 0; e < sys->n; e++) {
+        if (sys->field[e] == NULL || sys->field[e]->degree < 2) {
+            continue;
+        }
         for (size_t j = 0; j < sys->n; j++) {
             if (j == e) {
                 continue;
             }
+            Quat q = body_frame_of(sys, e, states[e].t);
+            Vec3d local = quat_rotate(quat_conjugate(q),
+                                      vec3_sub(states[j].r, states[e].r));
             double u;
-            harmonics_potential(&sys->j2_field, vec3_sub(states[j].r, states[e].r),
-                                sys->mu[e], &u);
+            harmonics_potential(sys->field[e], local, sys->mu[e], &u);
             potential -= sys->mu[j] * u;
         }
     }

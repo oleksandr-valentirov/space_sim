@@ -26,16 +26,38 @@ typedef struct {
     size_t n;
     double mu[NBODY_MAX];   /* m^3/s^2, in the same order as the states */
 
-    /* Oblateness of at most one body (ROADMAP K2 - J2 of Earth today; a
-     * second slot arrives if and when the Moon's own field does, K5, rather
-     * than being sized for that in advance). has_j2 is 0 whenever a caller
-     * zero-initialises the struct, which every caller does today, so this
-     * is opt-in: a system that never sets it behaves exactly as it did
-     * before K2 existed, bit for bit. j2_body indexes into mu[] and the
-     * state array the same way. */
-    int            has_j2;
-    int            j2_body;
-    HarmonicsField j2_field;
+    /* Each body's shape, or NULL for a point mass (ROADMAP K5e; one slot
+     * for one body before that, when Earth's J2 was the only one). NULL
+     * everywhere is what a zero-initialised struct gets, so a caller that
+     * sets none behaves exactly as it did before K2 existed, bit for bit.
+     *
+     * BORROWED, not held by value, for the reason K5a moved FieldCtx the
+     * same way: at degree 50 a HarmonicsField is 21 kB, sixteen of them are
+     * a third of a megabyte, and this struct is a local variable in the
+     * cooker and in three tests.
+     *
+     * THESE ARE TRUNCATED ON PURPOSE, and the caller does the truncating.
+     * What acts between two bodies is not what a vessel skimming the surface
+     * feels: the Moon's degree-2 term is 2e-5 of its point mass at the
+     * Earth's distance and degree 4 is 4e-10 of it, so the cooker hands over
+     * a low-degree copy while the asset carries the whole model
+     * (core/cook/cook_fixture.c). The alternative - evaluating degree 50 on
+     * every pair at every stage - costs 12 us a call to compute nothing. */
+    const HarmonicsField *field[NBODY_MAX];
+
+    /* Body names, for one purpose only: looking up the rotation model that
+     * says which way a field with tesseral terms is pointing (ROADMAP K5e).
+     * NULL means "no model", which is also what an unnamed body gets, and a
+     * body whose field is zonal does not care either way.
+     *
+     * MEASURED, not assumed to matter: applying the Moon's own field with
+     * its pole taken along the frame's z axis - the assumption K2 could
+     * afford for the Earth, whose pole IS along z - moved the geocentric
+     * lunar position 199 m over the fixture's span and made the error
+     * against JPL WORSE, 2108 m to 2307 m. The Moon's pole is 23.46 degrees
+     * off z. A field in the wrong frame is not a smaller correction than no
+     * field; it is a different, wrong one. */
+    const char *name[NBODY_MAX];
 } NBodySystem;
 
 /* Accelerations of every body from every other.

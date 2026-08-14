@@ -847,8 +847,8 @@ int main(void)
         init[1].v.y = 1022.0;
 
         static const EphBodyInfo pair[] = {
-            { "sized", 6.371e6, 0.0, NULL },
-            { "unsized", 0.0, 0.0, NULL },
+            { "sized", 6.371e6, 0.0, NULL, NULL },
+            { "unsized", 0.0, 0.0, NULL, NULL },
         };
 
         EphBuildConfig bcfg;

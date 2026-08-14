@@ -240,16 +240,14 @@ int main(void)
         field.degree = 2;
         field.re = 6378137.0;
         /* J2 (IERS 2010) from data/horizons/obj_earth.txt. */
-        field.c[harmonics_index(2, 0)] = -1.08262545e-3;
+        harmonics_set_unnormalised(&field, 2, 0, -1.08262545e-3, 0.0);
 
         NBodySystem sys;
         memset(&sys, 0, sizeof sys);
         sys.n = 2;
         sys.mu[0] = mu_earth;
         sys.mu[1] = mu_moon;
-        sys.has_j2 = 1;
-        sys.j2_body = 0;
-        sys.j2_field = field;
+        sys.field[0] = &field;
 
         State states[2];
         states[0] = (State){ { 0.0, 0.0, 0.0 }, { 0.0, 0.0, 0.0 }, 0.0 };
@@ -260,7 +258,7 @@ int main(void)
         nbody_accel(&sys, states, acc_with);
 
         NBodySystem sys_off = sys;
-        sys_off.has_j2 = 0;
+        sys_off.field[0] = NULL;
         Vec3d acc_without[2];
         nbody_accel(&sys_off, states, acc_without);
 

@@ -22,6 +22,7 @@
  * Run from the repository root. */
 
 #include "eph_build.h"
+#include "sha_read.h"
 #include "refdata.h"
 
 #include <stdio.h>
@@ -58,17 +59,24 @@
  * between them is far inside the uncertainty of Cr, and citing the file we
  * committed beats quoting a better number from memory. When the page is
  * refreshed the number follows it. */
+/* File scope, not automatic: at degree 50 a HarmonicsField is 21 kB, and
+ * three of them on the stack of a program that also holds the sample buffer
+ * is how a cooker stops running on the platform with the smallest stack. */
+static HarmonicsField earth_shape;
+static HarmonicsField moon_shape;
+
 static const EphBodyInfo BODIES[] = {
-    { "sun",          6.957e8,   1367.6, NULL },
-    { "mercury",      2.4394e6,  0.0,    NULL },
-    { "venus",        6.05184e6, 0.0,    NULL },
-    { "earth",        6.37101e6, 0.0,    &ATMOSPHERE_EARTH_USSA76 },
-    { "moon",         1.73753e6, 0.0,    NULL },
-    { "mars_bary",    3.38992e6, 0.0,    NULL },
-    { "jupiter_bary", 6.9911e7,  0.0,    NULL },
-    { "saturn_bary",  5.8232e7,  0.0,    NULL },
-    { "uranus_bary",  2.5362e7,  0.0,    NULL },
-    { "neptune_bary", 2.4624e7,  0.0,    NULL },
+    { "sun",          6.957e8,   1367.6, NULL, NULL },
+    { "mercury",      2.4394e6,  0.0,    NULL, NULL },
+    { "venus",        6.05184e6, 0.0,    NULL, NULL },
+    { "earth",        6.37101e6, 0.0,    &ATMOSPHERE_EARTH_USSA76,
+      &earth_shape },
+    { "moon",         1.73753e6, 0.0,    NULL,  &moon_shape },
+    { "mars_bary",    3.38992e6, 0.0,    NULL, NULL },
+    { "jupiter_bary", 6.9911e7,  0.0,    NULL, NULL },
+    { "saturn_bary",  5.8232e7,  0.0,    NULL, NULL },
+    { "uranus_bary",  2.5362e7,  0.0,    NULL, NULL },
+    { "neptune_bary", 2.4624e7,  0.0,    NULL, NULL },
 };
 #define N_BODIES (sizeof BODIES / sizeof BODIES[0])
 
@@ -89,6 +97,32 @@ static const EphBodyInfo BODIES[] = {
 #define ORIENT_DEGREE 36
 
 static const char *OUT_PATH = "data/fixture/earth_moon.eph";
+
+static const char *GRAIL_PATH = "data/grail/grgm900c_d50_sha.tab";
+
+/* How much of GRAIL the asset ships, and it is a measured trade rather than
+ * "as much as fits" (ROADMAP K5e). Over one revolution 100 km above the
+ * Moon, against the full degree-50 field:
+ *
+ *     point mass  3872 m      degree 16   281 m
+ *     degree  2   2901 m      degree 24    38 m
+ *     degree  4   1657 m      degree 32    62 m
+ *     degree  8   1451 m      degree 50     0 m  (the reference)
+ *
+ * and the cost of one field evaluation, from core/bench/bench_field.c, is
+ * 730 ns for point masses, about 3 us at degree 24 and 13.5 us at degree 50.
+ * So the last 26 degrees cost four times as much as the first 24 and buy
+ * tens of metres a revolution.
+ *
+ * Degree 24 also happens to be where the ladder stops being monotone - 32
+ * comes out slightly worse than 24 on this one metric - which is a property
+ * of comparing positions after a fixed time rather than of the field: a
+ * truncation shifts the phase as well as the shape.
+ *
+ * The data file carries all fifty. Raising this and recooking is the whole
+ * of the change if a mission ever flies low enough to care. */
+#define MOON_DEGREE 24
+
 
 static RefSample samples[MAX_SAMPLES];
 
@@ -125,6 +159,16 @@ int main(void)
 
         initial[i] = samples[0].s;
         system.mu[i] = refdata_gm_of(gm_table, n_gm, BODIES[i].name);
+
+        /* For the rotation lookup only (ROADMAP K5e). With Earth's J2 the
+         * only field the bodies move under, this changes the cook by 0.21 m
+         * of lunar position over the span and leaves the JPL comparison
+         * where it was - Earth's pole IS the frame's z axis, to within the
+         * precession since J2000. It is here so that the next field to be
+         * added is evaluated in its own frame rather than in whatever the
+         * frame happens to be, which is the mistake the Moon's field made
+         * visible. */
+        system.name[i] = BODIES[i].name;
         if (!(system.mu[i] > 0.0)) {
             fprintf(stderr, "cook: no GM for %s\n", BODIES[i].name);
             return 1;
@@ -132,24 +176,82 @@ int main(void)
 
         /* Earth's oblateness (ROADMAP K2). Values are cited, not invented:
          * data/horizons/obj_earth.txt, "J2 (IERS 2010)" and "Equ. radius,
-         * km". The Moon's own field is not here yet - GRAIL coefficients
-         * are real data to import (K5), not a number to guess, and the
-         * regression this is meant to shrink was already measured (ROADMAP
-         * "Дві розвилки") to be about Earth's J2, not the Moon's.
+         * km".
          *
-         * The pole is assumed fixed along the frame's z axis - see
-         * nbody.c's comment on has_j2 for what that costs and why it is
-         * acceptable before K3 gives bodies a real orientation. */
+         * The pole is assumed fixed along the frame's z axis here in the
+         * cooker - see nbody.c for what that costs. The runtime stopped
+         * assuming it in K5d, where the vessel's field learned to rotate
+         * into each body's own frame; the two differ by the precession
+         * since J2000, which moves Earth's J2 term by 6.4e-7 of itself. */
         if (strcmp(BODIES[i].name, "earth") == 0) {
-            system.has_j2 = 1;
-            system.j2_body = (int)i;
-            system.j2_field.degree = 2;
-            system.j2_field.re = 6378137.0;
+            earth_shape.degree = 2;
+            earth_shape.re = 6378137.0;
             /* Cited unnormalised, stored normalised (ROADMAP K5b): the
              * conversion happens in the setter so that no call site owns a
              * copy of the formula. */
-            harmonics_set_unnormalised(&system.j2_field, 2, 0,
-                                       -1.08262545e-3, 0.0);
+            harmonics_set_unnormalised(&earth_shape, 2, 0, -1.08262545e-3, 0.0);
+            system.field[i] = &earth_shape;
+        }
+
+        /* The Moon's own field (ROADMAP K5e), read from GRAIL rather than
+         * written down: data/grail/README.md says where the file came from
+         * and what its header promises.
+         *
+         * TWO FIELDS, AND THE SPLIT IS THE POINT. The asset gets the whole
+         * model, because that is what a vessel skimming 100 km over a
+         * mascon flies through. The N-body integration gets a low-degree
+         * copy, because at the Earth's distance the ratio (Re/r)^n is 2e-5
+         * at degree 2 and 4e-10 at degree 4 - the terms beyond it move
+         * nothing, and evaluating all fifty rows on every pair at every
+         * stage would cost 12 us a call to compute them. COOK_DEGREE is
+         * where that stops mattering, with room to spare.
+         *
+         * K4b's rule survives intact: one set of coefficients from one
+         * source, and the asset still records what it was given rather than
+         * a second opinion about the Moon. */
+        if (strcmp(BODIES[i].name, "moon") == 0) {
+            ShaReport rep;
+            if (sha_read(GRAIL_PATH, MOON_DEGREE, &moon_shape, &rep)
+                != CORE_OK) {
+                fprintf(stderr, "cook: cannot read %s\n", GRAIL_PATH);
+                return 1;
+            }
+
+            printf("  moon: GRAIL degree %d, %ld pairs, Re %.1f km\n",
+                   rep.read_degree, rep.pairs_read,
+                   rep.reference_radius_m / 1000.0);
+
+            /* The model's own GM differs from the ephemeris GM in the
+             * eighth digit (4902.79996709 against gm.csv's 4902.800066).
+             * The ephemeris one is used, as it is for Earth: the
+             * coefficients scale the field of the body the cooker is
+             * actually moving, and a second GM here would be a second
+             * opinion about the Moon's mass.
+             *
+             * AND THE N-BODY INTEGRATION DOES NOT GET IT. That was the plan
+             * and the measurement reversed it. Truncated to degree 4 and
+             * applied to the bodies, the Moon's own field moves the
+             * geocentric lunar position by 199 m over the fixture's span and
+             * makes the error against JPL WORSE: 2108 m to 2307 m. Rotating
+             * it into the Moon's real frame first - which nbody.c now does -
+             * makes it worse still, 2453 m.
+             *
+             * That is not a bug in the field. It is a model that is
+             * incomplete in a way JPL's is not: the lunar orbit is shaped by
+             * the Moon's triaxiality COUPLED to its libration, and
+             * core/offline/body_rotation.h carries the mean rotation with no
+             * physical libration at all. Adding one half of a coupled pair
+             * is not half a correction.
+             *
+             * So the bodies keep moving under point masses plus Earth's J2,
+             * which is what the fixture was measured against, and the asset
+             * carries the whole lunar model for the vessels that fly close
+             * enough to feel it. K4b's rule is not bent by this: the asset
+             * still records exactly the coefficients it was given from the
+             * one source, and nothing computes a second opinion about the
+             * Moon's shape. What changes is a claim this file can no longer
+             * make - that every term in the asset also acted on the bodies -
+             * and it is written here rather than left to be discovered. */
         }
     }
 

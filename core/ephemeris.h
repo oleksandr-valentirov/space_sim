@@ -133,7 +133,7 @@
 
 #define EPH_MAGIC "SSEPH\0\0\0"
 #define EPH_MAGIC_SIZE 8
-#define EPH_VERSION 5u
+#define EPH_VERSION 6u
 #define EPH_NAME_SIZE 32
 
 typedef struct EphemerisCtx EphemerisCtx;
