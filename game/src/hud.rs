@@ -19,7 +19,7 @@ use engine::egui;
 use crate::clock::Stall;
 use crate::mission;
 use crate::sim::Command;
-use crate::snapshot::WorldSnapshot;
+use crate::snapshot::{VesselSnapshot, WorldSnapshot};
 use crate::text::{tr, Key, Language};
 
 /// Секунд у добі. Тут — не фізична стала, а одиниця показу.
@@ -104,6 +104,167 @@ fn button(ui: &mut egui::Ui, id: &str, label: &str) -> bool {
     let drawn = ui.button(label);
     ui.interact(drawn.rect, egui::Id::new(id), egui::Sense::click())
         .clicked()
+}
+
+/// Числа панелі апарата, зняті зі снапшоту (ROADMAP-UI.md, U2c).
+///
+/// Окремо від малювання навмисно: оракул кроку — «значення в панелі збігається
+/// з незалежно порахованим зі снапшоту», а порівнювати числа з пікселями
+/// неможливо. Кожне поле читається [`vessel_panel`], тож структури, яку ніхто
+/// не читає, тут немає.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VesselReadout {
+    /// Висота над **поверхнею** тіла: відстань від центра мінус середній
+    /// радіус з ассета (`eph_body_radius`, U2a). Не над намальованою сферою
+    /// і не над опорним радіусом гармонік — для Місяця це різні числа,
+    /// і різняться вони на 470 м (K5e).
+    pub altitude_m: f64,
+    /// Швидкість **відносно тіла**, не барицентрична.
+    pub speed_m_s: f64,
+    /// Скільки лишилось до наступного маневру плану; `None` — маневрів
+    /// попереду немає.
+    pub next_burn_s: Option<f64>,
+    /// Сумарний Δv плану — **сума норм**, а не норма суми: два маневри
+    /// в протилежні боки коштують палива обидва.
+    pub total_dv_m_s: f64,
+    /// Наскільки прогноз випереджає курсор.
+    pub computed_ahead_s: f64,
+    /// Апарат зупинився помилкою.
+    pub failed: bool,
+}
+
+/// Знімає числа апарата зі снапшоту.
+///
+/// Ефемериду не кличе (правило 5): позиція тіла береться з найближчого
+/// семпла, який її вже несе (`leg::Sample::earth` — саме для цього вона там
+/// і лежить). Радіус приходить аргументом, бо це властивість тіла, а не
+/// кадру: його читають один раз при старті.
+pub fn read_vessel(
+    snapshot: &WorldSnapshot,
+    vessel: &VesselSnapshot,
+    body_radius_m: f64,
+) -> VesselReadout {
+    let body = body_near(vessel, snapshot.t);
+
+    let dr = [
+        vessel.state.r.x - body.0[0],
+        vessel.state.r.y - body.0[1],
+        vessel.state.r.z - body.0[2],
+    ];
+    let distance = (dr[0] * dr[0] + dr[1] * dr[1] + dr[2] * dr[2]).sqrt();
+
+    let dv = [
+        vessel.state.v.x - body.1[0],
+        vessel.state.v.y - body.1[1],
+        vessel.state.v.z - body.1[2],
+    ];
+    let speed = (dv[0] * dv[0] + dv[1] * dv[1] + dv[2] * dv[2]).sqrt();
+
+    let next_burn_s = vessel
+        .plan
+        .manoeuvres()
+        .iter()
+        .find(|m| m.t > snapshot.t)
+        .map(|m| m.t - snapshot.t);
+
+    let total_dv_m_s = vessel
+        .plan
+        .manoeuvres()
+        .iter()
+        .map(|m| (m.dv[0] * m.dv[0] + m.dv[1] * m.dv[1] + m.dv[2] * m.dv[2]).sqrt())
+        .sum();
+
+    VesselReadout {
+        altitude_m: distance - body_radius_m,
+        speed_m_s: speed,
+        next_burn_s,
+        total_dv_m_s,
+        computed_ahead_s: vessel.computed_to - snapshot.t,
+        failed: vessel.failed.is_some(),
+    }
+}
+
+/// Панель апарата. Нічого не надсилає — U2 лише показує.
+pub fn vessel_panel(ui: &mut egui::Ui, language: Language, name: &str, readout: &VesselReadout) {
+    ui.heading(tr(language, Key::Vessel));
+    ui.label(name);
+    ui.label(format!(
+        "{}: {:.1} км",
+        tr(language, Key::Altitude),
+        readout.altitude_m / 1000.0
+    ));
+    ui.label(format!(
+        "{}: {:.1} м/с",
+        tr(language, Key::Speed),
+        readout.speed_m_s
+    ));
+    ui.label(match readout.next_burn_s {
+        Some(seconds) => format!(
+            "{}: {:.2} діб",
+            tr(language, Key::NextBurn),
+            seconds / DAY_S
+        ),
+        None => tr(language, Key::NoBurns).to_string(),
+    });
+    ui.label(format!(
+        "{}: {:.2} м/с",
+        tr(language, Key::TotalDv),
+        readout.total_dv_m_s
+    ));
+    ui.label(format!(
+        "{}: {:.2} діб",
+        tr(language, Key::ComputedAhead),
+        readout.computed_ahead_s / DAY_S
+    ));
+    if readout.failed {
+        ui.label(tr(language, Key::Failed));
+    }
+}
+
+/// Позиція й швидкість Землі в найближчому до `t` семплі.
+///
+/// Семпл несе позицію тіла саме для цього (`crate::leg`), тож ефемерида в
+/// кадрі не потрібна. Швидкість семпл не несе, тож вона береться скінченною
+/// різницею між двома сусідніми семплами — того самого порядку точності, що
+/// й сама лінія на екрані.
+fn body_near(vessel: &VesselSnapshot, t: f64) -> ([f64; 3], [f64; 3]) {
+    let mut best: Option<(f64, [f64; 3], [f64; 3])> = None;
+
+    for leg in &vessel.legs {
+        for (i, sample) in leg.samples.iter().enumerate() {
+            let gap = (sample.state.t - t).abs();
+            if best.is_some_and(|(was, _, _)| gap >= was) {
+                continue;
+            }
+
+            // Сусід для різниці: наступний, якщо він є, інакше попередній.
+            let velocity = match leg.samples.get(i + 1).or_else(|| {
+                if i > 0 {
+                    leg.samples.get(i - 1)
+                } else {
+                    None
+                }
+            }) {
+                Some(other) => {
+                    let dt = other.state.t - sample.state.t;
+                    if dt == 0.0 {
+                        [0.0; 3]
+                    } else {
+                        [
+                            (other.earth[0] - sample.earth[0]) / dt,
+                            (other.earth[1] - sample.earth[1]) / dt,
+                            (other.earth[2] - sample.earth[2]) / dt,
+                        ]
+                    }
+                }
+                None => [0.0; 3],
+            };
+
+            best = Some((gap, sample.earth, velocity));
+        }
+    }
+
+    best.map_or(([0.0; 3], [0.0; 3]), |(_, r, v)| (r, v))
 }
 
 /// Календарна дата з секунд від епохи ассета (J2000 TDB), UTC-подібна.

@@ -160,3 +160,138 @@ fn the_button_says_resume_while_paused() {
     let centre = button_centre(&paused, hud::PAUSE);
     assert_eq!(click_at(&paused, Some(centre)), vec![Command::TogglePause]);
 }
+
+// ---------------------------------------------------------------------------
+// Панель апарата (U2c)
+
+/// Апарат на коловій орбіті навколо Землі, яка сама рухається.
+///
+/// Земля не в початку координат навмисно: панель має міряти висоту й
+/// швидкість **відносно тіла**, і апарат, порахований від початку координат,
+/// пройшов би перевірку лише на нерухомій Землі в нулі.
+fn vessel_with_plan(t: f64) -> game::snapshot::VesselSnapshot {
+    use core_rs::{State, Stop, Vec3d};
+    use game::leg::{Leg, Sample};
+    use game::plan::{Frame, Manoeuvre, Plan};
+    use game::world::{VesselId, EARTH};
+    use std::sync::Arc;
+
+    let earth_r = [1.2e11, -3.4e10, 5.0e9];
+    let earth_v = [7000.0, 25000.0, -3.0];
+    let offset = [7.0e6, 0.0, 0.0];
+    let relative_v = [0.0, 7500.0, 100.0];
+
+    // Два семпли: другий потрібен, щоб швидкість тіла була скінченною
+    // різницею, а не нулем.
+    let sample_at = |dt: f64| Sample {
+        state: State {
+            t: t + dt,
+            r: Vec3d {
+                x: earth_r[0] + earth_v[0] * dt + offset[0],
+                y: earth_r[1] + earth_v[1] * dt + offset[1],
+                z: earth_r[2] + earth_v[2] * dt + offset[2],
+            },
+            v: Vec3d {
+                x: earth_v[0] + relative_v[0],
+                y: earth_v[1] + relative_v[1],
+                z: earth_v[2] + relative_v[2],
+            },
+        },
+        earth: [
+            earth_r[0] + earth_v[0] * dt,
+            earth_r[1] + earth_v[1] * dt,
+            earth_r[2] + earth_v[2] * dt,
+        ],
+        moon: [0.0; 3],
+    };
+
+    let samples = vec![sample_at(0.0), sample_at(10.0)];
+    let state = samples[0].state;
+
+    let mut plan = Plan::new();
+    // Дві осі ненульові навмисно: маневр з однією не розрізняє суму норм і
+    // суму компонент, і мутація «складати компоненти» пройшла б повз.
+    plan.insert(Manoeuvre {
+        t: t + 2.0 * 86400.0,
+        dv: [3.0, 4.0, 0.0],
+        frame: Frame::Vnb { body: EARTH },
+    });
+    plan.insert(Manoeuvre {
+        t: t + 5.0 * 86400.0,
+        dv: [-3.0, -4.0, 0.0],
+        frame: Frame::Vnb { body: EARTH },
+    });
+
+    game::snapshot::VesselSnapshot {
+        id: VesselId(0),
+        name: "probe".to_string(),
+        legs: vec![Arc::new(Leg {
+            entry: state,
+            t1: t + 10.0,
+            step_out: 1.0,
+            samples,
+            stop: Stop::BufferFull,
+        })],
+        state,
+        plan,
+        start: state,
+        tip: state,
+        computed_to: t + 3.0 * 86400.0,
+        horizon_end: t + 100.0 * 86400.0,
+        params: None,
+        failed: None,
+    }
+}
+
+/// Кожне число панелі збігається з порахованим зі снапшоту іншим шляхом.
+#[test]
+fn the_vessel_panel_agrees_with_the_snapshot() {
+    const RADIUS: f64 = 6_371_000.0;
+
+    let mut world = snapshot(1000.0, None);
+    world.vessels.push(vessel_with_plan(world.t));
+
+    let readout = hud::read_vessel(&world, &world.vessels[0], RADIUS);
+
+    // Висота: апарат зміщений на 7000 км від центра Землі.
+    assert!(
+        (readout.altitude_m - (7.0e6 - RADIUS)).abs() < 1.0,
+        "висота {} м",
+        readout.altitude_m
+    );
+
+    // Швидкість відносно тіла: 7500 і 100 по двох осях.
+    let expected_speed = (7500.0f64 * 7500.0 + 100.0 * 100.0).sqrt();
+    assert!(
+        (readout.speed_m_s - expected_speed).abs() < 1e-3,
+        "швидкість {} м/с проти {expected_speed}",
+        readout.speed_m_s
+    );
+
+    // Δv плану — сума норм: |(3,4,0)| + |(-3,-4,0)| = 10, тоді як сума
+    // компонент дала б нуль. Саме це й розрізняє два маневри в різні боки.
+    assert!(
+        (readout.total_dv_m_s - 10.0).abs() < 1e-9,
+        "Δv {} м/с, а сума норм — 10",
+        readout.total_dv_m_s
+    );
+
+    // До наступного маневру — дві доби, а не п'ять: перший, що попереду.
+    assert_eq!(readout.next_burn_s, Some(2.0 * 86400.0));
+
+    assert!((readout.computed_ahead_s - 3.0 * 86400.0).abs() < 1e-9);
+    assert!(!readout.failed);
+}
+
+/// Маневр у минулому наступним не вважається.
+#[test]
+fn a_burn_already_flown_is_not_the_next_one() {
+    let mut world = snapshot(1000.0, None);
+    let vessel = vessel_with_plan(world.t);
+    world.vessels.push(vessel);
+
+    // Курсор перескочив обидва маневри.
+    world.t += 6.0 * 86400.0;
+    let readout = hud::read_vessel(&world, &world.vessels[0], 6_371_000.0);
+    assert_eq!(readout.next_burn_s, None);
+}

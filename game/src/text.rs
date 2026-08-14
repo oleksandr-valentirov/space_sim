@@ -38,6 +38,23 @@ pub enum Key {
     StalledHorizon,
     /// Причина зупинки: місія скінчилася.
     StalledMissionEnd,
+
+    /// Заголовок панелі апарата.
+    Vessel,
+    /// Висота над поверхнею тіла.
+    Altitude,
+    /// Швидкість відносно тіла.
+    Speed,
+    /// Час до наступного маневру.
+    NextBurn,
+    /// Сумарний Δv плану.
+    TotalDv,
+    /// Наскільки прогноз випереджає курсор.
+    ComputedAhead,
+    /// Апарат зупинився помилкою.
+    Failed,
+    /// Маневрів у плані більше немає.
+    NoBurns,
 }
 
 /// Мова інтерфейсу. Дві, бо саме дві таблиці й перевіряються.
@@ -68,6 +85,14 @@ fn english(key: Key) -> &'static str {
         Key::StalledPaused => "paused",
         Key::StalledHorizon => "waiting for the forecast",
         Key::StalledMissionEnd => "mission over",
+        Key::Vessel => "VESSEL",
+        Key::Altitude => "altitude",
+        Key::Speed => "speed",
+        Key::NextBurn => "next burn",
+        Key::TotalDv => "plan dv",
+        Key::ComputedAhead => "computed ahead",
+        Key::Failed => "stopped with an error",
+        Key::NoBurns => "no burns planned",
     }
 }
 
@@ -83,12 +108,20 @@ fn ukrainian(key: Key) -> &'static str {
         Key::StalledPaused => "пауза",
         Key::StalledHorizon => "чекає на прогноз",
         Key::StalledMissionEnd => "місія скінчилася",
+        Key::Vessel => "АПАРАТ",
+        Key::Altitude => "висота",
+        Key::Speed => "швидкість",
+        Key::NextBurn => "до маневру",
+        Key::TotalDv => "Δv плану",
+        Key::ComputedAhead => "прогноз уперед",
+        Key::Failed => "зупинився помилкою",
+        Key::NoBurns => "маневрів немає",
     }
 }
 
 /// Усі ключі — для перевірок і для того, хто колись малюватиме таблицю
 /// перекладу.
-pub const ALL: [Key; 10] = [
+pub const ALL: [Key; 18] = [
     Key::Time,
     Key::Day,
     Key::Warp,
@@ -99,6 +132,14 @@ pub const ALL: [Key; 10] = [
     Key::StalledPaused,
     Key::StalledHorizon,
     Key::StalledMissionEnd,
+    Key::Vessel,
+    Key::Altitude,
+    Key::Speed,
+    Key::NextBurn,
+    Key::TotalDv,
+    Key::ComputedAhead,
+    Key::Failed,
+    Key::NoBurns,
 ];
 
 #[cfg(test)]

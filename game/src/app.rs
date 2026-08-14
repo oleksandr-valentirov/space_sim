@@ -85,6 +85,10 @@ struct State {
     ui: Ui,
     input: WindowInput,
     language: Language,
+    /// Радіус Землі з ассета, прочитаний **один раз** (`eph_body_radius`,
+    /// U2a). Панель висоти його не переобчислює щокадру: розмір тіла не
+    /// змінюється, а правило 5 забороняє кликати ефемериду з кадру.
+    earth_radius_m: f64,
 
     /// Світ живе у власній нитці; тут лише ручка до неї (`crate::sim`).
     /// Головна нитка світ не рахує й не чіпає — вона його читає.
@@ -299,6 +303,7 @@ impl State {
         let ui = Ui::new(&gpu, target.format());
         let input = WindowInput::new(&ui, target.window());
         let sim = Sim::spawn(build_world(options)?)?;
+        let earth_radius_m = sim.ephemeris().body_radius(EARTH);
         // Планувальник ділить із симуляцією ассет, але не пропагатор:
         // `Ephemeris` — `Sync`, `Propagator` — ні (D3, H4).
         let planner = Planner::spawn(sim.ephemeris(), mission::config())?;
@@ -315,6 +320,7 @@ impl State {
             // ще немає — він з'явиться разом із рештою налаштувань, і саме
             // тому мова вже поле, а не константа в кожному виклику.
             language: Language::default(),
+            earth_radius_m,
             orbit: Orbit::at_altitude(mission::CAMERA_ALTITUDE_M),
             sim,
             planner,
@@ -462,6 +468,7 @@ impl State {
         // канал, а панель знає лише про те, що намальовано.
         let mut commands = Vec::new();
         let language = self.language;
+        let radius = self.earth_radius_m;
         let viewport = Viewport::new(
             self.target.width(),
             self.target.height(),
@@ -476,6 +483,11 @@ impl State {
                     .resizable(false)
                     .show(ui, |ui| {
                         commands.extend(hud::time_panel(ui, language, &snapshot));
+                        ui.separator();
+                        if let Some(vessel) = snapshot.vessels.first() {
+                            let readout = hud::read_vessel(&snapshot, vessel, radius);
+                            hud::vessel_panel(ui, language, &vessel.name, &readout);
+                        }
                     });
             });
         self.input.apply(self.target.window(), platform);
