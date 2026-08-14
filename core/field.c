@@ -35,10 +35,11 @@ CoreResult field_all_but(const EphemerisCtx *eph, int excluded, FieldCtx *out)
         /* Read once, here, rather than on every force evaluation: the
          * coefficients do not change, and the alternative is a file-format
          * decision reached inside the integrator's inner loop. */
-        if (eph_body_harmonics(eph, i, &out->harmonics[slot]) != CORE_OK) {
+        out->harmonics[slot] = eph_body_harmonics(eph, i);
+        if (out->harmonics[slot] == NULL) {
             return CORE_ERR_INVALID_ARG;
         }
-        if (out->harmonics[slot].degree >= 2) {
+        if (out->harmonics[slot]->degree >= 2) {
             out->n_harmonic++;
         }
 
@@ -108,7 +109,7 @@ void field_exclude(FieldCtx *ctx, int body)
     ctx->n_emitter = 0;
     ctx->n_atmosphere = 0;
     for (int i = 0; i < ctx->n_bodies; i++) {
-        if (ctx->harmonics[i].degree >= 2) {
+        if (ctx->harmonics[i] != NULL && ctx->harmonics[i]->degree >= 2) {
             ctx->n_harmonic++;
         }
         if (ctx->flux[i] > 0.0) {
@@ -125,8 +126,11 @@ void field_clear_harmonics(FieldCtx *ctx)
     if (ctx == NULL) {
         return;
     }
+    /* The pointer is dropped rather than a degree overwritten: since K5a
+     * these coefficients belong to the ephemeris, and a context that could
+     * edit them would be editing the asset for every other caller too. */
     for (int i = 0; i < ctx->n_bodies; i++) {
-        ctx->harmonics[i].degree = 0;
+        ctx->harmonics[i] = NULL;
     }
     ctx->n_harmonic = 0;
 }
@@ -328,9 +332,9 @@ void accel_field(double t, Vec3d r, Vec3d v, void *ctx, Vec3d *a_out)
          *
          * harmonics_accel wants the vessel relative to the body, which is
          * -d; the pole is assumed along z, as field.h explains. */
-        if (c->harmonics[i].degree >= 2) {
+        if (c->harmonics[i] != NULL && c->harmonics[i]->degree >= 2) {
             Vec3d term;
-            harmonics_accel(&c->harmonics[i], vec3_neg(d),
+            harmonics_accel(c->harmonics[i], vec3_neg(d),
                             eph_body_mu(c->eph, c->body[i]), &term);
             harmonic = vec3_add(harmonic, term);
         }
@@ -435,9 +439,9 @@ void field_gradient(double t, Vec3d r, Vec3d v, const FieldCtx *ctx,
          * Upper triangle only, matching the block above - the matrix comes
          * back symmetric to the bit, so taking its lower half would add the
          * same numbers in a different order. */
-        if (c->harmonics[i].degree >= 2) {
+        if (c->harmonics[i] != NULL && c->harmonics[i]->degree >= 2) {
             double hg[9];
-            harmonics_gradient(&c->harmonics[i], vec3_neg(d), mu, hg);
+            harmonics_gradient(c->harmonics[i], vec3_neg(d), mu, hg);
 
             g[0] += hg[0];
             g[4] += hg[4];

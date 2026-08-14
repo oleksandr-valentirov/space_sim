@@ -59,9 +59,21 @@ typedef struct {
      * Named for harmonics rather than for J2, unlike NBodySystem's has_j2:
      * the cooker only needs the low degrees that move one body under
      * another (PROJECT.md section 4), while this is the field a vessel
-     * flies in, and K5 puts a lunar model here. */
-    HarmonicsField harmonics[FIELD_MAX_BODIES];
-    int            n_harmonic;   /* how many have degree >= 2, for the fast path */
+     * flies in, and K5 puts a lunar model here.
+     *
+     * POINTERS INTO THE EPHEMERIS since K5a, where they used to be copies.
+     * The ephemeris already owns one expanded field per body, and the copy
+     * cost nothing while the degree ceiling was 8. At the degree 50 a lunar
+     * model needs, sixteen of them are a third of a megabyte in a struct
+     * that several tests declare as a local variable. Borrowing is also the
+     * honest description of the situation: these coefficients were never
+     * this context's to own, which is the whole argument of K4b.
+     *
+     * NULL means no harmonics for that body, and only field_clear_harmonics
+     * produces it - the asset always answers, with degree 0 for a point
+     * mass. */
+    const HarmonicsField *harmonics[FIELD_MAX_BODIES];
+    int                   n_harmonic;  /* how many have degree >= 2, fast path */
 
     /* Each body's size and brightness, read from the asset alongside the
      * harmonics (ROADMAP K6b). Radius 0 means the asset does not say how big

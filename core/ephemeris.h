@@ -166,14 +166,24 @@ double      eph_body_radius(const EphemerisCtx *ctx, int body);
 double      eph_body_flux(const EphemerisCtx *ctx, int body);
 
 /* A body's gravity field beyond its point mass, in its own body-fixed frame
- * (ROADMAP K4b). Writes a field with degree 0 - which harmonics_accel treats
- * as no contribution at all - for a body the asset describes as a point mass,
- * so a caller need not ask twice.
+ * (ROADMAP K4b). A body the asset describes as a point mass has degree 0 -
+ * which harmonics_accel treats as no contribution at all - so a caller need
+ * not ask twice. NULL only for a bad body index: "this body is round" is an
+ * answer, not a failure.
  *
- * Returns CORE_ERR_INVALID_ARG only for a bad body index or a NULL out: "this
- * body is round" is an answer, not a failure. */
-CoreResult eph_body_harmonics(const EphemerisCtx *ctx, int body,
-                              HarmonicsField *out);
+ * A POINTER INTO THE CONTEXT, not a copy (ROADMAP K5a). It is valid as long
+ * as the context is, which every caller already needs anyway - the field and
+ * the propagator both borrow the ephemeris and are documented as outliving
+ * nothing (core/field.h, core/prop.h).
+ *
+ * It used to be a copy, and the reason it stopped is arithmetic rather than
+ * taste. HarmonicsField is sized by HARMONICS_MAX_DEGREE, which K5b raises
+ * from 8 to 50 to fit a lunar model; the struct goes from about 700 bytes to
+ * 21 kB, and FieldCtx holds one per body for sixteen bodies. That is a third
+ * of a megabyte in a struct that several tests declare as a local variable,
+ * on a platform whose default stack is one megabyte. The copy was affordable
+ * only while the degree was small. */
+const HarmonicsField *eph_body_harmonics(const EphemerisCtx *ctx, int body);
 
 /* A body's atmosphere (ROADMAP K7b), with altitudes measured above its mean
  * radius. Writes a model with no layers - which atmosphere_density treats as

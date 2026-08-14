@@ -453,12 +453,12 @@ int main(void)
         /* Read back from the asset rather than restated here - and checked
          * against the constants the cooker was given, which is the claim
          * the format exists to make (ROADMAP K4b). */
-        HarmonicsField j2;
-        CHECK(eph_body_harmonics(eph, EARTH, &j2) == CORE_OK);
+        const HarmonicsField *j2 = eph_body_harmonics(eph, EARTH);
+        CHECK(j2 != NULL);
         HarmonicsField cited = earth_j2();
-        CHECK(j2.degree == cited.degree);
-        CHECK_BITS_EQ(j2.re, cited.re);
-        CHECK_BITS_EQ(j2.c[harmonics_index(2, 0)],
+        CHECK(j2->degree == cited.degree);
+        CHECK_BITS_EQ(j2->re, cited.re);
+        CHECK_BITS_EQ(j2->c[harmonics_index(2, 0)],
                       cited.c[harmonics_index(2, 0)]);
 
         /* Every other body is a point mass, and says so. */
@@ -466,9 +466,9 @@ int main(void)
             if ((int)b == EARTH) {
                 continue;
             }
-            HarmonicsField h;
-            CHECK(eph_body_harmonics(eph, (int)b, &h) == CORE_OK);
-            CHECK(h.degree == 0);
+            const HarmonicsField *h = eph_body_harmonics(eph, (int)b);
+            CHECK(h != NULL);
+            CHECK(h->degree == 0);
         }
 
         State earth;
@@ -483,7 +483,7 @@ int main(void)
         accel_field(t_begin, r, vec3_zero(), &oblate, &a_oblate);
 
         Vec3d expected;
-        harmonics_accel(&j2, vec3_sub(r, earth.r), eph_body_mu(eph, EARTH),
+        harmonics_accel(j2, vec3_sub(r, earth.r), eph_body_mu(eph, EARTH),
                         &expected);
 
         /* Bit-exact against the operation field.c actually performs - the

@@ -328,16 +328,13 @@ double eph_body_flux(const EphemerisCtx *ctx, int body)
     return ctx->flux[body];
 }
 
-CoreResult eph_body_harmonics(const EphemerisCtx *ctx, int body,
-                              HarmonicsField *out)
+const HarmonicsField *eph_body_harmonics(const EphemerisCtx *ctx, int body)
 {
-    if (ctx == NULL || out == NULL || body < 0 ||
-        (unsigned)body >= ctx->n_bodies) {
-        return CORE_ERR_INVALID_ARG;
+    if (ctx == NULL || body < 0 || (unsigned)body >= ctx->n_bodies) {
+        return NULL;
     }
 
-    *out = ctx->harmonics[body];
-    return CORE_OK;
+    return &ctx->harmonics[body];
 }
 
 CoreResult eph_body_atmosphere(const EphemerisCtx *ctx, int body,
