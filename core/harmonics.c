@@ -197,6 +197,27 @@ void harmonics_set_unnormalised(HarmonicsField *field, int n, int m,
     field->s[harmonics_index(n, m)] = s / norm;
 }
 
+/* (Re/r), never above one.
+ *
+ * The series is an EXTERIOR solution: inside the reference sphere it does not
+ * converge, and at degree 24 it does not merely lose accuracy - (1738/500)^24
+ * is 6e12, so a trajectory that clips the body produces an acceleration that
+ * ends the integration rather than a wrong number. That is not theoretical:
+ * it is how ROADMAP K5e found this, in a test that aims a lunar transfer at
+ * the Moon's centre and had always been allowed to pass through it while the
+ * Moon was a point mass.
+ *
+ * Holding the ratio at the boundary keeps the field continuous at r = Re,
+ * bounded below it, and honest about what it is: the exterior solution
+ * evaluated at the last radius where it means anything. Anything under the
+ * surface is a collision, which is the game's business and not this file's -
+ * but blowing up the integrator on the way there would take the collision
+ * with it. */
+static double clamp_rho(double rho)
+{
+    return rho > 1.0 ? 1.0 : rho;
+}
+
 static int clamp_degree(int degree)
 {
     return degree > HARMONICS_MAX_DEGREE ? HARMONICS_MAX_DEGREE : degree;
@@ -230,7 +251,7 @@ void harmonics_accel(const HarmonicsField *field, Vec3d r, double mu,
     /* One table instead of the two the unnormalised form needed: with R_m
      * built on the direction cosines, every term carries exactly (Re/r)^n
      * and a single mu/r^2 out front. */
-    double rho = field->re * r_inv;
+    double rho = clamp_rho(field->re * r_inv);
     double rho_pow[HARMONICS_MAX_DEGREE + 1];
     rho_pow[0] = 1.0;
     for (int n = 1; n <= degree; n++) {
@@ -342,7 +363,7 @@ void harmonics_gradient(const HarmonicsField *field, Vec3d r, double mu,
     double add_leg[HARMONICS_MAX_COEFFS];
     build_legendre(u, degree, a_leg, ad_leg, add_leg);
 
-    double rho = field->re * r_inv;
+    double rho = clamp_rho(field->re * r_inv);
     double rho_pow[HARMONICS_MAX_DEGREE + 1];
     rho_pow[0] = 1.0;
     for (int n = 1; n <= degree; n++) {
@@ -462,7 +483,7 @@ void harmonics_potential(const HarmonicsField *field, Vec3d r, double mu,
     double ad_leg[HARMONICS_MAX_COEFFS];
     build_legendre(u, degree, a_leg, ad_leg, NULL);
 
-    double rho = field->re * r_inv;
+    double rho = clamp_rho(field->re * r_inv);
     double rho_pow[HARMONICS_MAX_DEGREE + 1];
     rho_pow[0] = 1.0;
     for (int n = 1; n <= degree; n++) {

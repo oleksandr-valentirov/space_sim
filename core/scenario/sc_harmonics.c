@@ -38,6 +38,10 @@ int main(void)
 
     double mu = opaque(3.986004418e14);
 
+    /* Two of these sit INSIDE the reference radius (6.378e6): 4/3/2 is at
+     * 5.39e6 and -2/5/-3 at 6.16e6. Kept there on purpose since K5e - below
+     * the reference sphere harmonics.c holds (Re/r) at one, and that clamp
+     * is arithmetic like any other, so it belongs in the hash. */
     Vec3d points[6] = {
         vec3(7.0e6, 0.0, 0.0),
         vec3(0.0, 7.0e6, 0.0),

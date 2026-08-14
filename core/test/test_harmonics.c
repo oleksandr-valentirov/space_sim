@@ -56,12 +56,15 @@ static void test_j2_matches_closed_form(void)
     field.re = re;
     harmonics_set_unnormalised(&field, 2, 0, -j2, 0.0);
 
+    /* Every point outside the reference radius (6.378e6), where the series
+     * is the solution to something: below it harmonics.c holds (Re/r) at
+     * one, so a comparison there would be against the clamp (K5e). */
     Vec3d points[5] = {
         vec3(7.0e6, 0.0, 0.0),
         vec3(0.0, 7.0e6, 0.0),
         vec3(0.0, 0.0, 7.0e6),          /* pole */
-        vec3(4.0e6, 3.0e6, 2.0e6),
-        vec3(-2.0e6, 5.0e6, -3.0e6),
+        vec3(6.0e6, 4.5e6, 3.0e6),
+        vec3(-3.0e6, 7.5e6, -4.5e6),
     };
 
     for (int i = 0; i < 5; i++) {
@@ -198,9 +201,15 @@ static void test_legendre_matches_textbook(void)
     double mu = 3.986004418e14;
     double re = 6378136.3;
 
+    /* All three OUTSIDE the reference radius, which matters since K5e: the
+     * series is an exterior solution and harmonics.c holds (Re/r) at one
+     * below the reference sphere rather than letting it diverge. The first
+     * two points used to sit inside it - 5.4e6 and 6.2e6 against Re of
+     * 6.378e6 - which was fine while nothing clamped, and would now be
+     * comparing the clamp against the textbook. */
     Vec3d points[3] = {
-        vec3(4.0e6, 3.0e6, 2.0e6),
-        vec3(-2.0e6, 5.0e6, -3.0e6),
+        vec3(6.0e6, 4.5e6, 3.0e6),
+        vec3(-3.0e6, 7.5e6, -4.5e6),
         vec3(1.0e6, -1.5e6, 6.5e6),
     };
 

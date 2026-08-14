@@ -6,7 +6,7 @@ sc_cr3bp 1e58b8ae5f6b2a7c
 sc_dop853 8400ba159cae7209
 sc_dragflight 53c15595ddb565f8
 sc_ephemeris 0115ce645a9491a0
-sc_harmonics 429928eed2bd9c71
+sc_harmonics d7403e4c77579d91
 sc_orientation 75906fccc5679798
 sc_prop 18601561ca01eec1
 sc_quat 0cf6b4dd76bae45b
