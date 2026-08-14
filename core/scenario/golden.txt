@@ -6,6 +6,7 @@ sc_dop853 8400ba159cae7209
 sc_ephemeris ba016bc2008e24d2
 sc_harmonics 05b2cd1ee63ff371
 sc_prop 89c066ea68c0d4dd
+sc_quat 0cf6b4dd76bae45b
 sc_richardson 4727f9efe7889769
 sc_rk4 cf327da9e36dc16c
 sc_stm c2fa6f7a5186dc04
