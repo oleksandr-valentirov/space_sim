@@ -40,6 +40,7 @@ pub mod mission;
 pub mod plan;
 pub mod planner;
 pub mod save;
+pub mod schedule;
 pub mod sim;
 pub mod snapshot;
 pub mod text;
