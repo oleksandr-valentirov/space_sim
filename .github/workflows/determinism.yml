@@ -70,7 +70,7 @@ jobs:
             shell: 'msys2 {0}'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: MSYS2
         id: msys2
@@ -365,7 +365,7 @@ jobs:
 
       - name: Upload hashes
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: hashes-${{ matrix.name }}
           path: build/scenario/actual.txt

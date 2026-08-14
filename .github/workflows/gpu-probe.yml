@@ -40,7 +40,7 @@ jobs:
             os: macos-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Mesa з програмним Vulkan: без нього на раннері Linux немає жодного
       # адаптера, і зонд не мав би що показати.
@@ -58,7 +58,7 @@ jobs:
 
       - name: Upload table
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gpu-features-${{ matrix.name }}
           path: build/csv/gpu_features.csv

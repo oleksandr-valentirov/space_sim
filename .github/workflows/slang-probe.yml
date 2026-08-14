@@ -35,7 +35,7 @@ jobs:
             os: macos-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Без програмного Vulkan на раннері Linux немає жодного адаптера, а
       # зонд має саме малювати, не лише компілювати.
@@ -70,7 +70,7 @@ jobs:
 
       - name: Upload output
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: slang-output-${{ matrix.name }}
           path: build/slang/
