@@ -19,9 +19,9 @@ use std::path::Path;
 use std::process::Command;
 
 use core_sys::{
-    eph_body_state, eph_free, eph_load, prop_create, prop_free, prop_run, prop_run_stm, CoreEvent,
-    CoreResult, EphemerisCtx, PropConfig, PropagatorCtx, State, CORE_ERR_INVALID_ARG,
-    CORE_EVENT_PERIAPSIS, CORE_INTEG_DOP853, CORE_OK, CORE_STOP_EVENT,
+    eph_body_radius, eph_body_state, eph_free, eph_load, prop_create, prop_free, prop_run,
+    prop_run_stm, CoreEvent, CoreResult, EphemerisCtx, PropConfig, PropagatorCtx, State,
+    CORE_ERR_INVALID_ARG, CORE_EVENT_PERIAPSIS, CORE_INTEG_DOP853, CORE_OK, CORE_STOP_EVENT,
 };
 
 const ORACLE: &str = env!("CORE_ORACLE");
@@ -184,6 +184,50 @@ fn states_match_the_c_oracle_bit_for_bit() {
             expected.t = t;
             same_bits(&expected, &state, &format!("тіло {body}, момент {t}"));
         }
+
+        eph_free(ctx);
+    }
+}
+
+/// Радіуси теж звіряються бітово (ROADMAP U2a).
+///
+/// Функція повертає `double` замість коду — отже єдиний спосіб помітити, що
+/// декларація розійшлася з C, це порівняти саме число. І порівнювати треба
+/// **всі** тіла оракула разом із неіснуючим: розмір Землі й розмір Місяця
+/// відрізняються втричі, тож зсув на одне тіло в масиві контексту дав би
+/// цілком правдоподібний радіус — і невидиму помилку.
+#[test]
+fn radii_match_the_c_oracle_bit_for_bit() {
+    let records = oracle_records();
+    let radii = tagged(&records, "rad");
+    assert!(!radii.is_empty(), "оракул не дав жодного рядка rad");
+
+    unsafe {
+        let ctx = load_fixture();
+
+        let mut nonzero = 0;
+        for record in &radii {
+            let body = record.values[0] as i32;
+            let expected = record.values[1];
+
+            let got = eph_body_radius(ctx, body);
+            assert_eq!(
+                got.to_bits(),
+                expected.to_bits(),
+                "тіло {body}: C дав {expected}, а межа {got}"
+            );
+
+            if got != 0.0 {
+                nonzero += 1;
+            }
+        }
+
+        // Звірка нулів із нулями пройшла б і на функції, яка завжди повертає
+        // нуль. Тіла з розміром у фікстурі є, і хоч одне з них має тут бути.
+        assert!(
+            nonzero > 0,
+            "усі радіуси нульові — звірка нічого не перевірила"
+        );
 
         eph_free(ctx);
     }

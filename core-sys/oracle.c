@@ -19,6 +19,7 @@
  * Формат: перше поле — тег, далі числа в %.17g.
  *
  *   eph  <body> <t> <x> <y> <z> <vx> <vy> <vz>
+ *   rad  <body> <metres>                         середній радіус тіла
  *   samp <k> <t> <x> <y> <z> <vx> <vy> <vz>      семпл прогону
  *   run  <count> <stop> <event> <step>           підсумок прогону
  *   end  <t> <x> <y> <z> <vx> <vy> <vz>          кінцевий стан прогону
@@ -50,6 +51,9 @@ static const int BODIES[] = { 0, 3, 4 };
 
 static const double TIMES[] = { 0.0, 30.0 * DAY, 119.0 * DAY };
 #define N_TIMES (sizeof TIMES / sizeof TIMES[0])
+
+/* An index past the end of any asset we cook (ROADMAP U2a). */
+#define NO_SUCH_BODY 99
 
 /* Апарат на витягнутій навколоземній орбіті: зсув від Землі й швидкість,
  * задані числами. 0.8 колової швидкості на геостаціонарному радіусі — тобто
@@ -223,7 +227,19 @@ int main(void)
                    BODIES[b], TIMES[k],
                    s.r.x, s.r.y, s.r.z, s.v.x, s.v.y, s.v.z);
         }
+
+        printf("rad %d %.17g\n", BODIES[b], eph_body_radius(eph, BODIES[b]));
     }
+
+    /* And a body the asset has never heard of (ROADMAP U2a). The zero it
+     * returns is the same zero as "the asset does not say how big it is", and
+     * that is the whole contract: a caller who never checks a result code
+     * still cannot be handed a size that was invented for it. A declaration
+     * that got the argument type wrong - int where C expects int, but the
+     * other way around on some ABI - would show up right here, because an
+     * in-range index would keep answering plausibly. */
+    printf("rad %d %.17g\n", NO_SUCH_BODY,
+           eph_body_radius(eph, NO_SUCH_BODY));
 
     if (!propagate(eph)) {
         eph_free(eph);
