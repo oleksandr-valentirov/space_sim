@@ -12,6 +12,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use game::clock::Stall;
 use game::leg::{restart_at, Leg};
 use game::mission;
 use game::plan::{Frame, Manoeuvre, Plan};
@@ -53,14 +54,22 @@ fn a_preview_is_bit_identical_to_the_flight_that_follows() {
     // минуле між снапшотом і комітом. А відійти треба тому, що горизонт
     // тримається за курсором — біля старту після нього просто не лишилося б
     // ланок, які можна звірити.
-    let cursor_target = mission::start().t + 20.0 * DAY;
     sim.send(Command::SetWarp(game::clock::MAX_WARP));
-    wait_until("курсор дійде до 20-ї доби", || {
-        sim.snapshot().t >= cursor_target
+    wait_until("курсор відійде від старту", || {
+        sim.snapshot().t >= mission::start().t + 15.0 * DAY
     });
     sim.send(Command::TogglePause);
+    wait_until("пауза дійде", || {
+        sim.snapshot().stall == Some(Stall::Paused)
+    });
 
-    let burn_t = mission::start().t + 30.0 * DAY;
+    // Момент маневру береться від того, де курсор СПРАВДІ спинився, а не від
+    // круглого числа. Команда долітає не миттєво, і на максимальному warp
+    // кожен тік — це майже дві доби; фіксована 30-та доба означала б, що на
+    // повільнішій машині курсор устигає її проїхати, і план відхиляється як
+    // «у минулому». Саме так цей тест і впав на macOS, пройшовши на Linux.
+    let cursor = sim.snapshot().t;
+    let burn_t = cursor + 5.0 * DAY;
     wait_until("горизонт дійде до маневру", || {
         sim.snapshot().vessels[0].computed_to > burn_t
     });
@@ -105,10 +114,17 @@ fn a_preview_is_bit_identical_to_the_flight_that_follows() {
         vessel: VesselId(0),
         plan,
     });
+    // Відмова тут — це не «ще не прийшло», а провал; чекати на неї до кінця
+    // терпіння означало б сховати причину за таймаутом.
     wait_until("відповідь про план", || {
-        sim.events()
-            .iter()
-            .any(|e| matches!(e, Event::PlanCommitted { .. }))
+        for event in sim.events() {
+            match event {
+                Event::PlanCommitted { .. } => return true,
+                Event::PlanRejected { why, .. } => panic!("план відхилено: {why:?}"),
+                _ => {}
+            }
+        }
+        false
     });
 
     // Скільки ланок політ порахує після точки перезапуску, вирішує горизонт,
