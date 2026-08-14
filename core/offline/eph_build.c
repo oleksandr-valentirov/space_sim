@@ -171,6 +171,30 @@ CoreResult eph_build(const NBodySystem *sys, const State *initial,
                  write_exact(f, sys->j2_field.s,
                              n_terms * sizeof sys->j2_field.s[0]);
         }
+
+        /* The atmosphere (ROADMAP K7b). Unlike the harmonics above, this is
+         * NOT read back from the system being integrated, and the difference
+         * is the same one radius and flux have: air changes no trajectory in
+         * this file. The cooker moves bodies, and bodies do not feel their own
+         * drag - only vessels do, and there are none here. So there is no
+         * second source for it to disagree with. */
+        unsigned n_layers = 0;
+        if (bodies[b].atmosphere != NULL &&
+            bodies[b].atmosphere->n_layers > 0) {
+            n_layers = (unsigned)bodies[b].atmosphere->n_layers;
+        }
+        if (n_layers > (unsigned)ATMOSPHERE_MAX_LAYERS) {
+            ok = 0;
+        }
+        if (ok) {
+            ok = write_exact(f, &n_layers, sizeof n_layers);
+        }
+        for (unsigned i = 0; ok && i < n_layers; i++) {
+            const AtmosphereLayer *l = &bodies[b].atmosphere->layer[i];
+            ok = write_exact(f, &l->base_altitude_m, sizeof l->base_altitude_m) &&
+                 write_exact(f, &l->base_density, sizeof l->base_density) &&
+                 write_exact(f, &l->scale_height_m, sizeof l->scale_height_m);
+        }
     }
 
     if (!ok) {

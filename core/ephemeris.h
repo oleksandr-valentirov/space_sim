@@ -10,7 +10,7 @@
  * it follows those rules: opaque handle in a create/free pair, results by
  * return code, outputs through pointers.
  *
- * File format, version 4. All values are little-endian; a sentinel double in
+ * File format, version 5. All values are little-endian; a sentinel double in
  * the header catches a machine where that is not true, along with any other
  * disagreement about how a double is laid out.
  *
@@ -36,6 +36,11 @@
  *                               double reference radius, metres
  *                               double C[(d+1)(d+2)/2], triangular
  *                               double S[(d+1)(d+2)/2], same order
+ *                             uint32 atmosphere layer count, 0 for airless
+ *                             per layer, ascending by altitude:
+ *                               double base altitude above the mean radius, m
+ *                               double density at that altitude, kg/m^3
+ *                               double scale height, metres
  *   ...     8 each          position coefficients, ordered
  *                           [interval][body][component x,y,z][coefficient]
  *   ...     8 each          orientation coefficients, ordered
@@ -97,11 +102,29 @@
  * constant identity, which is eight of the fixture's ten and about four
  * fifths of what the block would otherwise cost. They read back as the
  * identity anyway (eph_body_orientation), so nothing downstream needs to
- * know which bodies were written. */
+ * know which bodies were written.
+ *
+ * Version 5 added the atmosphere (ROADMAP K7b), by the argument K4b made for
+ * harmonics and K6b for radius: how thick the air is over a body is a property
+ * of that body, not a setting of whoever propagates through it. Putting it in
+ * PropConfig instead would let two callers fly past two differently breathable
+ * Earths, and neither would be told.
+ *
+ * Layers rather than a sampled profile, because density falls fourteen orders
+ * of magnitude from sea level to 1000 km and no interpolation of the values
+ * themselves survives that; core/atmosphere.h has the whole argument. Zero
+ * layers means airless, which is nine of the fixture's ten bodies and costs
+ * them four bytes each.
+ *
+ * The altitudes are above the body's MEAN RADIUS - the same radius the shadow
+ * geometry uses, and not the reference radius of the harmonics, which for the
+ * Earth is a different number (6378137 against 6371010). Two radii in one
+ * asset is a thing worth saying out loud rather than discovering. */
 
 #ifndef CORE_EPHEMERIS_H
 #define CORE_EPHEMERIS_H
 
+#include "atmosphere.h"
 #include "core.h"
 #include "harmonics.h"
 #include "quat.h"
@@ -110,7 +133,7 @@
 
 #define EPH_MAGIC "SSEPH\0\0\0"
 #define EPH_MAGIC_SIZE 8
-#define EPH_VERSION 4u
+#define EPH_VERSION 5u
 #define EPH_NAME_SIZE 32
 
 typedef struct EphemerisCtx EphemerisCtx;
@@ -152,6 +175,16 @@ double      eph_body_flux(const EphemerisCtx *ctx, int body);
 CoreResult eph_body_harmonics(const EphemerisCtx *ctx, int body,
                               HarmonicsField *out);
 
+/* A body's atmosphere (ROADMAP K7b), with altitudes measured above its mean
+ * radius. Writes a model with no layers - which atmosphere_density treats as
+ * vacuum - for a body the asset describes as airless, so a caller need not
+ * ask twice.
+ *
+ * Returns CORE_ERR_INVALID_ARG only for a bad body index or a NULL out: "this
+ * body has no air" is an answer, not a failure. */
+CoreResult eph_body_atmosphere(const EphemerisCtx *ctx, int body,
+                               AtmosphereModel *out);
+
 /* Covered time span, seconds from J2000 TDB. */
 CoreResult eph_span(const EphemerisCtx *ctx, double *t_begin, double *t_end);
 
@@ -171,6 +204,19 @@ CoreResult eph_span(const EphemerisCtx *ctx, double *t_begin, double *t_end);
  * is facing. */
 CoreResult eph_body_orientation(const EphemerisCtx *ctx, int body, double t,
                                 Quat *out);
+
+/* Angular velocity of a body at t, rad/s, in the ephemeris frame (ROADMAP
+ * K7b) - the vector a co-rotating atmosphere's wind is built from.
+ *
+ * Taken from the analytic derivative of the same fitted quaternion the
+ * orientation comes from, the way a body's velocity comes from the derivative
+ * of its position fit. A body with no orientation model does not turn, and
+ * returns the zero vector with CORE_OK.
+ *
+ * This is what the co-rotating atmosphere of K7 needed the K3b block for, and
+ * it is the first thing in the core to read those channels in anger. */
+CoreResult eph_body_angular_velocity(const EphemerisCtx *ctx, int body,
+                                     double t, Vec3d *out);
 
 /* Position and velocity of a body. Returns CORE_ERR_INVALID_ARG for an
  * unknown body or a time outside the span: extrapolating a Chebyshev fit

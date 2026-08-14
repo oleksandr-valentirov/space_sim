@@ -251,6 +251,11 @@ fn propagation_matches_the_c_oracle_bit_for_bit() {
     const VESSEL_DX: f64 = 42_164.0e3;
     const VESSEL_VY: f64 = 1967.84;
     const VESSEL_VZ: f64 = 1475.88;
+    // Низька орбіта для перевірки опору (ROADMAP K7b); дзеркало
+    // core-sys/oracle.c, де пояснено, чому потрібна друга.
+    const LEO_DX: f64 = 6_698_137.0;
+    const LEO_VY: f64 = 6680.0;
+    const LEO_VZ: f64 = 3860.0;
     const CAP: usize = 64;
 
     let records = oracle_records();
@@ -436,6 +441,7 @@ fn propagation_matches_the_c_oracle_bit_for_bit() {
             mass_kg: 1000.0,
             area_m2: 20.0,
             cr: 1.3,
+            cd: 0.0,
         };
 
         let mut srp_final = State::default();
@@ -484,6 +490,97 @@ fn propagation_matches_the_c_oracle_bit_for_bit() {
             .map(|k| phi[k].abs())
             .sum();
         assert!(off_diagonal > 1.0, "STM виглядає одиничною: {phi:?}");
+
+        // --- Апарат, що відчуває повітря (ROADMAP K7b) -----------------
+        //
+        // Та сама причина, що й для SRP вище, і на одне поле гостріша:
+        // `cr` і `cd` стоять поруч, мають однаковий тип і правдоподібні
+        // значення один для одного, тож переставлені місцями вони дали б
+        // траєкторію, яка виглядає бездоганно. Ланка низька навмисно — на
+        // геостаціонарі, де летить апарат вище, повітря немає взагалі, і
+        // прогін з `cd` надрукував би те саме, що без нього.
+        let oracle_drag_run = tagged(&records, "dragrun");
+        let oracle_drag_end = tagged(&records, "dragend");
+        assert_eq!(oracle_drag_run.len(), 1);
+        assert_eq!(oracle_drag_end.len(), 1);
+
+        let mut low = State::default();
+        let result = eph_body_state(ctx, 3, VESSEL_T0, &mut low);
+        assert_eq!(result, CORE_OK);
+        low.r.x += LEO_DX;
+        low.v.y += LEO_VY;
+        low.v.z += LEO_VZ;
+        low.t = VESSEL_T0;
+
+        let blunt = core_sys::VesselParams {
+            mass_kg: 1000.0,
+            area_m2: 20.0,
+            cr: 1.3,
+            cd: 2.2,
+        };
+
+        let mut drag_final = State::default();
+        step = 0.0;
+        let result = prop_run(
+            p,
+            &low,
+            &blunt,
+            VESSEL_T0 + 600.0,
+            std::ptr::null(),
+            0,
+            samples.as_mut_ptr(),
+            CAP,
+            &mut count,
+            &mut drag_final,
+            &mut stop,
+            &mut event,
+            &mut step,
+        );
+        assert_eq!(result, CORE_OK);
+
+        let run = &oracle_drag_run[0];
+        assert_eq!(
+            run.values[0] as usize, count,
+            "кількість семплів під опором"
+        );
+        assert_eq!(run.values[3].to_bits(), step.to_bits(), "крок під опором");
+        same_bits(
+            &oracle_drag_end[0].state(0),
+            &drag_final,
+            "кінцевий стан під опором",
+        );
+
+        // І опір таки щось зробив: та сама ланка без `cd` мусить прийти
+        // в інше місце. Без цього все вище звірялося б із оракулом, який
+        // теж пролетів крізь вакуум.
+        let dry = core_sys::VesselParams { cd: 0.0, ..blunt };
+        let mut dry_final = State::default();
+        step = 0.0;
+        let result = prop_run(
+            p,
+            &low,
+            &dry,
+            VESSEL_T0 + 600.0,
+            std::ptr::null(),
+            0,
+            samples.as_mut_ptr(),
+            CAP,
+            &mut count,
+            &mut dry_final,
+            &mut stop,
+            &mut event,
+            &mut step,
+        );
+        assert_eq!(result, CORE_OK);
+
+        let moved = ((drag_final.r.x - dry_final.r.x).powi(2)
+            + (drag_final.r.y - dry_final.r.y).powi(2)
+            + (drag_final.r.z - dry_final.r.z).powi(2))
+        .sqrt();
+        assert!(
+            moved > 1e-3,
+            "апарат з cd мав загальмувати, а розійшовся на {moved} м"
+        );
 
         prop_free(p);
         eph_free(ctx);

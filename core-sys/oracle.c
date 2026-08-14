@@ -59,6 +59,16 @@ static const double TIMES[] = { 0.0, 30.0 * DAY, 119.0 * DAY };
 #define VESSEL_VY 1967.84
 #define VESSEL_VZ 1475.88
 
+/* І другий апарат, низько (ROADMAP K7b). Той, що вище, висить на 35786 км,
+ * де повітря немає взагалі — прогін з ненульовим `cd` там надрукував би те
+ * саме, що без нього, і переставлені `cr` і `cd` пройшли б звірку.
+ *
+ * 320 км над екваторіальним радіусом, майже колова, нахилена: швидкість
+ * узята літералами, як і вся решта тут, бо оракул лінкується без libm. */
+#define LEO_DX 6698137.0
+#define LEO_VY 6680.0
+#define LEO_VZ 3860.0
+
 #define CAP 64
 
 static void print_state(const char *tag, const State *s)
@@ -152,6 +162,7 @@ static int propagate(const EphemerisCtx *eph)
     sail.mass_kg = 1000.0;
     sail.area_m2 = 20.0;
     sail.cr = 1.3;
+    sail.cd = 0.0;
 
     step = 0.0;
     if (prop_run(p, &vessel, &sail, VESSEL_T0 + 0.5 * DAY, NULL, 0, samples,
@@ -162,6 +173,30 @@ static int propagate(const EphemerisCtx *eph)
 
     printf("srprun %zu %d %d %.17g\n", n, (int)stop, event, step);
     print_state("srpend", &final_state);
+
+    /* І низька орбіта з апаратом, який відчуває повітря (ROADMAP K7b).
+     * Десять хвилин: на 320 км цього досить, щоб опір зрушив останні біти
+     * далеко за межу звірки, і мало, щоб ланка лишалась однією ланкою. */
+    State low;
+    low.r = vec3(earth.r.x + LEO_DX, earth.r.y, earth.r.z);
+    low.v = vec3(earth.v.x, earth.v.y + LEO_VY, earth.v.z + LEO_VZ);
+    low.t = VESSEL_T0;
+
+    VesselParams blunt;
+    blunt.mass_kg = 1000.0;
+    blunt.area_m2 = 20.0;
+    blunt.cr = 1.3;
+    blunt.cd = 2.2;
+
+    step = 0.0;
+    if (prop_run(p, &low, &blunt, VESSEL_T0 + 600.0, NULL, 0, samples,
+                 CAP, &n, &final_state, &stop, &event, &step) != CORE_OK) {
+        prop_free(p);
+        return 0;
+    }
+
+    printf("dragrun %zu %d %d %.17g\n", n, (int)stop, event, step);
+    print_state("dragend", &final_state);
 
     prop_free(p);
     return 1;

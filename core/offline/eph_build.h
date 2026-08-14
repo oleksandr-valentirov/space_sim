@@ -11,6 +11,7 @@
 #ifndef CORE_EPH_BUILD_H
 #define CORE_EPH_BUILD_H
 
+#include "atmosphere.h"
 #include "nbody.h"
 
 #include <stddef.h>
@@ -40,6 +41,15 @@ typedef struct {
     const char *name;
     double      radius_m;   /* mean radius; 0 if the data does not say */
     double      flux_1au;   /* W/m^2 at 1 AU; 0 for a body that is dark */
+
+    /* The body's air, altitudes measured above radius_m (ROADMAP K7b). NULL
+     * is airless, which is every body in the fixture but the Earth, and it
+     * writes four bytes.
+     *
+     * A pointer rather than the model by value: the model is 776 bytes, and
+     * a list of ten bodies most of which have no air would be seven and a
+     * half kilobytes of zeroes in every translation unit that declares one. */
+    const AtmosphereModel *atmosphere;
 } EphBodyInfo;
 
 typedef struct {

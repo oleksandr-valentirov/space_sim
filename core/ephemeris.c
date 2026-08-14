@@ -34,6 +34,10 @@ struct EphemerisCtx {
      * answer eph_body_harmonics would be trading a few kilobytes for a
      * bug. */
     HarmonicsField *harmonics;
+
+    /* One per body, no layers where the asset says airless (ROADMAP K7b).
+     * Expanded for the same reason the harmonics are. */
+    AtmosphereModel *atmosphere;
 };
 
 static int read_exact(FILE *f, void *dst, size_t n)
@@ -101,11 +105,13 @@ CoreResult eph_load(const char *path, EphemerisCtx **out)
     ctx->flux = calloc(n_bodies, sizeof *ctx->flux);
     ctx->coeffs = calloc(n_coeffs, sizeof *ctx->coeffs);
     ctx->harmonics = calloc(n_bodies, sizeof *ctx->harmonics);
+    ctx->atmosphere = calloc(n_bodies, sizeof *ctx->atmosphere);
     ctx->orient_slot = calloc(n_bodies, sizeof *ctx->orient_slot);
 
     if (ctx->names == NULL || ctx->mu == NULL || ctx->radius == NULL ||
         ctx->flux == NULL || ctx->coeffs == NULL ||
-        ctx->harmonics == NULL || ctx->orient_slot == NULL) {
+        ctx->harmonics == NULL || ctx->atmosphere == NULL ||
+        ctx->orient_slot == NULL) {
         eph_free(ctx);
         fclose(f);
         return CORE_ERR_BUFFER_TOO_SMALL;
@@ -181,6 +187,51 @@ CoreResult eph_load(const char *path, EphemerisCtx **out)
                 return CORE_ERR_INVALID_ARG;
             }
         }
+
+        /* The atmosphere (ROADMAP K7b). */
+        unsigned n_layers;
+        if (!read_exact(f, &n_layers, sizeof n_layers)) {
+            eph_free(ctx);
+            fclose(f);
+            return CORE_ERR_INVALID_ARG;
+        }
+        if (n_layers > (unsigned)ATMOSPHERE_MAX_LAYERS) {
+            eph_free(ctx);
+            fclose(f);
+            return CORE_ERR_INVALID_ARG;
+        }
+
+        ctx->atmosphere[b].n_layers = (int)n_layers;
+
+        for (unsigned i = 0; i < n_layers; i++) {
+            AtmosphereLayer *l = &ctx->atmosphere[b].layer[i];
+
+            if (!read_exact(f, &l->base_altitude_m, sizeof l->base_altitude_m) ||
+                !read_exact(f, &l->base_density, sizeof l->base_density) ||
+                !read_exact(f, &l->scale_height_m, sizeof l->scale_height_m)) {
+                eph_free(ctx);
+                fclose(f);
+                return CORE_ERR_INVALID_ARG;
+            }
+
+            /* Ascending and strictly, positive density, positive scale
+             * height. atmosphere_density's band search assumes the first and
+             * would return a silently wrong band without it; the other two it
+             * survives, by treating the band as vacuum, which is a plausible
+             * atmosphere built from a corrupt file and worse than a refusal.
+             *
+             * Checked here rather than there because this is where a file is
+             * turned into a model. The runtime asks for a density thousands
+             * of times a second and should not be re-validating a table that
+             * was already accepted. */
+            if (!(l->base_density > 0.0) || !(l->scale_height_m > 0.0) ||
+                (i > 0 && !(l->base_altitude_m >
+                            ctx->atmosphere[b].layer[i - 1].base_altitude_m))) {
+                eph_free(ctx);
+                fclose(f);
+                return CORE_ERR_INVALID_ARG;
+            }
+        }
     }
 
     if (!read_exact(f, ctx->coeffs, n_coeffs * sizeof *ctx->coeffs)) {
@@ -234,6 +285,7 @@ void eph_free(EphemerisCtx *ctx)
     free(ctx->flux);
     free(ctx->coeffs);
     free(ctx->harmonics);
+    free(ctx->atmosphere);
     free(ctx->orient_slot);
     free(ctx->orient);
     free(ctx);
@@ -285,6 +337,18 @@ CoreResult eph_body_harmonics(const EphemerisCtx *ctx, int body,
     }
 
     *out = ctx->harmonics[body];
+    return CORE_OK;
+}
+
+CoreResult eph_body_atmosphere(const EphemerisCtx *ctx, int body,
+                               AtmosphereModel *out)
+{
+    if (ctx == NULL || out == NULL || body < 0 ||
+        (unsigned)body >= ctx->n_bodies) {
+        return CORE_ERR_INVALID_ARG;
+    }
+
+    *out = ctx->atmosphere[body];
     return CORE_OK;
 }
 
@@ -367,6 +431,71 @@ CoreResult eph_body_orientation(const EphemerisCtx *ctx, int body, double t,
      * so this is not defensive: it is the one invariant the four channels
      * left to restore, and restoring it is a sqrt. */
     *out = quat_normalize(q);
+    return CORE_OK;
+}
+
+CoreResult eph_body_angular_velocity(const EphemerisCtx *ctx, int body,
+                                     double t, Vec3d *out)
+{
+    if (ctx == NULL || out == NULL || body < 0 ||
+        (unsigned)body >= ctx->n_bodies) {
+        return CORE_ERR_INVALID_ARG;
+    }
+
+    long index;
+    double a, b;
+    if (interval_of(ctx, t, &index, &a, &b) != CORE_OK) {
+        return CORE_ERR_INVALID_ARG;
+    }
+
+    /* A body whose rotation is not modelled does not turn. The same answer
+     * eph_body_orientation gives, and the same kind of answer: "not
+     * modelled", not "failed". */
+    if (ctx->orient_slot[body] < 0) {
+        *out = vec3_zero();
+        return CORE_OK;
+    }
+
+    size_t stride = (size_t)ctx->orient_degree;
+    size_t base = ((size_t)index * ctx->n_orient
+                   + (size_t)ctx->orient_slot[body]) * 4u * stride;
+
+    const double *cw = ctx->orient + base;
+    const double *cx = cw + stride;
+    const double *cy = cx + stride;
+    const double *cz = cy + stride;
+
+    Quat q = { cheb_eval(cw, stride, a, b, t),
+               cheb_eval(cx, stride, a, b, t),
+               cheb_eval(cy, stride, a, b, t),
+               cheb_eval(cz, stride, a, b, t) };
+
+    /* The analytic derivative of the same polynomial, exactly as the velocity
+     * of a body is the derivative of its position fit (cheb_eval_deriv). Not
+     * a finite difference: differencing a quaternion whose own fit error is
+     * 1e-13 over a step small enough to be local would be all error. */
+    Quat qd = { cheb_eval_deriv(cw, stride, a, b, t),
+                cheb_eval_deriv(cx, stride, a, b, t),
+                cheb_eval_deriv(cy, stride, a, b, t),
+                cheb_eval_deriv(cz, stride, a, b, t) };
+
+    /* omega = 2 * vector part of (qd (x) q*), which is the inertial-frame
+     * angular velocity for q taking body-fixed components to inertial ones -
+     * quat.h's convention, and the one eph_body_orientation returns.
+     *
+     * Written out rather than built from a general quaternion product: only
+     * the vector part is wanted, the scalar part is identically zero for a
+     * unit q, and computing it to discard it would invite someone to check
+     * whether it really is zero and find 1e-17.
+     *
+     * NOT normalised first. q from the fit is unit to about 1e-13, and
+     * dividing both q and qd by |q| would change omega by the same 1e-13
+     * while costing a sqrt and a division per evaluation - this sits in the
+     * force loop. The error it saves is four orders below the fit error the
+     * orientation channels already carry. */
+    out->x = 2.0 * (-qd.w * q.x + qd.x * q.w - qd.y * q.z + qd.z * q.y);
+    out->y = 2.0 * (-qd.w * q.y + qd.x * q.z + qd.y * q.w - qd.z * q.x);
+    out->z = 2.0 * (-qd.w * q.z - qd.x * q.y + qd.y * q.x + qd.z * q.w);
     return CORE_OK;
 }
 

@@ -18,11 +18,11 @@
 #define DAY 86400.0
 
 static const EphBodyInfo ALL_BODIES[] = {
-    { "sun", 0.0, 0.0 },          { "mercury", 0.0, 0.0 },
-    { "venus", 0.0, 0.0 },        { "earth", 0.0, 0.0 },
-    { "moon", 0.0, 0.0 },         { "mars_bary", 0.0, 0.0 },
-    { "jupiter_bary", 0.0, 0.0 }, { "saturn_bary", 0.0, 0.0 },
-    { "uranus_bary", 0.0, 0.0 },  { "neptune_bary", 0.0, 0.0 },
+    { "sun", 0.0, 0.0 , NULL },          { "mercury", 0.0, 0.0 , NULL },
+    { "venus", 0.0, 0.0 , NULL },        { "earth", 0.0, 0.0 , NULL },
+    { "moon", 0.0, 0.0 , NULL },         { "mars_bary", 0.0, 0.0 , NULL },
+    { "jupiter_bary", 0.0, 0.0 , NULL }, { "saturn_bary", 0.0, 0.0 , NULL },
+    { "uranus_bary", 0.0, 0.0 , NULL },  { "neptune_bary", 0.0, 0.0 , NULL },
 };
 #define N_ALL (sizeof ALL_BODIES / sizeof ALL_BODIES[0])
 
@@ -169,7 +169,8 @@ int main(void)
                         + sizeof(double)      /* mean radius (K6b) */
                         + sizeof(double)      /* solar flux (K6b) */
                         + sizeof(uint32_t)    /* orientation flag (K3b) */
-                        + sizeof(uint32_t);   /* harmonic degree */
+                        + sizeof(uint32_t)    /* harmonic degree */
+                        + sizeof(uint32_t);   /* atmosphere layers (K7b) */
         size_t coeffs = (size_t)report.intervals * N_ALL * 3u * DEGREE
                       * sizeof(double);
         size_t orient = (size_t)report.intervals * N_ORIENT * 4u * ORIENT_DEGREE
@@ -182,7 +183,10 @@ int main(void)
          * position, for two bodies out of ten - which is the price of
          * fitting a wave with a polynomial. Worth stating next to the
          * layout, since the obvious way to make it cheaper (fewer
-         * coefficients) is exactly the one that does not work. */
+         * coefficients) is exactly the one that does not work.
+         *
+         * Version 5 moved it again, by one word a body - every body in this
+         * system is airless, so none of them carries a layer after it. */
         CHECK(orient > 0);
     }
 
@@ -298,6 +302,59 @@ int main(void)
         }
 
         CHECK(worst < 1e-11);
+    }
+
+    /* Angular velocity (ROADMAP K7b), against a number that was in the
+     * repository before this function existed: obj_earth.txt's
+     * "Rot. Rate (rad/s) = 0.00007292115", and obj_moon.txt's sidereal rate.
+     * The same external oracle K3a used for the orientation itself, which is
+     * the point - this reads the derivative of the same fitted channels, so
+     * checking it against those channels would be checking a polynomial
+     * against itself.
+     *
+     * Direction matters as much as magnitude and is checked separately: for
+     * both bodies the rotation is prograde about the pole, so omega must
+     * point along the axis eph_body_orientation puts the body's z on, not
+     * against it. A sign error here would leave the magnitude perfect and
+     * make the atmosphere blow the wrong way at 930 m/s. */
+    {
+        static const struct {
+            int    body;
+            double rate;
+        } SPIN[] = { { 3, 7.292115e-5 }, { 4, 2.6617e-6 } };
+
+        for (size_t k = 0; k < sizeof SPIN / sizeof SPIN[0]; k++) {
+            double t = t_begin + 11.0 * DAY;
+
+            Vec3d w;
+            CHECK(eph_body_angular_velocity(eph, SPIN[k].body, t, &w)
+                  == CORE_OK);
+
+            double rate = vec3_norm(w);
+            CHECK(fabs(rate - SPIN[k].rate) / SPIN[k].rate < 2e-4);
+
+            Quat q;
+            CHECK(eph_body_orientation(eph, SPIN[k].body, t, &q) == CORE_OK);
+            Vec3d pole = quat_rotate(q, vec3(0.0, 0.0, 1.0));
+            CHECK(vec3_dot(w, pole) > 0.99 * rate);
+        }
+
+        /* A body with no orientation model does not turn - an answer, the
+         * same way the identity quaternion is one. */
+        Vec3d still;
+        CHECK(eph_body_angular_velocity(eph, 6, t_begin, &still) == CORE_OK);
+        CHECK(vec3_norm(still) == 0.0);
+
+        /* And the same refusals as everything else that reads a fit. */
+        Vec3d w;
+        CHECK(eph_body_angular_velocity(eph, 0, t_begin - 1.0, &w)
+              == CORE_ERR_INVALID_ARG);
+        CHECK(eph_body_angular_velocity(eph, -1, t_begin, &w)
+              == CORE_ERR_INVALID_ARG);
+        CHECK(eph_body_angular_velocity(eph, 0, t_begin, NULL)
+              == CORE_ERR_INVALID_ARG);
+        CHECK(eph_body_angular_velocity(NULL, 0, t_begin, &w)
+              == CORE_ERR_INVALID_ARG);
     }
 
     /* Same refusals as eph_body_state, and for the same reason: a fit

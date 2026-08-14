@@ -32,17 +32,23 @@ typedef struct {
  *
  * core/prop.h used to explain why it did not: a struct whose every field is
  * ignored is worse than its absence, because the caller fills it in, nothing
- * happens, and nothing says so. That argument is why cd, the drag
- * coefficient of the PROJECT.md sketch, is still not here. It arrives with
- * K7, together with the atmosphere that reads it.
+ * happens, and nothing says so. That is why cd waited for K7b and the
+ * atmosphere that reads it, rather than arriving here with the other three.
  *
  * Zero mass means "no radiation pressure", not an error: it is what a caller
  * that has not thought about SRP yet passes, and it reproduces the point-mass
- * trajectory bit for bit. */
+ * trajectory bit for bit. Zero cd means the same for drag.
+ *
+ * ONE AREA FOR BOTH FORCES, and that is a simplification worth naming. The
+ * cross-section a vessel presents to the Sun and the one it presents to the
+ * air are the same number here, which is true for a sphere and roughly true
+ * for a tumbling spacecraft. Separating them would mean modelling attitude,
+ * and attitude is the local tier (PROJECT.md section 4), not this. */
 typedef struct {
     double mass_kg;
-    double area_m2;   /* cross-section presented to the Sun */
+    double area_m2;   /* cross-section, shared by sunlight and air */
     double cr;        /* 1 absorbs, 2 reflects; real spacecraft near 1.3 */
+    double cd;        /* drag coefficient; near 2.2 for a blunt body in LEO */
 } VesselParams;
 
 typedef enum {

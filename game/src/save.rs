@@ -173,13 +173,15 @@ impl Save {
             if let Some(p) = vessel.params {
                 let _ = writeln!(
                     out,
-                    "  params {} {} {} # {:e} kg, {:e} m^2, cr {:e}",
+                    "  params {} {} {} {} # {:e} kg, {:e} m^2, cr {:e}, cd {:e}",
                     hex(p.mass_kg),
                     hex(p.area_m2),
                     hex(p.cr),
+                    hex(p.cd),
                     p.mass_kg,
                     p.area_m2,
-                    p.cr
+                    p.cr,
+                    p.cd
                 );
             }
             for m in vessel.plan.manoeuvres() {
@@ -274,10 +276,19 @@ impl Save {
                             let mass_kg = number(&mut words, "params[mass]")?;
                             let area_m2 = number(&mut words, "params[area]")?;
                             let cr = number(&mut words, "params[cr]")?;
+                            // Відсутнє — нуль, тобто «цей апарат не відчуває
+                            // повітря»: сейви, написані до K7b, читаються далі
+                            // й означають рівно те, що означали. Той самий
+                            // договір, що й для всього рядка `params` вище.
+                            let cd = match words.clone().next() {
+                                Some(w) if !w.starts_with('#') => number(&mut words, "params[cd]")?,
+                                _ => 0.0,
+                            };
                             vessel.params = Some(core_rs::VesselParams {
                                 mass_kg,
                                 area_m2,
                                 cr,
+                                cd,
                             });
                         }
                         "applied" => {

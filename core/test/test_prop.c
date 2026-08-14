@@ -807,8 +807,8 @@ int main(void)
         PropConfig c = config(H_MAX);
         CHECK(prop_create(eph, &c, &q) == CORE_OK);
 
-        VesselParams sail = { 1000.0, 20.0, 1.3 };
-        VesselParams none = { 1000.0, 0.0, 1.3 };
+        VesselParams sail = { 1000.0, 20.0, 1.3, 0.0 };
+        VesselParams none = { 1000.0, 0.0, 1.3, 0.0 };
 
         State final_none, final_zero, final_sail, final_again;
         size_t n = 0;

@@ -108,6 +108,14 @@ int main(void)
     sail.area_m2 = opaque(20.0);
     sail.cr = opaque(1.3);
 
+    /* Zero, and set explicitly. This scenario builds VesselParams field by
+     * field, and -Wmissing-field-initializers does not see that form - so
+     * when K7b added cd, this struct silently grew an uninitialised member
+     * that field_set_vessel reads as "does this vessel feel drag". Whatever
+     * was on the stack would have decided, differently on each platform,
+     * which is the one failure mode a determinism scenario must not have. */
+    sail.cd = opaque(0.0);
+
     PropConfig cfg;
     cfg.integrator = CORE_INTEG_DOP853;
     cfg.tol_m = opaque(1e-2);

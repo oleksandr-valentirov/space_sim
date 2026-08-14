@@ -581,11 +581,13 @@ fn a_vessel_with_area_feels_the_sun() {
         mass_kg: 1000.0,
         area_m2: 0.0,
         cr: 1.3,
+        cd: 0.0,
     };
     let sail = core_rs::VesselParams {
         mass_kg: 1000.0,
         area_m2: 20.0,
         cr: 1.3,
+        cd: 0.0,
     };
 
     let mut step = 0.0;

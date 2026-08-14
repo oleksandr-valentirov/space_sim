@@ -26,11 +26,11 @@
 #define DAY 86400.0
 
 static const EphBodyInfo ALL_BODIES[] = {
-    { "sun", 0.0, 0.0 },          { "mercury", 0.0, 0.0 },
-    { "venus", 0.0, 0.0 },        { "earth", 0.0, 0.0 },
-    { "moon", 0.0, 0.0 },         { "mars_bary", 0.0, 0.0 },
-    { "jupiter_bary", 0.0, 0.0 }, { "saturn_bary", 0.0, 0.0 },
-    { "uranus_bary", 0.0, 0.0 },  { "neptune_bary", 0.0, 0.0 },
+    { "sun", 0.0, 0.0 , NULL },          { "mercury", 0.0, 0.0 , NULL },
+    { "venus", 0.0, 0.0 , NULL },        { "earth", 0.0, 0.0 , NULL },
+    { "moon", 0.0, 0.0 , NULL },         { "mars_bary", 0.0, 0.0 , NULL },
+    { "jupiter_bary", 0.0, 0.0 , NULL }, { "saturn_bary", 0.0, 0.0 , NULL },
+    { "uranus_bary", 0.0, 0.0 , NULL },  { "neptune_bary", 0.0, 0.0 , NULL },
 };
 #define N_ALL (sizeof ALL_BODIES / sizeof ALL_BODIES[0])
 

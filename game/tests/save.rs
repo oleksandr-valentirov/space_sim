@@ -302,6 +302,7 @@ fn a_vessel_with_area_survives_the_save() {
         mass_kg: 1000.0,
         area_m2: 20.0,
         cr: 1.3,
+        cd: 0.0,
     };
 
     let cursor = mission::start().t + 4.0 * 3600.0;

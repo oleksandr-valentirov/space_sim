@@ -59,16 +59,16 @@
  * committed beats quoting a better number from memory. When the page is
  * refreshed the number follows it. */
 static const EphBodyInfo BODIES[] = {
-    { "sun",          6.957e8,   1367.6 },
-    { "mercury",      2.4394e6,  0.0 },
-    { "venus",        6.05184e6, 0.0 },
-    { "earth",        6.37101e6, 0.0 },
-    { "moon",         1.73753e6, 0.0 },
-    { "mars_bary",    3.38992e6, 0.0 },
-    { "jupiter_bary", 6.9911e7,  0.0 },
-    { "saturn_bary",  5.8232e7,  0.0 },
-    { "uranus_bary",  2.5362e7,  0.0 },
-    { "neptune_bary", 2.4624e7,  0.0 },
+    { "sun",          6.957e8,   1367.6, NULL },
+    { "mercury",      2.4394e6,  0.0,    NULL },
+    { "venus",        6.05184e6, 0.0,    NULL },
+    { "earth",        6.37101e6, 0.0,    &ATMOSPHERE_EARTH_USSA76 },
+    { "moon",         1.73753e6, 0.0,    NULL },
+    { "mars_bary",    3.38992e6, 0.0,    NULL },
+    { "jupiter_bary", 6.9911e7,  0.0,    NULL },
+    { "saturn_bary",  5.8232e7,  0.0,    NULL },
+    { "uranus_bary",  2.5362e7,  0.0,    NULL },
+    { "neptune_bary", 2.4624e7,  0.0,    NULL },
 };
 #define N_BODIES (sizeof BODIES / sizeof BODIES[0])
 
