@@ -159,7 +159,21 @@ pub struct Tick {
 
 impl World {
     pub fn new(asset: &Path, cfg: PropConfig, epoch: f64, warp: f64) -> Result<World, CoreError> {
-        let eph = Arc::new(Ephemeris::load(asset)?);
+        World::with_ephemeris(Arc::new(Ephemeris::load(asset)?), cfg, epoch, warp)
+    }
+
+    /// Те саме, але на вже завантаженій ефемериді.
+    ///
+    /// Потрібно планувальнику (J5): його спекулятивний світ ділить ассет із
+    /// справжнім. Ділити його можна тому, що `Ephemeris` — `Sync`, і це не
+    /// припущення, а прочитаний C (`core-rs`, D3): контекст після
+    /// `eph_load` не змінюється взагалі.
+    pub fn with_ephemeris(
+        eph: Arc<Ephemeris>,
+        cfg: PropConfig,
+        epoch: f64,
+        warp: f64,
+    ) -> Result<World, CoreError> {
         let prop = Propagator::new(eph.clone(), cfg)?;
 
         Ok(World {
@@ -172,21 +186,47 @@ impl World {
         })
     }
 
+    pub fn ephemeris(&self) -> Arc<Ephemeris> {
+        self.eph.clone()
+    }
+
     pub fn add_vessel(&mut self, name: &str, start: State, horizon_end: f64) -> VesselId {
+        // Нуль означає «обери сам» лише на першому виклику; далі переноситься
+        // те, що лишив попередній (`core/prop.h`).
+        self.add_planned_vessel(name, start, 0.0, horizon_end, Plan::new())
+    }
+
+    /// Апарат, що продовжує чужий політ: із заданим кроком і вже заданим
+    /// планом.
+    ///
+    /// Це шлях планувальника (J5). `step` тут не косметика: прогноз, що
+    /// починається з «обери сам», — це інша траєкторія, ніж продовження з
+    /// перенесеним кроком (H1), тобто саме те, чого прев'ю не має права
+    /// показувати.
+    pub fn add_planned_vessel(
+        &mut self,
+        name: &str,
+        start: State,
+        step: f64,
+        horizon_end: f64,
+        plan: Plan,
+    ) -> VesselId {
         let id = VesselId(self.vessels.len() as u32);
         self.vessels.push(Vessel {
             id,
             name: name.to_string(),
             tip: start,
-            // Нуль означає «обери сам» лише на першому виклику; далі
-            // переноситься те, що лишив попередній (`core/prop.h`).
-            tip_step: 0.0,
+            tip_step: step,
             horizon_end,
-            plan: Plan::new(),
+            plan,
             applied: 0,
             trajectory: Trajectory::new(start),
             failed: None,
         });
+
+        let index = self.vessels.len() - 1;
+        bake_applied(&self.eph, &mut self.vessels[index]);
+
         self.version += 1;
         id
     }
@@ -237,17 +277,7 @@ impl World {
         // Маневри, раніші за точку перезапуску, вже вшиті в збережені семпли.
         // Той, що припадає рівно на неї, — ні: ланка закінчується станом ДО
         // імпульсу, а сам імпульс жив у `tip`, який ми щойно перезаписали.
-        vessel.applied = 0;
-        while let Some(m) = vessel.plan.get(vessel.applied).copied() {
-            if m.t < vessel.tip.t {
-                vessel.applied += 1;
-            } else if m.t == vessel.tip.t {
-                // Сам інкремент робить `apply_manoeuvre`.
-                apply_manoeuvre(&self.eph, vessel);
-            } else {
-                break;
-            }
-        }
+        bake_applied(&self.eph, vessel);
 
         self.version += 1;
         Ok(Some(from))
@@ -487,11 +517,32 @@ impl World {
                     state: v.trajectory.state_at(t),
                     legs: v.trajectory.share(),
                     plan: v.plan.clone(),
+                    start: v.trajectory.start(),
                     tip: v.tip,
                     computed_to: v.computed_to(),
+                    horizon_end: v.horizon_end,
                     failed: v.failed,
                 })
                 .collect(),
+        }
+    }
+}
+
+/// Рахує, скільки маневрів плану вже вшито в стан `vessel.tip`.
+///
+/// Раніші за `tip.t` — вшиті в збережені семпли. Той, що припадає рівно на
+/// нього, — ні: ланка закінчується станом ДО імпульсу, а сам імпульс жив у
+/// `tip`, який щойно перезаписали (або якого ще не було зовсім).
+fn bake_applied(eph: &Ephemeris, vessel: &mut Vessel) {
+    vessel.applied = 0;
+    while let Some(m) = vessel.plan.get(vessel.applied).copied() {
+        if m.t < vessel.tip.t {
+            vessel.applied += 1;
+        } else if m.t == vessel.tip.t {
+            // Сам інкремент робить `apply_manoeuvre`.
+            apply_manoeuvre(eph, vessel);
+        } else {
+            break;
         }
     }
 }

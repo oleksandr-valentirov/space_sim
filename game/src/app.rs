@@ -29,10 +29,13 @@ use engine::orbit::Orbit;
 use engine::window::{self, Target};
 
 use crate::clock::Stall;
+use crate::leg::restart_at;
 use crate::mission;
+use crate::plan::Manoeuvre;
+use crate::planner::{Planner, Preview, Request};
 use crate::sim::{Command, Event, Sim};
 use crate::view;
-use crate::world::World;
+use crate::world::{World, EARTH};
 
 pub struct Options {
     pub width: u32,
@@ -74,6 +77,12 @@ struct State {
     /// Світ живе у власній нитці; тут лише ручка до неї (`crate::sim`).
     /// Головна нитка світ не рахує й не чіпає — вона його читає.
     sim: Sim,
+
+    /// Спекулятивні прогони (`crate::planner`). У світ не пишуть нічого,
+    /// доки гравець не скаже.
+    planner: Planner,
+    preview: Option<Preview>,
+    next_request: u64,
 
     dragging: bool,
     cursor: Option<(f64, f64)>,
@@ -124,7 +133,9 @@ impl ApplicationHandler for App {
                 println!("ассет: {}", self.options.asset.display());
                 println!(
                     "камера: тягніть лівою кнопкою — обертання, колесо — висота\n\
-                     час: пробіл — пауза, «.» і «,» — warp удвічі, Esc — вихід"
+                     час: пробіл — пауза, «.» і «,» — warp удвічі\n\
+                     план: «p» — показати гальмування через 5 діб, Enter — летіти ним\n\
+                     Esc — вихід"
                 );
                 state.report_time(&state.sim.snapshot());
                 self.state = Some(state);
@@ -157,6 +168,10 @@ impl ApplicationHandler for App {
                     // порядків (`crate::clock`).
                     Key::Character(".") => state.sim.send(Command::ScaleWarp(2.0)),
                     Key::Character(",") => state.sim.send(Command::ScaleWarp(0.5)),
+                    // Показати, що буде, якщо загальмувати через п'ять діб.
+                    Key::Character("p") => state.ask_for_preview(),
+                    // І полетіти цим планом.
+                    Key::Named(NamedKey::Enter) => state.commit_preview(),
                     _ => {}
                 }
             }
@@ -243,6 +258,9 @@ impl State {
 
         let frame = Frame::new(&gpu, target.format());
         let sim = Sim::spawn(options.asset.clone(), options.demo_plan)?;
+        // Планувальник ділить із симуляцією ассет, але не пропагатор:
+        // `Ephemeris` — `Sync`, `Propagator` — ні (D3, H4).
+        let planner = Planner::spawn(sim.ephemeris(), mission::config())?;
 
         target.window().request_redraw();
 
@@ -252,6 +270,9 @@ impl State {
             frame,
             orbit: Orbit::at_altitude(mission::CAMERA_ALTITUDE_M),
             sim,
+            planner,
+            preview: None,
+            next_request: 0,
             dragging: false,
             cursor: None,
         })
@@ -275,10 +296,66 @@ impl State {
         );
     }
 
+    /// Просить прогноз для гіпотетичного гальмування через п'ять діб.
+    ///
+    /// Одна кнопка замість тягнення вузла: UI флайт-планера — це M3, а тут
+    /// перевіряється шлях, а не інтерфейс.
+    fn ask_for_preview(&mut self) {
+        let snapshot = self.sim.snapshot();
+        let Some(vessel) = snapshot.vessels.first() else {
+            return;
+        };
+
+        let burn_t = snapshot.t + 5.0 * 86400.0;
+        if burn_t >= vessel.horizon_end || vessel.computed_to < burn_t {
+            println!("прев'ю: прогноз ще не дійшов до тієї доби");
+            return;
+        }
+
+        let mut plan = vessel.plan.clone();
+        plan.insert(Manoeuvre {
+            t: burn_t,
+            dv: [-8.0, 0.0, 0.0],
+            frame: crate::plan::Frame::Vnb { body: EARTH },
+        });
+
+        // Точка перезапуску — та сама функція, якою скористається симуляція,
+        // коли прийме план. Одна функція, а не два однакові правила.
+        let restart = restart_at(&vessel.legs, vessel.start, burn_t);
+
+        self.next_request += 1;
+        self.planner.request(Request {
+            id: self.next_request,
+            vessel: vessel.id,
+            from: restart.state,
+            step: restart.step,
+            plan,
+            horizon_end: vessel.horizon_end,
+        });
+    }
+
+    /// Летіти показаним планом.
+    fn commit_preview(&mut self) {
+        let Some(preview) = self.preview.take() else {
+            println!("нема чого комітити — спершу «p»");
+            return;
+        };
+        self.sim.send(Command::CommitPlan {
+            vessel: preview.vessel,
+            plan: preview.plan,
+        });
+    }
+
     fn draw(&mut self) -> Result<(), String> {
         // Рівно один раз за кадр, і тримається весь кадр: два завантаження
         // дали б дві різні миті в одній картинці.
         let snapshot = self.sim.snapshot();
+
+        // Прев'ю з планувальника: беремо найсвіжіше, старіші відкидаються.
+        if let Some(preview) = self.planner.latest() {
+            println!("прев'ю {}: {} ланок", preview.id, preview.legs.len());
+            self.preview = Some(preview);
+        }
 
         // Дискретне приходить каналом, а не снапшотом (`crate::sim`).
         for event in self.sim.events() {
@@ -291,6 +368,8 @@ impl State {
                 }
                 Event::PlanCommitted { vessel, from } => {
                     println!("план для {vessel:?} прийнято, перерахунок з {from:?}");
+                    // Прев'ю стало реальністю — стирати його з кадру.
+                    self.preview = None;
                 }
             }
         }
@@ -316,7 +395,11 @@ impl State {
             &view,
             self.target.width(),
             self.target.height(),
-            &view::build(&snapshot, self.orbit.camera()),
+            &view::build_with_preview(
+                &snapshot,
+                self.orbit.camera(),
+                self.preview.as_ref().map_or(&[], |p| p.legs.as_slice()),
+            ),
         );
 
         self.gpu.queue.submit([encoder.finish()]);

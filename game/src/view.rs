@@ -32,6 +32,8 @@ const PREDICTION: [f32; 4] = [0.9, 0.6, 0.2, 1.0];
 const HISTORY: [f32; 4] = [0.35, 0.45, 0.6, 1.0];
 /// Маркер апарата.
 const VESSEL: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+/// Спекулятивне прев'ю з планувальника — те, чого ще не вирішили летіти.
+const PREVIEW: [f32; 4] = [0.4, 0.9, 0.5, 1.0];
 
 /// Півдовжина хреста-маркера як частка відстані до камери.
 ///
@@ -40,6 +42,19 @@ const VESSEL: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 const MARKER_FRACTION: f64 = 0.01;
 
 pub fn build(snapshot: &WorldSnapshot, camera: Camera) -> Scene {
+    build_with_preview(snapshot, camera, &[])
+}
+
+/// Те саме, плюс спекулятивна лінія з планувальника (ROADMAP J5).
+///
+/// Прев'ю малюється окремим кольором і **поверх** прогнозу, а не замість
+/// нього: гравець має бачити обидві лінії одночасно — ту, якою полетить зараз,
+/// і ту, якою полетів би за новим планом.
+pub fn build_with_preview(
+    snapshot: &WorldSnapshot,
+    camera: Camera,
+    preview: &[std::sync::Arc<crate::leg::Leg>],
+) -> Scene {
     let mut scene = Scene::new(camera);
 
     for vessel in &snapshot.vessels {
@@ -86,6 +101,18 @@ pub fn build(snapshot: &WorldSnapshot, camera: Camera) -> Scene {
             push_marker(&mut scene, position);
         }
     }
+
+    let mut speculative = Vec::new();
+    for leg in preview {
+        for sample in &leg.samples {
+            speculative.push([
+                sample.state.r.x - sample.earth[0],
+                sample.state.r.y - sample.earth[1],
+                sample.state.r.z - sample.earth[2],
+            ]);
+        }
+    }
+    push_line(&mut scene, speculative, PREVIEW);
 
     scene
 }

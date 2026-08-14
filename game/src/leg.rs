@@ -124,19 +124,7 @@ impl Trajectory {
     pub fn truncate_after(&mut self, t: f64) -> Restart {
         let keep = self.legs.partition_point(|leg| leg.t1 <= t);
         self.legs.truncate(keep);
-
-        match self.legs.last() {
-            Some(leg) => Restart {
-                state: leg.samples.last().map_or(leg.entry, |s| s.state),
-                step: leg.step_out,
-            },
-            // Нуль означає «обери сам» — саме те, що треба, коли ланок не
-            // лишилося взагалі (`core/prop.h`).
-            None => Restart {
-                state: self.start,
-                step: 0.0,
-            },
-        }
+        restart_at(&self.legs, self.start, t)
     }
 
     /// Докуди пораховано. Для порожньої траєкторії — момент старту.
@@ -205,6 +193,33 @@ impl Trajectory {
 pub struct Restart {
     pub state: State,
     pub step: f64,
+}
+
+/// Точка перезапуску для моменту `t`: остання межа ланки не пізніша за нього.
+///
+/// Вільна функція, бо потрібна двом і мусить бути **однією**: світу — щоб
+/// перерахувати хвіст після правки плану, планувальнику — щоб порахувати
+/// прев'ю з тієї самої точки. Дві реалізації цього правила розійшлися б, і
+/// розійшлися б саме там, де ціна найвища: прев'ю показувало б лінію, якою
+/// апарат потім не полетить (ROADMAP J5).
+///
+/// `legs` мусять бути вже обрізані по `t` або впорядковані — береться остання
+/// з `t1 <= t`.
+pub fn restart_at(legs: &[Arc<Leg>], start: State, t: f64) -> Restart {
+    let keep = legs.partition_point(|leg| leg.t1 <= t);
+
+    match keep.checked_sub(1).and_then(|i| legs.get(i)) {
+        Some(leg) => Restart {
+            state: leg.samples.last().map_or(leg.entry, |s| s.state),
+            step: leg.step_out,
+        },
+        // Нуль означає «обери сам» — саме те, що треба, коли ланок не
+        // лишилося взагалі (`core/prop.h`).
+        None => Restart {
+            state: start,
+            step: 0.0,
+        },
+    }
 }
 
 /// Кубічний Ерміт по позиції й швидкості.

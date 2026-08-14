@@ -37,6 +37,7 @@ pub mod clock;
 pub mod leg;
 pub mod mission;
 pub mod plan;
+pub mod planner;
 pub mod sim;
 pub mod snapshot;
 pub mod view;

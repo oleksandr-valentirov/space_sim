@@ -99,6 +99,12 @@ pub struct Sim {
     commands: Sender<Command>,
     events: Receiver<Event>,
     published: Arc<ArcSwap<WorldSnapshot>>,
+    /// Ассет, який світ уже завантажив.
+    ///
+    /// Тримається тут, щоб планувальник міг ділити його, а не читати вдруге
+    /// (`crate::planner`). `Ephemeris` — `Sync`, і це доведено читанням C у
+    /// D3, коли жодної другої нитки ще не існувало.
+    eph: Arc<core_rs::Ephemeris>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -111,6 +117,7 @@ impl Sim {
     pub fn spawn(asset: PathBuf, demo_plan: bool) -> Result<Sim, String> {
         let mut world = build(&asset, demo_plan)?;
 
+        let eph = world.ephemeris();
         let published = Arc::new(ArcSwap::from_pointee(world.snapshot()));
         let (commands, command_rx) = crossbeam_channel::unbounded();
         let (event_tx, events) = crossbeam_channel::unbounded();
@@ -125,6 +132,7 @@ impl Sim {
             commands,
             events,
             published,
+            eph,
             thread: Some(thread),
         })
     }
@@ -136,6 +144,10 @@ impl Sim {
     /// одну мить, а траєкторія малюватиметься з іншої.
     pub fn snapshot(&self) -> Arc<WorldSnapshot> {
         self.published.load_full()
+    }
+
+    pub fn ephemeris(&self) -> Arc<core_rs::Ephemeris> {
+        self.eph.clone()
     }
 
     pub fn send(&self, command: Command) {
