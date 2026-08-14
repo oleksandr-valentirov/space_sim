@@ -27,10 +27,25 @@
 
 #include "vec3.h"
 
-/* Raised only when K5 actually needs a higher degree (GRAIL, ~50). Every
- * triangular array below is sized off this, so raising it is a one-line
- * change, not a rewrite - but it also grows every one of those arrays
- * quadratically, so it is deliberately not raised speculatively. */
+/* Raising this is NOT enough to reach GRAIL degrees, and the first version
+ * of this comment claimed otherwise. Measured by raising it to 64 and
+ * evaluating: the acceleration goes NaN from about degree 44, because this
+ * formulation carries unnormalised quantities that overflow a double on
+ * their own - Re^n exceeds DBL_MAX at n = 50 for the Moon's 1738 km
+ * radius, and |(x+iy)|^m at m = 49 for a low lunar orbit. Both are
+ * properties of the unnormalised form, not of any particular
+ * coefficients, and no choice of data avoids them.
+ *
+ * Degrees past ~40 need the fully normalised recursion instead, working
+ * in (Re/r)^n rather than in Re^n and r^-n separately. That is the real
+ * content of K5, ahead of importing anything: the lunar field it wants is
+ * published normalised (as every real gravity model is, for exactly this
+ * reason) and truncating it to degree 8 to fit here would throw away the
+ * mascons that are the point.
+ *
+ * Eight is what the J2 work of K2 and K4 needs, with room to spare, and
+ * the triangular arrays below grow quadratically, so it stays there until
+ * the normalised form arrives. */
 #define HARMONICS_MAX_DEGREE 8
 #define HARMONICS_MAX_COEFFS \
     ((HARMONICS_MAX_DEGREE + 1) * (HARMONICS_MAX_DEGREE + 2) / 2)
