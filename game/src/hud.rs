@@ -18,6 +18,7 @@ use engine::egui;
 
 use crate::clock::Stall;
 use crate::mission;
+use crate::plan::{Frame, Manoeuvre, Plan};
 use crate::schedule::{Kind, Marker};
 use crate::sim::Command;
 use crate::snapshot::{VesselSnapshot, WorldSnapshot};
@@ -168,6 +169,140 @@ pub const SEEK: &str = "hud.schedule.seek.";
 /// Скільки подій показувати. Розклад — це «куди перемотати далі», а не
 /// журнал: перші кілька відповідають на це питання, решта лише займає екран.
 const MAX_ROWS: usize = 6;
+
+/// Чернетка плану, яку редагує гравець.
+///
+/// Це той рідкісний власний стан UI, який правило 1 дозволяє: **редагований,
+/// але ще не поданий план не існує поза екраном**. Щойно гравець просить
+/// прев'ю або коміт, чернетка перетворюється на `Plan` і йде в нитку — і з
+/// того моменту істина знову в снапшоті.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PlanDraft {
+    pub manoeuvres: Vec<Manoeuvre>,
+}
+
+impl PlanDraft {
+    /// Чернетка з плану, яким апарат летить зараз.
+    pub fn from_plan(plan: &Plan) -> PlanDraft {
+        PlanDraft {
+            manoeuvres: plan.manoeuvres().to_vec(),
+        }
+    }
+
+    /// План у тому вигляді, в якому його прийме світ.
+    ///
+    /// `Plan::insert` тримає порядок за часом сам, тож чернетка не зобов'язана
+    /// його берегти: гравець може посунути маневр у минуле відносно сусіда, і
+    /// це не має ставати помилкою редагування.
+    pub fn plan(&self) -> Plan {
+        let mut plan = Plan::new();
+        for manoeuvre in &self.manoeuvres {
+            plan.insert(*manoeuvre);
+        }
+        plan
+    }
+}
+
+/// Що панель плану просить зробити.
+///
+/// Обидва варіанти несуть **той самий** план, який показано на екрані, і в
+/// цьому вся суть кроку: лінія, яку бачив, і є лінія, якою полетиш (J5).
+#[derive(Clone, Debug, PartialEq)]
+pub enum PlanAction {
+    /// Показати, що вийде. Іде в планувальник, у світ не пише нічого.
+    Preview(Plan),
+    /// Летіти цим. Іде в нитку симуляції.
+    Commit(Plan),
+}
+
+/// Адреси віджетів плану. Ті самі міркування, що в `SEEK`: тест мусить
+/// знаходити віджет за іменем, а не за пікселем.
+pub const PLAN_ADD: &str = "hud.plan.add";
+pub const PLAN_COMMIT: &str = "hud.plan.commit";
+pub const PLAN_DELETE: &str = "hud.plan.delete.";
+
+/// Панель плану: маневри рядками, час і три компоненти Δv у VNB.
+///
+/// `draft` — власний стан UI (див. [`PlanDraft`]); `notice` — те, що світ
+/// відповів на попередню спробу, і панель показує саме його, а не власне
+/// припущення про успіх (правило 8).
+pub fn plan_panel(
+    ui: &mut egui::Ui,
+    language: Language,
+    now: f64,
+    body: i32,
+    draft: &mut PlanDraft,
+    notice: Option<&str>,
+) -> Vec<PlanAction> {
+    let mut actions = Vec::new();
+    let mut changed = false;
+
+    ui.heading(tr(language, Key::Plan));
+
+    let mut delete = None;
+    for (index, manoeuvre) in draft.manoeuvres.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            // Час у добах від «зараз» — те, чим гравець думає. У план він
+            // іде абсолютним, як вимагає `Manoeuvre::t`.
+            let mut days = (manoeuvre.t - now) / DAY_S;
+            let response = ui.add(
+                egui::DragValue::new(&mut days)
+                    .speed(0.01)
+                    .range(-3650.0..=3650.0),
+            );
+            if response.changed() {
+                manoeuvre.t = now + days * DAY_S;
+                changed = true;
+            }
+
+            for axis in 0..3 {
+                let mut value = manoeuvre.dv[axis];
+                let response = ui.add(egui::DragValue::new(&mut value).speed(0.1));
+                if response.changed() {
+                    manoeuvre.dv[axis] = value;
+                    changed = true;
+                }
+            }
+
+            if button(ui, &format!("{PLAN_DELETE}{index}"), "×") {
+                delete = Some(index);
+            }
+        });
+    }
+
+    if let Some(index) = delete {
+        draft.manoeuvres.remove(index);
+        changed = true;
+    }
+
+    ui.horizontal(|ui| {
+        if button(ui, PLAN_ADD, tr(language, Key::AddBurn)) {
+            draft.manoeuvres.push(Manoeuvre {
+                // Доба вперед — не «зараз»: маневр у поточній миті світ
+                // відхилить, бо курсор його вже проходить.
+                t: now + DAY_S,
+                dv: [0.0; 3],
+                frame: Frame::Vnb { body },
+            });
+            changed = true;
+        }
+        if button(ui, PLAN_COMMIT, tr(language, Key::Commit)) {
+            actions.push(PlanAction::Commit(draft.plan()));
+        }
+    });
+
+    if let Some(text) = notice {
+        ui.label(text);
+    }
+
+    // Прев'ю — після коміту в списку дій, бо зміна цього кадру могла бути
+    // саме тією, яку коміт і забирає.
+    if changed {
+        actions.push(PlanAction::Preview(draft.plan()));
+    }
+
+    actions
+}
 
 /// Числа панелі апарата, зняті зі снапшоту (ROADMAP-UI.md, U2c).
 ///

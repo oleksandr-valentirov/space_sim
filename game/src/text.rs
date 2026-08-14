@@ -64,6 +64,19 @@ pub enum Key {
     Apoapsis,
     /// Подій у порахованому ще немає.
     NoEvents,
+
+    /// Заголовок панелі плану.
+    Plan,
+    /// Додати маневр.
+    AddBurn,
+    /// Летіти показаним планом.
+    Commit,
+    /// План порожній.
+    NoPlan,
+    /// План відхилено: маневр у минулому.
+    RejectedInThePast,
+    /// План прийнято.
+    PlanAccepted,
 }
 
 /// Мова інтерфейсу. Дві, бо саме дві таблиці й перевіряються.
@@ -106,6 +119,12 @@ fn english(key: Key) -> &'static str {
         Key::Periapsis => "periapsis",
         Key::Apoapsis => "apoapsis",
         Key::NoEvents => "nothing computed yet",
+        Key::Plan => "PLAN",
+        Key::AddBurn => "add burn",
+        Key::Commit => "fly it",
+        Key::NoPlan => "no burns yet",
+        Key::RejectedInThePast => "refused: that moment has already been flown",
+        Key::PlanAccepted => "plan accepted",
     }
 }
 
@@ -133,12 +152,18 @@ fn ukrainian(key: Key) -> &'static str {
         Key::Periapsis => "перицентр",
         Key::Apoapsis => "апоцентр",
         Key::NoEvents => "поки що порожньо",
+        Key::Plan => "ПЛАН",
+        Key::AddBurn => "додати маневр",
+        Key::Commit => "летіти цим",
+        Key::NoPlan => "маневрів ще немає",
+        Key::RejectedInThePast => "відхилено: ту мить уже пролетіли",
+        Key::PlanAccepted => "план прийнято",
     }
 }
 
 /// Усі ключі — для перевірок і для того, хто колись малюватиме таблицю
 /// перекладу.
-pub const ALL: [Key; 22] = [
+pub const ALL: [Key; 28] = [
     Key::Time,
     Key::Day,
     Key::Warp,
@@ -161,6 +186,12 @@ pub const ALL: [Key; 22] = [
     Key::Periapsis,
     Key::Apoapsis,
     Key::NoEvents,
+    Key::Plan,
+    Key::AddBurn,
+    Key::Commit,
+    Key::NoPlan,
+    Key::RejectedInThePast,
+    Key::PlanAccepted,
 ];
 
 #[cfg(test)]

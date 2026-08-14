@@ -38,9 +38,9 @@ use crate::planner::{Planner, Preview, Request};
 use crate::save::{self, Save};
 use crate::schedule;
 use crate::sim::{Command, Event, Sim};
-use crate::text::Language;
+use crate::text::{tr, Key as TextKey, Language};
 use crate::view;
-use crate::world::{World, EARTH};
+use crate::world::{PlanRejected, World, EARTH};
 
 pub struct Options {
     pub width: u32,
@@ -103,6 +103,13 @@ struct State {
 
     dragging: bool,
     cursor: Option<(f64, f64)>,
+
+    /// План, який гравець редагує (ROADMAP-UI.md, U4a). Власний стан UI:
+    /// поза екраном його не існує, доки не піде запитом або комітом.
+    draft: hud::PlanDraft,
+    /// Остання відповідь світу на план — те, що панель показує замість
+    /// власного припущення про успіх (правило 8).
+    notice: Option<String>,
 }
 
 /// Світ за опціями — спільне для вікна й для знімка.
@@ -329,6 +336,8 @@ impl State {
             next_request: 0,
             dragging: false,
             cursor: None,
+            draft: hud::PlanDraft::default(),
+            notice: None,
         })
     }
 
@@ -392,6 +401,54 @@ impl State {
         });
     }
 
+    /// Що зробити з тим, що попросила панель плану (ROADMAP-UI.md, U4a).
+    ///
+    /// Прев'ю йде в планувальник, коміт — у нитку симуляції. Розділення не
+    /// косметичне: планувальник не пише у світ нічого (J5), і саме тому
+    /// правку можна показувати на кожен рух повзунка.
+    fn apply_plan_action(
+        &mut self,
+        action: hud::PlanAction,
+        snapshot: &crate::snapshot::WorldSnapshot,
+    ) {
+        let Some(vessel) = snapshot.vessels.first() else {
+            return;
+        };
+
+        match action {
+            hud::PlanAction::Preview(plan) => {
+                // Точка перезапуску — та сама функція, якою скористається
+                // симуляція, коли прийме план. Одна функція, а не два
+                // однакові правила.
+                let Some(first) = plan.manoeuvres().first() else {
+                    // Порожній план прев'ю не потребує: летіти ним — це те
+                    // саме, що вже намальовано.
+                    self.preview = None;
+                    return;
+                };
+                let restart = restart_at(&vessel.legs, vessel.start, first.t);
+
+                self.next_request += 1;
+                self.planner.request(Request {
+                    id: self.next_request,
+                    vessel: vessel.id,
+                    from: restart.state,
+                    step: restart.step,
+                    plan,
+                    horizon_end: vessel.horizon_end,
+                    params: vessel.params,
+                });
+            }
+            hud::PlanAction::Commit(plan) => {
+                self.notice = None;
+                self.sim.send(Command::CommitPlan {
+                    vessel: vessel.id,
+                    plan,
+                });
+            }
+        }
+    }
+
     /// Летіти показаним планом.
     fn commit_preview(&mut self) {
         let Some(preview) = self.preview.take() else {
@@ -429,6 +486,15 @@ impl State {
                 }
                 Event::PlanRejected { vessel, why } => {
                     println!("план для {vessel:?} відхилено: {why:?}");
+                    self.notice = Some(
+                        match why {
+                            PlanRejected::InThePast => {
+                                tr(self.language, TextKey::RejectedInThePast)
+                            }
+                            PlanRejected::NoSuchVessel => tr(self.language, TextKey::Failed),
+                        }
+                        .to_string(),
+                    );
                 }
                 Event::Saved { error } => match error {
                     Some(e) => println!("сейв не записався: {e}"),
@@ -436,6 +502,7 @@ impl State {
                 },
                 Event::PlanCommitted { vessel, from } => {
                     println!("план для {vessel:?} прийнято, перерахунок з {from:?}");
+                    self.notice = Some(tr(self.language, TextKey::PlanAccepted).to_string());
                     // Прев'ю стало реальністю — стирати його з кадру.
                     self.preview = None;
                 }
@@ -474,8 +541,11 @@ impl State {
         // повертає команди, а не надсилає їх: хто надсилає, той і знає про
         // канал, а панель знає лише про те, що намальовано.
         let mut commands = Vec::new();
+        let mut plan_actions = Vec::new();
         let language = self.language;
         let radius = self.earth_radius_m;
+        let notice = self.notice.clone();
+        let draft = &mut self.draft;
         let viewport = Viewport::new(
             self.target.width(),
             self.target.height(),
@@ -501,6 +571,16 @@ impl State {
                             let markers = schedule::scan(&vessel.legs);
                             commands
                                 .extend(hud::schedule_panel(ui, language, snapshot.t, &markers));
+
+                            ui.separator();
+                            plan_actions.extend(hud::plan_panel(
+                                ui,
+                                language,
+                                snapshot.t,
+                                EARTH,
+                                draft,
+                                notice.as_deref(),
+                            ));
                         }
                     });
             });
@@ -508,6 +588,9 @@ impl State {
 
         for command in commands {
             self.sim.send(command);
+        }
+        for action in plan_actions {
+            self.apply_plan_action(action, &snapshot);
         }
 
         self.gpu.queue.submit([encoder.finish()]);

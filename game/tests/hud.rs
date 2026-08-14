@@ -367,3 +367,161 @@ fn a_schedule_row_seeks_to_its_own_event() {
 
     assert_eq!(clicked, vec![Command::SeekTo(world.t + 7200.0)]);
 }
+
+// ---------------------------------------------------------------------------
+// Редактор маневрів (U4a)
+
+/// Малює панель плану кілька кадрів і повертає дії останнього.
+///
+/// Кадр-розігрів тут потрібен двічі: egui дізнається геометрію віджетів лише
+/// намалювавши їх, а `DragValue` ще й тримає власний стан редагування.
+fn plan_frames(
+    draft: &mut hud::PlanDraft,
+    now: f64,
+    clicks: &[&str],
+    notice: Option<&str>,
+) -> Vec<hud::PlanAction> {
+    let context = egui::Context::default();
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
+
+    let draw = |draft: &mut hud::PlanDraft, events: Vec<egui::Event>| {
+        let mut actions = Vec::new();
+        let input = egui::RawInput {
+            screen_rect: Some(screen),
+            events,
+            ..Default::default()
+        };
+        let mut output = context.run_ui(input, |ui| {
+            actions = hud::plan_panel(ui, Language::English, now, 3, draft, notice);
+        });
+        output.textures_delta.clear();
+        actions
+    };
+
+    draw(draft, Vec::new());
+
+    let mut events = Vec::new();
+    for id in clicks {
+        let centre = context
+            .read_response(egui::Id::new(*id))
+            .map(|response| response.rect.center())
+            .unwrap_or_else(|| panic!("віджета «{id}» немає в панелі"));
+
+        events.push(egui::Event::PointerMoved(centre));
+        events.push(egui::Event::PointerButton {
+            pos: centre,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::default(),
+        });
+        events.push(egui::Event::PointerButton {
+            pos: centre,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::default(),
+        });
+    }
+
+    draw(draft, events)
+}
+
+/// Панель, якої ніхто не чіпав, нічого не просить.
+///
+/// Без цього «правка породжує рівно один запит» перевіряло б лише те, що
+/// запит узагалі буває: панель, яка щокадру просить прев'ю, перевантажила б
+/// планувальник і виглядала б так само правильно.
+#[test]
+fn an_untouched_plan_asks_for_nothing() {
+    let mut draft = hud::PlanDraft::default();
+    assert_eq!(plan_frames(&mut draft, 0.0, &[], None), Vec::new());
+}
+
+/// Додавання маневру дає рівно один запит прев'ю — з тим планом, що показано.
+#[test]
+fn adding_a_burn_asks_for_exactly_one_preview() {
+    let mut draft = hud::PlanDraft::default();
+    let actions = plan_frames(&mut draft, 0.0, &[hud::PLAN_ADD], None);
+
+    assert_eq!(actions.len(), 1, "мав бути рівно один запит: {actions:?}");
+    match &actions[0] {
+        hud::PlanAction::Preview(plan) => {
+            assert_eq!(plan.manoeuvres().len(), 1);
+            // Той самий план, що в чернетці на екрані — не «схожий».
+            assert_eq!(plan, &draft.plan());
+        }
+        other => panic!("очікували прев'ю, отримали {other:?}"),
+    }
+}
+
+/// «Летіти цим» кладе рівно той план, який показано.
+#[test]
+fn committing_sends_the_plan_that_was_shown() {
+    let mut draft = hud::PlanDraft::default();
+    plan_frames(&mut draft, 0.0, &[hud::PLAN_ADD], None);
+
+    let shown = draft.plan();
+    let actions = plan_frames(&mut draft, 0.0, &[hud::PLAN_COMMIT], None);
+
+    assert_eq!(actions, vec![hud::PlanAction::Commit(shown)]);
+}
+
+/// Видалення рядка теж просить прев'ю, і план коротшає.
+#[test]
+fn deleting_a_row_asks_for_a_preview_of_what_is_left() {
+    let mut draft = hud::PlanDraft::default();
+    plan_frames(&mut draft, 0.0, &[hud::PLAN_ADD], None);
+    plan_frames(&mut draft, 0.0, &[hud::PLAN_ADD], None);
+    assert_eq!(draft.manoeuvres.len(), 2);
+
+    let delete_first = format!("{}{}", hud::PLAN_DELETE, 0);
+    let actions = plan_frames(&mut draft, 0.0, &[&delete_first], None);
+
+    assert_eq!(draft.manoeuvres.len(), 1);
+    assert_eq!(
+        actions,
+        vec![hud::PlanAction::Preview(draft.plan())],
+        "після видалення прев'ю мусить бути про те, що лишилось"
+    );
+}
+
+/// Відповідь світу видно на панелі, а не лише в логах (правило 8).
+///
+/// Перевіряється саме намальований текст: панель, яка отримала відмову й
+/// мовчки лишила старий план на екрані, — це та помилка, від якої правило 8
+/// й існує.
+#[test]
+fn a_refusal_is_drawn_where_the_player_looks() {
+    use game::text::{tr, Key};
+
+    let refusal = tr(Language::English, Key::RejectedInThePast);
+    let context = egui::Context::default();
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
+    let mut draft = hud::PlanDraft::default();
+
+    let mut output = context.run_ui(
+        egui::RawInput {
+            screen_rect: Some(screen),
+            ..Default::default()
+        },
+        |ui| {
+            hud::plan_panel(ui, Language::English, 0.0, 3, &mut draft, Some(refusal));
+        },
+    );
+
+    let drawn = output
+        .shapes
+        .iter()
+        .any(|clipped| shape_says(&clipped.shape, refusal));
+    output.textures_delta.clear();
+
+    assert!(drawn, "відмови «{refusal}» немає серед намальованого");
+}
+
+/// Чи є в фігурі текст із заданим рядком.
+fn shape_says(shape: &egui::epaint::Shape, needle: &str) -> bool {
+    match shape {
+        egui::epaint::Shape::Text(text) => text.galley.text().contains(needle),
+        egui::epaint::Shape::Vec(shapes) => shapes.iter().any(|s| shape_says(s, needle)),
+        _ => false,
+    }
+}
