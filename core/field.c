@@ -28,7 +28,19 @@ CoreResult field_all_but(const EphemerisCtx *eph, int excluded, FieldCtx *out)
         if (i == excluded) {
             continue;
         }
-        out->body[out->n_bodies++] = i;
+
+        int slot = out->n_bodies++;
+        out->body[slot] = i;
+
+        /* Read once, here, rather than on every force evaluation: the
+         * coefficients do not change, and the alternative is a file-format
+         * decision reached inside the integrator's inner loop. */
+        if (eph_body_harmonics(eph, i, &out->harmonics[slot]) != CORE_OK) {
+            return CORE_ERR_INVALID_ARG;
+        }
+        if (out->harmonics[slot].degree >= 2) {
+            out->n_harmonic++;
+        }
     }
 
     if (out->n_bodies == 0) {
@@ -38,28 +50,15 @@ CoreResult field_all_but(const EphemerisCtx *eph, int excluded, FieldCtx *out)
     return CORE_OK;
 }
 
-CoreResult field_set_harmonics(FieldCtx *ctx, int body,
-                               const HarmonicsField *field)
+void field_clear_harmonics(FieldCtx *ctx)
 {
-    if (ctx == NULL || field == NULL) {
-        return CORE_ERR_INVALID_ARG;
+    if (ctx == NULL) {
+        return;
     }
-    if (field->degree < 2 || !(field->re > 0.0)) {
-        return CORE_ERR_INVALID_ARG;
-    }
-
     for (int i = 0; i < ctx->n_bodies; i++) {
-        if (ctx->body[i] == body) {
-            ctx->has_harmonics = 1;
-            ctx->harmonics_slot = i;
-            ctx->harmonics = *field;
-            return CORE_OK;
-        }
+        ctx->harmonics[i].degree = 0;
     }
-
-    /* Not a body this context sums over - see the header for why silence
-     * would be the wrong answer. */
-    return CORE_ERR_INVALID_ARG;
+    ctx->n_harmonic = 0;
 }
 
 /* Position of body index b at t, and the vector from r to it. Returns 0 and
@@ -104,18 +103,20 @@ void accel_field(double t, Vec3d r, Vec3d v, void *ctx, Vec3d *a_out)
          * state up a second time - the ephemeris evaluation is the
          * expensive part here, not the arithmetic. Accumulated separately
          * and added once at the end so the point-mass sum keeps exactly the
-         * association it had before K4: with no harmonics set, this
-         * function is bit-for-bit what it was.
+         * association it had before K4: over an asset of pure point masses,
+         * this function is bit-for-bit what it was.
          *
          * harmonics_accel wants the vessel relative to the body, which is
          * -d; the pole is assumed along z, as field.h explains. */
-        if (c->has_harmonics && i == c->harmonics_slot) {
-            harmonics_accel(&c->harmonics, vec3_neg(d),
-                            eph_body_mu(c->eph, c->body[i]), &harmonic);
+        if (c->harmonics[i].degree >= 2) {
+            Vec3d term;
+            harmonics_accel(&c->harmonics[i], vec3_neg(d),
+                            eph_body_mu(c->eph, c->body[i]), &term);
+            harmonic = vec3_add(harmonic, term);
         }
     }
 
-    if (c->has_harmonics) {
+    if (c->n_harmonic > 0) {
         sum = vec3_add(sum, harmonic);
     }
 
@@ -136,7 +137,7 @@ void field_gradient(double t, Vec3d r, const FieldCtx *ctx, double g[9])
     /* Refused, not approximated - see field.h. Linearising the point-mass
      * part of a field that also has harmonics in it would produce a
      * plausible matrix describing a trajectory nobody is flying. */
-    if (c->has_harmonics) {
+    if (c->n_harmonic > 0) {
         c->failed = 1;
         return;
     }
@@ -187,7 +188,7 @@ void accel_field_var(double t, const Vec3d *r, const Vec3d *v, int n_blocks,
      * below, so the refusal is total: half an answer - a reference
      * trajectory carrying harmonics with perturbations that do not - is
      * the mismatch this is meant to prevent, not a milder version of it. */
-    if (c->has_harmonics) {
+    if (c->n_harmonic > 0) {
         c->failed = 1;
         for (int b = 0; b < n_blocks; b++) {
             a_out[b] = vec3_zero();

@@ -104,22 +104,19 @@ static Dop853Config vessel_config(void)
 }
 
 /* Largest separation between a massless particle started on body's state and
- * the body itself, sampled through the span. `oblate` is the ephemeris index
- * of a body to give Earth's J2 to, or -1 for point masses only. */
+ * the body itself, sampled through the span. With point_mass_only set, the
+ * asset's harmonics are dropped - the same bodies, one effect removed. */
 static double tracking_error(const EphemerisCtx *eph, int body,
                              double t_begin, double t_end, int samples,
-                             int oblate)
+                             int point_mass_only)
 {
     FieldCtx field;
     if (field_all_but(eph, body, &field) != CORE_OK) {
         return -1.0;
     }
 
-    if (oblate >= 0) {
-        HarmonicsField j2 = earth_j2();
-        if (field_set_harmonics(&field, oblate, &j2) != CORE_OK) {
-            return -1.0;
-        }
+    if (point_mass_only) {
+        field_clear_harmonics(&field);
     }
 
     State start;
@@ -227,12 +224,12 @@ int main(void)
      * a sign, or kilometres read as metres moves a planet by a fraction of
      * its own orbit. */
     {
-        double earth = tracking_error(eph, EARTH, t_begin, t_end, 50, -1);
+        double earth = tracking_error(eph, EARTH, t_begin, t_end, 50, 0);
         printf("  earth tracks to %.4g m, moon to ", earth);
         CHECK(earth >= 0.0);
         CHECK(earth < 1.0e4);
 
-        double moon = tracking_error(eph, MOON, t_begin, t_end, 50, EARTH);
+        double moon = tracking_error(eph, MOON, t_begin, t_end, 50, 0);
         printf("%.4g m (with J2)\n", moon);
         CHECK(moon >= 0.0);
         CHECK(moon < 100.0);
@@ -255,7 +252,7 @@ int main(void)
          * just as loudly, which is the property worth having - this cannot
          * pass by agreeing with itself. */
         double moon_point_mass = tracking_error(eph, MOON, t_begin, t_end,
-                                                50, -1);
+                                                50, 1);
         printf("  moon without the J2 term: %.4g m\n", moon_point_mass);
         CHECK(moon_point_mass >= 0.0);
         CHECK(moon_point_mass > 1000.0);
@@ -269,23 +266,27 @@ int main(void)
          * is the reaction term, not fit error: measured 629 m against the
          * 8.2 m this test saw before K2 put J2 in the asset.
          *
-         * It cannot be fixed by adding harmonics to the field here, and the
-         * attempt is refused rather than silently accepted - the Earth is
-         * the one body this context excludes. */
+         * And it cannot be fixed by any arrangement of this field: the
+         * Earth is the one body this context excludes, so its harmonics go
+         * out with it. There is nothing here to switch on. */
         FieldCtx around_earth;
         CHECK(field_all_but(eph, EARTH, &around_earth) == CORE_OK);
-        HarmonicsField j2 = earth_j2();
-        CHECK(field_set_harmonics(&around_earth, EARTH, &j2)
-              == CORE_ERR_INVALID_ARG);
-        CHECK(around_earth.has_harmonics == 0);
+        CHECK(around_earth.n_harmonic == 0);
     }
 
     /* The gradient on its own, by central differences, at a point with no
      * symmetry to hide a transposed index. Measured agreement better than
-     * 1e-6 relative. */
+     * 1e-6 relative.
+     *
+     * Point masses only, and since K4b that has to be asked for: the asset
+     * now carries Earth's shape, so a field built from it refuses to
+     * linearise (field.h). This is the whole of what K8's Pines Hessian
+     * buys - until it exists, every STM in this codebase describes a
+     * rounder Earth than the one the vessel flies past. */
     {
         FieldCtx field;
         CHECK(field_all_bodies(eph, &field) == CORE_OK);
+        field_clear_harmonics(&field);
 
         State earth;
         CHECK(eph_body_state(eph, EARTH, t_begin, &earth) == CORE_OK);
@@ -338,10 +339,11 @@ int main(void)
     /* The STM of a vessel trajectory, by finite differences. Same method as
      * core/test/test_stm.c, in metres this time: the perturbation is 1 km and
      * the integrator tolerance 1e-3 m, so the noise floor of the measurement
-     * is around 1e-6 relative. */
+     * is around 1e-6 relative. Point masses only, for the reason above. */
     {
         FieldCtx field;
         CHECK(field_all_bodies(eph, &field) == CORE_OK);
+        field_clear_harmonics(&field);
 
         State earth;
         CHECK(eph_body_state(eph, EARTH, t_begin, &earth) == CORE_OK);
@@ -418,9 +420,32 @@ int main(void)
         CHECK(field_all_bodies(eph, &plain) == CORE_OK);
         CHECK(field_all_bodies(eph, &oblate) == CORE_OK);
 
-        HarmonicsField j2 = earth_j2();
-        CHECK(field_set_harmonics(&oblate, EARTH, &j2) == CORE_OK);
-        CHECK(oblate.has_harmonics == 1);
+        /* oblate is what the asset says; plain is the same thing with the
+         * one effect removed. */
+        field_clear_harmonics(&plain);
+        CHECK(plain.n_harmonic == 0);
+        CHECK(oblate.n_harmonic == 1);
+
+        /* Read back from the asset rather than restated here - and checked
+         * against the constants the cooker was given, which is the claim
+         * the format exists to make (ROADMAP K4b). */
+        HarmonicsField j2;
+        CHECK(eph_body_harmonics(eph, EARTH, &j2) == CORE_OK);
+        HarmonicsField cited = earth_j2();
+        CHECK(j2.degree == cited.degree);
+        CHECK_BITS_EQ(j2.re, cited.re);
+        CHECK_BITS_EQ(j2.c[harmonics_index(2, 0)],
+                      cited.c[harmonics_index(2, 0)]);
+
+        /* Every other body is a point mass, and says so. */
+        for (size_t b = 0; b < N_ALL; b++) {
+            if ((int)b == EARTH) {
+                continue;
+            }
+            HarmonicsField h;
+            CHECK(eph_body_harmonics(eph, (int)b, &h) == CORE_OK);
+            CHECK(h.degree == 0);
+        }
 
         State earth;
         CHECK(eph_body_state(eph, EARTH, t_begin, &earth) == CORE_OK);
@@ -468,8 +493,7 @@ int main(void)
     {
         FieldCtx oblate;
         CHECK(field_all_bodies(eph, &oblate) == CORE_OK);
-        HarmonicsField j2 = earth_j2();
-        CHECK(field_set_harmonics(&oblate, EARTH, &j2) == CORE_OK);
+        CHECK(oblate.n_harmonic == 1);
 
         double g[9];
         for (int k = 0; k < 9; k++) {
@@ -485,7 +509,6 @@ int main(void)
          * guards against, not a milder form of it. */
         FieldCtx again;
         CHECK(field_all_bodies(eph, &again) == CORE_OK);
-        CHECK(field_set_harmonics(&again, EARTH, &j2) == CORE_OK);
 
         Vec3d in_r[2] = { vec3(1.0e9, 2.0e9, 3.0e8), vec3(1.0e3, 0.0, 0.0) };
         Vec3d in_v[2] = { vec3_zero(), vec3_zero() };
@@ -495,31 +518,6 @@ int main(void)
         CHECK(again.failed == 1);
         CHECK(vec3_norm(out[0]) == 0.0);
         CHECK(vec3_norm(out[1]) == 0.0);
-    }
-
-    /* field_set_harmonics rejects what it cannot honour. */
-    {
-        FieldCtx c;
-        CHECK(field_all_bodies(eph, &c) == CORE_OK);
-        HarmonicsField j2 = earth_j2();
-
-        CHECK(field_set_harmonics(NULL, EARTH, &j2) == CORE_ERR_INVALID_ARG);
-        CHECK(field_set_harmonics(&c, EARTH, NULL) == CORE_ERR_INVALID_ARG);
-        CHECK(field_set_harmonics(&c, 999, &j2) == CORE_ERR_INVALID_ARG);
-
-        /* Degree below 2 would silently contribute nothing at all, since
-         * harmonics_accel starts at degree 2 - so it is refused rather than
-         * accepted as an expensive way to change nothing. */
-        HarmonicsField too_low = j2;
-        too_low.degree = 1;
-        CHECK(field_set_harmonics(&c, EARTH, &too_low) == CORE_ERR_INVALID_ARG);
-
-        HarmonicsField no_radius = j2;
-        no_radius.re = 0.0;
-        CHECK(field_set_harmonics(&c, EARTH, &no_radius)
-              == CORE_ERR_INVALID_ARG);
-
-        CHECK(c.has_harmonics == 0);
     }
 
     /* Running off the end of the ephemeris sets the flag rather than

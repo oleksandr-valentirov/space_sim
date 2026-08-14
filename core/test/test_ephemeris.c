@@ -10,6 +10,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 
 #define MAX_SAMPLES 256
 #define DAY 86400.0
@@ -137,8 +138,23 @@ int main(void)
         CHECK(report.intervals == 8);
         CHECK(report.max_fit_error_m < 1.0);
         CHECK(report.max_fit_error_m > 0.0);
-        CHECK(report.bytes_written == 27328);
         CHECK(report.integrator_steps > 0);
+
+        /* Spelled out from core/ephemeris.h's format table rather than
+         * recorded as a number, so it says what the layout IS and not
+         * merely what it measured once. Every body here is a point mass -
+         * this system sets no harmonics - so each carries the degree word
+         * and nothing after it.
+         *
+         * The recorded-number version of this check was 27328 and went
+         * stale the moment version 2 added that word (ROADMAP K4b), which
+         * is exactly the right failure: a format change that did not move
+         * the size would slip past a hardcoded total. */
+        size_t header = 8 + 4 + 4 + 4 + 4 + 8 + 8 + 8;
+        size_t per_body = EPH_NAME_SIZE + sizeof(double) + sizeof(uint32_t);
+        size_t coeffs = (size_t)report.intervals * N_ALL * 3u * 14u
+                      * sizeof(double);
+        CHECK(report.bytes_written == header + N_ALL * per_body + coeffs);
     }
 
     EphemerisCtx *eph = NULL;

@@ -88,8 +88,26 @@ CoreResult eph_build(const NBodySystem *sys, const State *initial,
         memset(name, 0, sizeof name);
         snprintf(name, sizeof name, "%s", names[b]);
 
+        /* Straight from the system being integrated, never from a second
+         * source (ROADMAP K4b). That is the whole point of putting these in
+         * the asset: whatever shape the cooker moved the bodies under is
+         * the shape a vessel reading this file will fly in, and there is no
+         * arrangement of the code in which the two can differ. */
+        int has = sys->has_j2 && (size_t)sys->j2_body == b;
+        unsigned degree = has ? (unsigned)sys->j2_field.degree : 0u;
+
         ok = write_exact(f, name, sizeof name) &&
-             write_exact(f, &sys->mu[b], sizeof sys->mu[b]);
+             write_exact(f, &sys->mu[b], sizeof sys->mu[b]) &&
+             write_exact(f, &degree, sizeof degree);
+
+        if (ok && degree >= 2u) {
+            size_t n_terms = (size_t)(degree + 1u) * (degree + 2u) / 2u;
+            ok = write_exact(f, &sys->j2_field.re, sizeof sys->j2_field.re) &&
+                 write_exact(f, sys->j2_field.c,
+                             n_terms * sizeof sys->j2_field.c[0]) &&
+                 write_exact(f, sys->j2_field.s,
+                             n_terms * sizeof sys->j2_field.s[0]);
+        }
     }
 
     if (!ok) {

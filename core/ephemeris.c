@@ -17,6 +17,13 @@ struct EphemerisCtx {
     char   (*names)[EPH_NAME_SIZE];
     double  *mu;
     double  *coeffs;   /* [interval][body][component][degree] */
+
+    /* One per body, degree 0 where the asset says point mass. Stored
+     * expanded rather than as the file's variable-length blocks: the file
+     * is read once, and a reader that had to walk a triangular array to
+     * answer eph_body_harmonics would be trading a few kilobytes for a
+     * bug. */
+    HarmonicsField *harmonics;
 };
 
 static int read_exact(FILE *f, void *dst, size_t n)
@@ -79,21 +86,60 @@ CoreResult eph_load(const char *path, EphemerisCtx **out)
     ctx->names = calloc(n_bodies, sizeof *ctx->names);
     ctx->mu = calloc(n_bodies, sizeof *ctx->mu);
     ctx->coeffs = calloc(n_coeffs, sizeof *ctx->coeffs);
+    ctx->harmonics = calloc(n_bodies, sizeof *ctx->harmonics);
 
-    if (ctx->names == NULL || ctx->mu == NULL || ctx->coeffs == NULL) {
+    if (ctx->names == NULL || ctx->mu == NULL || ctx->coeffs == NULL ||
+        ctx->harmonics == NULL) {
         eph_free(ctx);
         fclose(f);
         return CORE_ERR_BUFFER_TOO_SMALL;
     }
 
     for (unsigned b = 0; b < n_bodies; b++) {
+        unsigned degree;
+
         if (!read_exact(f, ctx->names[b], EPH_NAME_SIZE) ||
-            !read_exact(f, &ctx->mu[b], sizeof ctx->mu[b])) {
+            !read_exact(f, &ctx->mu[b], sizeof ctx->mu[b]) ||
+            !read_exact(f, &degree, sizeof degree)) {
             eph_free(ctx);
             fclose(f);
             return CORE_ERR_INVALID_ARG;
         }
         ctx->names[b][EPH_NAME_SIZE - 1] = '\0';
+
+        /* Degree 1 is not a point mass and not representable: the degree-1
+         * terms vanish only in a frame centred on the body's centre of
+         * mass, which is the frame this asset is in, so a file claiming
+         * them is describing something this reader would get wrong.
+         * Refused rather than truncated. */
+        if (degree == 1u || degree > (unsigned)HARMONICS_MAX_DEGREE) {
+            eph_free(ctx);
+            fclose(f);
+            return CORE_ERR_INVALID_ARG;
+        }
+
+        ctx->harmonics[b].degree = (int)degree;
+
+        if (degree >= 2u) {
+            size_t n_terms = (size_t)(degree + 1u) * (degree + 2u) / 2u;
+
+            if (!read_exact(f, &ctx->harmonics[b].re,
+                            sizeof ctx->harmonics[b].re) ||
+                !read_exact(f, ctx->harmonics[b].c,
+                            n_terms * sizeof ctx->harmonics[b].c[0]) ||
+                !read_exact(f, ctx->harmonics[b].s,
+                            n_terms * sizeof ctx->harmonics[b].s[0])) {
+                eph_free(ctx);
+                fclose(f);
+                return CORE_ERR_INVALID_ARG;
+            }
+
+            if (!(ctx->harmonics[b].re > 0.0)) {
+                eph_free(ctx);
+                fclose(f);
+                return CORE_ERR_INVALID_ARG;
+            }
+        }
     }
 
     if (!read_exact(f, ctx->coeffs, n_coeffs * sizeof *ctx->coeffs)) {
@@ -123,6 +169,7 @@ void eph_free(EphemerisCtx *ctx)
     free(ctx->names);
     free(ctx->mu);
     free(ctx->coeffs);
+    free(ctx->harmonics);
     free(ctx);
 }
 
@@ -145,6 +192,18 @@ double eph_body_mu(const EphemerisCtx *ctx, int body)
         return 0.0;
     }
     return ctx->mu[body];
+}
+
+CoreResult eph_body_harmonics(const EphemerisCtx *ctx, int body,
+                              HarmonicsField *out)
+{
+    if (ctx == NULL || out == NULL || body < 0 ||
+        (unsigned)body >= ctx->n_bodies) {
+        return CORE_ERR_INVALID_ARG;
+    }
+
+    *out = ctx->harmonics[body];
+    return CORE_OK;
 }
 
 CoreResult eph_span(const EphemerisCtx *ctx, double *t_begin, double *t_end)

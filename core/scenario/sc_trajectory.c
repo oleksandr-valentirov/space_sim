@@ -132,6 +132,19 @@ int main(void)
         return 1;
     }
 
+    /* Point masses, explicitly (ROADMAP K4b).
+     *
+     * Everything below goes through accel_field_var, and since the asset
+     * began carrying Earth's shape that refuses to linearise - there is no
+     * Pines Hessian until K8. Without this line the refusal arrives as
+     * zero acceleration, multiple shooting converges beautifully on a
+     * straight line, and this scenario hashes it: a determinism check that
+     * reproduces the same nonsense on every platform.
+     *
+     * Clearing keeps the scenario measuring what it was written to measure.
+     * The check below is what makes that a statement rather than a hope. */
+    field_clear_harmonics(&field);
+
     ShootingConfig shoot = { 0 };
     shoot.tol_m = opaque(1e-2);
     shoot.continuity_m = opaque(1.0);
@@ -178,6 +191,13 @@ int main(void)
     core_hash_f64(&h, (double)report.manoeuvres);
     core_hash_f64(&h, report.flown);
     core_hash_f64(&h, report.worst_offset_m);
+
+    /* The field must never have failed. A sticky flag nobody reads is not a
+     * safeguard, and this scenario is precisely where that mattered: the
+     * K4b refusal above would otherwise have been hashed as a result. */
+    if (field.failed) {
+        return 1;
+    }
     core_hash_f64(&h, (double)report.completed);
 
     eph_free(eph);

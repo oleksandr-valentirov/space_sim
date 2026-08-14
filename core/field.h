@@ -43,21 +43,23 @@ typedef struct {
     int n_bodies;
     int body[FIELD_MAX_BODIES];   /* indices into the ephemeris */
 
-    /* Oblateness of at most one of those bodies (ROADMAP K4), set through
-     * field_set_harmonics and off in any zero-initialised context - so a
-     * caller that never asks for it gets bit-for-bit what this file
-     * computed before K4 existed.
+    /* Each body's shape, read from the asset when the context is built
+     * (ROADMAP K4b) and indexed alongside body[]. Degree 0 means point
+     * mass, which is what every body but the Earth is today.
+     *
+     * Read rather than supplied: these are the same coefficients the
+     * cooker integrated the bodies under (core/ephemeris.h), so a vessel
+     * and the bodies cannot disagree about the shape of the Earth. There
+     * is deliberately no setter - the version of this that took one let a
+     * caller pass numbers unrelated to the asset, and nothing would have
+     * said so.
      *
      * Named for harmonics rather than for J2, unlike NBodySystem's has_j2:
-     * the cooker only ever needs the low degrees that move one body under
+     * the cooker only needs the low degrees that move one body under
      * another (PROJECT.md section 4), while this is the field a vessel
-     * flies in, and K5 puts a degree-50 GRAIL lunar model right here.
-     *
-     * harmonics_slot indexes body[], not the ephemeris - resolved once when
-     * it is set, so the force loop does not search for it. */
-    int            has_harmonics;
-    int            harmonics_slot;
-    HarmonicsField harmonics;
+     * flies in, and K5 puts a lunar model here. */
+    HarmonicsField harmonics[FIELD_MAX_BODIES];
+    int            n_harmonic;   /* how many have degree >= 2, for the fast path */
 
     /* Sticky: set on the first failed evaluation, never cleared except by the
      * caller. Mutable through a const-free context pointer, which is why the
@@ -74,30 +76,25 @@ CoreResult field_all_bodies(const EphemerisCtx *eph, FieldCtx *out);
  * acceleration the cooker integrated it under. */
 CoreResult field_all_but(const EphemerisCtx *eph, int excluded, FieldCtx *out);
 
-/* Give one of the context's bodies a gravity field beyond a point mass
- * (ROADMAP K4). `body` is an ephemeris index, as passed to field_all_but,
- * and must be one this context actually sums over - asking for the body
- * that field_all_but excluded is an error rather than a no-op, because it
- * would otherwise read as "harmonics enabled" while nothing applied them.
+/* Drop every harmonic term, leaving point masses.
  *
- * The coefficients are supplied by the caller, not read from the asset:
- * the ephemeris format has no place for them yet. See core/cook/ for where
- * the same numbers are cited on the cooker side.
+ * Exists for measurement, not for configuration: it is how a test says
+ * "the same asset, the same bodies, without this one effect" and gets a
+ * number to compare against. Flying with it is flying a field the asset
+ * does not describe. */
+void field_clear_harmonics(FieldCtx *ctx);
+
+/* Sum of mu_i (R_i - r) / |R_i - r|^3 over the context's bodies, in index
+ * order, plus each body's harmonic term where the asset gives it one.
+ * Matches AccelFunc; velocity is unused and will not be once drag exists.
  *
- * FRAME: the field is applied with the body's pole assumed to lie along
+ * FRAME: harmonics are applied with each body's pole assumed to lie along
  * the ephemeris frame's own z axis, exactly as the cooker does (see
  * core/offline/nbody.c) and for the same reason - body orientation is
  * K3b, and K3a measured what its absence costs. For a zonal field that is
  * the whole story, since only the pole enters; the prime meridian, whose
  * error is much larger (core/offline/body_rotation.h), cancels. A tesseral
  * field is a different matter and must wait for K3b. */
-CoreResult field_set_harmonics(FieldCtx *ctx, int body,
-                               const HarmonicsField *field);
-
-/* Sum of mu_i (R_i - r) / |R_i - r|^3 over the context's bodies, in index
- * order, plus the harmonic term of field_set_harmonics if one is set.
- * Matches AccelFunc; velocity is unused and will not be once drag
- * exists. */
 void accel_field(double t, Vec3d r, Vec3d v, void *ctx, Vec3d *a_out);
 
 /* The same field plus its linearisation, for stm_integrate. Block 0 is the
