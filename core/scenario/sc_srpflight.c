@@ -116,11 +116,10 @@ int main(void)
      * which is the one failure mode a determinism scenario must not have. */
     sail.cd = opaque(0.0);
 
-    PropConfig cfg;
-    cfg.integrator = CORE_INTEG_DOP853;
-    cfg.tol_m = opaque(1e-2);
-    cfg.h_max_s = opaque(60.0);
-    cfg.max_steps = 0;
+    /* Braced, not field by field: -Wmissing-field-initializers only
+     * sees this form, and PropConfig has grown a field twice now. */
+    PropConfig cfg = { CORE_INTEG_DOP853, opaque(1e-2), opaque(60.0), 0,
+                       opaque(1.0) };
 
     PropagatorCtx *p = NULL;
     if (prop_create(eph, &cfg, &p) != CORE_OK) {

@@ -311,6 +311,12 @@ CoreResult prop_create(const EphemerisCtx *eph, const PropConfig *cfg,
     if (!(cfg->tol_m > 0.0) || cfg->h_max_s < 0.0 || cfg->max_steps < 0) {
         return CORE_ERR_INVALID_ARG;
     }
+    /* See PropConfig::density_scale: zero is refused rather than read as one,
+     * so that a caller who never set the field hears about it here instead of
+     * flying through an atmosphere scaled by whatever the stack held. */
+    if (!(cfg->density_scale > 0.0)) {
+        return CORE_ERR_INVALID_ARG;
+    }
 
     PropagatorCtx *p = calloc(1, sizeof *p);
     if (p == NULL) {
@@ -326,6 +332,7 @@ CoreResult prop_create(const EphemerisCtx *eph, const PropConfig *cfg,
         free(p);
         return res;
     }
+    field_set_density_scale(&p->field, cfg->density_scale);
 
     p->cfg = *cfg;
     *out = p;

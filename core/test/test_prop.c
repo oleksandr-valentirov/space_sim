@@ -60,11 +60,10 @@ static State samples_two[4096];
 
 static PropConfig config(double h_max_s)
 {
-    PropConfig cfg;
-    cfg.integrator = CORE_INTEG_DOP853;
-    cfg.tol_m = TOL_M;
-    cfg.h_max_s = h_max_s;
-    cfg.max_steps = 0;
+    /* Braced rather than field by field, which is the difference between a
+     * grown struct being a compile error and being whatever the stack held
+     * (K7b). density_scale = 1 is the asset's own air. */
+    PropConfig cfg = { CORE_INTEG_DOP853, TOL_M, h_max_s, 0, 1.0 };
     return cfg;
 }
 
@@ -1094,6 +1093,89 @@ int main(void)
         CHECK(same_state(&stm_final, &final_sail));
 
         prop_free(q);
+    }
+
+    /* ---- Air the caller can turn up (ROADMAP K7c) ----------------------- *
+     *
+     * density_scale has lived in FieldCtx since K7b with a setter and a test,
+     * and no caller above it. This is that caller: the number now travels in
+     * PropConfig, so a propagator built with it flies through thicker air
+     * without anything else in the call changing.
+     *
+     * The oracle is linearity through the whole chain rather than inside the
+     * field: twice the density must move the vessel twice as far from where
+     * no drag would have left it. core/test/test_field.c already checks the
+     * multiplication itself; what could break here is the number not
+     * arriving, arriving once and being remembered, or arriving squared. */
+    {
+        PropConfig plain = config(H_MAX);
+        PropConfig thick = config(H_MAX);
+        thick.density_scale = 2.0;
+
+        PropagatorCtx *a = NULL;
+        PropagatorCtx *b = NULL;
+        CHECK(prop_create(eph, &plain, &a) == CORE_OK);
+        CHECK(prop_create(eph, &thick, &b) == CORE_OK);
+
+        /* Start where the air is: the same 200 km crossing section 14 found,
+         * reached with no vessel at all so that both runs below start from
+         * identical bits. */
+        CoreEvent seam = { CORE_EVENT_ALTITUDE, EARTH, H_SEAM };
+        State entry;
+        CHECK(fires(a, &dive, &seam, t_far, &entry));
+
+        VesselParams blunt = { 1000.0, 20.0, 0.0, 2.2 };
+        VesselParams slick = { 1000.0, 20.0, 0.0, 0.0 };
+
+        double t_stop = entry.t + 300.0;
+        State no_air, once, twice, unaffected_a, unaffected_b;
+        size_t n = 0;
+        CoreStopReason stop;
+        int event = 0;
+        double step;
+
+        step = 0.0;
+        CHECK(prop_run(a, &entry, NULL, t_stop, NULL, 0, NULL, 0, &n, &no_air,
+                       &stop, &event, &step) == CORE_OK);
+        step = 0.0;
+        CHECK(prop_run(a, &entry, &blunt, t_stop, NULL, 0, NULL, 0, &n, &once,
+                       &stop, &event, &step) == CORE_OK);
+        step = 0.0;
+        CHECK(prop_run(b, &entry, &blunt, t_stop, NULL, 0, NULL, 0, &n, &twice,
+                       &stop, &event, &step) == CORE_OK);
+
+        double d_once = vec3_distance(once.r, no_air.r);
+        double d_twice = vec3_distance(twice.r, no_air.r);
+
+        printf("  300 s of drag moves the vessel %.4g m, twice the air "
+               "%.4g m (ratio %.4f)\n", d_once, d_twice, d_twice / d_once);
+        CHECK(d_once > 1.0);
+        CHECK(d_twice / d_once > 1.95 && d_twice / d_once < 2.05);
+
+        /* A vessel with no cd feels no air, whatever the air is scaled by.
+         * Bit-identical, because the term is not evaluated at all. */
+        step = 0.0;
+        CHECK(prop_run(a, &entry, &slick, t_stop, NULL, 0, NULL, 0, &n,
+                       &unaffected_a, &stop, &event, &step) == CORE_OK);
+        step = 0.0;
+        CHECK(prop_run(b, &entry, &slick, t_stop, NULL, 0, NULL, 0, &n,
+                       &unaffected_b, &stop, &event, &step) == CORE_OK);
+        CHECK(same_state(&unaffected_a, &unaffected_b));
+        CHECK(same_state(&unaffected_a, &no_air));
+
+        /* Zero is refused rather than read as one. An unset field is the K7b
+         * bug, and the only place left that can still tell the caller is
+         * here. */
+        PropConfig dead = config(H_MAX);
+        dead.density_scale = 0.0;
+        PropagatorCtx *never = NULL;
+        CHECK(prop_create(eph, &dead, &never) == CORE_ERR_INVALID_ARG);
+        CHECK(never == NULL);
+        dead.density_scale = -1.0;
+        CHECK(prop_create(eph, &dead, &never) == CORE_ERR_INVALID_ARG);
+
+        prop_free(a);
+        prop_free(b);
     }
 
     /* prop_free(NULL) is allowed - Drop on the Rust side frees without

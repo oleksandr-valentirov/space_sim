@@ -105,6 +105,25 @@ typedef struct {
     /* Steps allowed per prop_run call, not per trajectory. 0 -> integrator
      * default. Exceeding it is CORE_ERR_TOLERANCE_NOT_MET. */
     long max_steps;
+
+    /* Every air density this propagator sees is multiplied by this
+     * (ROADMAP K7c). One is the asset's own profile.
+     *
+     * IT MUST BE POSITIVE, and zero is not a default. A field that treated
+     * zero as one would be a field that a caller who never heard of it fills
+     * with whatever was on the stack and never finds out - which is the K7b
+     * bug exactly, and it cost a Windows CI failure. prop_create refuses
+     * anything not above zero, so an unset PropConfig fails loudly at the
+     * only place that can still tell the caller anything.
+     *
+     * Here rather than in VesselParams because it describes the air and not
+     * the spacecraft: two vessels flying the same leg fly through the same
+     * atmosphere. And a constant rather than a function of time, because a
+     * solar cycle is a sine with an eleven-year period, libm is forbidden in
+     * this loop, and nobody can say where the next maximum falls anyway - so
+     * the game computes it outside and it holds for the leg, exactly as the
+     * vessel's mass does (core/field.h). */
+    double density_scale;
 } PropConfig;
 
 /* Why a run ended. Not an error code: every value here is a normal outcome. */

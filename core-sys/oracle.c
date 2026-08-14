@@ -89,11 +89,9 @@ static int propagate(const EphemerisCtx *eph)
     vessel.v = vec3(earth.v.x, earth.v.y + VESSEL_VY, earth.v.z + VESSEL_VZ);
     vessel.t = VESSEL_T0;
 
-    PropConfig cfg;
-    cfg.integrator = CORE_INTEG_DOP853;
-    cfg.tol_m = 1e-2;
-    cfg.h_max_s = 1800.0;
-    cfg.max_steps = 0;
+    /* Braced, so that the next field PropConfig grows is a compile error here
+     * rather than whatever the stack held (K7b). */
+    PropConfig cfg = { CORE_INTEG_DOP853, 1e-2, 1800.0, 0, 1.0 };
 
     PropagatorCtx *p = NULL;
     if (prop_create(eph, &cfg, &p) != CORE_OK) {

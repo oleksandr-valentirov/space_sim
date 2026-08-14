@@ -121,11 +121,10 @@ int main(void)
     blunt.cr = opaque(0.0);
     blunt.cd = opaque(2.2);
 
-    PropConfig cfg;
-    cfg.integrator = CORE_INTEG_DOP853;
-    cfg.tol_m = opaque(1e-2);
-    cfg.h_max_s = opaque(30.0);
-    cfg.max_steps = 0;
+    /* Braced, not field by field: -Wmissing-field-initializers only
+     * sees this form, and PropConfig has grown a field twice now. */
+    PropConfig cfg = { CORE_INTEG_DOP853, opaque(1e-2), opaque(30.0), 0,
+                       opaque(1.0) };
 
     PropagatorCtx *p = NULL;
     if (prop_create(eph, &cfg, &p) != CORE_OK) {
