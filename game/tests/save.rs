@@ -298,11 +298,14 @@ fn a_file_that_is_not_a_save_is_refused() {
 fn a_vessel_with_area_survives_the_save() {
     use core_rs::VesselParams;
 
+    // Обидва коефіцієнти ненульові навмисно. З `cd: 0.0` цей тест проходив
+    // би й тоді, якби сейв загубив поле цілком: нуль неможливо відрізнити
+    // від «не записано» (ROADMAP K7c).
     let sail = VesselParams {
         mass_kg: 1000.0,
         area_m2: 20.0,
         cr: 1.3,
-        cd: 0.0,
+        cd: 2.2,
     };
 
     let cursor = mission::start().t + 4.0 * 3600.0;
