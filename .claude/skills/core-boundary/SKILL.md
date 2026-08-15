@@ -13,10 +13,11 @@ RAII + `Result`, і рушій уже цим користується (`engine::
 ## Поточний стан межі — не плутати зі скетчем із PROJECT.md §5
 
 PROJECT.md §5 описує **цільовий** C API (~20 функцій) — це план, не поточний
-стан. **Реально оголошено й обгорнуто на сьогодні дванадцять функцій**
+стан. **Реально оголошено й обгорнуто на сьогодні вісімнадцять функцій**
 (вісім нижче плюс `eph_body_radius` (U2a), `eph_body_mu` і
-`porkchop_compute_eph` (U5a), `eph_body_orientation` (R1c) — перші дві
-повертають `double` без коду помилки, бо це читання поля контексту):
+`porkchop_compute_eph` (U5a), `eph_body_orientation` (R1c), чотири CR3BP і дві
+фреймові (U6b2, U6b1) — `eph_body_radius` і `eph_body_mu` повертають `double`
+без коду помилки, бо це читання поля контексту):
 
 ```rust
 // core-sys/src/lib.rs — сирі декларації, extern "C", без жодного unsafe-блоку
@@ -64,11 +65,29 @@ pub fn eph_body_orientation(ctx: *const EphemerisCtx, body: c_int, t: f64,
 
 // U5a, у libcore_planning.a разом із lambert_solve. Обгортка над
 // porkchop_compute, яка сама подає eph_body_state замість колбеків.
-// УВАГА: після U5b у неї немає викликача в грі (борг D9) — гра розгортає
+// УВАГА: після U5b у неї немає викликача в грі (борг D10) — гра розгортає
 // сітку в Rust над lambert_solve, бо їй потрібен переліт ВІД АПАРАТА і в
 // координатах центрального тіла.
 pub fn porkchop_compute_eph(/* eph, depart_body, arrive_body, mu, prograde,
                                дві сітки, буфер від Rust, out_count */) -> CoreResult;
+```
+
+```rust
+// U6b1, U6b2: CR3BP і синодичний фрейм. Усі — БЕЗРОЗМІРНІ одиниці, і це
+// угода, якої не перевіряє компілятор: метри тут дадуть число, схоже на
+// правду. Тому в core-rs/tests/cr3bp.rs поруч стоять числа ЗЗОВНІ.
+pub fn cr3bp_mu(gm_primary: f64, gm_secondary: f64) -> f64;
+pub fn cr3bp_jacobi(r: Vec3d, v: Vec3d, mu: f64) -> f64;   // Vec3d за значенням
+pub fn cr3bp_lagrange(mu: f64, point: c_int, out: *mut Vec3d) -> CoreResult;
+// TOLERANCE_NOT_MET тут — ВІДПОВІДЬ (променю нема де перетнути криву), не збій.
+pub fn cr3bp_zvc_radius(mu: f64, c: f64, from: Vec3d, dir_unit: Vec3d,
+                        r_max: f64, r_out: *mut f64) -> CoreResult;
+
+// SynodicFrame — найбільша структура межі (6×Vec3d + 5×double), і заповнює
+// її C: помилка в розкладці дає не дивне число, а запис за межі.
+pub fn frame_synodic(eph: *const EphemerisCtx, primary: c_int, secondary: c_int,
+                     t: f64, out: *mut SynodicFrame) -> CoreResult;
+pub fn frame_from_inertial(f: *const SynodicFrame, input: *const State, out: *mut State);
 ```
 
 ```rust
