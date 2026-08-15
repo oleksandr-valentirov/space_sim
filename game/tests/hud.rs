@@ -229,6 +229,9 @@ fn vessel_with_plan(t: f64) -> game::snapshot::VesselSnapshot {
     game::snapshot::VesselSnapshot {
         id: VesselId(0),
         name: "probe".to_string(),
+        // Константи Якобі в цій фікстурі немає: вона про панелі, а не про
+        // карту (U6b3).
+        jacobi: None,
         legs: vec![Arc::new(Leg {
             entry: state,
             t1: t + 10.0,

@@ -169,6 +169,9 @@ fn a_manoeuvre_beyond_the_forecast_has_no_node() {
     };
 
     let vessel = game::snapshot::VesselSnapshot {
+        // Константи Якобі в цій фікстурі немає: вона про вузли й панелі, а
+        // не про карту (U6b3).
+        jacobi: None,
         id: VesselId(0),
         name: "probe".to_string(),
         legs: vec![Arc::new(Leg {
