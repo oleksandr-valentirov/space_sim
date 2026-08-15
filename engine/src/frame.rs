@@ -22,10 +22,11 @@
 //! `sphere.wgsl`.
 
 use crate::camera::Camera;
+use crate::cubesphere::{self, Patch};
 use crate::depth;
 use crate::gpu::Gpu;
 use crate::scene::Scene;
-use crate::sphere::{self, Mesh};
+use crate::sphere;
 
 /// Колір очищення. Не чорний навмисно: чорний кадр і кадр, якого не було,
 /// виглядають однаково, і перевірка «щось намалювалось» на чорному нічого
@@ -45,17 +46,12 @@ pub const CLEAR_BYTES: [u8; 3] = [5, 8, 20];
 /// Вбудовується в бінарник, а не читається з диска: шейдер — частина
 /// програми, а не ассет, який можна підмінити. Генерується
 /// `scripts/build_shaders.sh` і комітиться (ROADMAP F2).
-const SPHERE_WGSL: &str = include_str!("../shaders/sphere.wgsl");
+const PATCH_WGSL: &str = include_str!("../shaders/patch.wgsl");
 
 /// Те саме для ламаних (ROADMAP J1).
 const LINE_WGSL: &str = include_str!("../shaders/line.wgsl");
 
 pub const FOV_Y: f64 = std::f64::consts::PI / 3.0;
-
-/// Сітка сфери. 64×128 — те саме, на чому міряли F5, тобто числа звідти
-/// лишаються порівнюваними.
-const LAT_SEGMENTS: u32 = 64;
-const LON_SEGMENTS: u32 = 128;
 
 const LIGHT_DIR: [f32; 3] = [0.4, 0.4, 0.82];
 const COLOUR: [f32; 4] = [0.2, 0.6, 0.9, 1.0];
@@ -127,186 +123,22 @@ struct Lines {
 }
 
 pub struct Frame {
-    pipeline: wgpu::RenderPipeline,
-    bind_group: wgpu::BindGroup,
-    uniform_buffer: wgpu::Buffer,
-
-    mesh: Mesh,
-    position_buffer: wgpu::Buffer,
-    normal_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
+    /// Планета патчами (ROADMAP-PLANETS.md, R1d).
+    planet: Planet,
 
     /// Створюється при першому кадрі й перестворюється, коли змінився
     /// розмір цілі. Живе тут, а не в `app`, з однієї причини: інакше та сама
     /// логіка була б і в [`crate::shot`], а два місця розходяться.
     depth: Option<Depth>,
 
-    /// Байти позицій, що переписуються щокадру. Тримається між кадрами, щоб
-    /// не виділяти 8385 × 12 байтів шістдесят разів на секунду.
-    position_bytes: Vec<u8>,
-
     lines: Lines,
 }
 
 impl Frame {
     pub fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Frame {
-        let mesh = sphere::generate(sphere::EARTH_RADIUS_M, LAT_SEGMENTS, LON_SEGMENTS);
-
-        let module = gpu
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("sphere"),
-                source: wgpu::ShaderSource::Wgsl(SPHERE_WGSL.into()),
-            });
-
-        let bind_layout = gpu
-            .device
-            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("frame"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            });
-
-        let layout = gpu
-            .device
-            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("frame"),
-                bind_group_layouts: &[Some(&bind_layout)],
-                immediate_size: 0,
-            });
-
-        // Атрибути мусять пережити виклик створення пайплайна, тож масиви
-        // живуть тут, а не всередині виразу.
-        let position_attrs = [wgpu::VertexAttribute {
-            format: wgpu::VertexFormat::Float32x3,
-            offset: 0,
-            shader_location: 0,
-        }];
-        let normal_attrs = [wgpu::VertexAttribute {
-            format: wgpu::VertexFormat::Float32x3,
-            offset: 0,
-            shader_location: 1,
-        }];
-
-        let pipeline = gpu
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("frame"),
-                layout: Some(&layout),
-                vertex: wgpu::VertexState {
-                    module: &module,
-                    entry_point: Some("vertex_main"),
-                    compilation_options: Default::default(),
-                    buffers: &[
-                        Some(wgpu::VertexBufferLayout {
-                            array_stride: 12,
-                            step_mode: wgpu::VertexStepMode::Vertex,
-                            attributes: &position_attrs,
-                        }),
-                        Some(wgpu::VertexBufferLayout {
-                            array_stride: 12,
-                            step_mode: wgpu::VertexStepMode::Vertex,
-                            attributes: &normal_attrs,
-                        }),
-                    ],
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &module,
-                    entry_point: Some("fragment_main"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                primitive: wgpu::PrimitiveState {
-                    // Без відсікання граней — той самий вибір, що в
-                    // `sphere_render`: коректність тримається на тесті
-                    // глибини (сфера опукла), а не на вгаданому порядку
-                    // обходу вершин.
-                    cull_mode: None,
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: depth::FORMAT,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(depth::COMPARE),
-                    stencil: wgpu::StencilState::default(),
-                    bias: wgpu::DepthBiasState::default(),
-                }),
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            });
-
-        let position_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("frame positions"),
-            size: (mesh.positions.len() * 12) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        // Нормалі не залежать від камери, тож пишуться раз.
-        let mut normal_bytes = Vec::with_capacity(mesh.normals.len() * 12);
-        for n in &mesh.normals {
-            for value in n {
-                normal_bytes.extend_from_slice(&value.to_le_bytes());
-            }
-        }
-        let normal_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("frame normals"),
-            size: normal_bytes.len() as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        gpu.queue.write_buffer(&normal_buffer, 0, &normal_bytes);
-
-        let index_bytes: Vec<u8> = mesh.indices.iter().flat_map(|i| i.to_le_bytes()).collect();
-        let index_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("frame indices"),
-            size: index_bytes.len() as u64,
-            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        gpu.queue.write_buffer(&index_buffer, 0, &index_bytes);
-
-        let uniform_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("frame uniforms"),
-            size: 96,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("frame"),
-            layout: &bind_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            }],
-        });
-
-        let position_bytes = Vec::with_capacity(mesh.positions.len() * 12);
-
         Frame {
-            pipeline,
-            bind_group,
-            uniform_buffer,
-            mesh,
-            position_buffer,
-            normal_buffer,
-            index_buffer,
+            planet: Planet::new(gpu, format),
             depth: None,
-            position_bytes,
             lines: Lines::new(gpu, format),
         }
     }
@@ -378,30 +210,13 @@ impl Frame {
         let camera = &scene.camera;
         self.ensure_depth(gpu, width, height);
 
-        // Camera-relative щокадру, на кожну вершину: віднімання й поворот у
-        // double, звуження до f32 — останній крок (ROADMAP F4, F5). Для
-        // 8385 вершин налагоджувальної сфери це прийнятно; мільйони вершин
-        // LOD у M4 доведеться зсувати по патчах, і саме `--perf-probe`
-        // покаже, коли межа настане.
-        self.position_bytes.clear();
-        for &p in &self.mesh.positions {
-            let rel = camera.relative(p);
-            for value in rel {
-                self.position_bytes.extend_from_slice(&value.to_le_bytes());
-            }
-        }
-        gpu.queue
-            .write_buffer(&self.position_buffer, 0, &self.position_bytes);
-
         let aspect = f64::from(width) / f64::from(height);
         let projection = depth::reversed_infinite(FOV_Y, aspect, self.near_for(camera));
-        let uniforms = Uniforms {
-            projection,
-            light_dir: [LIGHT_DIR[0], LIGHT_DIR[1], LIGHT_DIR[2], 0.0],
-            colour: COLOUR,
-        };
-        gpu.queue
-            .write_buffer(&self.uniform_buffer, 0, &uniforms.to_bytes());
+
+        // Планета: камера віднімається раз на патч, у `double`, а поворот
+        // їде в матриці (R1d). Кількість роботи на CPU більше не залежить
+        // від кількості вершин — тільки від кількості патчів.
+        self.planet.upload(gpu, scene, projection);
 
         // Ламані проходять той самий шлях, що вершини сфери: віднімання й
         // поворот у double, звуження до f32 останнім кроком. Інакше
@@ -434,14 +249,325 @@ impl Frame {
             occlusion_query_set: None,
         });
 
+        self.planet.draw(&mut pass);
+        self.lines.draw(&mut pass, scene);
+    }
+}
+
+/// Планета патчами кубосфери (ROADMAP-PLANETS.md, R1d).
+///
+/// Заміна UV-сфери, і суть заміни не в формі, а в тому, **хто рахує
+/// camera-relative**. Було: CPU щокадру проганяв кожну з 8385 вершин через
+/// `camera.relative`. Стало: CPU віднімає камеру раз на патч — шість чисел
+/// на грань замість тисячі, — а зсув вершини всередині патча в `f32` уже
+/// лежить у буфері й не переписується взагалі.
+///
+/// Поворот при цьому переїхав у шейдер, у ту саму матрицю, що й проєкція:
+/// перенесення зробило віднімання на CPU в `double`, повороту байдуже до
+/// масштабу (`camera::Camera::view_rotation`).
+///
+/// Початки патчів їдуть **storage-буфером**, а не масивом uniform-буферів:
+/// D3D12 останніх не дає взагалі, і PROJECT.md §7 уже поклав per-object дані
+/// саме сюди.
+struct Planet {
+    pipeline: wgpu::RenderPipeline,
+    bind_group: wgpu::BindGroup,
+    uniform_buffer: wgpu::Buffer,
+    origin_buffer: wgpu::Buffer,
+
+    offset_buffer: wgpu::Buffer,
+    normal_buffer: wgpu::Buffer,
+    patch_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    index_count: u32,
+
+    /// Початки патчів у світових координатах тіла — рахуються раз, бо форма
+    /// планети не змінюється; камера віднімається від них щокадру.
+    origins: Vec<[f64; 3]>,
+    origin_bytes: Vec<u8>,
+}
+
+/// Рівень, на якому малюється планета. Без LOD — його приносить R2.
+///
+/// Нуль означає «патч на грань»: шість патчів, 32 відрізки на бік, тобто той
+/// самий кутовий крок силуету, що в UV-сфери 64×128 (32 сегменти на 90°).
+/// Саме тому знімок до й після можна звіряти маскою, а не «схожістю».
+const PLANET_LEVEL: u32 = 0;
+
+impl Planet {
+    fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Planet {
+        let module = gpu
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("patch"),
+                source: wgpu::ShaderSource::Wgsl(PATCH_WGSL.into()),
+            });
+
+        // Шість граней на нульовому рівні; на рівні L їх 6·4^L.
+        let side = 1u32 << PLANET_LEVEL;
+        let mut patches = Vec::new();
+        for face in 0..cubesphere::FACES {
+            for i in 0..side {
+                for j in 0..side {
+                    patches.push(Patch {
+                        face,
+                        level: PLANET_LEVEL,
+                        i,
+                        j,
+                    });
+                }
+            }
+        }
+
+        // Геометрія збирається раз: зсуви й нормалі від камери не залежать,
+        // а індекс патча — тим паче.
+        let mut offset_bytes = Vec::new();
+        let mut normal_bytes = Vec::new();
+        let mut patch_bytes = Vec::new();
+        let mut index_bytes = Vec::new();
+        let mut origins = Vec::new();
+        let mut base: u32 = 0;
+
+        for (index, patch) in patches.iter().enumerate() {
+            let mesh = patch.mesh(sphere::EARTH_RADIUS_M);
+            origins.push(mesh.origin);
+
+            for (offset, normal) in mesh.offsets.iter().zip(mesh.normals.iter()) {
+                for value in offset {
+                    offset_bytes.extend_from_slice(&value.to_le_bytes());
+                }
+                for value in normal {
+                    normal_bytes.extend_from_slice(&value.to_le_bytes());
+                }
+                patch_bytes.extend_from_slice(&(index as u32).to_le_bytes());
+            }
+
+            for i in &mesh.indices {
+                index_bytes.extend_from_slice(&(base + i).to_le_bytes());
+            }
+            base += mesh.offsets.len() as u32;
+        }
+
+        let index_count = (index_bytes.len() / 4) as u32;
+
+        let vertex_buffer = |label: &str, bytes: &[u8]| {
+            let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: bytes.len() as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            gpu.queue.write_buffer(&buffer, 0, bytes);
+            buffer
+        };
+
+        let offset_buffer = vertex_buffer("patch offsets", &offset_bytes);
+        let normal_buffer = vertex_buffer("patch normals", &normal_bytes);
+        let patch_buffer = vertex_buffer("patch indices", &patch_bytes);
+
+        let index_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("patch elements"),
+            size: index_bytes.len() as u64,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        gpu.queue.write_buffer(&index_buffer, 0, &index_bytes);
+
+        let uniform_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("patch uniforms"),
+            size: 96,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Чотири числа на патч, а не три: вирівнювання vec4 у std430, і
+        // четверте лишається нулем.
+        let origin_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("patch origins"),
+            size: (patches.len() * 16) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bind_layout = gpu
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("patch"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("patch"),
+            layout: &bind_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: origin_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let layout = gpu
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("patch"),
+                bind_group_layouts: &[Some(&bind_layout)],
+                immediate_size: 0,
+            });
+
+        let offset_attrs = [wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: 0,
+            shader_location: 0,
+        }];
+        let normal_attrs = [wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: 0,
+            shader_location: 1,
+        }];
+        let patch_attrs = [wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Uint32,
+            offset: 0,
+            shader_location: 2,
+        }];
+
+        let pipeline = gpu
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("patch"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vertex_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: 12,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &offset_attrs,
+                        }),
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: 12,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &normal_attrs,
+                        }),
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: 4,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &patch_attrs,
+                        }),
+                    ],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fragment_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    // Без відсікання граней — той самий вибір, що був у
+                    // сфери: коректність тримається на тесті глибини, а не
+                    // на вгаданому порядку обходу вершин.
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: depth::FORMAT,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(depth::COMPARE),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+
+        let origin_bytes = Vec::with_capacity(patches.len() * 16);
+
+        Planet {
+            pipeline,
+            bind_group,
+            uniform_buffer,
+            origin_buffer,
+            offset_buffer,
+            normal_buffer,
+            patch_buffer,
+            index_buffer,
+            index_count,
+            origins,
+            origin_bytes,
+        }
+    }
+
+    /// Початки патчів відносно камери й матриця на цей кадр.
+    ///
+    /// Оце і є весь CPU-прохід планети: шість віднімань у `double` замість
+    /// восьми з половиною тисяч.
+    fn upload(&mut self, gpu: &Gpu, scene: &Scene, projection: depth::Matrix) {
+        let camera = &scene.camera;
+        let eye = camera.position();
+
+        self.origin_bytes.clear();
+        for origin in &self.origins {
+            // Віднімання в `double`, звуження — останнім кроком, як завжди
+            // (ROADMAP F4). Поворот тут НЕ робиться: він у матриці, бо його
+            // однаково доведеться застосувати й до зсуву вершини.
+            for k in 0..3 {
+                let value = (origin[k] - eye[k]) as f32;
+                self.origin_bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            self.origin_bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        gpu.queue
+            .write_buffer(&self.origin_buffer, 0, &self.origin_bytes);
+
+        let uniforms = Uniforms {
+            projection: depth::multiply(projection, camera.view_rotation()),
+            light_dir: [LIGHT_DIR[0], LIGHT_DIR[1], LIGHT_DIR[2], 0.0],
+            colour: COLOUR,
+        };
+        gpu.queue
+            .write_buffer(&self.uniform_buffer, 0, &uniforms.to_bytes());
+    }
+
+    fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
-        pass.set_vertex_buffer(0, self.position_buffer.slice(..));
+        pass.set_vertex_buffer(0, self.offset_buffer.slice(..));
         pass.set_vertex_buffer(1, self.normal_buffer.slice(..));
+        pass.set_vertex_buffer(2, self.patch_buffer.slice(..));
         pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        pass.draw_indexed(0..self.mesh.indices.len() as u32, 0, 0..1);
-
-        self.lines.draw(&mut pass, scene);
+        pass.draw_indexed(0..self.index_count, 0, 0..1);
     }
 }
 

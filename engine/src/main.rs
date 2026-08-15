@@ -188,7 +188,7 @@ fn run_depth_probe() -> Result<(), String> {
 /// 30 fps (33.3 мс) для кількох роздільностей. Метод і його межі — див.
 /// `engine::perf_probe`.
 fn run_perf_probe() -> Result<(), String> {
-    use engine::perf_probe::{camera_pass_ms, measure, Overlay};
+    use engine::perf_probe::{camera_pass_ms, measure, patch_pass_ms, Overlay};
 
     const FRAMES: u32 = 300;
     const BUDGET_60: f64 = 1000.0 / 60.0;
@@ -207,8 +207,8 @@ fn run_perf_probe() -> Result<(), String> {
     println!(
         "{FRAMES} кадрів на роздільність, синхронний submit+poll (верхня межа, не конвеєр).\n\
          профіль: {profile}\n\
-         сцена: сфера радіуса Землі, 8385 вершин / 16384 трикутники, \
-         camera-relative щокадру\n"
+         сцена: кубосфера радіуса Землі, шість патчів 32×32 — 6534 вершини / \
+         12288 трикутників, camera-relative раз на патч (R1d)\n"
     );
     println!(
         "{:>10} {:>10} {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>9}",
@@ -240,12 +240,20 @@ fn run_perf_probe() -> Result<(), String> {
         }
     }
 
-    // Окремо — частина кадру, про яку заздалегідь відомо, що вона тимчасова.
-    let pass_ms = camera_pass_ms(200);
+    // Окремо — CPU-прохід планети, до й після R1d. Два числа, бо одне без
+    // другого не каже, чи виграш узагалі є.
+    let was_ms = camera_pass_ms(200);
+    let now_ms = patch_pass_ms(200);
     println!(
-        "\nCPU, camera-relative на 8385 вершин: {pass_ms:.3} мс на кадр \
-         ({:.0}% бюджету 60 Hz). M4 замінить це зсувом по патчах.",
-        100.0 * pass_ms / BUDGET_60
+        "\nCPU-прохід планети:\n  \
+         було (UV-сфера, 8385 вершин щокадру): {:.1} мкс = {:.2}% бюджету 60 Hz\n  \
+         стало (шість патчів, по одному початку): {:.3} мкс = {:.4}%\n  \
+         виграш: у {:.0} разів",
+        was_ms * 1000.0,
+        100.0 * was_ms / BUDGET_60,
+        now_ms * 1000.0,
+        100.0 * now_ms / BUDGET_60,
+        was_ms / now_ms
     );
 
     Ok(())

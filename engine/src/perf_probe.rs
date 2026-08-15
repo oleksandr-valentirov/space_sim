@@ -24,6 +24,7 @@
 
 use std::time::Instant;
 
+use crate::cubesphere;
 use crate::frame::{self, Frame};
 use crate::gpu::Gpu;
 use crate::scene::Scene;
@@ -56,13 +57,12 @@ impl Stats {
     }
 }
 
-/// Скільки коштує сам прохід camera-relative по вершинах меша, без GPU.
+/// Скільки коштував прохід camera-relative по вершинах UV-сфери.
 ///
-/// Міряється окремо, бо це єдина частина кадру, про яку заздалегідь відомо,
-/// що вона тимчасова: `Frame` перераховує позиції всіх вершин у `double`
-/// щокадру (ROADMAP F5, I1), а M4 замінить це зсувом по патчах. Загальний
-/// час кадру цього не показує — там воно змішане з синхронізацією й
-/// растеризацією, і на швидкій машині одне тоне в іншому.
+/// **Кадр цього більше не робить** (R1d): планета малюється патчами, і
+/// віднімання камери коштує шість чисел замість 8385. Функція лишилася саме
+/// тому, що число без другого числа нічого не означає — вона друкується
+/// поруч із [`patch_pass_ms`], і різниця між ними і є той виграш.
 ///
 /// Повертає мілісекунди на один прохід.
 pub fn camera_pass_ms(passes: u32) -> f64 {
@@ -91,6 +91,55 @@ pub fn camera_pass_ms(passes: u32) -> f64 {
     }
     // Щоб оптимізатор не викинув цикл цілком.
     assert_eq!(bytes.len(), mesh.positions.len() * 12);
+
+    start.elapsed().as_secs_f64() * 1000.0 / f64::from(passes)
+}
+
+/// Те саме для планети з патчів — те, що кадр робить **зараз** (R1d).
+///
+/// Робота тут та сама за формою (віднімання камери в `double`, звуження до
+/// `f32`) і різна за обсягом: один початок на патч замість позиції на
+/// вершину. Тому й міряється тією самою функцією ззовні: два числа з одного
+/// прогону порівнянні, з різних — ні.
+pub fn patch_pass_ms(passes: u32) -> f64 {
+    let camera = frame::default_camera();
+    let eye = camera.position();
+
+    // Ті самі патчі, що й у кадрі: шість граней нульового рівня.
+    let origins: Vec<[f64; 3]> = (0..cubesphere::FACES)
+        .map(|face| {
+            cubesphere::Patch {
+                face,
+                level: 0,
+                i: 0,
+                j: 0,
+            }
+            .mesh(sphere::EARTH_RADIUS_M)
+            .origin
+        })
+        .collect();
+
+    let mut bytes: Vec<u8> = Vec::with_capacity(origins.len() * 16);
+    let mut run = || {
+        bytes.clear();
+        for origin in &origins {
+            for k in 0..3 {
+                let value = (origin[k] - eye[k]) as f32;
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+    };
+
+    for _ in 0..2 {
+        run();
+    }
+
+    let start = Instant::now();
+    for _ in 0..passes {
+        run();
+    }
+    assert_eq!(bytes.len(), origins.len() * 16);
 
     start.elapsed().as_secs_f64() * 1000.0 / f64::from(passes)
 }

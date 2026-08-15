@@ -430,3 +430,97 @@ fn the_patch_mesh_is_closed() {
         assert!((length - 1.0).abs() < 1e-6, "нормаль довжиною {length}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Кубосфера в кадрі замість UV-сфери (R1d)
+
+/// Силует кубосфери збігається з силуетом UV-сфери — маскою, не кольорами.
+///
+/// Оракул тут — **інший шлях до тієї самої картинки**: `sphere_render` (F5)
+/// малює UV-сферу з тією самою камерою, проєкцією й ближньою площиною, а
+/// `Frame` тепер малює патчі. Порівнюються не пікселі, а маска «планета /
+/// небо»: кольори різнитися **зобов'язані** — нормалі в кубосфери інші, та й
+/// sRGB-перетворення вже записане як окреме рішення (правило 7 етапу R).
+///
+/// Допуск — частка кадру, і взятий він із геометрії, а не зі стелі: обидві
+/// сітки апроксимують коло 32 сегментами на 90°, тобто силует у кожної свій
+/// на частки пікселя, а розбіжність збирається вздовж усього краю диска.
+#[test]
+fn the_cubesphere_draws_the_same_silhouette_as_the_uv_sphere() {
+    use engine::frame;
+    use engine::gpu::Gpu;
+    use engine::scene::Scene;
+    use engine::shot::{self, Shot};
+    use engine::{sphere, sphere_render};
+
+    const WIDTH: u32 = 1280;
+    const HEIGHT: u32 = 720;
+
+    let Ok(gpu) = Gpu::new(wgpu::Instance::default(), None) else {
+        eprintln!("ПРОПУЩЕНО: немає адаптера wgpu");
+        return;
+    };
+
+    let camera = frame::default_camera();
+    let near = frame::DEFAULT_ALTITUDE_M / 10.0;
+
+    // Старий шлях: UV-сфера, camera-relative на кожну вершину.
+    let mesh = sphere::generate(sphere::EARTH_RADIUS_M, 64, 128);
+    let old = sphere_render::render(
+        &gpu,
+        WIDTH,
+        HEIGHT,
+        &camera,
+        &mesh,
+        &sphere_render::Params {
+            near,
+            light_dir: [0.4, 0.4, 0.82],
+            colour: [0.2, 0.6, 0.9, 1.0],
+        },
+    )
+    .expect("UV-сфера мала намалюватися");
+
+    // Новий шлях: патчі, camera-relative раз на патч. Той самий `Frame`, що
+    // йде у вікно, — інакше перевірявся б не той кадр.
+    let new = shot::take_scene(&gpu, WIDTH, HEIGHT, &Scene::new(frame::default_camera()))
+        .expect("кубосфера мала намалюватися");
+
+    // Тло в двох шляхів різне — `sphere_render` чистить у чорний, `Frame` у
+    // свій колір неба, — тож маска береться від власного тла кожного.
+    let planet = |s: &Shot, x: u32, y: u32, sky: [u8; 3]| {
+        let p = s.pixel(x, y);
+        [p[0], p[1], p[2]] != sky
+    };
+    const BLACK: [u8; 3] = [0, 0, 0];
+
+    let mut differ = 0u64;
+    let mut lit = 0u64;
+    for y in 0..HEIGHT {
+        for x in 0..WIDTH {
+            let in_old = planet(&old, x, y, BLACK);
+            let in_new = planet(&new, x, y, frame::CLEAR_BYTES);
+            if in_old {
+                lit += 1;
+            }
+            if in_old != in_new {
+                differ += 1;
+            }
+        }
+    }
+
+    let edge = 2.0 * std::f64::consts::PI * (lit as f64 / std::f64::consts::PI).sqrt();
+    println!(
+        "  силует: {lit} пікселів, розбіжність {differ} = {:.2} пікселя на \\
+         піксель краю (край ≈ {edge:.0})",
+        differ as f64 / edge
+    );
+
+    assert!(lit > 0, "стара сфера не намалювалася — звіряти нема з чим");
+    // Не більше пікселя по краю (R1d), і край рахується з площі диска, а не
+    // вгадується: 2πr при r = √(площа/π).
+    assert!(
+        (differ as f64) <= edge,
+        "силует поїхав на {differ} пікселів при краю в {edge:.0} — це не \\
+         допуск, це вісь або порядок обходу"
+    );
+}
