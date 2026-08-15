@@ -154,6 +154,14 @@ fn build_all(
                 // після побудови, бо хендл тайлів видає кадр, а не снапшот
                 // (D12).
                 tiles: TileSet::Smooth,
+                // Повітря — властивість тіла (S1). Земля його має, решта
+                // ассета ні: у Місяця атмосфери немає, і `None` тут означає
+                // саме це, а не «ще не зробили».
+                air: if body.body == EARTH {
+                    Some(engine::scene::Atmosphere::EARTH.with_surface(body.radius_m))
+                } else {
+                    None
+                },
             });
         }
     }

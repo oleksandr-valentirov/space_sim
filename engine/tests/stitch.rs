@@ -101,6 +101,7 @@ fn looking_down(direction: [f64; 3], altitude: f64) -> Scene {
         radius_m: sphere::EARTH_RADIUS_M,
         orientation: [1.0, 0.0, 0.0, 0.0],
         tiles: TileSet::Smooth,
+        air: None,
     });
     scene
 }

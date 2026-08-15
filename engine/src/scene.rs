@@ -69,6 +69,93 @@ pub struct Body {
     /// **єдиним**, що відрізняє одне тіло від іншого для рендера: DEM
     /// приїде в R5 і адресуватиметься саме цим.
     pub tiles: TileSet,
+    /// Повітря навколо тіла, або `None` — його немає (ROADMAP-ATMOSPHERE.md,
+    /// S1).
+    ///
+    /// **Властивість тіла, а не налаштування кадру** — те саме рішення, що з
+    /// гармоніками й радіусом (CLAUDE.md): повітря Землі є властивістю Землі,
+    /// і два викликачі не мають права намалювати дві різні Землі. `None` —
+    /// це Місяць, і він зобов'язаний давати той самий кадр, що до етапу S.
+    pub air: Option<Atmosphere>,
+}
+
+/// Атмосфера тіла за моделлю Hillaire 2020 (PROJECT.md §7).
+///
+/// Одиниці — **на метр**, не на кілометр: у статті все в кілометрах, і саме
+/// на цьому перетворенні найлегше загубити три порядки. Решта рушія міряє
+/// метрами, тож міряють і ці числа.
+///
+/// Значення для Землі — [`Atmosphere::EARTH`]; для іншої планети це просто
+/// інші числа, і жодного коду вони не міняють.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Atmosphere {
+    /// Радіус верхньої межі атмосфери, метри. Від центра тіла, не від
+    /// поверхні: так само, як `radius_m`.
+    pub top_m: f64,
+    /// Розсіювання Релея на рівні поверхні, 1/м, по RGB.
+    pub rayleigh_scattering: [f32; 3],
+    /// Висота шкали Релея, метри.
+    pub rayleigh_height_m: f32,
+    /// Розсіювання Мі на рівні поверхні, 1/м. Сіре — Мі майже не залежить
+    /// від довжини хвилі, і саме тому серпанок білий.
+    pub mie_scattering: f32,
+    /// Поглинання Мі, 1/м. Більше за розсіювання: аерозоль ще й гасить.
+    pub mie_absorption: f32,
+    /// Висота шкали Мі, метри.
+    pub mie_height_m: f32,
+    /// Асиметрія фазової функції Мі, безрозмірна. Додатна — вперед.
+    pub mie_g: f32,
+    /// Поглинання озоном на піку, 1/м, по RGB.
+    pub ozone_absorption: [f32; 3],
+    /// Центр озонового шару й його півширина, метри. Шар трикутний, як у
+    /// статті: лінійно росте до центра й лінійно спадає.
+    pub ozone_centre_m: f32,
+    pub ozone_width_m: f32,
+}
+
+impl Atmosphere {
+    /// Земля: числа зі статті Hillaire 2020, переведені в метри.
+    ///
+    /// Верхня межа 100 км над поверхнею — лінія Кармана й та сама висота, на
+    /// якій `core/atmosphere.c` перестає рахувати опір. Збіг тут не
+    /// випадковий і не обов'язковий: одне число про рендер, друге про
+    /// фізику, і якщо колись розійдуться — це буде рішення, а не помилка.
+    pub const EARTH: Atmosphere = Atmosphere {
+        top_m: 6_371_000.0 + 100_000.0,
+        // 5.802, 13.558, 33.1 · 10⁻⁶ на кілометр у статті.
+        rayleigh_scattering: [5.802e-6, 13.558e-6, 33.1e-6],
+        rayleigh_height_m: 8_000.0,
+        mie_scattering: 3.996e-6,
+        mie_absorption: 4.40e-6,
+        mie_height_m: 1_200.0,
+        mie_g: 0.8,
+        ozone_absorption: [0.650e-6, 1.881e-6, 0.085e-6],
+        ozone_centre_m: 25_000.0,
+        ozone_width_m: 15_000.0,
+    };
+
+    /// Скільки повітря підіймається над поверхнею Землі, метри. Лінія
+    /// Кармана.
+    pub const EARTH_THICKNESS_M: f64 = 100_000.0;
+
+    /// Ті самі коефіцієнти, але верхня межа — над **цим** радіусом.
+    ///
+    /// Радіус тіла приходить з ассета (`eph_body_radius`), і брати замість
+    /// нього константу означало б мати дві різні Землі: одну у фізиці, другу
+    /// в повітрі. Товщина шару лишається та сама — вона властивість
+    /// атмосфери, а не тіла.
+    pub fn with_surface(self, surface_m: f64) -> Atmosphere {
+        Atmosphere {
+            top_m: surface_m + (self.top_m - 6_371_000.0),
+            ..self
+        }
+    }
+
+    /// Товщина шару повітря, метри: скільки атмосфера підіймається над
+    /// поверхнею тіла радіуса `surface_m`.
+    pub fn thickness_m(&self, surface_m: f64) -> f64 {
+        self.top_m - surface_m
+    }
 }
 
 /// Набір тайлів поверхні.
@@ -120,5 +207,52 @@ impl Scene {
     /// Потрібно тому, хто виділяє буфер під них один раз, а не щокадру.
     pub fn vertex_count(&self) -> usize {
         self.polylines.iter().map(|p| p.points.len()).sum()
+    }
+}
+
+#[cfg(test)]
+mod atmosphere_tests {
+    use super::*;
+
+    /// Одиниці — на метр, і це та помилка, яку найлегше зробити мовчки.
+    ///
+    /// Оптична товща вертикального променя крізь усю атмосферу — це
+    /// `β·H` з точністю до `exp(−товщина/H)`, тобто для Землі число порядку
+    /// 0.1 у синьому. Якби коефіцієнти лишились «на кілометр», вийшло б 100,
+    /// тобто небо, крізь яке не видно нічого.
+    #[test]
+    fn the_vertical_optical_depth_is_the_order_of_a_tenth() {
+        let air = Atmosphere::EARTH;
+        let h = f64::from(air.rayleigh_height_m);
+        for (channel, beta) in air.rayleigh_scattering.iter().enumerate() {
+            let depth = f64::from(*beta) * h;
+            assert!(
+                (0.01..1.0).contains(&depth),
+                "канал {channel}: оптична товща {depth}, тобто одиниці не ті"
+            );
+        }
+    }
+
+    /// Мі гасить сильніше, ніж розсіює, і озон поглинає найбільше в зеленому.
+    ///
+    /// Не краса, а перевірка того, що числа не переставлені місцями: саме
+    /// таку помилку не видно в кадрі — небо лишається блакитним.
+    #[test]
+    fn the_coefficients_keep_the_order_the_paper_gives_them() {
+        let air = Atmosphere::EARTH;
+        assert!(air.mie_absorption > air.mie_scattering);
+        assert!(air.mie_height_m < air.rayleigh_height_m);
+        assert!(air.rayleigh_scattering[2] > air.rayleigh_scattering[0]);
+        assert!(air.ozone_absorption[1] > air.ozone_absorption[0]);
+        assert!(air.ozone_absorption[1] > air.ozone_absorption[2]);
+    }
+
+    /// Верхня межа їде за радіусом тіла, товщина шару лишається.
+    #[test]
+    fn the_layer_keeps_its_thickness_on_any_radius() {
+        let surface = 6_378_137.0;
+        let air = Atmosphere::EARTH.with_surface(surface);
+        assert_eq!(air.thickness_m(surface), Atmosphere::EARTH_THICKNESS_M);
+        assert_eq!(air.rayleigh_height_m, Atmosphere::EARTH.rayleigh_height_m);
     }
 }

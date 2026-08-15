@@ -941,3 +941,46 @@ fn attaching_terrain_to_a_body_that_is_not_there_does_nothing() {
     let after: Vec<_> = scene.bodies.iter().map(|b| b.tiles).collect();
     assert_eq!(before, after, "невідоме тіло змінило чужі тайли");
 }
+
+/// Повітря є в Землі й немає в Місяця (ROADMAP-ATMOSPHERE.md, S1).
+///
+/// Тіло без атмосфери — це не «ще не зробили», а факт про Місяць, і рушій
+/// має право на ньому економити. Тест ловить рівно ту помилку, яку легко
+/// зробити при першому викликачі: повісити повітря на всі тіла ассета.
+#[test]
+fn the_earth_carries_air_and_the_moon_does_not() {
+    let mut world = mission::world(&mission::default_asset()).expect("світ будується");
+    world.run_to_day(mission::start().t + 2.0 * 86400.0, 1.0, 8);
+    let snapshot = world.snapshot();
+    let scene = view::build(&snapshot, Orbit::at_altitude(1.0e9).camera());
+
+    // Порядок тіл у сцені — той самий, що в снапшоті, з пропуском
+    // безрозмірних (`view::attach_terrain` спирається на це саме правило).
+    let mut with_air = 0;
+    for body in &scene.bodies {
+        if body.air.is_some() {
+            with_air += 1;
+        }
+    }
+    assert_eq!(
+        with_air,
+        1,
+        "повітря має бути рівно в одного тіла з {}",
+        scene.bodies.len()
+    );
+
+    let earth = scene
+        .bodies
+        .iter()
+        .find(|b| b.air.is_some())
+        .expect("щойно порахували");
+    let air = earth.air.expect("щойно перевірили");
+    // Верхня межа стоїть над радіусом **із ассета**, а не над константою.
+    assert!(
+        (air.thickness_m(earth.radius_m) - engine::scene::Atmosphere::EARTH_THICKNESS_M).abs()
+            < 1.0,
+        "шар {} м над радіусом {}",
+        air.thickness_m(earth.radius_m),
+        earth.radius_m
+    );
+}

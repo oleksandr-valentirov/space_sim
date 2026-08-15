@@ -188,6 +188,7 @@ fn the_gpu_draws_exactly_as_many_patches_as_the_cpu_kept() {
                         radius_m: EARTH_RADIUS_M,
                         orientation: [1.0, 0.0, 0.0, 0.0],
                         tiles: TileSet::Smooth,
+                        air: None,
                     });
                     let mut encoder =
                         gpu.device

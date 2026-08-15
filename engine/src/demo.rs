@@ -146,6 +146,7 @@ fn body(radius_m: f64, tiles: TileSet) -> Body {
         radius_m,
         orientation: [1.0, 0.0, 0.0, 0.0],
         tiles,
+        air: None,
     }
 }
 
@@ -220,12 +221,14 @@ fn halo() -> Result<Scene, String> {
         radius_m: sphere::EARTH_RADIUS_M,
         orientation: [1.0, 0.0, 0.0, 0.0],
         tiles: TileSet::Smooth,
+        air: None,
     });
     scene.bodies.push(Body {
         centre: moon,
         radius_m: MOON_RADIUS_M,
         orientation: [1.0, 0.0, 0.0, 0.0],
         tiles: TileSet::Smooth,
+        air: None,
     });
     scene.polylines.push(Polyline {
         points,

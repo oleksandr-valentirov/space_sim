@@ -102,6 +102,7 @@ pub fn default_scene(camera: Camera) -> Scene {
         // лише додав би до кожного числа привід сумніватися.
         orientation: [1.0, 0.0, 0.0, 0.0],
         tiles: TileSet::Smooth,
+        air: None,
     });
     scene
 }
@@ -1956,12 +1957,14 @@ mod tests {
             radius_m: sphere::EARTH_RADIUS_M,
             orientation: [1.0, 0.0, 0.0, 0.0],
             tiles: TileSet::Smooth,
+            air: None,
         });
         scene.bodies.push(Body {
             centre: moon_centre,
             radius_m: moon_radius,
             orientation: [1.0, 0.0, 0.0, 0.0],
             tiles: TileSet::Smooth,
+            air: None,
         });
 
         let near = Frame::near_for(&scene);
