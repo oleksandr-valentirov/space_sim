@@ -371,31 +371,55 @@ pub fn run(options: &app::Options, days: f64, frames: u32) -> Result<(), String>
         }
 
         for (width, height) in [(1280u32, 720u32), (1920, 1080)] {
+            // Проріджена сцена будується під **свою** роздільність: критерій
+            // екранний, і на 1080p пів пікселя — це інша величина в метрах.
+            let viewport = view::Viewport {
+                width_px: width,
+                height_px: height,
+            };
+            let thinned_start = Instant::now();
+            let thinned = view::build_thinned(&snapshot, camera(), &[], frame, viewport);
+            let thinned_ms = thinned_start.elapsed().as_secs_f64() * 1000.0;
+            let thinned_size = SceneSize::of(&thinned, &snapshot);
+
+            println!(
+                "  {width}×{height}, проріджування: {} → {} вершин (×{:.0}), \
+                 побудова {thinned_ms:.3} мс",
+                size.vertices,
+                thinned_size.vertices,
+                size.vertices as f64 / thinned_size.vertices.max(1) as f64
+            );
+
             for (overlay, name) in [(Overlay::None, "немає"), (Overlay::Panels, "панелі")]
             {
-                let (stats, upload) = measure(
-                    &gpu,
-                    width,
-                    height,
-                    frames,
-                    &scene,
-                    &snapshot,
-                    overlay,
-                    earth_radius_m,
-                )?;
-                println!(
-                    "  {width}×{height}, інтерфейс {name}: mean {:.3} мс, p95 {:.3} мс, \
-                     запас до 60 Hz {:+.2} мс",
-                    stats.mean_ms,
-                    stats.p95_ms,
-                    stats.headroom_ms(1000.0 / 60.0)
-                );
-                println!(
-                    "    з них Lines::upload: {:.3} мс ({:.0}% кадру, {:.1} нс на вершину)",
-                    upload.mean_ms,
-                    100.0 * upload.mean_ms / stats.mean_ms.max(f64::MIN_POSITIVE),
-                    upload.mean_ms * 1.0e6 / size.vertices.max(1) as f64
-                );
+                for (scene, size, label) in [
+                    (&scene, &size, "повний"),
+                    (&thinned, &thinned_size, "проріджений"),
+                ] {
+                    let (stats, upload) = measure(
+                        &gpu,
+                        width,
+                        height,
+                        frames,
+                        scene,
+                        &snapshot,
+                        overlay,
+                        earth_radius_m,
+                    )?;
+                    println!(
+                        "  {width}×{height}, інтерфейс {name}, слід {label}: \
+                         mean {:.3} мс, p95 {:.3} мс, запас до 60 Hz {:+.2} мс",
+                        stats.mean_ms,
+                        stats.p95_ms,
+                        stats.headroom_ms(1000.0 / 60.0)
+                    );
+                    println!(
+                        "    з них Lines::upload: {:.3} мс ({:.0}% кадру, {:.1} нс на вершину)",
+                        upload.mean_ms,
+                        100.0 * upload.mean_ms / stats.mean_ms.max(f64::MIN_POSITIVE),
+                        upload.mean_ms * 1.0e6 / size.vertices.max(1) as f64
+                    );
+                }
             }
         }
     }

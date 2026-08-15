@@ -43,6 +43,18 @@ use crate::palette;
 /// маркер має лишатися маркером — того самого розміру на екрані.
 const MARKER_FRACTION: f64 = 0.01;
 
+/// Розмір кадру в пікселях — усе, що проріджуванню треба знати про вікно.
+///
+/// Не `engine::ui::Viewport`: той несе ще й масштаб інтерфейсу й позицію
+/// курсора, а тут потрібні рівно два числа. Ширина потрібна разом із висотою,
+/// бо горизонтальний кут зору виводиться зі співвідношення сторін, і без неї
+/// відхилення по `x` міряли б у інших пікселях, ніж по `y`.
+#[derive(Clone, Copy)]
+pub struct Viewport {
+    pub width_px: u32,
+    pub height_px: u32,
+}
+
 pub fn build(snapshot: &WorldSnapshot, camera: Camera) -> Scene {
     build_with_preview(snapshot, camera, &[], ViewFrame::Inertial)
 }
@@ -50,6 +62,21 @@ pub fn build(snapshot: &WorldSnapshot, camera: Camera) -> Scene {
 /// Те саме в заданому фреймі (ROADMAP-UI.md, U6a2).
 pub fn build_in(snapshot: &WorldSnapshot, camera: Camera, frame: ViewFrame) -> Scene {
     build_with_preview(snapshot, camera, &[], frame)
+}
+
+/// Те саме, але сліди проріджені за екранним критерієм (N2a).
+///
+/// Окремим входом, а не прапорцем у [`build_in`], і не заради сумісності:
+/// оракул кроку — це порівняння **двох** сцен, проріджена проти повної, тож
+/// обидві мусять будуватися однаково легко. Гра кличе цю, тести — обидві.
+pub fn build_thinned(
+    snapshot: &WorldSnapshot,
+    camera: Camera,
+    preview: &[std::sync::Arc<crate::leg::Leg>],
+    frame: ViewFrame,
+    viewport: Viewport,
+) -> Scene {
+    build_all(snapshot, camera, preview, frame, Some(viewport))
 }
 
 /// Те саме, плюс спекулятивна лінія з планувальника (ROADMAP J5).
@@ -62,6 +89,21 @@ pub fn build_with_preview(
     camera: Camera,
     preview: &[std::sync::Arc<crate::leg::Leg>],
     frame: ViewFrame,
+) -> Scene {
+    build_all(snapshot, camera, preview, frame, None)
+}
+
+/// Спільне тіло обох входів: `thin` вирішує, чи проріджувати сліди.
+///
+/// `None` означає «віддати кожен семпл», і саме таким сцену бачив увесь код до
+/// N2a — тобто це не «вимкнена оптимізація», а еталон, проти якого міряється
+/// проріджений.
+fn build_all(
+    snapshot: &WorldSnapshot,
+    camera: Camera,
+    preview: &[std::sync::Arc<crate::leg::Leg>],
+    frame: ViewFrame,
+    thin: Option<Viewport>,
 ) -> Scene {
     let mut scene = Scene::new(camera);
 
@@ -165,8 +207,8 @@ pub fn build_with_preview(
             }
         }
 
-        push_line(&mut scene, history, palette::HISTORY.scene());
-        push_line(&mut scene, future, palette::PREDICTION.scene());
+        push_trail(&mut scene, history, palette::HISTORY.scene(), thin);
+        push_trail(&mut scene, future, palette::PREDICTION.scene(), thin);
 
         // Де апарат зараз. Позиція інтерпольована (снапшот), а Земля береться
         // з найближчого семпла: за крок інтегратора вона зсувається на частки
@@ -201,9 +243,33 @@ pub fn build_with_preview(
             }
         }
     }
-    push_line(&mut scene, speculative, palette::PREVIEW.scene());
+    push_trail(&mut scene, speculative, palette::PREVIEW.scene(), thin);
 
     scene
+}
+
+/// Ламана сліду: та сама [`push_line`], але через критерій N2a, якщо просили.
+///
+/// Проріджуються **сліди**, а не всі ламані сцени. Хрест маркера — три
+/// відрізки по дві точки, і критерій над ними або нічого не зробить, або
+/// з'їсть маркер; крива нульової швидкості будується не з семплів, і в неї
+/// своя ціна (борг D11).
+fn push_trail(scene: &mut Scene, points: Vec<[f64; 3]>, colour: [f32; 4], thin: Option<Viewport>) {
+    let points = match thin {
+        None => points,
+        Some(viewport) => {
+            let kept = crate::thin::keep(
+                &points,
+                &scene.camera,
+                engine::frame::FOV_Y,
+                viewport.width_px,
+                viewport.height_px,
+                crate::thin::TOLERANCE_PX,
+            );
+            kept.into_iter().map(|index| points[index]).collect()
+        }
+    };
+    push_line(scene, points, colour);
 }
 
 /// Позиція семпла відносно Землі **тієї самої миті** — те, з чого починається
