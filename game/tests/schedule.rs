@@ -25,7 +25,7 @@ use game::schedule::{self, Kind};
 /// тож пенсія вимкнена; наслідок для маркерів записаний у ROADMAP, N3a.
 fn fly(legs: usize) -> game::snapshot::WorldSnapshot {
     let mut world = mission::world(&mission::default_asset()).expect("світ будується");
-    world.set_retirement(None);
+    world.set_history_trimming(None);
 
     for _ in 0..100_000 {
         world.step(1.0 / 60.0, 4);

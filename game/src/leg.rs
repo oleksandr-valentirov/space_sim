@@ -79,6 +79,14 @@ pub struct Trajectory {
     /// й тільки один раз, тож одного числа досить, і воно не змушує чіпати
     /// `Leg`, яку ділять снапшоти.
     retired: usize,
+
+    /// Кут, який радіус-вектор апарата обійшов навколо центрального тіла в
+    /// кожній ланці, радіани (N5a).
+    ///
+    /// Поруч із ланками, а не в них: ланку ділять снапшоти, і додавати їй поле
+    /// заради політики вікна означало б розсилати це число всім читачам, яким
+    /// воно не потрібне. Довжина завжди дорівнює `legs`.
+    swept: Vec<f64>,
 }
 
 impl Trajectory {
@@ -87,6 +95,7 @@ impl Trajectory {
             start,
             legs: Vec::new(),
             retired: 0,
+            swept: Vec::new(),
         }
     }
 
@@ -95,6 +104,7 @@ impl Trajectory {
     }
 
     pub fn push(&mut self, leg: Leg) {
+        self.swept.push(swept_angle(&leg.samples));
         self.legs.push(Arc::new(leg));
     }
 
@@ -163,6 +173,68 @@ impl Trajectory {
         dropped
     }
 
+    /// Викидає ланки, старші за `revolutions` обертів позаду курсора
+    /// (ROADMAP.md, N5a; рішення Q4).
+    ///
+    /// **Оберт міряється кутом, а не перицентром.** Сума кутів між сусідніми
+    /// геоцентричними радіус-векторами працює і на замкненій орбіті, і на
+    /// перельоті, і навколо L2 — там питання «де перицентр» доброї відповіді
+    /// не має.
+    ///
+    /// ⚠ **Двері в один бік.** Інваріант 5 забороняє інтегрувати минуле вдруге,
+    /// тож викинута ланка не повертається. Тому `start` переїжджає на `entry`
+    /// найстарішої вцілілої: без цього `state_at` і каскадний перерахунок
+    /// брали б за основу стан, якого в траєкторії вже немає.
+    ///
+    /// Повертає, скільки семплів зникло.
+    pub fn keep_revolutions(&mut self, cursor_t: f64, revolutions: f64) -> usize {
+        if self.legs.is_empty() || revolutions <= 0.0 {
+            return 0;
+        }
+
+        // Від ланки під курсором, а не від останньої: прогноз біжить на
+        // `LEAD_LEGS` уперед, і рахувати вікно від нього означало б викидати
+        // те, що гравець щойно бачив.
+        let cursor_leg = self
+            .legs
+            .partition_point(|leg| leg.t1 < cursor_t)
+            .min(self.legs.len() - 1);
+
+        let budget = revolutions * std::f64::consts::TAU;
+        let mut total = 0.0;
+        let mut oldest = cursor_leg;
+        while oldest > 0 {
+            total += self.swept[oldest];
+            if total >= budget {
+                break;
+            }
+            oldest -= 1;
+        }
+
+        if oldest == 0 {
+            return 0;
+        }
+
+        let dropped: usize = self.legs[..oldest]
+            .iter()
+            .map(|leg| leg.samples.len())
+            .sum();
+
+        self.start = self.legs[oldest].entry;
+        self.legs.drain(..oldest);
+        self.swept.drain(..oldest);
+        self.retired = self.retired.saturating_sub(oldest);
+        dropped
+    }
+
+    /// Скільки важить історія в пам'яті, байти.
+    ///
+    /// 104 байти на семпл — те саме число, яким говорить борг D7, і саме те,
+    /// яке має побачити гравець поруч із вибором вікна (N5a).
+    pub fn history_bytes(&self) -> usize {
+        self.sample_count() * 104
+    }
+
     /// Час останнього семпла, якщо він є.
     pub fn end(&self) -> Option<f64> {
         self.legs.last().map(|leg| leg.t1)
@@ -179,6 +251,7 @@ impl Trajectory {
     pub fn truncate_after(&mut self, t: f64) -> Restart {
         let keep = self.legs.partition_point(|leg| leg.t1 <= t);
         self.legs.truncate(keep);
+        self.swept.truncate(keep);
         // Каскад різав хвіст, тож пенсіонерів меншати не може — але межа
         // мусить лишитися всередині вектора.
         self.retired = self.retired.min(self.legs.len());
@@ -338,4 +411,35 @@ fn hermite(a: &State, b: &State, t: f64) -> State {
         },
         t,
     }
+}
+
+/// Кут, який радіус-вектор обійшов навколо центрального тіла за ці семпли.
+///
+/// Сума кутів між сусідніми векторами, через `atan2` від довжини векторного
+/// добутку й скалярного: біля нуля вона точна, тоді як `acos` там втрачає
+/// половину значущих цифр. Це політика сховища, не інтегратор, тож `libm`
+/// тут дозволена (інваріант 3 говорить про цикл інтегрування).
+fn swept_angle(samples: &[Sample]) -> f64 {
+    let geocentric = |s: &Sample| {
+        [
+            s.state.r.x - s.earth[0],
+            s.state.r.y - s.earth[1],
+            s.state.r.z - s.earth[2],
+        ]
+    };
+
+    let mut total = 0.0;
+    for pair in samples.windows(2) {
+        let a = geocentric(&pair[0]);
+        let b = geocentric(&pair[1]);
+        let cross = [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ];
+        let sin = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+        let cos = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        total += sin.atan2(cos);
+    }
+    total
 }

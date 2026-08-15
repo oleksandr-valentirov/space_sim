@@ -63,7 +63,7 @@ fn three_burns(start_t: f64) -> Plan {
 /// `tests/retire.rs`.
 fn world_with(plan: Plan) -> World {
     let mut world = mission::world(&mission::default_asset()).expect("світ будується");
-    world.set_retirement(None);
+    world.set_history_trimming(None);
     world
         .commit_plan(VesselId(0), plan)
         .expect("план у майбутньому");
@@ -251,7 +251,7 @@ fn editing_a_manoeuvre_costs_only_the_tail() {
 
     let mut world = mission::world(&mission::default_asset()).expect("світ будується");
     // Без пенсії — з тієї ж причини, що й у `world_with`.
-    world.set_retirement(None);
+    world.set_history_trimming(None);
     world
         .commit_plan(VesselId(0), plan.clone())
         .expect("план у майбутньому");

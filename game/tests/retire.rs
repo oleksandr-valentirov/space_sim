@@ -1,4 +1,4 @@
-//! Пенсія ланок: що вона зобов'язана лишити недоторканним (ROADMAP.md, N3a).
+//! Що робить гра з минулим: вікно в обертах (N5a) і пенсія ланок (N3a).
 //!
 //! Пенсія викидає семпли назавжди (інваріант 5), тож перевіряти треба не «чи
 //! стало менше» — це видно й так, — а **що саме вціліло**. Три речі на ланку
@@ -13,7 +13,7 @@ const DAYS: f64 = 60.0;
 
 fn flown(retire: bool) -> World {
     let mut world = mission::world(&mission::default_asset()).expect("світ будується");
-    world.set_retirement(if retire { Some(RAW_LEGS_BEHIND) } else { None });
+    world.set_history_trimming(if retire { Some(RAW_LEGS_BEHIND) } else { None });
     world.run_to_day(mission::start().t + DAYS * 86400.0, 1.0, 8);
     world
 }
@@ -129,4 +129,64 @@ fn every_leg_keeps_the_three_things_the_save_stands_on() {
             "ланка {index}: останній семпл, r.x"
         );
     }
+}
+
+/// Головне число N5a: історія виходить на полицю й **перестає рости**.
+///
+/// ⚠ **Фікстура тут — станція, і це не деталь.** Перша версія тесту брала
+/// halo 1151 і була зелена з хибної причини: її геоцентричний радіус-вектор
+/// обходить коло раз на місячний місяць, тож двадцять обертів — це двадцять
+/// місяців, більше за всю фікстуру. Полиця, яку тест бачив, була **кінцем
+/// місії**, а не вікном (1128 семплів на 75-й добі й стільки ж на 90-й, при
+/// десяти ланках із десяти можливих).
+///
+/// Станція на низькій орбіті робить оберт за півтори години, тож двадцять
+/// обертів — доба з гаком, і вікно справді ріже. Оракул — той самий прогін
+/// без різання: без нього історія росте, з ним виходить на полицю.
+#[test]
+fn the_history_stops_growing_once_the_window_is_full() {
+    let counts = |trim: bool| {
+        let mut world = mission::fleet(&mission::default_asset(), 1).expect("флот будується");
+        world.set_history_trimming(if trim { Some(RAW_LEGS_BEHIND) } else { None });
+        let start = mission::start().t;
+
+        let mut out = Vec::new();
+        for days in [20.0, 40.0, 80.0] {
+            world.run_to_day(start + days * 86400.0, 1.0, 8);
+            // Апарат 1 — станція; нульовий це halo, у якого оберт місячний.
+            out.push(world.vessels()[1].trajectory.sample_count());
+        }
+        out
+    };
+
+    let windowed = counts(true);
+    let whole = counts(false);
+
+    // Без вікна історія росте — інакше перевірка нижче нічого не доводила б.
+    assert!(
+        whole[2] > whole[0] * 2,
+        "без вікна історія мала рости: {whole:?}"
+    );
+
+    // З вікном — полиця: подвоєння прогону не додає навіть ланки.
+    let slack = game::world::LEG;
+    assert!(
+        windowed[2] <= windowed[1] + slack,
+        "історія росла далі: {windowed:?}"
+    );
+    assert!(
+        windowed[2] * 4 < whole[2],
+        "вікно зрізало замало: {windowed:?} проти {whole:?}"
+    );
+}
+
+/// Пам'ять названа тим самим числом, яким говорить борг.
+///
+/// Не окремий підрахунок у тесті: гравець побачить саме `history_bytes`, і
+/// розійтися ці два числа не мають права.
+#[test]
+fn the_predicted_size_is_the_sample_count_times_the_debts_number() {
+    let world = flown(true);
+    let trajectory = &world.vessels()[0].trajectory;
+    assert_eq!(trajectory.history_bytes(), trajectory.sample_count() * 104);
 }

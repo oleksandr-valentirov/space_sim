@@ -33,7 +33,7 @@ fn samples(snapshot: &WorldSnapshot) -> Vec<game::leg::Sample> {
 /// те, що лишилось; звіряти з нею означало б звіряти сховище, а не фізику.
 fn finished_world() -> World {
     let mut world = mission::world(&mission::default_asset()).expect("світ будується");
-    world.set_retirement(None);
+    world.set_history_trimming(None);
     world.run_to_end(1.0, 8);
     world
 }

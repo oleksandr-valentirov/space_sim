@@ -53,7 +53,7 @@ fn thinned(
 /// проріджувань, тож пенсія вимкнена; їхнє накладання — число N3a в ROADMAP.
 fn flown() -> game::snapshot::WorldSnapshot {
     let mut world = mission::fleet(&mission::default_asset(), STATIONS).expect("флот будується");
-    world.set_retirement(None);
+    world.set_history_trimming(None);
     world.run_to_day(mission::start().t + DAYS * 86400.0, 1.0, 8);
     world.snapshot()
 }

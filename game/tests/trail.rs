@@ -43,7 +43,7 @@ fn the_rotating_frame_does_not_move_a_sample_that_already_happened() {
     // Без пенсії ланок: вона змінює **самі семпли** старої історії (N3a), тож
     // із нею тест питав би про дві різні речі одразу. Те, що він на неї падає,
     // до речі, і є доказом, що пенсія справді двері в один бік.
-    world.set_retirement(None);
+    world.set_history_trimming(None);
 
     world.run_to_day(start + 5.0 * 86400.0, 1.0, 8);
     let early = view::build_in(&world.snapshot(), camera(), ViewFrame::Rotating);

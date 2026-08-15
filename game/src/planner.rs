@@ -275,7 +275,7 @@ fn compute(
     };
     // Спекулятивний світ живе кілька ланок і зникає — пенсія тут устигла б
     // хіба заплатити за прохід (N3a).
-    world.set_retirement(None);
+    world.set_history_trimming(None);
     let vessel = world.add_planned_vessel(
         "preview",
         request.from,
