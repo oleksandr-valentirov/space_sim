@@ -40,6 +40,7 @@ pub mod mission;
 pub mod node;
 pub mod plan;
 pub mod planner;
+pub mod porkchop;
 pub mod save;
 pub mod schedule;
 pub mod sim;

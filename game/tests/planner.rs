@@ -16,7 +16,7 @@ use game::clock::Stall;
 use game::leg::{restart_at, Leg};
 use game::mission;
 use game::plan::{Frame, Manoeuvre, Plan};
-use game::planner::{Planner, Preview, Request};
+use game::planner::{Planner, Preview, PreviewRequest, Request};
 use game::sim::{Command, Event, Sim};
 use game::world::VesselId;
 
@@ -87,7 +87,7 @@ fn a_preview_is_bit_identical_to_the_flight_that_follows() {
 
     let plan = burn_at(burn_t);
     let planner = Planner::spawn(sim.ephemeris(), mission::config()).expect("нитка планувальника");
-    planner.request(Request {
+    planner.request(Request::Preview(PreviewRequest {
         id: 1,
         vessel: VesselId(0),
         from: restart.state,
@@ -95,7 +95,7 @@ fn a_preview_is_bit_identical_to_the_flight_that_follows() {
         plan: plan.clone(),
         params: None,
         horizon_end: vessel.horizon_end,
-    });
+    }));
 
     let mut preview: Option<Preview> = None;
     wait_until("прев'ю", || {
@@ -240,7 +240,7 @@ fn starting_a_preview_from_the_wrong_step_gives_a_different_line() {
     let planner = Planner::spawn(sim.ephemeris(), mission::config()).expect("планувальник");
 
     let ask = |id: u64, step: f64| -> Preview {
-        planner.request(Request {
+        planner.request(Request::Preview(PreviewRequest {
             id,
             vessel: VesselId(0),
             from: restart.state,
@@ -248,7 +248,7 @@ fn starting_a_preview_from_the_wrong_step_gives_a_different_line() {
             plan: plan.clone(),
             params: None,
             horizon_end: vessel.horizon_end,
-        });
+        }));
         let mut got = None;
         wait_until("прев'ю", || {
             got = planner.latest();
@@ -304,7 +304,7 @@ fn only_the_latest_request_is_answered() {
             dv: [-(id as f64), 0.0, 0.0],
             frame: Frame::Inertial,
         });
-        planner.request(Request {
+        planner.request(Request::Preview(PreviewRequest {
             id,
             vessel: VesselId(0),
             from: restart.state,
@@ -312,7 +312,7 @@ fn only_the_latest_request_is_answered() {
             plan,
             params: None,
             horizon_end: vessel.horizon_end,
-        });
+        }));
     }
 
     let mut last = None;
@@ -370,7 +370,7 @@ fn the_request_that_cancelled_the_work_is_answered_too() {
             dv: [-(id as f64), 0.0, 0.0],
             frame: Frame::Inertial,
         });
-        planner.request(Request {
+        planner.request(Request::Preview(PreviewRequest {
             id,
             vessel: VesselId(0),
             from: restart.state,
@@ -378,7 +378,7 @@ fn the_request_that_cancelled_the_work_is_answered_too() {
             plan,
             params: None,
             horizon_end: vessel.horizon_end,
-        });
+        }));
     };
 
     ask(1);

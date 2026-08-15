@@ -36,6 +36,7 @@ use crossbeam_channel::{Receiver, Sender, TryRecvError};
 
 use crate::leg::Leg;
 use crate::plan::Plan;
+use crate::porkchop::{self, Grid, GridRequest};
 use crate::world::{VesselId, World};
 
 /// Скільки ланок рахувати між перевірками каналу.
@@ -44,13 +45,29 @@ use crate::world::{VesselId, World};
 /// б відповідати із затримкою в цілу ланку без жодного виграшу.
 const LEGS_PER_CHECK: usize = 1;
 
+/// Про що просять нитку.
+///
+/// Два види роботи, **один канал**, і саме тому правило скасування лишається
+/// одне: новіший запит скасовує те, що рахується зараз, хоч би якого воно
+/// було виду. Наслідок названий чесно — попросити сітку й тут-таки смикнути
+/// вузол означає лишитися без сітки. Це те саме «доходить рівно останнє», що
+/// й для прев'ю, а не окремий випадок; два канали натомість вимагали б
+/// вирішувати, який вид роботи головніший, і відповіді на це в нас немає.
+#[derive(Debug, Clone)]
+pub enum Request {
+    /// Показати, що буде, якщо летіти цим планом.
+    Preview(PreviewRequest),
+    /// Порахувати сітку вікон перельоту (ROADMAP-UI.md, U5b).
+    Grid(GridRequest),
+}
+
 /// Що порахувати.
 ///
 /// `from` і `step` — точка перезапуску, порахована [`crate::leg::restart_at`]
 /// зі снапшоту. Саме з неї `Sim` перерахує хвіст, коли план закомітять, — і
 /// саме тому прев'ю мусить починатися звідти ж, а не з «де апарат зараз».
 #[derive(Debug, Clone)]
-pub struct Request {
+pub struct PreviewRequest {
     pub id: u64,
     pub vessel: VesselId,
     pub from: State,
@@ -77,6 +94,11 @@ pub struct Planner {
     /// **знищити**, а не просто перестати ним користуватися.
     requests: Option<Sender<Request>>,
     previews: Receiver<Preview>,
+    /// Відповіді другого виду. Окремий канал, хоча запити йдуть одним:
+    /// **порядок важить лише для запитів** — саме він вирішує, що скасувати.
+    /// Відповіді ж читає різний код у різних місцях кадру, і спільна черга
+    /// змусила б кожного читача перебирати чужі.
+    grids: Receiver<Grid>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -89,15 +111,17 @@ impl Planner {
     pub fn spawn(eph: Arc<Ephemeris>, cfg: PropConfig) -> Result<Planner, String> {
         let (requests, request_rx) = crossbeam_channel::unbounded::<Request>();
         let (preview_tx, previews) = crossbeam_channel::unbounded();
+        let (grid_tx, grids) = crossbeam_channel::unbounded();
 
         let thread = std::thread::Builder::new()
             .name("planner".to_string())
-            .spawn(move || run(&eph, cfg, &request_rx, &preview_tx))
+            .spawn(move || run(&eph, cfg, &request_rx, &preview_tx, &grid_tx))
             .map_err(|e| format!("нитка планувальника не запустилася: {e}"))?;
 
         Ok(Planner {
             requests: Some(requests),
             previews,
+            grids,
             thread: Some(thread),
         })
     }
@@ -115,6 +139,11 @@ impl Planner {
     pub fn latest(&self) -> Option<Preview> {
         self.previews.try_iter().last()
     }
+
+    /// Найсвіжіша сітка, якщо вона є. Ті самі міркування, що в [`Self::latest`].
+    pub fn latest_grid(&self) -> Option<Grid> {
+        self.grids.try_iter().last()
+    }
 }
 
 impl Drop for Planner {
@@ -131,12 +160,14 @@ impl Drop for Planner {
 
 /// Чим скінчилася одна одиниця роботи.
 ///
-/// Чотири стани, а не `Option`, рівно тому, що «скасовано» мусить **нести
-/// той запит, який скасував**: інакше він губиться, і губиться саме
-/// найновіший — див. [`Outcome::Cancelled`].
+/// Не `Option`, рівно тому, що «скасовано» мусить **нести той запит, який
+/// скасував**: інакше він губиться, і губиться саме найновіший — див.
+/// [`Outcome::Cancelled`].
 enum Outcome {
-    /// Порахували.
+    /// Порахували прогноз.
     Ready(Preview),
+    /// Порахували сітку.
+    Sheet(Grid),
     /// Прогін не почався (світ не побудувався). Відповіді не буде, але й
     /// чекати нема на що — це не скасування.
     Nothing,
@@ -157,6 +188,7 @@ fn run(
     cfg: PropConfig,
     requests: &Receiver<Request>,
     previews: &Sender<Preview>,
+    grids: &Sender<Grid>,
 ) {
     let Ok(first) = requests.recv() else {
         return;
@@ -171,9 +203,20 @@ fn run(
             request = newer;
         }
 
-        match compute(eph, cfg, &request, requests) {
+        let outcome = match &request {
+            Request::Preview(ask) => compute(eph, cfg, ask, requests),
+            Request::Grid(ask) => sweep(eph, ask, requests),
+        };
+
+        match outcome {
             Outcome::Ready(preview) => {
                 if previews.send(preview).is_err() {
+                    return;
+                }
+                pending = requests.recv().ok();
+            }
+            Outcome::Sheet(grid) => {
+                if grids.send(grid).is_err() {
                     return;
                 }
                 pending = requests.recv().ok();
@@ -186,11 +229,42 @@ fn run(
     }
 }
 
+/// Рахує сітку вікон, кидаючи роботу між рядками.
+///
+/// Рядок — одиниця роботи тут, як ланка для прогнозу, і причина та сама:
+/// 0.24 мс проти 22 мс на всю сітку (вимір — `crate::porkchop`). Дрібніше
+/// різати нема сенсу, грубіше — означало б чекати на сітку, яку вже ніхто не
+/// питає.
+fn sweep(eph: &Arc<Ephemeris>, request: &GridRequest, requests: &Receiver<Request>) -> Outcome {
+    if request.t1.is_empty() || request.tof.is_empty() {
+        // Порожня вісь — це не сітка з нуля клітинок, а запит ні про що.
+        // Малювати тут нічого, і мовчання чесніше за порожній плот.
+        return Outcome::Nothing;
+    }
+
+    let mut cells = Vec::with_capacity(request.t1.len() * request.tof.len());
+    for i in 0..request.t1.len() {
+        match requests.try_recv() {
+            Ok(newer) => return Outcome::Cancelled(newer),
+            Err(TryRecvError::Disconnected) => return Outcome::Gone,
+            Err(TryRecvError::Empty) => {}
+        }
+        cells.extend(porkchop::row(eph, request, i));
+    }
+
+    Outcome::Sheet(Grid {
+        id: request.id,
+        t1: request.t1.clone(),
+        tof: request.tof.clone(),
+        cells,
+    })
+}
+
 /// Рахує прогноз, кидаючи роботу, щойно прилетів новіший запит.
 fn compute(
     eph: &Arc<Ephemeris>,
     cfg: PropConfig,
-    request: &Request,
+    request: &PreviewRequest,
     requests: &Receiver<Request>,
 ) -> Outcome {
     // Звичайнісінький світ. Той самий код, той самий `step`, той самий

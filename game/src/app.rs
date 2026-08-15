@@ -35,7 +35,7 @@ use crate::leg::restart_at;
 use crate::mission;
 use crate::node;
 use crate::plan::Manoeuvre;
-use crate::planner::{Planner, Preview, Request};
+use crate::planner::{Planner, Preview, PreviewRequest, Request};
 use crate::save::{self, Save};
 use crate::schedule;
 use crate::sim::{Command, Event, Sim};
@@ -428,7 +428,7 @@ impl State {
         let restart = restart_at(&vessel.legs, vessel.start, burn_t);
 
         self.next_request += 1;
-        self.planner.request(Request {
+        self.planner.request(Request::Preview(PreviewRequest {
             id: self.next_request,
             vessel: vessel.id,
             from: restart.state,
@@ -436,7 +436,7 @@ impl State {
             plan,
             horizon_end: vessel.horizon_end,
             params: vessel.params,
-        });
+        }));
     }
 
     /// Що зробити з тим, що попросила панель плану (ROADMAP-UI.md, U4a).
@@ -467,7 +467,7 @@ impl State {
                 let restart = restart_at(&vessel.legs, vessel.start, first.t);
 
                 self.next_request += 1;
-                self.planner.request(Request {
+                self.planner.request(Request::Preview(PreviewRequest {
                     id: self.next_request,
                     vessel: vessel.id,
                     from: restart.state,
@@ -475,7 +475,7 @@ impl State {
                     plan,
                     horizon_end: vessel.horizon_end,
                     params: vessel.params,
-                });
+                }));
             }
             hud::PlanAction::Commit(plan) => {
                 self.notice = None;
