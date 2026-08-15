@@ -255,8 +255,7 @@ fn the_tolerance_holds_wherever_the_camera_sits() {
                         for b in 0..=SIDE {
                             let p = patch.vertex(a, b, radius);
                             let v = [p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]];
-                            nearest =
-                                nearest.min((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt());
+                            nearest = nearest.min((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt());
                         }
                     }
                     let px = lod::error_m(patch, radius) / nearest.max(1.0) * focal;
