@@ -167,7 +167,7 @@ fn the_gpu_draws_exactly_as_many_patches_as_the_cpu_kept() {
 
                     // Шлях CPU: той самий вибір рівня, той самий відбір.
                     let body = lod::Body::still([0.0, 0.0, 0.0], EARTH_RADIUS_M);
-                    let selection = lod::select(&body, &camera, focal);
+                    let selection = lod::select(&body, &camera, focal, None);
                     let occluder =
                         cull::Body::smooth([0.0, 0.0, 0.0], EARTH_RADIUS_M, body.rotation);
                     let mut visibility = cull::horizon(&selection, &occluder, &camera);

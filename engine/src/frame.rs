@@ -1366,6 +1366,16 @@ impl Planet {
             // з процедурною деталлю (R7c), якій треба, куди сідати; передумова
             // ж мусила бути закрита окремо й з власним оракулом.
             let ceiling = lod::MAX_LEVEL;
+            // **Рельєф входить у вибір рівня (R7c).** Без нього критерій
+            // питає лише про стрілу прогину сфери, а сфера зблизька пласка:
+            // на кілометрі над Місяцем клітинка виходила 2665 м, тобто 1662
+            // пікселі завширшки, і в неї не влазив ні шум, ні сам DEM (вузол
+            // 5330 м). Тіло без тайлів лишається гладким і рахується як
+            // раніше — бітово.
+            let terrain = match body.tiles {
+                scene::TileSet::Loaded(id) => self.terrains.get(id.0).map(|slot| &slot.data),
+                scene::TileSet::Smooth => None,
+            };
             let selection = lod::select(
                 &lod::Body {
                     centre: body.centre,
@@ -1375,6 +1385,7 @@ impl Planet {
                 },
                 camera,
                 focal,
+                terrain,
             );
             needed += selection.patches.len();
             self.selections.push(selection);

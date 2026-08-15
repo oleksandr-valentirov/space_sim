@@ -195,6 +195,7 @@ fn an_unstitched_joint_would_be_thinner_than_a_pixel() {
         &LodBody::still([0.0, 0.0, 0.0], radius),
         &scene.camera,
         focal,
+        None,
     );
 
     let node = |patch: &engine::cubesphere::Patch, edge: Edge, k: usize| match edge {

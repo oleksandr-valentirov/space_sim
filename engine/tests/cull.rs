@@ -138,7 +138,7 @@ fn the_horizon_takes_away_most_of_the_planet() {
 
     for altitude in [1.0e5, 3.0e5, 2.0e6, 1.0e7, 4.0e8] {
         let camera = above(altitude);
-        let selection = lod::select(&earth_lod(), &camera, focal);
+        let selection = lod::select(&earth_lod(), &camera, focal, None);
         let visibility = cull::horizon(&selection, &earth(), &camera);
         let all = selection.patches.len();
         let drawn = visibility.drawn();
@@ -176,7 +176,7 @@ fn nothing_visible_is_ever_thrown_away() {
     let altitude = 3.0e5;
     let camera = above(altitude);
     let eye = camera.position();
-    let selection = lod::select(&earth_lod(), &camera, focal);
+    let selection = lod::select(&earth_lod(), &camera, focal, None);
     let visibility = cull::horizon(&selection, &earth(), &camera);
 
     // Вузол видно, якщо відрізок до нього не заходить у сферу. Для опуклого
@@ -236,7 +236,7 @@ fn the_frustum_adds_less_than_the_horizon_took() {
             ("надир", above(altitude)),
             ("уздовж лімба", along_limb(altitude)),
         ] {
-            let selection = lod::select(&earth_lod(), &camera, focal);
+            let selection = lod::select(&earth_lod(), &camera, focal, None);
             let mut visibility = cull::horizon(&selection, &earth(), &camera);
             cull::frustum(
                 &mut visibility,
@@ -304,7 +304,7 @@ fn the_frustum_never_drops_what_lands_in_the_frame() {
 
     for altitude in [3.0e5, 2.0e6] {
         let camera = along_limb(altitude);
-        let selection = lod::select(&earth_lod(), &camera, focal);
+        let selection = lod::select(&earth_lod(), &camera, focal, None);
         let mut visibility = cull::horizon(&selection, &earth(), &camera);
         let limb_only: Vec<bool> = visibility.visible.clone();
         cull::frustum(
@@ -379,7 +379,7 @@ fn turning_the_body_turns_the_set_with_it() {
     let turned_camera = Camera::look_at(eye, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
 
     let run = |body_lod: lod::Body, occluder: Body, camera: &Camera| {
-        let selection = lod::select(&body_lod, camera, focal);
+        let selection = lod::select(&body_lod, camera, focal, None);
         let mut visibility = cull::horizon(&selection, &occluder, camera);
         cull::frustum(
             &mut visibility,

@@ -35,6 +35,7 @@
 
 use crate::camera::Camera;
 use crate::cubesphere::{EdgeMask, Patch, EDGES, FACES, SIDE};
+use crate::tiles::Terrain;
 use std::collections::HashSet;
 
 /// Скільки пікселів геометричної похибки терпимо.
@@ -117,6 +118,36 @@ pub fn error_m(patch: &Patch, radius: f64) -> f64 {
     worst * radius
 }
 
+/// Найдовша клітинка патча в метрах — хорда між сусідніми вузлами.
+///
+/// Той самий обхід, що в [`error_m`], і з тієї ж причини: найбільші клітинки
+/// лежать біля центральної лінії грані.
+pub fn cell_m(patch: &Patch, radius: f64) -> f64 {
+    let n = Patch::face_nodes(patch.level);
+    let centre = n / 2;
+    let local = |index: u32| -> usize {
+        let first = index as usize * SIDE;
+        centre.clamp(first, first + SIDE) - first
+    };
+    let a_at = local(patch.i);
+    let b_at = local(patch.j);
+
+    let mut worst: f64 = 0.0;
+    for k in 0..SIDE {
+        worst = worst.max(chord(patch, k, b_at, k + 1, b_at));
+        worst = worst.max(chord(patch, a_at, k, a_at, k + 1));
+    }
+    worst * radius
+}
+
+/// Довжина ребра однієї клітинки на одиничній сфері.
+fn chord(patch: &Patch, a0: usize, b0: usize, a1: usize, b1: usize) -> f64 {
+    let p = patch.vertex(a0, b0, 1.0);
+    let q = patch.vertex(a1, b1, 1.0);
+    let d = [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+}
+
 /// Стріла прогину однієї клітинки на одиничній сфері.
 fn sagitta(patch: &Patch, a0: usize, b0: usize, a1: usize, b1: usize) -> f64 {
     let p = patch.vertex(a0, b0, 1.0);
@@ -154,7 +185,13 @@ fn sagitta(patch: &Patch, a0: usize, b0: usize, a1: usize, b1: usize) -> f64 {
 ///   яка на висоті 1 м втратила б у скороченні дванадцять значущих цифр;
 /// - **око збоку** — найближча точка на краю шапки, під кутом `β − α`, і
 ///   `cos(β − α)` розкладається в ті самі чотири множення, що в лімбі.
-pub fn error_px(patch: &Patch, body: &Body, eye_in_body: [f64; 3], focal_px: f64) -> f64 {
+pub fn error_px(
+    patch: &Patch,
+    body: &Body,
+    eye_in_body: [f64; 3],
+    focal_px: f64,
+    relief_slope: f64,
+) -> f64 {
     let e = eye_in_body;
     let d = (e[0] * e[0] + e[1] * e[1] + e[2] * e[2]).sqrt();
     let r = body.radius_m;
@@ -177,7 +214,29 @@ pub fn error_px(patch: &Patch, body: &Body, eye_in_body: [f64; 3], focal_px: f64
         (d * d + r * r - 2.0 * d * r * cos_gap).max(0.0).sqrt()
     };
 
-    error_m(patch, r) / nearest.max(1.0) * focal_px
+    // **Дві незалежні похибки, і сфера — лише одна з них** (R7c).
+    //
+    // Стріла прогину каже, наскільки пласка клітинка відходить від **сфери**,
+    // і зблизька вона нікчемна: сфера локально пласка. Виміряно — на кілометрі
+    // над Місяцем критерій зупиняється на клітинці 2665 м, тобто 1662 пікселі
+    // завширшки. У таку сітку не влазить ні процедурна деталь, ні сам DEM,
+    // вузол якого там 5330 м. Тобто критерій, який дивиться лише на сферу,
+    // мовчки забороняє рельєф як такий.
+    //
+    // Друга похибка — **рельєф**: пласка клітинка на схилі з нахилом `s`
+    // відходить від поверхні на величину порядку `s · L`. Вона падає з рівнем
+    // **лінійно**, а стріла прогину — квадратично, тож зблизька вирішує саме
+    // вона, і саме вона доводить поділ до тих рівнів, де деталь видно.
+    //
+    // Максимум, а не сума: джерела незалежні, більше з двох і задає рівень, а
+    // сума лише подвоїла б відповідь там, де вони збігаються.
+    let sphere = error_m(patch, r);
+    let relief = if relief_slope > 0.0 {
+        relief_slope * cell_m(patch, r)
+    } else {
+        0.0
+    };
+    sphere.max(relief) / nearest.max(1.0) * focal_px
 }
 
 /// Тіло, для якого вибирається рівень.
@@ -247,7 +306,7 @@ impl Body {
 /// невирівняний набір не годиться ні на що, крім тріщин, а маски без
 /// вирівнювання довелося б рахувати на різницю в два рівні, якої зшивання
 /// не вміє. Хто просить набір — просить набір, що малюється.
-pub fn select(body: &Body, camera: &Camera, focal_px: f64) -> Selection {
+pub fn select(body: &Body, camera: &Camera, focal_px: f64, terrain: Option<&Terrain>) -> Selection {
     let mut out = Selection {
         patches: Vec::new(),
         masks: Vec::new(),
@@ -266,6 +325,7 @@ pub fn select(body: &Body, camera: &Camera, focal_px: f64) -> Selection {
             body,
             eye,
             focal_px,
+            terrain,
             &mut out,
         );
     }
@@ -302,18 +362,29 @@ fn balance(selection: &mut Selection) {
             continue;
         }
         for edge in EDGES {
-            let cell = patch.neighbour(edge).patch;
-            let Some(coarse) = covering(&leaves, cell) else {
-                // Сусідній бік дрібніший за нас — це його турбота, не наша.
-                continue;
-            };
-            if patch.level - coarse.level < 2 {
-                continue;
-            }
-            leaves.remove(&coarse);
-            for child in coarse.children() {
-                leaves.insert(child);
-                queue.push(child);
+            // **Цикл, а не одна перевірка.** Один поділ зменшує різницю на
+            // один рівень, а вона буває й більшою: критерій зі стрілою прогину
+            // міняється плавно, тож різниця в три рівні на сусідніх патчах
+            // просто не траплялась — а з рельєфом (R7c) нахил між сусідами
+            // стрибає, і вона з'явилась першим же кадром. Поділений бік тоді
+            // лишався на два рівні грубішим, `stitching` бачив різницю 2 і
+            // валив `debug_assert`. Діти поділеного стають до черги й самі, але
+            // це їм не допомагає: їхній сусід ДРІБНІШИЙ за них, тобто з їхнього
+            // боку все гаразд, і питати мусить той самий бік, що й почав.
+            loop {
+                let cell = patch.neighbour(edge).patch;
+                let Some(coarse) = covering(&leaves, cell) else {
+                    // Сусідній бік дрібніший за нас — це його турбота, не наша.
+                    break;
+                };
+                if patch.level - coarse.level < 2 {
+                    break;
+                }
+                leaves.remove(&coarse);
+                for child in coarse.children() {
+                    leaves.insert(child);
+                    queue.push(child);
+                }
             }
         }
     }
@@ -390,8 +461,23 @@ fn stitching(patches: &[Patch]) -> Vec<EdgeMask> {
         .collect()
 }
 
-fn subdivide(patch: Patch, body: &Body, eye: [f64; 3], focal: f64, out: &mut Selection) {
-    if error_px(&patch, body, eye, focal) <= TOLERANCE_PX {
+fn subdivide(
+    patch: Patch,
+    body: &Body,
+    eye: [f64; 3],
+    focal: f64,
+    terrain: Option<&Terrain>,
+    out: &mut Selection,
+) {
+    // Нахил **місцевий**, а не одне число на тіло: рівнина не має платити
+    // вершинами за те, що десь на тілі є гори. Береться в центрі патча —
+    // одна вибірка на патч, і та сама з обох боків спільного ребра, бо
+    // `slope_at` там бітово однаковий (R7c).
+    let relief_slope = match terrain {
+        Some(terrain) => terrain.slope_at(&patch, SIDE / 2, SIDE / 2),
+        None => 0.0,
+    };
+    if error_px(&patch, body, eye, focal, relief_slope) <= TOLERANCE_PX {
         out.patches.push(patch);
         return;
     }
@@ -412,7 +498,8 @@ fn subdivide(patch: Patch, body: &Body, eye: [f64; 3], focal: f64, out: &mut Sel
             body,
             eye,
             focal,
-            out,
+            terrain,
+            &mut *out,
         );
     }
 }

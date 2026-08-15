@@ -50,7 +50,7 @@ fn coming_closer_never_lowers_the_level_of_a_point() {
     for step in 0..=steps {
         let t = f64::from(step) / f64::from(steps);
         let altitude = far * (near / far).powf(t);
-        let selection = lod::select(&earth(), &above(altitude), focal);
+        let selection = lod::select(&earth(), &above(altitude), focal, None);
 
         for (index, &(u, v)) in probes.iter().enumerate() {
             let level = lod::level_at(&selection, 0, u, v)
@@ -84,8 +84,8 @@ fn coming_closer_never_lowers_the_level_of_a_point() {
 fn the_same_camera_gives_the_same_patches() {
     let focal = lod::focal_px(FOV_Y, HEIGHT_PX);
     for altitude in [3.0e5, 2.0e6, 4.0e8] {
-        let first = lod::select(&earth(), &above(altitude), focal);
-        let second = lod::select(&earth(), &above(altitude), focal);
+        let first = lod::select(&earth(), &above(altitude), focal, None);
+        let second = lod::select(&earth(), &above(altitude), focal, None);
         assert_eq!(
             first.patches, second.patches,
             "на висоті {altitude:.1e} м два виклики дали різні набори"
@@ -104,7 +104,7 @@ fn the_count_stays_where_it_can_be_afforded() {
 
     for (name, altitude) in [("низька орбіта", 3.0e5), ("відстань до Місяця", 4.0e8)]
     {
-        let selection = lod::select(&earth(), &above(altitude), focal);
+        let selection = lod::select(&earth(), &above(altitude), focal, None);
         let levels: Vec<u32> = {
             let mut l: Vec<u32> = selection.patches.iter().map(|p| p.level).collect();
             l.sort_unstable();
@@ -152,7 +152,7 @@ fn the_count_stays_where_it_can_be_afforded() {
 fn a_taller_frame_needs_finer_patches_from_the_same_point() {
     let mut counts = Vec::new();
     for height in [720.0, 1440.0, 2880.0, 5760.0] {
-        let selection = lod::select(&earth(), &above(3.0e5), lod::focal_px(FOV_Y, height));
+        let selection = lod::select(&earth(), &above(3.0e5), lod::focal_px(FOV_Y, height), None);
         println!("  {height} px заввишки: {} патчів", selection.patches.len());
         counts.push(selection.patches.len());
     }
@@ -182,7 +182,7 @@ fn a_taller_frame_needs_finer_patches_from_the_same_point() {
 #[test]
 fn from_far_away_the_planet_is_six_faces() {
     let focal = lod::focal_px(FOV_Y, HEIGHT_PX);
-    let selection = lod::select(&earth(), &above(4.0e8), focal);
+    let selection = lod::select(&earth(), &above(4.0e8), focal, None);
     assert_eq!(
         selection.patches.len(),
         6,
@@ -238,7 +238,7 @@ fn the_tolerance_holds_wherever_the_camera_sits() {
                 let d = radius + altitude;
                 let eye = [u[0] * d, u[1] * d, u[2] * d];
                 let camera = Camera::look_at(eye, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
-                let selection = lod::select(&body, &camera, focal);
+                let selection = lod::select(&body, &camera, focal, None);
                 patches = patches.max(selection.patches.len());
 
                 for patch in &selection.patches {
@@ -309,7 +309,7 @@ fn no_neighbour_in_the_set_is_two_levels_away() {
     let mut added = 0;
 
     for altitude in [1.0e5, 3.0e5, 1.0e6, 1.0e7, 4.0e8] {
-        let selection = lod::select(&earth(), &above(altitude), focal);
+        let selection = lod::select(&earth(), &above(altitude), focal, None);
         let leaves: std::collections::HashSet<Patch> = selection.patches.iter().copied().collect();
 
         for patch in &selection.patches {
@@ -372,7 +372,7 @@ fn the_stitched_surface_has_no_edge_without_a_pair() {
     let focal = lod::focal_px(FOV_Y, HEIGHT_PX);
 
     for altitude in [1.0e5, 3.0e5, 2.0e6] {
-        let selection = lod::select(&earth(), &above(altitude), focal);
+        let selection = lod::select(&earth(), &above(altitude), focal, None);
 
         // Позиція → номер. Бітова рівність стає рівністю номерів, і далі
         // ребра рахуються цілими числами.
