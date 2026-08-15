@@ -11,6 +11,7 @@ members = [
     "core-rs",
     "engine",
     "game",
+    "tools/dem-cook",
     "tools/gpu-probe",
     "tools/slang-probe",
 ]
