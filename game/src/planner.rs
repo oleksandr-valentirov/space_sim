@@ -273,6 +273,9 @@ fn compute(
     let Ok(mut world) = World::with_ephemeris(eph.clone(), cfg, request.from.t, 1.0) else {
         return Outcome::Nothing;
     };
+    // Спекулятивний світ живе кілька ланок і зникає — пенсія тут устигла б
+    // хіба заплатити за прохід (N3a).
+    world.set_retirement(None);
     let vessel = world.add_planned_vessel(
         "preview",
         request.from,

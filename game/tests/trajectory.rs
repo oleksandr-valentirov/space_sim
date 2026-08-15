@@ -26,8 +26,14 @@ fn samples(snapshot: &WorldSnapshot) -> Vec<game::leg::Sample> {
         .collect()
 }
 
+/// Світ без пенсії ланок (N3a).
+///
+/// Це головна звірка J1 — семпл у семпл із прямим прогоном H5, — а пенсія
+/// семпли викидає. Вона не міняє жодного біта того, що порахували, але міняє
+/// те, що лишилось; звіряти з нею означало б звіряти сховище, а не фізику.
 fn finished_world() -> World {
     let mut world = mission::world(&mission::default_asset()).expect("світ будується");
+    world.set_retirement(None);
     world.run_to_end(1.0, 8);
     world
 }

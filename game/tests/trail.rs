@@ -40,6 +40,10 @@ fn history(scene: &engine::scene::Scene) -> Vec<[f64; 3]> {
 fn the_rotating_frame_does_not_move_a_sample_that_already_happened() {
     let mut world = mission::world(&mission::default_asset()).expect("світ будується");
     let start = mission::start().t;
+    // Без пенсії ланок: вона змінює **самі семпли** старої історії (N3a), тож
+    // із нею тест питав би про дві різні речі одразу. Те, що він на неї падає,
+    // до речі, і є доказом, що пенсія справді двері в один бік.
+    world.set_retirement(None);
 
     world.run_to_day(start + 5.0 * 86400.0, 1.0, 8);
     let early = view::build_in(&world.snapshot(), camera(), ViewFrame::Rotating);

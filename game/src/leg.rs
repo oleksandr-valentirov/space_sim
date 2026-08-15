@@ -73,6 +73,12 @@ pub struct Trajectory {
     /// каскадному перерахунку, коли правка викидає геть усі ланки (J3).
     start: State,
     legs: Vec<Arc<Leg>>,
+    /// Скільки ланок від початку вже пройшли пенсію (N3a).
+    ///
+    /// Індекс, а не прапорець у ланці: ланки йдуть на пенсію тільки з початку
+    /// й тільки один раз, тож одного числа досить, і воно не змушує чіпати
+    /// `Leg`, яку ділять снапшоти.
+    retired: usize,
 }
 
 impl Trajectory {
@@ -80,6 +86,7 @@ impl Trajectory {
         Trajectory {
             start,
             legs: Vec::new(),
+            retired: 0,
         }
     }
 
@@ -108,6 +115,54 @@ impl Trajectory {
         self.legs.iter().map(|leg| leg.samples.len()).sum()
     }
 
+    /// Відправляє на пенсію ланки, що лишилися позаду вікна навколо курсора
+    /// (ROADMAP.md, N3a).
+    ///
+    /// **Пенсія — це проріджування семплів раз і назавжди**, а не викидання
+    /// ланки: слід має лишитися на карті (припущення Q4). Недоторканними
+    /// лишаються три речі, на яких стоїть сейв (`restart_at`): `entry`,
+    /// **останній семпл** і `step_out`. Дуглас-Пекер обидва кінці лишає завжди,
+    /// тож останній семпл переживає пенсію за побудовою, а не за вийнятком.
+    ///
+    /// ⚠ **Двері в один бік.** Інваріант 5 забороняє інтегрувати минуле вдруге,
+    /// тож викинуті семпли не повертаються ніколи. Тому допуск тут — не
+    /// налаштування, а рішення: `tol_m` мусить лишатися підпіксельним на тому
+    /// масштабі, з якого гравець колись подивиться на старе минуле.
+    ///
+    /// Повертає, скільки семплів зникло — це і є число кроку.
+    pub fn retire_before(&mut self, keep_raw_legs: usize, tol_m: f64) -> usize {
+        if self.legs.len() <= keep_raw_legs {
+            return 0;
+        }
+
+        let last_to_retire = self.legs.len() - keep_raw_legs;
+        let mut dropped = 0;
+        for index in self.retired..last_to_retire {
+            let leg = &self.legs[index];
+            let points: Vec<[f64; 3]> = leg
+                .samples
+                .iter()
+                .map(|s| [s.state.r.x, s.state.r.y, s.state.r.z])
+                .collect();
+            let keep = crate::thin::simplify3(&points, tol_m);
+            if keep.len() == leg.samples.len() {
+                continue;
+            }
+
+            dropped += leg.samples.len() - keep.len();
+            let samples = keep.into_iter().map(|i| leg.samples[i]).collect();
+            self.legs[index] = Arc::new(Leg {
+                entry: leg.entry,
+                t1: leg.t1,
+                step_out: leg.step_out,
+                samples,
+                stop: leg.stop,
+            });
+        }
+        self.retired = last_to_retire;
+        dropped
+    }
+
     /// Час останнього семпла, якщо він є.
     pub fn end(&self) -> Option<f64> {
         self.legs.last().map(|leg| leg.t1)
@@ -124,6 +179,9 @@ impl Trajectory {
     pub fn truncate_after(&mut self, t: f64) -> Restart {
         let keep = self.legs.partition_point(|leg| leg.t1 <= t);
         self.legs.truncate(keep);
+        // Каскад різав хвіст, тож пенсіонерів меншати не може — але межа
+        // мусить лишитися всередині вектора.
+        self.retired = self.retired.min(self.legs.len());
         restart_at(&self.legs, self.start, t)
     }
 

@@ -54,8 +54,16 @@ fn three_burns(start_t: f64) -> Plan {
     plan
 }
 
+/// Світ без пенсії ланок (N3a).
+///
+/// Тести цього файлу звіряють **потік семплів** із незалежним прогоном, а
+/// пенсія семпли викидає — тобто змінює те, що вони порівнюють, не змінюючи
+/// жодного біта того, що порахували. Вимикати її тут не послаблення оракула, а
+/// умова, за якої він узагалі про щось питає; саму пенсію перевіряє
+/// `tests/retire.rs`.
 fn world_with(plan: Plan) -> World {
     let mut world = mission::world(&mission::default_asset()).expect("світ будується");
+    world.set_retirement(None);
     world
         .commit_plan(VesselId(0), plan)
         .expect("план у майбутньому");
@@ -242,6 +250,8 @@ fn editing_a_manoeuvre_costs_only_the_tail() {
     let plan = three_burns(start.t);
 
     let mut world = mission::world(&mission::default_asset()).expect("світ будується");
+    // Без пенсії — з тієї ж причини, що й у `world_with`.
+    world.set_retirement(None);
     world
         .commit_plan(VesselId(0), plan.clone())
         .expect("план у майбутньому");
