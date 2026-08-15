@@ -28,14 +28,14 @@ use crate::frame_view::{self, Synodic, ViewFrame};
 use crate::snapshot::WorldSnapshot;
 use crate::world::{EARTH, MOON};
 
-/// Прогноз — той самий колір, яким H5 малював живу траєкторію.
-const PREDICTION: [f32; 4] = [0.9, 0.6, 0.2, 1.0];
-/// Історія — приглушено, щоб було видно, куди рухається межа.
-const HISTORY: [f32; 4] = [0.35, 0.45, 0.6, 1.0];
-/// Маркер апарата.
-const VESSEL: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
-/// Спекулятивне прев'ю з планувальника — те, чого ще не вирішили летіти.
-const PREVIEW: [f32; 4] = [0.4, 0.9, 0.5, 1.0];
+// Кольори ліній переїхали в `palette` (U7c) — не заради порядку, а тому що
+// саме вони й задають палітру інтерфейсу: акцент панелі зобов'язаний бути
+// кольором прогнозу, і живучи в двох місцях, ці двоє тихо розійшлися б.
+//
+// Числа при переїзді не змінились: [0.9, 0.6, 0.2] — це (229, 153, 51) у тих
+// самих одиницях, бо ціль кадру не sRGB і байт ділиться на 255 без гамми.
+// Перевіряють це тести `palette`, а не коментар.
+use crate::palette;
 
 /// Півдовжина хреста-маркера як частка відстані до камери.
 ///
@@ -163,8 +163,8 @@ pub fn build_with_preview(
             }
         }
 
-        push_line(&mut scene, history, HISTORY);
-        push_line(&mut scene, future, PREDICTION);
+        push_line(&mut scene, history, palette::HISTORY.scene());
+        push_line(&mut scene, future, palette::PREDICTION.scene());
 
         // Де апарат зараз. Позиція інтерпольована (снапшот), а Земля береться
         // з найближчого семпла: за крок інтегратора вона зсувається на частки
@@ -199,7 +199,7 @@ pub fn build_with_preview(
             }
         }
     }
-    push_line(&mut scene, speculative, PREVIEW);
+    push_line(&mut scene, speculative, palette::PREVIEW.scene());
 
     scene
 }
@@ -378,7 +378,7 @@ fn push_marker(scene: &mut Scene, position: [f64; 3]) {
         b[axis] += arm;
         scene.polylines.push(Polyline {
             points: vec![a, b],
-            colour: VESSEL,
+            colour: palette::VESSEL.scene(),
         });
     }
 }

@@ -42,6 +42,9 @@ fn snapshot(warp: f64, stall: Option<Stall>) -> WorldSnapshot {
 /// намалювавши їх один раз, тож у першому кадрі клікати нема по чому.
 fn click_at(snapshot: &WorldSnapshot, at: Option<egui::Pos2>) -> Vec<Command> {
     let context = egui::Context::default();
+    // Зі справжнім стилем (U7c): панель, намальована типовим egui, має інші
+    // відступи й розміри кнопок, тобто тест клікав би не туди, куди гравець.
+    game::palette::apply(&context);
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
 
     let draw = |events: Vec<egui::Event>| -> Vec<Command> {
@@ -90,6 +93,9 @@ fn click_at(snapshot: &WorldSnapshot, at: Option<egui::Pos2>) -> Vec<Command> {
 /// лишаючись зеленим.
 fn button_centre(snapshot: &WorldSnapshot, id: &str) -> egui::Pos2 {
     let context = egui::Context::default();
+    // Зі справжнім стилем (U7c): панель, намальована типовим egui, має інші
+    // відступи й розміри кнопок, тобто тест клікав би не туди, куди гравець.
+    game::palette::apply(&context);
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
 
     // Два кадри: у першому egui лише дізнається, де що лежить.
@@ -329,6 +335,9 @@ fn a_schedule_row_seeks_to_its_own_event() {
     ];
 
     let context = egui::Context::default();
+    // Зі справжнім стилем (U7c): панель, намальована типовим egui, має інші
+    // відступи й розміри кнопок, тобто тест клікав би не туди, куди гравець.
+    game::palette::apply(&context);
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
 
     let draw = |events: Vec<egui::Event>| -> Vec<Command> {
@@ -389,6 +398,9 @@ fn plan_frames(
     notice: Option<&str>,
 ) -> Vec<hud::PlanAction> {
     let context = egui::Context::default();
+    // Зі справжнім стилем (U7c): панель, намальована типовим egui, має інші
+    // відступи й розміри кнопок, тобто тест клікав би не туди, куди гравець.
+    game::palette::apply(&context);
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
 
     let draw = |draft: &mut hud::PlanDraft, events: Vec<egui::Event>| {
@@ -502,6 +514,9 @@ fn a_refusal_is_drawn_where_the_player_looks() {
 
     let refusal = tr(Language::English, Key::RejectedInThePast);
     let context = egui::Context::default();
+    // Зі справжнім стилем (U7c): панель, намальована типовим egui, має інші
+    // відступи й розміри кнопок, тобто тест клікав би не туди, куди гравець.
+    game::palette::apply(&context);
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
     let mut draft = hud::PlanDraft::default();
 
@@ -546,6 +561,9 @@ fn click_view(
     // перевіряється окремо (U6b4).
     let curve = None;
     let context = egui::Context::default();
+    // Зі справжнім стилем (U7c): панель, намальована типовим egui, має інші
+    // відступи й розміри кнопок, тобто тест клікав би не туди, куди гравець.
+    game::palette::apply(&context);
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
 
     let draw = |events: Vec<egui::Event>| -> hud::ViewChoice {
@@ -588,6 +606,9 @@ fn click_view(
 fn view_button_centre(frame: ViewFrame, language: Language, id: &str) -> egui::Pos2 {
     let curve = None;
     let context = egui::Context::default();
+    // Зі справжнім стилем (U7c): панель, намальована типовим egui, має інші
+    // відступи й розміри кнопок, тобто тест клікав би не туди, куди гравець.
+    game::palette::apply(&context);
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
 
     for _ in 0..2 {
@@ -679,6 +700,9 @@ fn the_panel_speaks_both_languages() {
 
     let drawn = |language: Language| -> String {
         let context = egui::Context::default();
+        // Зі справжнім стилем (U7c): панель, намальована типовим egui, має інші
+        // відступи й розміри кнопок, тобто тест клікав би не туди, куди гравець.
+        game::palette::apply(&context);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
         let mut text = String::new();
         for _ in 0..2 {
@@ -774,6 +798,9 @@ fn the_curve_caption_appears_with_the_curve_and_warns_every_time() {
     // формами, і це той самий шлях, яким його побачить гравець.
     let drawn = |frame: ViewFrame| -> String {
         let context = egui::Context::default();
+        // Зі справжнім стилем (U7c): панель, намальована типовим egui, має інші
+        // відступи й розміри кнопок, тобто тест клікав би не туди, куди гравець.
+        game::palette::apply(&context);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
         let mut text = String::new();
         for _ in 0..2 {

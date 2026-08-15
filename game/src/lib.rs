@@ -39,6 +39,7 @@ pub mod hud;
 pub mod leg;
 pub mod mission;
 pub mod node;
+pub mod palette;
 pub mod plan;
 pub mod planner;
 pub mod porkchop;

@@ -359,6 +359,16 @@ impl State {
 
         let frame = Frame::new(&gpu, target.format());
         let ui = Ui::new(&gpu, target.format());
+        // Приладова палітра (U7c) — раз при старті, а не щокадру: `Style`
+        // всередині контексту живе далі сам, а перевстановлення його в кадрі
+        // означало б, що жоден віджет не може змінити стиль тимчасово.
+        //
+        // Тема прибита до темної, і той самий стиль ставиться **обом**: у
+        // цієї гри світлої теми немає — приладова панель, що побіліла від
+        // системної налаштовки, це не варіант оформлення, а зламаний кадр.
+        // Одного `set_theme` для цього мало: він каже, яку тему брати, а не
+        // що в ній лежить.
+        crate::palette::apply(ui.context());
         let input = WindowInput::new(&ui, target.window());
         let sim = Sim::spawn(build_world(options)?)?;
         let earth_radius_m = sim.ephemeris().body_radius(EARTH);
@@ -375,9 +385,8 @@ impl State {
             frame,
             ui,
             input,
-            // Англійська як основна (ROADMAP-UI.md, правило 7). Перемикача
-            // ще немає — він з'явиться разом із рештою налаштувань, і саме
-            // тому мова вже поле, а не константа в кожному виклику.
+            // Англійська як основна (ROADMAP-UI.md, правило 7); перемикач —
+            // у панелі вигляду (U7a).
             language: Language::default(),
             earth_radius_m,
             orbit: Orbit::at_altitude(mission::CAMERA_ALTITUDE_M),
