@@ -25,15 +25,15 @@
 | clippy, rustfmt | лінт і форматування, у CI обидва — гейт | для розробки | ставить rustup за `rust-toolchain.toml` |
 | python3 | скрипти в `scripts/` | для `make plots` і завантаження даних | є в системі |
 | matplotlib | графіки з CSV | для `make plots` | `python3-matplotlib` |
-| valgrind | перевірка пам'яті на межі (ROADMAP D3) | ні, це робить CI | `valgrind` |
-| Slang | компілятор шейдерів (ROADMAP P1) | для `slang-probe` і згодом для шейдерів | `sh scripts/fetch_slang.sh` |
+| valgrind | `make valgrind`: читання неініціалізованої пам'яті, чого ASan не бачить | для гейта перед пушем | `valgrind` |
+| Slang | компілятор шейдерів; WGSL комітяться, тож потрібен лише коли їх правиш | ні | `sh scripts/fetch_slang.sh` |
 
 ```sh
 sudo apt install build-essential binutils python3-matplotlib valgrind
 ```
 
 Rust — не з apt: див. «Версія Rust» нижче. Версія в репозиторіях Ubuntu вже
-застара для того, що знадобиться на етапі E.
+застара для наших залежностей.
 
 Python-залежності продубльовано машинно-читно у
 [scripts/requirements.txt](scripts/requirements.txt) — якщо ставите не через
@@ -48,9 +48,10 @@ apt, а у venv.
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-`rust-version` у `Cargo.toml` — **1.87**, і цього вимагає `wgpu` 30, який
-приїхав із розвідкою P0. До неї поріг був 1.75 (упирався не в мову, а в
-cargo: таблиця `[lints]` з'явилася в 1.74).
+`rust-version` у `Cargo.toml` — **1.95**, і його задає `egui` 0.36 (до нього
+поріг тримав `wgpu` 30 на 1.87, а ще раніше — cargo з таблицею `[lints]` на
+1.75). Поріг тут завжди чужий: його ставить найвимогливіша залежність, а не
+наш код.
 
 Старий cargo проєкт уже не збере — але **повідомлення буде оманливе**.
 Перевірено на 1.75: він падає не на `rust-version`, а раніше, спіткнувшись
@@ -87,13 +88,16 @@ feature `edition2024` is required ... not stabilized in this version of Cargo (1
 
 ```sh
 make test        # усе про C: «поліція libm», юніт-тести, звірка хешів
+make asan        # ті самі юніт-тести під ASan+UBSan (~5 хв)
+make valgrind    # ті самі юніт-тести під valgrind (~6 хв)
 make csv         # вивід ядра у build/csv/*.csv
 make plots       # графіки з CSV у build/plots/*.png (потрібен matplotlib)
-make bench       # пропускна здатність DOP853 (скіл perf-probe)
+make bench       # інтегратор, силова модель, пропускна здатність (скіл perf-probe)
 make flags       # прапорці компіляції ядра
 make cook        # перегенерувати ассет-фікстуру (робити свідомо!)
 
-cargo test       # межа C↔Rust: збірка ядра крейтом cc, FFI, обгортка
+cargo test --workspace   # межа C↔Rust, рушій, гра
+cargo run -p game        # сама гра: вікно
 cargo clippy --all-targets -- -D warnings
 cargo run -q --example flags    # ті самі прапорці, з боку cargo
 ```
@@ -120,5 +124,5 @@ scripts/     Python. Завантаження опорних даних, гра�
 data/        Опорні дані JPL і закомічена ассет-фікстура.
 ```
 
-`engine/`, `game/` і `tools/` поки порожні — вони з'являються за порядком
-кроків у ROADMAP.md, а не наперед.
+`tools/` поки містить лише зонди (`gpu-probe`, `slang-probe`) — кукер ассетів
+з'явиться разом із першим тайлом DEM, а не наперед.
