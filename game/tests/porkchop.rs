@@ -272,3 +272,314 @@ fn a_preview_asked_after_a_grid_still_arrives() {
     });
     assert!(!preview.expect("щойно перевірили").legs.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Плот: зображення, осі, курсор (U5c)
+//
+// Ані ассета, ані нитки тут уже немає — сітка збирається руками. Так і
+// задумано: усе нижче перевіряє переклад сітки в екран, а він не має права
+// залежати від того, звідки сітка взялася.
+
+use engine::egui;
+use game::hud;
+use game::porkchop::{cell_at, colour, Cell};
+use game::text::Language;
+
+/// Сітка 4×3 з дірою в кутку: ціни ростуть зі збільшенням обох індексів.
+fn handmade() -> Grid {
+    let t1: Vec<f64> = (0..4).map(|i| f64::from(i) * DAY).collect();
+    let tof: Vec<f64> = (1..4).map(|j| f64::from(j) * DAY).collect();
+
+    let mut cells = Vec::new();
+    for i in 0..t1.len() {
+        for j in 0..tof.len() {
+            // Правий верхній кут — заборонена зона.
+            cells.push(if i == 3 && j == 2 {
+                None
+            } else {
+                Some(Cell {
+                    v_inf_depart: 100.0 * (i + 1) as f64,
+                    v_inf_arrive: 10.0 * (j + 1) as f64,
+                })
+            });
+        }
+    }
+
+    Grid {
+        id: 42,
+        t1,
+        tof,
+        cells,
+    }
+}
+
+/// Дірка прозора, ціна — ні, і дешеве не схоже на дороге.
+///
+/// Це три властивості кольору, від яких залежить, чи можна плоту вірити.
+/// Найважливіша — перша: непрозора дірка лягла б на ту саму шкалу, що й ціни,
+/// і око почало б порівнювати її з ними.
+#[test]
+fn a_hole_is_transparent_and_a_price_is_not() {
+    let cheap = Cell {
+        v_inf_depart: 100.0,
+        v_inf_arrive: 10.0,
+    };
+    let costly = Cell {
+        v_inf_depart: 900.0,
+        v_inf_arrive: 90.0,
+    };
+    let (low, high) = (cheap.total(), costly.total());
+
+    assert_eq!(colour(None, low, high)[3], 0, "дірка мусить бути прозорою");
+    assert_eq!(colour(Some(cheap), low, high)[3], 255);
+    assert_eq!(colour(Some(costly), low, high)[3], 255);
+    assert_ne!(
+        colour(Some(cheap), low, high),
+        colour(Some(costly), low, high),
+        "кінці шкали пофарбовані однаково — плот нічого не показує"
+    );
+
+    // Уся сітка однакова — це дешевий кінець, а не дорогий і не ділення на нуль.
+    let flat = colour(Some(cheap), low, low);
+    assert_eq!(flat, colour(Some(cheap), low, high));
+    assert_eq!(flat[3], 255);
+}
+
+/// Шкала монотонна: дорожче — не «інакше», а далі в один бік.
+#[test]
+fn the_scale_goes_one_way() {
+    let (low, high) = (100.0, 1000.0);
+    let mut previous = colour(
+        Some(Cell {
+            v_inf_depart: low,
+            v_inf_arrive: 0.0,
+        }),
+        low,
+        high,
+    );
+
+    for step in 1..=9 {
+        let cell = Cell {
+            v_inf_depart: low + f64::from(step) * 100.0,
+            v_inf_arrive: 0.0,
+        };
+        let now = colour(Some(cell), low, high);
+        assert!(
+            now[0] >= previous[0] && now[2] <= previous[2],
+            "на кроці {step} шкала повернула назад: {previous:?} → {now:?}"
+        );
+        previous = now;
+    }
+}
+
+/// Низ плоту — найкоротший переліт, і саме тут ламається переворот осі.
+///
+/// Зображення йде рядками згори вниз, а `tof` на плоті росте вгору. Забути
+/// цей переворот легко, а виглядає забуття як цілком правдоподібний плот, у
+/// якому курсор просто відповідає дзеркально.
+#[test]
+fn the_bottom_of_the_plot_is_the_shortest_flight() {
+    let grid = handmade();
+
+    assert_eq!(cell_at(&grid, 0.01, 0.01), Some((0, 0)), "лівий нижній кут");
+    assert_eq!(cell_at(&grid, 0.99, 0.99), Some((3, 2)), "правий верхній");
+    assert_eq!(
+        cell_at(&grid, 0.01, 0.99),
+        Some((0, 2)),
+        "лівий верхній: перший відхід, найдовший переліт"
+    );
+
+    // Поза плотом клітинки немає — інакше промах повз край читався б як
+    // вибір крайньої.
+    assert_eq!(cell_at(&grid, -0.1, 0.5), None);
+    assert_eq!(cell_at(&grid, 0.5, 1.2), None);
+}
+
+/// Числа під курсором — числа тієї клітинки, а не сусідньої.
+///
+/// Панель малюється без вікна: `RawInput` із позицією миші, і те, що вийшло,
+/// шукається серед намальованого тексту. Пікселі тут ні до чого — панель із
+/// NaN виглядає точнісінько так само, як панель із правильними числами.
+#[test]
+fn the_readout_shows_the_cell_under_the_cursor() {
+    let grid = handmade();
+    let context = egui::Context::default();
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 500.0));
+    let mut state = hud::PlotState::default();
+
+    let mut draw = |events: Vec<egui::Event>| -> Vec<String> {
+        let input = egui::RawInput {
+            screen_rect: Some(screen),
+            events,
+            ..Default::default()
+        };
+        let mut output = context.run_ui(input, |ui| {
+            hud::porkchop_panel(ui, Language::English, Some(&grid), &mut state);
+        });
+        output.textures_delta.clear();
+        output
+            .shapes
+            .iter()
+            .flat_map(|clipped| texts(&clipped.shape))
+            .collect()
+    };
+
+    // Кадр-розігрів: до першого малювання плот не має ні місця, ні розміру.
+    draw(Vec::new());
+
+    let rect = context
+        .read_response(egui::Id::new(hud::PLOT_IMAGE))
+        .expect("плот мусить бути намальований")
+        .rect;
+
+    // Наводимо на клітинку (2, 0): третій відхід, найкоротший переліт.
+    let at = egui::pos2(
+        rect.min.x + rect.width() * (2.5 / 4.0),
+        rect.max.y - rect.height() * (0.5 / 3.0),
+    );
+    let said = draw(vec![egui::Event::PointerMoved(at)]);
+    let all = said.join(" | ");
+
+    let cell = grid.at(2, 0).expect("клітинка (2, 0) не дірка");
+    assert!(
+        all.contains(&format!(
+            "{:.0} / {:.0}",
+            cell.v_inf_depart, cell.v_inf_arrive
+        )),
+        "серед намальованого немає чисел клітинки (2, 0): {all}"
+    );
+    assert!(
+        all.contains("1.00 days"),
+        "переліт клітинки (2, 0) — доба, а панель каже: {all}"
+    );
+
+    // А тепер дірка — і вона мусить назватися діркою, а не мовчати.
+    let hole = egui::pos2(
+        rect.min.x + rect.width() * (3.5 / 4.0),
+        rect.max.y - rect.height() * (2.5 / 3.0),
+    );
+    let said = draw(vec![egui::Event::PointerMoved(hole)]).join(" | ");
+    assert!(
+        said.contains(game::text::tr(
+            Language::English,
+            game::text::Key::NoSolution
+        )),
+        "заборонена зона нічого не сказала про себе: {said}"
+    );
+}
+
+/// Клік по плоту обирає вікно — те, на яке дивилися.
+#[test]
+fn a_click_chooses_the_window_under_the_pointer() {
+    let grid = handmade();
+    let context = egui::Context::default();
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 500.0));
+    let mut state = hud::PlotState::default();
+
+    let draw = |state: &mut hud::PlotState, events: Vec<egui::Event>| {
+        let input = egui::RawInput {
+            screen_rect: Some(screen),
+            events,
+            ..Default::default()
+        };
+        let mut actions = Vec::new();
+        let mut output = context.run_ui(input, |ui| {
+            actions = hud::porkchop_panel(ui, Language::English, Some(&grid), state);
+        });
+        output.textures_delta.clear();
+        actions
+    };
+
+    assert_eq!(
+        draw(&mut state, Vec::new()),
+        Vec::new(),
+        "плот сам не клікає"
+    );
+
+    let rect = context
+        .read_response(egui::Id::new(hud::PLOT_IMAGE))
+        .expect("плот мусить бути намальований")
+        .rect;
+    let at = egui::pos2(
+        rect.min.x + rect.width() * (1.5 / 4.0),
+        rect.max.y - rect.height() * (1.5 / 3.0),
+    );
+
+    let actions = draw(
+        &mut state,
+        vec![
+            egui::Event::PointerMoved(at),
+            egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            },
+            egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            },
+        ],
+    );
+
+    assert_eq!(actions, vec![hud::PorkchopAction::Choose(1, 1)]);
+    assert_eq!(state.chosen, Some((1, 1)));
+}
+
+/// Кнопка просить сітку — і рівно це, без жодного вибору вікна.
+#[test]
+fn the_button_asks_for_a_grid_and_nothing_else() {
+    let context = egui::Context::default();
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 500.0));
+    let mut state = hud::PlotState::default();
+
+    let mut draw = |events: Vec<egui::Event>| {
+        let input = egui::RawInput {
+            screen_rect: Some(screen),
+            events,
+            ..Default::default()
+        };
+        let mut actions = Vec::new();
+        let mut output = context.run_ui(input, |ui| {
+            actions = hud::porkchop_panel(ui, Language::English, None, &mut state);
+        });
+        output.textures_delta.clear();
+        actions
+    };
+
+    draw(Vec::new());
+    let centre = context
+        .read_response(egui::Id::new(hud::PLOT_COMPUTE))
+        .expect("кнопка мусить бути намальована")
+        .rect
+        .center();
+
+    let actions = draw(vec![
+        egui::Event::PointerMoved(centre),
+        egui::Event::PointerButton {
+            pos: centre,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::default(),
+        },
+        egui::Event::PointerButton {
+            pos: centre,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::default(),
+        },
+    ]);
+
+    assert_eq!(actions, vec![hud::PorkchopAction::Compute]);
+}
+
+/// Увесь текст фігури — плаский список рядків.
+fn texts(shape: &egui::epaint::Shape) -> Vec<String> {
+    match shape {
+        egui::epaint::Shape::Text(text) => vec![text.galley.text().to_string()],
+        egui::epaint::Shape::Vec(shapes) => shapes.iter().flat_map(texts).collect(),
+        _ => Vec::new(),
+    }
+}

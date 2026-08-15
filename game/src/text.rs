@@ -77,6 +77,25 @@ pub enum Key {
     RejectedInThePast,
     /// План прийнято.
     PlanAccepted,
+
+    /// Заголовок панелі вікон перельоту.
+    Porkchop,
+    /// Порахувати сітку вікон.
+    ComputeWindows,
+    /// Сітки ще немає.
+    NoGrid,
+    /// Момент відходу.
+    Depart,
+    /// Тривалість перельоту.
+    FlightTime,
+    /// «діб» — одиниця після числа.
+    Days,
+    /// Гіперболічний надлишок швидкості на обох кінцях.
+    Vinf,
+    /// У цій клітинці Ламберт не зійшовся.
+    NoSolution,
+    /// Підказка: наведіть або клікніть, щоб побачити вікно.
+    PickWindow,
 }
 
 /// Мова інтерфейсу. Дві, бо саме дві таблиці й перевіряються.
@@ -125,6 +144,15 @@ fn english(key: Key) -> &'static str {
         Key::NoPlan => "no burns yet",
         Key::RejectedInThePast => "refused: that moment has already been flown",
         Key::PlanAccepted => "plan accepted",
+        Key::Porkchop => "WINDOWS",
+        Key::ComputeWindows => "sweep windows",
+        Key::NoGrid => "no grid yet",
+        Key::Depart => "depart",
+        Key::FlightTime => "flight",
+        Key::Days => "days",
+        Key::Vinf => "v-inf out / in",
+        Key::NoSolution => "no transfer here",
+        Key::PickWindow => "point at the plot",
     }
 }
 
@@ -158,12 +186,21 @@ fn ukrainian(key: Key) -> &'static str {
         Key::NoPlan => "маневрів ще немає",
         Key::RejectedInThePast => "відхилено: ту мить уже пролетіли",
         Key::PlanAccepted => "план прийнято",
+        Key::Porkchop => "ВІКНА",
+        Key::ComputeWindows => "порахувати вікна",
+        Key::NoGrid => "сітки ще немає",
+        Key::Depart => "відхід",
+        Key::FlightTime => "переліт",
+        Key::Days => "діб",
+        Key::Vinf => "v-inf туди / там",
+        Key::NoSolution => "тут перельоту немає",
+        Key::PickWindow => "наведіть на плот",
     }
 }
 
 /// Усі ключі — для перевірок і для того, хто колись малюватиме таблицю
 /// перекладу.
-pub const ALL: [Key; 28] = [
+pub const ALL: [Key; 37] = [
     Key::Time,
     Key::Day,
     Key::Warp,
@@ -192,6 +229,15 @@ pub const ALL: [Key; 28] = [
     Key::NoPlan,
     Key::RejectedInThePast,
     Key::PlanAccepted,
+    Key::Porkchop,
+    Key::ComputeWindows,
+    Key::NoGrid,
+    Key::Depart,
+    Key::FlightTime,
+    Key::Days,
+    Key::Vinf,
+    Key::NoSolution,
+    Key::PickWindow,
 ];
 
 #[cfg(test)]

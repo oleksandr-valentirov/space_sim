@@ -36,12 +36,13 @@ use crate::mission;
 use crate::node;
 use crate::plan::Manoeuvre;
 use crate::planner::{Planner, Preview, PreviewRequest, Request};
+use crate::porkchop::{Grid, GridRequest};
 use crate::save::{self, Save};
 use crate::schedule;
 use crate::sim::{Command, Event, Sim};
 use crate::text::{tr, Key as TextKey, Language};
 use crate::view;
-use crate::world::{PlanRejected, World, EARTH};
+use crate::world::{PlanRejected, World, EARTH, MOON};
 
 pub struct Options {
     pub width: u32,
@@ -122,6 +123,13 @@ struct State {
     grab: Option<node::Grab>,
     /// Чернетку змінили тягненням — треба попросити прев'ю.
     draft_changed: bool,
+
+    /// Плот вікон перельоту: текстура й обране вікно (ROADMAP-UI.md, U5c).
+    plot: hud::PlotState,
+    /// Остання сітка з планувальника. Не стан світу — відповідь на запит.
+    grid: Option<Grid>,
+    /// `mu` Землі з ассета, прочитана **один раз**, як і радіус вище.
+    earth_mu: f64,
 }
 
 /// Світ за опціями — спільне для вікна й для знімка.
@@ -347,6 +355,7 @@ impl State {
         let input = WindowInput::new(&ui, target.window());
         let sim = Sim::spawn(build_world(options)?)?;
         let earth_radius_m = sim.ephemeris().body_radius(EARTH);
+        let earth_mu = sim.ephemeris().body_mu(EARTH);
         // Планувальник ділить із симуляцією ассет, але не пропагатор:
         // `Ephemeris` — `Sync`, `Propagator` — ні (D3, H4).
         let planner = Planner::spawn(sim.ephemeris(), mission::config())?;
@@ -376,6 +385,9 @@ impl State {
             nodes: Vec::new(),
             grab: None,
             draft_changed: false,
+            plot: hud::PlotState::default(),
+            grid: None,
+            earth_mu,
         })
     }
 
@@ -487,6 +499,43 @@ impl State {
         }
     }
 
+    /// Що зробити з тим, що попросив плот вікон (ROADMAP-UI.md, U5c).
+    fn apply_porkchop_action(
+        &mut self,
+        action: hud::PorkchopAction,
+        snapshot: &crate::snapshot::WorldSnapshot,
+    ) {
+        match action {
+            hud::PorkchopAction::Compute => {
+                self.next_request += 1;
+                self.planner
+                    .request(Request::Grid(self.grid_request(snapshot.t)));
+            }
+            // Вибір вікна поки що лишається на екрані: перетворити його на
+            // маневр — окремий крок із власним оракулом (U5d).
+            hud::PorkchopAction::Choose(..) => {}
+        }
+    }
+
+    /// Осі сітки: від «зараз» уперед, перельоти від доби до двох тижнів.
+    ///
+    /// Числа тут — властивість **цієї місії**, а не плоту: 40 діб уперед
+    /// покривають те, що ассет-фікстура взагалі знає (120 діб від епохи), а
+    /// переліт Земля—Місяць реально триває від трьох до семи діб, тож вікно
+    /// від однієї до чотирнадцяти лишає видимими обидва краї заборонених зон.
+    /// Клітинок 40×28 = 1120, тобто близько 3 мс роботи нитки (U5b).
+    fn grid_request(&self, now: f64) -> GridRequest {
+        GridRequest {
+            id: self.next_request,
+            depart_body: EARTH,
+            arrive_body: MOON,
+            mu: self.earth_mu,
+            prograde: true,
+            t1: (0..40).map(|i| now + f64::from(i) * 86400.0).collect(),
+            tof: (1..=28).map(|j| f64::from(j) * 0.5 * 86400.0).collect(),
+        }
+    }
+
     /// Летіти показаним планом.
     fn commit_preview(&mut self) {
         let Some(preview) = self.preview.take() else {
@@ -508,6 +557,20 @@ impl State {
         if let Some(preview) = self.planner.latest() {
             println!("прев'ю {}: {} ланок", preview.id, preview.legs.len());
             self.preview = Some(preview);
+        }
+
+        // Так само й сітка вікон — інший канал, те саме правило (U5b).
+        if let Some(grid) = self.planner.latest_grid() {
+            println!(
+                "сітка {}: {} клітинок, {} без розв'язку",
+                grid.id,
+                grid.cells.len(),
+                grid.cells.iter().filter(|c| c.is_none()).count()
+            );
+            // Вибір із попередньої сітки на нову не переноситься: індекси ті
+            // самі, а осі інші, тож «те саме вікно» вказувало б на інший час.
+            self.plot.chosen = None;
+            self.grid = Some(grid);
         }
 
         // Дискретне приходить каналом, а не снапшотом (`crate::sim`).
@@ -580,10 +643,13 @@ impl State {
         // канал, а панель знає лише про те, що намальовано.
         let mut commands = Vec::new();
         let mut plan_actions = Vec::new();
+        let mut plot_actions = Vec::new();
         let language = self.language;
         let radius = self.earth_radius_m;
         let notice = self.notice.clone();
         let draft = &mut self.draft;
+        let plot = &mut self.plot;
+        let grid = self.grid.as_ref();
         let viewport = Viewport::new(
             self.target.width(),
             self.target.height(),
@@ -621,6 +687,15 @@ impl State {
                             ));
                         }
                     });
+
+                // Плот — праворуч, окремою панеллю: він квадратний і живе
+                // своїм життям, а ліва колонка вже про апарат і його план.
+                engine::egui::Panel::right("windows")
+                    .exact_size(230.0)
+                    .resizable(false)
+                    .show(ui, |ui| {
+                        plot_actions.extend(hud::porkchop_panel(ui, language, grid, plot));
+                    });
             });
         self.input.apply(self.target.window(), platform);
 
@@ -629,6 +704,9 @@ impl State {
         }
         for action in plan_actions {
             self.apply_plan_action(action, &snapshot);
+        }
+        for action in plot_actions {
+            self.apply_porkchop_action(action, &snapshot);
         }
 
         // Вузли для наступного кадру: подія миші прийде між кадрами, а

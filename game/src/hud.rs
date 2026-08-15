@@ -19,6 +19,7 @@ use engine::egui;
 use crate::clock::Stall;
 use crate::mission;
 use crate::plan::{Frame, Manoeuvre, Plan};
+use crate::porkchop::{cell_at, colour, Grid};
 use crate::schedule::{Kind, Marker};
 use crate::sim::Command;
 use crate::snapshot::{VesselSnapshot, WorldSnapshot};
@@ -302,6 +303,252 @@ pub fn plan_panel(
     }
 
     actions
+}
+
+/// Стан плоту вікон, який існує лише на екрані (ROADMAP-UI.md, U5c).
+///
+/// Той самий виняток із правила 1, що [`PlanDraft`]: текстура — це сітка,
+/// перекладена в пікселі, а обране вікно — це «на що я дивлюсь», і поза
+/// екраном ні того, ні того немає. Числа при цьому не запам'ятовуються жодні:
+/// усе, що показано, щоразу виводиться з `Grid`.
+#[derive(Default)]
+pub struct PlotState {
+    /// Текстура й номер сітки, з якої вона зроблена.
+    ///
+    /// Номер тут не для порядку, а щоб не перебудовувати зображення щокадру:
+    /// сітка 100×100 — це 10⁴ пікселів, і сама вона не змінюється взагалі,
+    /// доки не приїде наступна.
+    texture: Option<(u64, egui::TextureHandle)>,
+    /// Обране вікно — індекси на осях, а не час: осі задає той, хто просив
+    /// сітку, і тримати другу копію їхніх значень означало б дати їм
+    /// розійтися.
+    pub chosen: Option<(usize, usize)>,
+}
+
+/// Що плот просить зробити.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PorkchopAction {
+    /// Порахувати сітку — кнопка. Осі вибирає той, хто надсилає запит.
+    Compute,
+    /// Гравець обрав вікно: індекси на осях сітки.
+    Choose(usize, usize),
+}
+
+/// Адреси віджетів плоту.
+pub const PLOT_COMPUTE: &str = "hud.porkchop.compute";
+pub const PLOT_IMAGE: &str = "hud.porkchop.image";
+
+/// Скільки пікселів екрана віддати плоту. Квадрат: осі різні за змістом, але
+/// однакові за важливістю, і витягнутий плот читається як «одна з них
+/// точніша».
+const PLOT_SIDE: f32 = 200.0;
+
+/// Числа обраного (чи наведеного) вікна — те, що показує курсор.
+///
+/// Окремо від малювання з тієї ж причини, що [`VesselReadout`]: оракул кроку —
+/// «число в панелі дорівнює числу в сітці», а пікселі з числами не звіряються.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindowReadout {
+    /// Момент відходу, абсолютний час ассета.
+    pub t1: f64,
+    /// Тривалість перельоту, секунди.
+    pub tof: f64,
+    /// Клітинка; `None` — заборонена зона, і саме так її треба показати.
+    pub cell: Option<crate::porkchop::Cell>,
+}
+
+/// Числа вікна за індексами на осях. Нічого не рахує, крім вибірки.
+pub fn read_window(grid: &Grid, i_t1: usize, i_tof: usize) -> Option<WindowReadout> {
+    Some(WindowReadout {
+        t1: *grid.t1.get(i_t1)?,
+        tof: *grid.tof.get(i_tof)?,
+        cell: grid.at(i_t1, i_tof),
+    })
+}
+
+/// Панель плоту: сітка зображенням, осі в датах, курсор із числами.
+///
+/// `grid` — те, що порахувала нитка планувальника (правило 6); `None` означає
+/// «ще не просили» або «ще рахується», і панель у цьому разі показує кнопку й
+/// нічого не вигадує.
+pub fn porkchop_panel(
+    ui: &mut egui::Ui,
+    language: Language,
+    grid: Option<&Grid>,
+    state: &mut PlotState,
+) -> Vec<PorkchopAction> {
+    let mut actions = Vec::new();
+
+    ui.heading(tr(language, Key::Porkchop));
+
+    if button(ui, PLOT_COMPUTE, tr(language, Key::ComputeWindows)) {
+        actions.push(PorkchopAction::Compute);
+    }
+
+    let Some(grid) = grid else {
+        ui.label(tr(language, Key::NoGrid));
+        return actions;
+    };
+
+    // Текстура будується один раз на сітку, а не на кадр.
+    let texture = match &state.texture {
+        Some((id, texture)) if *id == grid.id => texture.clone(),
+        _ => {
+            let texture = ui.ctx().load_texture(
+                "porkchop",
+                image_of(grid),
+                // Без згладжування: піксель — це клітинка, і розмита межа
+                // між клітинкою й діркою — це вигаданий проміжний стан.
+                egui::TextureOptions::NEAREST,
+            );
+            state.texture = Some((grid.id, texture.clone()));
+            texture
+        }
+    };
+
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(PLOT_SIDE, PLOT_SIDE),
+        egui::Sense::click_and_drag(),
+    );
+    ui.painter().image(
+        texture.id(),
+        rect,
+        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+        egui::Color32::WHITE,
+    );
+
+    // Друга взаємодія з нашим іменем — та сама причина, що в `button`: тест
+    // мусить знаходити плот за іменем, а не за підібраним пікселем.
+    let named = ui.interact(rect, egui::Id::new(PLOT_IMAGE), egui::Sense::click());
+
+    // Найдешевше вікно позначене хрестиком: плот існує, щоб його знайти, і
+    // шукати мінімум оком по градієнту — робота, яку вже зробила машина.
+    if let Some((i, j, _)) = grid.best() {
+        let at = cell_centre(rect, grid, i, j);
+        let arm = 4.0;
+        let stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+        ui.painter().line_segment(
+            [
+                egui::pos2(at.x - arm, at.y - arm),
+                egui::pos2(at.x + arm, at.y + arm),
+            ],
+            stroke,
+        );
+        ui.painter().line_segment(
+            [
+                egui::pos2(at.x - arm, at.y + arm),
+                egui::pos2(at.x + arm, at.y - arm),
+            ],
+            stroke,
+        );
+    }
+
+    // Осі: дати по краях замість підписів на кожній поділці. Плот шириною
+    // 200 пікселів не витримає більшого, а два кінці вже кажуть, що це за
+    // проміжок.
+    let (first, last) = (grid.t1[0], grid.t1[grid.t1.len() - 1]);
+    ui.label(format!(
+        "{} — {}",
+        &calendar(first)[..10],
+        &calendar(last)[..10]
+    ));
+    ui.label(format!(
+        "{}: {:.1} — {:.1} {}",
+        tr(language, Key::FlightTime),
+        grid.tof[0] / DAY_S,
+        grid.tof[grid.tof.len() - 1] / DAY_S,
+        tr(language, Key::Days)
+    ));
+
+    // Під курсором — те, на що дивляться; без курсора — те, що обрали.
+    let under_pointer = response
+        .hover_pos()
+        .and_then(|at| cell_at(grid, from_left(rect, at), from_bottom(rect, at)));
+    let shown = under_pointer.or(state.chosen);
+
+    match shown.and_then(|(i, j)| read_window(grid, i, j)) {
+        Some(readout) => {
+            ui.label(format!(
+                "{} {}",
+                tr(language, Key::Depart),
+                calendar(readout.t1)
+            ));
+            ui.label(format!(
+                "{}: {:.2} {}",
+                tr(language, Key::FlightTime),
+                readout.tof / DAY_S,
+                tr(language, Key::Days)
+            ));
+            match readout.cell {
+                Some(cell) => {
+                    ui.label(format!(
+                        "{}: {:.0} / {:.0} м/с",
+                        tr(language, Key::Vinf),
+                        cell.v_inf_depart,
+                        cell.v_inf_arrive
+                    ));
+                }
+                // Дірка називається дірою. Порожній рядок тут читався б як
+                // «безкоштовно».
+                None => {
+                    ui.label(tr(language, Key::NoSolution));
+                }
+            }
+        }
+        None => {
+            ui.label(tr(language, Key::PickWindow));
+        }
+    }
+
+    if named.clicked() {
+        if let Some((i, j)) = ui
+            .ctx()
+            .pointer_interact_pos()
+            .and_then(|at| cell_at(grid, from_left(rect, at), from_bottom(rect, at)))
+        {
+            state.chosen = Some((i, j));
+            actions.push(PorkchopAction::Choose(i, j));
+        }
+    }
+
+    actions
+}
+
+fn from_left(rect: egui::Rect, at: egui::Pos2) -> f32 {
+    (at.x - rect.min.x) / rect.width()
+}
+
+fn from_bottom(rect: egui::Rect, at: egui::Pos2) -> f32 {
+    (rect.max.y - at.y) / rect.height()
+}
+
+/// Центр клітинки в пікселях — для позначки на плоті.
+fn cell_centre(rect: egui::Rect, grid: &Grid, i_t1: usize, i_tof: usize) -> egui::Pos2 {
+    let x = (i_t1 as f32 + 0.5) / grid.t1.len() as f32;
+    let y = (i_tof as f32 + 0.5) / grid.tof.len() as f32;
+    egui::pos2(
+        rect.min.x + x * rect.width(),
+        rect.max.y - y * rect.height(),
+    )
+}
+
+/// Сітка в зображення: піксель — клітинка, рядок 0 — найдовший переліт.
+///
+/// Переворот саме тут, в одному місці: далі його знає лише [`from_bottom`],
+/// і обидва підпорядковані одній угоді — `tof` росте вгору.
+fn image_of(grid: &Grid) -> egui::ColorImage {
+    let (low, high) = grid.range().unwrap_or((0.0, 1.0));
+    let (w, h) = (grid.t1.len(), grid.tof.len());
+
+    let mut pixels = vec![egui::Color32::TRANSPARENT; w * h];
+    for i in 0..w {
+        for j in 0..h {
+            let [r, g, b, a] = colour(grid.at(i, j), low, high);
+            pixels[(h - 1 - j) * w + i] = egui::Color32::from_rgba_unmultiplied(r, g, b, a);
+        }
+    }
+
+    egui::ColorImage::new([w, h], pixels)
 }
 
 /// Числа панелі апарата, зняті зі снапшоту (ROADMAP-UI.md, U2c).
