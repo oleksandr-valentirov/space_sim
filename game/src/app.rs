@@ -710,6 +710,9 @@ impl State {
                 &snapshot,
                 self.orbit.camera(),
                 self.preview.as_ref().map_or(&[], |p| p.legs.as_slice()),
+                // Перемикач фрейму приносить U6a4; поки вибір тут один, і
+                // названий він явно, а не полем, якого ніхто не пише.
+                crate::frame_view::ViewFrame::Inertial,
             ),
         );
 

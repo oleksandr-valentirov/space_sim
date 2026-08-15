@@ -34,6 +34,7 @@
 
 pub mod app;
 pub mod clock;
+pub mod frame_view;
 pub mod hud;
 pub mod leg;
 pub mod mission;

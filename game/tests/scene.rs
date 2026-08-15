@@ -562,3 +562,182 @@ fn compose(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
         aw * bz + ax * by - ay * bx + az * bw,
     ]
 }
+
+// ---------------------------------------------------------------------------
+// Обертовий фрейм (ROADMAP-UI.md, U6a2)
+
+/// Синодичні координати з `view` — ті самі, що дає формула рушія, звірена з C.
+///
+/// Оракул тут не «петля виглядає замкненою», і саме тому він вартий чогось.
+/// `engine::trajectory::rotating_position` звірена з `frame_from_inertial`
+/// (C, `core/frame.h`) на 1345 семплах фікстури з розбіжністю 3.48·10⁻⁷ (F6);
+/// якщо перетворення гри збігається з нею на всій живій траєкторії, воно
+/// збігається і з ядром — транзитивно, без другої фікстури.
+///
+/// Різниця між ними рівно одна й навмисна: рушій віддає безрозмірні одиниці
+/// CR3BP (поділені на `L` **своєї** миті), а гра множить їх на теперішню
+/// відстань Земля-Місяць. Тому Місяць кожного семпла лягає туди, де Місяць
+/// зараз, — і саме це тримає картинку нерухомою, поки `L` гуляє в межах
+/// 3.63–4.06·10⁸ м.
+#[test]
+fn the_rotating_frame_agrees_with_the_formula_checked_against_c() {
+    use game::frame_view::ViewFrame;
+    use game::world::{EARTH, MOON};
+
+    let mut world = mission::world(&mission::default_asset()).expect("світ");
+    world.tick(16);
+    let snapshot = world.snapshot();
+
+    let camera = || Orbit::at_altitude(mission::CAMERA_ALTITUDE_M).camera();
+    let scene = view::build_in(&snapshot, camera(), ViewFrame::Rotating);
+
+    // Теперішня відстань Земля-Місяць — той самий масштаб, яким гра множить.
+    let body = |index: i32| {
+        snapshot
+            .bodies
+            .iter()
+            .find(|b| b.body == index)
+            .expect("тіло у снапшоті")
+    };
+    let d = [
+        body(MOON).position[0] - body(EARTH).position[0],
+        body(MOON).position[1] - body(EARTH).position[1],
+        body(MOON).position[2] - body(EARTH).position[2],
+    ];
+    let scale = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+
+    // Те, що мала б дати гра: формула рушія на тих самих семплах і тих самих
+    // нормалях, помножена на масштаб.
+    let vessel = &snapshot.vessels[0];
+    let mut expected: Vec<[f64; 3]> = Vec::new();
+    for leg in &vessel.legs {
+        let normals = view::plane_normals(&leg.samples);
+        for (index, sample) in leg.samples.iter().enumerate() {
+            if sample.state.t <= snapshot.t {
+                continue;
+            }
+            // Рушій чекає **одиничну** нормаль (`fill_axes` її нормує), а
+            // `plane_normals` віддає `d × ḋ` як є — гра нормує сама, всередині
+            // базису. Різні контракти на ту саму величину, і мовчазна
+            // невідповідність тут дала б 10²³ м різниці.
+            let n = normals[index];
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            let p = engine::trajectory::rotating_position(
+                [sample.state.r.x, sample.state.r.y, sample.state.r.z],
+                sample.earth,
+                sample.moon,
+                [n[0] / len, n[1] / len, n[2] / len],
+            );
+            expected.push([p[0] * scale, p[1] * scale, p[2] * scale]);
+        }
+    }
+    assert!(
+        expected.len() > 500,
+        "прогноз надто короткий: {}",
+        expected.len()
+    );
+
+    // Прогноз — найдовша ламана; історії на початку місії немає.
+    let drawn = scene
+        .polylines
+        .iter()
+        .max_by_key(|p| p.points.len())
+        .expect("у сцені є ламані")
+        .points
+        .clone();
+    assert_eq!(
+        drawn.len(),
+        expected.len(),
+        "кількість точок розійшлася — порівнюються різні ламані"
+    );
+
+    let mut worst = 0.0f64;
+    for (a, b) in drawn.iter().zip(expected.iter()) {
+        let e = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+        worst = worst.max(e);
+    }
+    println!(
+        "  {} точок, найгірша розбіжність із формулою рушія {worst:.3e} м",
+        drawn.len()
+    );
+
+    // Метр на 4·10⁸ — це 2.5·10⁻⁹ відносно, тобто рівень самої формули, а не
+    // помилка перетворення. `μ` у гри з ассета, у рушія — константа, і на
+    // цьому рівні вони теж мали б збігтися.
+    assert!(
+        worst < 1.0,
+        "розбіжність {worst:.3e} м — це вже інша формула, а не інша арифметика"
+    );
+
+    // Друге число, заради якого карту й вмикають: у синодичному фреймі та сама
+    // траєкторія займає втричі менше місця, бо з неї прибрано обертання пари.
+    let spread = |points: &[[f64; 3]]| {
+        let mut worst: f64 = 0.0;
+        for p in points {
+            for q in points.iter().step_by(points.len() / 32 + 1) {
+                let d =
+                    ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();
+                worst = worst.max(d);
+            }
+        }
+        worst
+    };
+    let inertial = view::build_in(&snapshot, camera(), ViewFrame::Inertial);
+    let inertial_points = inertial
+        .polylines
+        .iter()
+        .max_by_key(|p| p.points.len())
+        .expect("у сцені є ламані")
+        .points
+        .clone();
+    let (a, b) = (spread(&inertial_points), spread(&drawn));
+    println!("  розмах: інерціально {a:.4e} м, синодично {b:.4e} м");
+    assert!(
+        b < 0.5 * a,
+        "синодичний розмах {b:.3e} проти інерціального {a:.3e} — фрейм нічого \
+         не прибрав"
+    );
+}
+
+/// Тіла в синодичному фреймі стоять там, де їм належить.
+///
+/// Земля за `−μ·L` від початку координат, Місяць за `(1 − μ)·L`, обидва на осі
+/// x — це визначення фрейму, і воно ж перевіряє, що тіла пройшли **те саме**
+/// перетворення, що й ламані. Тіло, залишене в інерціальних координатах,
+/// висіло б окремо від траєкторії навколо себе.
+#[test]
+fn the_pair_sits_on_the_axis_in_the_rotating_frame() {
+    use game::frame_view::ViewFrame;
+
+    let world = mission::world(&mission::default_asset()).expect("світ");
+    let snapshot = world.snapshot();
+    let camera = Orbit::at_altitude(mission::CAMERA_ALTITUDE_M).camera();
+
+    let scene = view::build_in(&snapshot, camera, ViewFrame::Rotating);
+    let (earth, moon) = (scene.bodies[0], scene.bodies[1]);
+
+    // Масштаб — теперішня відстань Земля-Місяць, тобто саме те, чим фрейм
+    // нормує все інше.
+    let l = moon.centre[0] - earth.centre[0];
+    let mu = -earth.centre[0] / l;
+    println!(
+        "  Земля {:?}, Місяць {:?}, L = {l:.4e} м, μ = {mu:.9}",
+        earth.centre, moon.centre
+    );
+
+    assert!(
+        (3.6e8..4.1e8).contains(&l),
+        "відстань між тілами {l:.3e} м — це не орбіта Місяця"
+    );
+    assert!(
+        (mu - 0.0121505856).abs() < 1e-6,
+        "барицентр стоїть за μ = {mu:.9}, а мало б за 0.01215",
+    );
+    for (name, body) in [("Земля", earth), ("Місяць", moon)] {
+        assert!(
+            body.centre[1].abs() < 1.0 && body.centre[2].abs() < 1.0,
+            "{name} зійшла з осі x: {:?}",
+            body.centre
+        );
+    }
+}

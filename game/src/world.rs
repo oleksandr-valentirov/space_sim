@@ -645,7 +645,9 @@ impl World {
                 Some(BodySnapshot {
                     body,
                     position: [state.r.x, state.r.y, state.r.z],
+                    velocity: [state.v.x, state.v.y, state.v.z],
                     radius_m: self.eph.body_radius(body),
+                    mu: self.eph.body_mu(body),
                     orientation: [q.w, q.x, q.y, q.z],
                 })
             })

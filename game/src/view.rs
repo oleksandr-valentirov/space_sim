@@ -24,8 +24,9 @@
 use engine::camera::Camera;
 use engine::scene::{Body, Polyline, Scene, TileSet};
 
+use crate::frame_view::{self, Synodic, ViewFrame};
 use crate::snapshot::WorldSnapshot;
-use crate::world::EARTH;
+use crate::world::{EARTH, MOON};
 
 /// Прогноз — той самий колір, яким H5 малював живу траєкторію.
 const PREDICTION: [f32; 4] = [0.9, 0.6, 0.2, 1.0];
@@ -43,7 +44,12 @@ const PREVIEW: [f32; 4] = [0.4, 0.9, 0.5, 1.0];
 const MARKER_FRACTION: f64 = 0.01;
 
 pub fn build(snapshot: &WorldSnapshot, camera: Camera) -> Scene {
-    build_with_preview(snapshot, camera, &[])
+    build_with_preview(snapshot, camera, &[], ViewFrame::Inertial)
+}
+
+/// Те саме в заданому фреймі (ROADMAP-UI.md, U6a2).
+pub fn build_in(snapshot: &WorldSnapshot, camera: Camera, frame: ViewFrame) -> Scene {
+    build_with_preview(snapshot, camera, &[], frame)
 }
 
 /// Те саме, плюс спекулятивна лінія з планувальника (ROADMAP J5).
@@ -55,14 +61,27 @@ pub fn build_with_preview(
     snapshot: &WorldSnapshot,
     camera: Camera,
     preview: &[std::sync::Arc<crate::leg::Leg>],
+    frame: ViewFrame,
 ) -> Scene {
     let mut scene = Scene::new(camera);
 
+    // Базис «зараз» — для тіл і маркерів. Точки траєкторії беруть базис своєї
+    // миті, і саме тому він рахується не тут, а поруч із семплом.
+    //
+    // Немає базису — немає й обертового фрейму: якщо в ассеті немає Місяця
+    // або він стоїть в одній точці із Землею, сцена лишається інерціальною.
+    // Це не тихе ігнорування вибору: інерціальний кадр — правильна відповідь
+    // на «пари тіл немає», а NaN у кожній вершині — ні.
+    let now = match frame {
+        ViewFrame::Inertial => None,
+        ViewFrame::Rotating => synodic_now(snapshot),
+    };
+    let moon_now = moon_local(snapshot).unwrap_or([0.0; 3]);
+
     // Тіла — те саме віднімання Землі, що й для ламаних, і з тієї ж причини:
     // кадр геоцентричний (див. вступ модуля). Земля опиняється рівно в
-    // початку координат, Місяць — там, де він відносно неї в цю мить, а
-    // орієнтація не чіпається зовсім: поворот тіла навколо власного центра
-    // від вибору початку координат не залежить.
+    // початку координат, Місяць — там, де він відносно неї в цю мить, а в
+    // обертовому фреймі обидва стоять нерухомо.
     if let Some(earth) = snapshot.bodies.iter().find(|b| b.body == EARTH) {
         for body in &snapshot.bodies {
             // Тіло без розміру малювати нема як: радіус нуль — це «ассет не
@@ -70,14 +89,24 @@ pub fn build_with_preview(
             if body.radius_m <= 0.0 {
                 continue;
             }
+            let centre = [
+                body.position[0] - earth.position[0],
+                body.position[1] - earth.position[1],
+                body.position[2] - earth.position[2],
+            ];
             scene.bodies.push(Body {
-                centre: [
-                    body.position[0] - earth.position[0],
-                    body.position[1] - earth.position[1],
-                    body.position[2] - earth.position[2],
-                ],
+                centre: match now {
+                    Some(s) => s.apply(centre, moon_now),
+                    None => centre,
+                },
                 radius_m: body.radius_m,
-                orientation: body.orientation,
+                // Поворот тіла навколо власного центра від вибору початку
+                // координат не залежить — а от від вибору **осей** залежить,
+                // і в обертовому фреймі осі інші.
+                orientation: match now {
+                    Some(s) => frame_view::compose(s.rotation(), body.orientation),
+                    None => body.orientation,
+                },
                 // Рельєфу ще немає в жодного тіла — його приносить R5.
                 tiles: TileSet::Smooth,
             });
@@ -89,12 +118,22 @@ pub fn build_with_preview(
         let mut future: Vec<[f64; 3]> = Vec::new();
 
         for leg in &vessel.legs {
-            for sample in &leg.samples {
-                let point = [
-                    sample.state.r.x - sample.earth[0],
-                    sample.state.r.y - sample.earth[1],
-                    sample.state.r.z - sample.earth[2],
-                ];
+            let normals = plane_normals(&leg.samples);
+            for (index, sample) in leg.samples.iter().enumerate() {
+                let point = geocentric(sample);
+                // Кожна точка бере базис **своєї миті** — у цьому вся суть
+                // обертового фрейму: базис «зараз» дав би просто повернуту
+                // інерціальну траєкторію.
+                let point = match now {
+                    Some(s) => match sample_frame(sample, normals[index], &s) {
+                        Some(turned) => turned,
+                        // Виродженого базису на семплі бути не може, якщо він
+                        // є «зараз», — але мовчазний NaN коштував би дорожче
+                        // за цю гілку.
+                        None => continue,
+                    },
+                    None => point,
+                };
 
                 if sample.state.t <= snapshot.t {
                     history.push(point);
@@ -125,23 +164,140 @@ pub fn build_with_preview(
                 vessel.state.r.y - earth[1],
                 vessel.state.r.z - earth[2],
             ];
+            // Маркер — це «зараз», тож і базис у нього теперішній.
+            let position = match now {
+                Some(s) => s.apply(position, moon_now),
+                None => position,
+            };
             push_marker(&mut scene, position);
         }
     }
 
     let mut speculative = Vec::new();
     for leg in preview {
-        for sample in &leg.samples {
-            speculative.push([
-                sample.state.r.x - sample.earth[0],
-                sample.state.r.y - sample.earth[1],
-                sample.state.r.z - sample.earth[2],
-            ]);
+        let normals = plane_normals(&leg.samples);
+        for (index, sample) in leg.samples.iter().enumerate() {
+            match now {
+                Some(s) => {
+                    if let Some(turned) = sample_frame(sample, normals[index], &s) {
+                        speculative.push(turned);
+                    }
+                }
+                None => speculative.push(geocentric(sample)),
+            }
         }
     }
     push_line(&mut scene, speculative, PREVIEW);
 
     scene
+}
+
+/// Позиція семпла відносно Землі **тієї самої миті** — те, з чого починається
+/// будь-який із двох фреймів.
+fn geocentric(sample: &crate::leg::Sample) -> [f64; 3] {
+    [
+        sample.state.r.x - sample.earth[0],
+        sample.state.r.y - sample.earth[1],
+        sample.state.r.z - sample.earth[2],
+    ]
+}
+
+/// Точка семпла в синодичному фреймі його власної миті, у масштабі `now`.
+fn sample_frame(sample: &crate::leg::Sample, normal: [f64; 3], now: &Synodic) -> Option<[f64; 3]> {
+    let d = [
+        sample.moon[0] - sample.earth[0],
+        sample.moon[1] - sample.earth[1],
+        sample.moon[2] - sample.earth[2],
+    ];
+    let basis = now.with_line(d, normal)?;
+    Some(basis.apply(geocentric(sample), d))
+}
+
+/// Нормалі миттєвої площини Земля-Місяць по семплах однієї ланки.
+///
+/// Публічна заради тесту, який звіряє **перетворення** з формулою рушія
+/// (`engine::trajectory::rotating_position`, звіреною з C-оракулом): якби тест
+/// рахував нормалі по-своєму, він порівнював би дві різні площини й списував
+/// би розбіжність на них.
+///
+/// Центральна різниця, а не аналітична швидкість Місяця: у семплі її немає й
+/// не буде — 104 байти на семпл це вже борг D7, і додавати до них ще 24 заради
+/// вигляду не варто. F6 виміряв, що при кроці ~2.7 год центральна різниця дає
+/// розбіжність 3.5·10⁻⁷ проти C-оракула; на краях ланки різниця однобічна.
+pub fn plane_normals(samples: &[crate::leg::Sample]) -> Vec<[f64; 3]> {
+    let line = |s: &crate::leg::Sample| {
+        [
+            s.moon[0] - s.earth[0],
+            s.moon[1] - s.earth[1],
+            s.moon[2] - s.earth[2],
+        ]
+    };
+    let cross = |a: [f64; 3], b: [f64; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+
+    (0..samples.len())
+        .map(|i| {
+            let before = line(&samples[i.saturating_sub(1)]);
+            let after = line(&samples[(i + 1).min(samples.len() - 1)]);
+            let rate = [
+                after[0] - before[0],
+                after[1] - before[1],
+                after[2] - before[2],
+            ];
+            cross(line(&samples[i]), rate)
+        })
+        .collect()
+}
+
+/// Місяць відносно Землі в мить снапшоту.
+fn moon_local(snapshot: &WorldSnapshot) -> Option<[f64; 3]> {
+    let earth = snapshot.bodies.iter().find(|b| b.body == EARTH)?;
+    let moon = snapshot.bodies.iter().find(|b| b.body == MOON)?;
+    Some([
+        moon.position[0] - earth.position[0],
+        moon.position[1] - earth.position[1],
+        moon.position[2] - earth.position[2],
+    ])
+}
+
+/// Синодичний базис у мить снапшоту — той, у якому стоять тіла й маркери.
+///
+/// Тут нормаль береться з **швидкостей** (`d × ḋ`), а не з різниці семплів:
+/// снапшот їх має, а сусідньої миті в нього немає. Обидва шляхи дають ту саму
+/// площину — це те, що робить кадр цілим.
+fn synodic_now(snapshot: &WorldSnapshot) -> Option<Synodic> {
+    let earth = snapshot.bodies.iter().find(|b| b.body == EARTH)?;
+    let moon = snapshot.bodies.iter().find(|b| b.body == MOON)?;
+
+    let d = [
+        moon.position[0] - earth.position[0],
+        moon.position[1] - earth.position[1],
+        moon.position[2] - earth.position[2],
+    ];
+    let rate = [
+        moon.velocity[0] - earth.velocity[0],
+        moon.velocity[1] - earth.velocity[1],
+        moon.velocity[2] - earth.velocity[2],
+    ];
+    let normal = [
+        d[1] * rate[2] - d[2] * rate[1],
+        d[2] * rate[0] - d[0] * rate[2],
+        d[0] * rate[1] - d[1] * rate[0],
+    ];
+
+    // Масштаб — теперішня відстань: у ній міряються всі семпли, і саме тому
+    // Місяць у кадрі стоїть.
+    let scale = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    let total = earth.mu + moon.mu;
+    if total <= 0.0 {
+        return None;
+    }
+    Synodic::new(d, normal, scale, moon.mu / total)
 }
 
 fn push_line(scene: &mut Scene, points: Vec<[f64; 3]>, colour: [f32; 4]) {
