@@ -174,6 +174,53 @@ fn model_matrix(rotation: [[f64; 3]; 3], radius: f64) -> depth::Matrix {
     m
 }
 
+/// Скільки проходів кадру буває найбільше.
+///
+/// Чотири — це чотири діапазони глибини з PROJECT.md §7 (зорі, scaled space,
+/// поверхня, локальна сцена). Число стоїть тут, бо під нього виділяються
+/// буфери uniform-ів: розкладка з динамічним зсувом мусить бути відома до
+/// першого кадру, а не з'ясовуватись у ньому.
+pub const MAX_PASSES: usize = 4;
+
+/// Скільки байтів займає матриця проєкції ламаних.
+const LINE_UNIFORM_BYTES: u64 = 64;
+
+/// Крок між uniform-ами сусідніх проходів у буфері.
+///
+/// 256 байтів — вирівнювання динамічного зсуву, якого вимагає wgpu на всіх
+/// трьох цілях. Самі [`Uniforms`] коротші; решта кроку не використовується, і
+/// платити за неї доводиться рівно тому, що альтернатива — буфер на прохід.
+const PASS_STRIDE: u64 = 256;
+
+/// Один прохід кадру — **дані**, а не гілка в коді (ROADMAP-PLANETS.md, R4a).
+///
+/// ## Чому це не «frame graph» у звичному сенсі, і чому так правильно
+///
+/// Класичний граф кадру існує заради двох речей: порядку проходів і бар'єрів
+/// між ресурсами. Другого тут не потрібно взагалі — `wgpu` розставляє бар'єри
+/// сам, за використанням ресурсів, і власний розв'язувач поверх нього був би
+/// другою правдою про той самий стан. Лишається перше, а перше — це список.
+///
+/// Тому проходи стали списком структур, а не деревом залежностей: кадр
+/// перестав знати, **скільки** їх, і саме це потрібно чотирьом діапазонам
+/// глибини (R4b). CLAUDE.md прямо забороняє заводити структуру наперед; тут
+/// другий читач приходить наступним кроком, а не «колись».
+///
+/// Що в проході змінне, а що ні:
+///
+/// - **проєкція своя**, бо діапазон — це пара площин;
+/// - **глибина очищається завжди.** У цьому й суть поділу: два тіла в різних
+///   діапазонах не змагаються за біти глибини взагалі, їх упорядковує
+///   порядок проходів;
+/// - **колір очищає лише перший.** Композиція йде back-to-front, тобто від
+///   найдальшого діапазону до найближчого, і кожен наступний малює поверх.
+#[derive(Clone, Copy, Debug)]
+struct Pass {
+    label: &'static str,
+    projection: depth::Matrix,
+    clear_colour: bool,
+}
+
 /// Буфер глибини разом із розміром, під який його зроблено.
 struct Depth {
     view: wgpu::TextureView,
@@ -208,6 +255,10 @@ pub struct Frame {
     depth: Option<Depth>,
 
     lines: Lines,
+
+    /// План цього кадру: проходи в порядку малювання (R4a). Поле, а не
+    /// змінна, щоб не виділяти вектор щокадру.
+    passes: Vec<Pass>,
 }
 
 impl Frame {
@@ -216,6 +267,7 @@ impl Frame {
             planet: Planet::new(gpu, format),
             depth: None,
             lines: Lines::new(gpu, format),
+            passes: Vec::with_capacity(MAX_PASSES),
         }
     }
 
@@ -309,47 +361,71 @@ impl Frame {
         self.ensure_depth(gpu, width, height);
 
         let aspect = f64::from(width) / f64::from(height);
-        let projection = depth::reversed_infinite(FOV_Y, aspect, Frame::near_for(scene));
+        self.plan(scene, aspect);
 
         // Планети: камера віднімається раз на патч, у `double`, а поворот
         // їде в матриці (R1d). Кількість роботи на CPU більше не залежить
         // від кількості вершин — тільки від кількості патчів і тіл.
-        self.planet
-            .upload(gpu, scene, projection, f64::from(width), f64::from(height));
+        self.planet.upload(
+            gpu,
+            scene,
+            &self.passes,
+            f64::from(width),
+            f64::from(height),
+        );
 
         // Ламані проходять той самий шлях, що вершини сфери: віднімання й
         // поворот у double, звуження до f32 останнім кроком. Інакше
         // траєкторія за 4·10⁸ м від камери тремтіла б, а сфера поруч — ні.
-        self.lines.upload(gpu, scene, projection);
+        self.lines.upload(gpu, scene, &self.passes);
 
         let depth = self.depth.as_ref().expect("ensure_depth щойно її створив");
 
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("frame"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(CLEAR),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &depth.view,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(depth::CLEAR),
-                    store: wgpu::StoreOp::Store,
+        for (index, plan) in self.passes.iter().enumerate() {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some(plan.label),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: if plan.clear_colour {
+                            wgpu::LoadOp::Clear(CLEAR)
+                        } else {
+                            wgpu::LoadOp::Load
+                        },
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth.view,
+                    depth_ops: Some(wgpu::Operations {
+                        // Очищається на кожному проході: діапазони не
+                        // змагаються за біти глибини, їх упорядковує порядок.
+                        load: wgpu::LoadOp::Clear(depth::CLEAR),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
                 }),
-                stencil_ops: None,
-            }),
-            multiview_mask: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
+                multiview_mask: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
 
-        self.planet.draw(&mut pass);
-        self.lines.draw(&mut pass, scene);
+            self.planet.draw(&mut pass, index);
+            self.lines.draw(&mut pass, scene, index);
+        }
+    }
+
+    /// План кадру: які проходи й з якими проєкціями (R4a).
+    fn plan(&mut self, scene: &Scene, aspect: f64) {
+        let near = Frame::near_for(scene);
+        self.passes.clear();
+        self.passes.push(Pass {
+            label: "scene",
+            projection: depth::reversed_infinite(FOV_Y, aspect, near),
+            clear_colour: true,
+        });
     }
 }
 
@@ -584,8 +660,11 @@ impl Planet {
                         visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
+                            // Один буфер на тіло, зсув — на прохід (R4a).
+                            // Інакше кількість буферів множилася б на
+                            // кількість діапазонів, а вони — те, що міняється.
+                            has_dynamic_offset: true,
+                            min_binding_size: std::num::NonZeroU64::new(UNIFORM_BYTES),
                         },
                         count: None,
                     },
@@ -697,7 +776,7 @@ impl Planet {
     fn slot(&self, gpu: &Gpu) -> BodySlot {
         let uniform_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("patch uniforms"),
-            size: UNIFORM_BYTES,
+            size: PASS_STRIDE * MAX_PASSES as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -718,7 +797,11 @@ impl Planet {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: uniform_buffer.as_entire_binding(),
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &uniform_buffer,
+                        offset: 0,
+                        size: std::num::NonZeroU64::new(UNIFORM_BYTES),
+                    }),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -759,14 +842,7 @@ impl Planet {
     ///
     /// Оце і є прохід планети: вибір рівня на тіло, звіряння з кешем і
     /// віднімання камери від початку кожного патча, у `double`.
-    fn upload(
-        &mut self,
-        gpu: &Gpu,
-        scene: &Scene,
-        projection: depth::Matrix,
-        width_px: f64,
-        height_px: f64,
-    ) {
+    fn upload(&mut self, gpu: &Gpu, scene: &Scene, passes: &[Pass], width_px: f64, height_px: f64) {
         let aspect = width_px / height_px;
         let camera = &scene.camera;
         let eye = camera.position();
@@ -797,8 +873,9 @@ impl Planet {
             self.bodies.push(slot);
         }
 
-        // Поворот вигляду однаковий для всіх тіл — множиться раз, а не на тіло.
-        let view = depth::multiply(projection, camera.view_rotation());
+        // Поворот вигляду однаковий для всіх тіл і всіх проходів — множиться
+        // раз, а не на тіло й не на прохід.
+        let view_rotation = camera.view_rotation();
 
         self.draws.clear();
         let mut origin_bytes: Vec<u8> = Vec::with_capacity(self.cache.capacity * 16);
@@ -854,21 +931,28 @@ impl Planet {
             gpu.queue
                 .write_buffer(&slot.origin_buffer, 0, &origin_bytes);
 
-            let uniforms = Uniforms {
-                projection: view,
-                model: model_matrix(rotation, body.radius_m),
-                light_dir: [LIGHT_DIR[0], LIGHT_DIR[1], LIGHT_DIR[2], 0.0],
-                colour: COLOUR,
-            };
-            gpu.queue
-                .write_buffer(&slot.uniform_buffer, 0, &uniforms.to_bytes());
+            let model = model_matrix(rotation, body.radius_m);
+            for (k, plan) in passes.iter().enumerate() {
+                let uniforms = Uniforms {
+                    projection: depth::multiply(plan.projection, view_rotation),
+                    model,
+                    light_dir: [LIGHT_DIR[0], LIGHT_DIR[1], LIGHT_DIR[2], 0.0],
+                    colour: COLOUR,
+                };
+                gpu.queue.write_buffer(
+                    &slot.uniform_buffer,
+                    k as u64 * PASS_STRIDE,
+                    &uniforms.to_bytes(),
+                );
+            }
         }
     }
 
-    fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
+    fn draw(&self, pass: &mut wgpu::RenderPass<'_>, index: usize) {
         if self.draws.is_empty() {
             return;
         }
+        let offset = (index as u64 * PASS_STRIDE) as u32;
 
         pass.set_pipeline(&self.pipeline);
         pass.set_vertex_buffer(0, self.cache.offset_buffer.slice(..));
@@ -881,7 +965,7 @@ impl Planet {
         let mut bound = usize::MAX;
         for draw in &self.draws {
             if draw.body != bound {
-                pass.set_bind_group(0, &self.bodies[draw.body].bind_group, &[]);
+                pass.set_bind_group(0, &self.bodies[draw.body].bind_group, &[offset]);
                 bound = draw.body;
             }
             let first = u32::from(draw.mask) * PATCH_INDICES as u32;
@@ -912,8 +996,9 @@ impl Lines {
                     visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                        // Як і в патчів: зсув на прохід, а не буфер на прохід.
+                        has_dynamic_offset: true,
+                        min_binding_size: std::num::NonZeroU64::new(LINE_UNIFORM_BYTES),
                     },
                     count: None,
                 }],
@@ -996,7 +1081,7 @@ impl Lines {
 
         let uniform_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("line uniforms"),
-            size: 64,
+            size: PASS_STRIDE * MAX_PASSES as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -1006,7 +1091,11 @@ impl Lines {
             layout: &bind_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &uniform_buffer,
+                    offset: 0,
+                    size: std::num::NonZeroU64::new(LINE_UNIFORM_BYTES),
+                }),
             }],
         });
 
@@ -1038,7 +1127,7 @@ impl Lines {
         (make("line positions", 12), make("line colours", 16))
     }
 
-    fn upload(&mut self, gpu: &Gpu, scene: &Scene, projection: depth::Matrix) {
+    fn upload(&mut self, gpu: &Gpu, scene: &Scene, passes: &[Pass]) {
         let vertices = scene.vertex_count();
         if vertices == 0 {
             return;
@@ -1067,28 +1156,30 @@ impl Lines {
             }
         }
 
-        let mut uniform_bytes = Vec::with_capacity(64);
-        for column in projection {
-            for value in column {
-                uniform_bytes.extend_from_slice(&value.to_le_bytes());
+        let mut uniform_bytes = Vec::with_capacity(LINE_UNIFORM_BYTES as usize);
+        for (k, plan) in passes.iter().enumerate() {
+            uniform_bytes.clear();
+            for column in plan.projection {
+                for value in column {
+                    uniform_bytes.extend_from_slice(&value.to_le_bytes());
+                }
             }
+            gpu.queue
+                .write_buffer(&self.uniform_buffer, k as u64 * PASS_STRIDE, &uniform_bytes);
         }
-
-        gpu.queue
-            .write_buffer(&self.uniform_buffer, 0, &uniform_bytes);
         gpu.queue
             .write_buffer(&self.position_buffer, 0, &self.position_bytes);
         gpu.queue
             .write_buffer(&self.colour_buffer, 0, &self.colour_bytes);
     }
 
-    fn draw(&self, pass: &mut wgpu::RenderPass<'_>, scene: &Scene) {
+    fn draw(&self, pass: &mut wgpu::RenderPass<'_>, scene: &Scene, index: usize) {
         if scene.vertex_count() == 0 {
             return;
         }
 
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_bind_group(0, &self.bind_group, &[(index as u64 * PASS_STRIDE) as u32]);
         pass.set_vertex_buffer(0, self.position_buffer.slice(..));
         pass.set_vertex_buffer(1, self.colour_buffer.slice(..));
 
