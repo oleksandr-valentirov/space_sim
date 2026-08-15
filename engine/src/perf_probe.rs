@@ -27,7 +27,6 @@ use std::time::Instant;
 use crate::cubesphere;
 use crate::frame::{self, Frame};
 use crate::gpu::Gpu;
-use crate::scene::Scene;
 use crate::shot;
 use crate::sphere;
 
@@ -95,17 +94,22 @@ pub fn camera_pass_ms(passes: u32) -> f64 {
     start.elapsed().as_secs_f64() * 1000.0 / f64::from(passes)
 }
 
-/// Те саме для планети з патчів — те, що кадр робить **зараз** (R1d).
+/// Те саме для планети з патчів — те, що кадр робить **зараз** (R1d, R1e).
 ///
 /// Робота тут та сама за формою (віднімання камери в `double`, звуження до
 /// `f32`) і різна за обсягом: один початок на патч замість позиції на
 /// вершину. Тому й міряється тією самою функцією ззовні: два числа з одного
 /// прогону порівнянні, з різних — ні.
+///
+/// З R1e у прохід додалися поворот тіла й множення на радіус — дев'ять
+/// множень на початок патча замість жодного. Це те, що кадр справді робить на
+/// **одне** тіло; на N тіл прохід множиться на N.
 pub fn patch_pass_ms(passes: u32) -> f64 {
     let camera = frame::default_camera();
     let eye = camera.position();
 
-    // Ті самі патчі, що й у кадрі: шість граней нульового рівня.
+    // Ті самі патчі, що й у кадрі: шість граней нульового рівня на одиничній
+    // сфері.
     let origins: Vec<[f64; 3]> = (0..cubesphere::FACES)
         .map(|face| {
             cubesphere::Patch {
@@ -114,17 +118,27 @@ pub fn patch_pass_ms(passes: u32) -> f64 {
                 i: 0,
                 j: 0,
             }
-            .mesh(sphere::EARTH_RADIUS_M)
+            .mesh(1.0)
             .origin
         })
         .collect();
+
+    // Тіло, як у сцені: радіус Землі й поворот на 45° навколо (1,1,1) —
+    // матриця без жодного нуля, щоб вимір не залежав від того, які саме числа
+    // в ній опинились.
+    let radius = sphere::EARTH_RADIUS_M;
+    let centre = [0.0, 0.0, 0.0];
+    let rotation = frame::rotation([0.923_880, 0.220_942, 0.220_942, 0.220_942]);
 
     let mut bytes: Vec<u8> = Vec::with_capacity(origins.len() * 16);
     let mut run = || {
         bytes.clear();
         for origin in &origins {
             for k in 0..3 {
-                let value = (origin[k] - eye[k]) as f32;
+                let turned = rotation[k][0] * origin[0]
+                    + rotation[k][1] * origin[1]
+                    + rotation[k][2] * origin[2];
+                let value = (centre[k] + radius * turned - eye[k]) as f32;
                 bytes.extend_from_slice(&value.to_le_bytes());
             }
             bytes.extend_from_slice(&0.0f32.to_le_bytes());
@@ -173,7 +187,7 @@ pub fn measure(
     // Сцена без ламаних: вимір лишається порівнюваним із числами I3, де їх
     // ще не було. Коли прогноз стане частиною сцени, це буде окремий рядок
     // таблиці, а не тихо інше число в тому самому (скіл `perf-probe`).
-    let scene = Scene::new(frame::default_camera());
+    let scene = frame::default_scene(frame::default_camera());
 
     // COPY_SRC свідомо відсутній: цей вимір не читає пікселі назад, а
     // читання назад — окрема вартість, якої немає в реальному кадрі

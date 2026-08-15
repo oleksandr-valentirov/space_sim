@@ -14,10 +14,9 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::WindowId;
 
-use crate::frame::Frame;
+use crate::frame::{self, Frame};
 use crate::gpu::Gpu;
 use crate::orbit::Orbit;
-use crate::scene::Scene;
 use crate::window::{self, Target};
 
 pub struct Options {
@@ -260,7 +259,9 @@ impl State {
             &view,
             self.target.width(),
             self.target.height(),
-            &Scene::new(self.orbit.camera()),
+            // Зонд рушія дивиться на одне тіло радіуса Землі: гра свою сцену
+            // збирає сама, а тут її немає (R1e).
+            &frame::default_scene(self.orbit.camera()),
         );
 
         self.gpu.queue.submit([encoder.finish()]);

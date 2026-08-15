@@ -19,7 +19,6 @@
 use engine::egui;
 use engine::frame::{self, Frame};
 use engine::gpu::Gpu;
-use engine::scene::Scene;
 use engine::shot::{self, Shot};
 use engine::ui::{Ui, Viewport};
 
@@ -72,7 +71,7 @@ fn draw_with_ui(gpu: &Gpu, width: u32, height: u32, build: impl FnMut(&mut egui:
         });
 
     let mut scene_frame = Frame::new(gpu, shot::FORMAT);
-    let scene = Scene::new(frame::default_camera());
+    let scene = frame::default_scene(frame::default_camera());
     scene_frame.draw(gpu, &mut encoder, &view, width, height, &scene);
 
     let mut interface = Ui::new(gpu, shot::FORMAT);
@@ -99,7 +98,7 @@ fn draw_plain(gpu: &Gpu, width: u32, height: u32) -> Shot {
         });
 
     let mut scene_frame = Frame::new(gpu, shot::FORMAT);
-    let scene = Scene::new(frame::default_camera());
+    let scene = frame::default_scene(frame::default_camera());
     scene_frame.draw(gpu, &mut encoder, &view, width, height, &scene);
 
     shot::read_back(gpu, encoder, &texture, width, height).expect("кадр мав прочитатися назад")
@@ -217,7 +216,7 @@ fn the_scale_factor_scales() {
         });
 
     let mut scene_frame = Frame::new(&gpu, shot::FORMAT);
-    let scene = Scene::new(frame::default_camera());
+    let scene = frame::default_scene(frame::default_camera());
     scene_frame.draw(&gpu, &mut encoder, &view, SIZE, SIZE, &scene);
 
     let mut interface = Ui::new(&gpu, shot::FORMAT);

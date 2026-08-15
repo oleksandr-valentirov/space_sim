@@ -114,7 +114,7 @@ fn one_frame_draws_into_two_different_sizes() {
     let Some(gpu) = gpu() else { return };
 
     let mut frame = Frame::new(&gpu, shot::FORMAT);
-    let scene = Scene::new(frame::default_camera());
+    let scene = frame::default_scene(frame::default_camera());
 
     // Ширше, тоді менше. Портретних співвідношень тут немає навмисно: з
     // 10⁷ м диск ширший за вузький бік такого кадру, і аналітична формула
@@ -169,14 +169,14 @@ fn the_camera_moves_the_frame_it_draws() {
     let mut frame = Frame::new(&gpu, shot::FORMAT);
     let mut orbit = Orbit::default();
 
-    let far = draw(&gpu, &mut frame, &Scene::new(orbit.camera()));
+    let far = draw(&gpu, &mut frame, &frame::default_scene(orbit.camera()));
     let far_coverage = coverage(&far);
 
     // Обертання не має міняти покриття взагалі: сфера з усіх боків однакова.
     // Це найдешевша перевірка того, що обертання не потягло за собою
     // висоту чи проєкцію.
     orbit.drag(300.0, 120.0);
-    let turned = draw(&gpu, &mut frame, &Scene::new(orbit.camera()));
+    let turned = draw(&gpu, &mut frame, &frame::default_scene(orbit.camera()));
     assert!(
         (coverage(&turned) - far_coverage).abs() < 0.005,
         "обертання змінило покриття: {:.4} проти {far_coverage:.4}",
@@ -187,7 +187,7 @@ fn the_camera_moves_the_frame_it_draws() {
     for _ in 0..11 {
         orbit.zoom(1.0);
     }
-    let near = draw(&gpu, &mut frame, &Scene::new(orbit.camera()));
+    let near = draw(&gpu, &mut frame, &frame::default_scene(orbit.camera()));
     let measured = coverage(&near);
     let analytic = expected_at(orbit.altitude(), SIZE, SIZE);
 

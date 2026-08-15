@@ -449,7 +449,6 @@ fn the_patch_mesh_is_closed() {
 fn the_cubesphere_draws_the_same_silhouette_as_the_uv_sphere() {
     use engine::frame;
     use engine::gpu::Gpu;
-    use engine::scene::Scene;
     use engine::shot::{self, Shot};
     use engine::{sphere, sphere_render};
 
@@ -482,8 +481,13 @@ fn the_cubesphere_draws_the_same_silhouette_as_the_uv_sphere() {
 
     // Новий шлях: патчі, camera-relative раз на патч. Той самий `Frame`, що
     // йде у вікно, — інакше перевірявся б не той кадр.
-    let new = shot::take_scene(&gpu, WIDTH, HEIGHT, &Scene::new(frame::default_camera()))
-        .expect("кубосфера мала намалюватися");
+    let new = shot::take_scene(
+        &gpu,
+        WIDTH,
+        HEIGHT,
+        &frame::default_scene(frame::default_camera()),
+    )
+    .expect("кубосфера мала намалюватися");
 
     // Тло в двох шляхів різне — `sphere_render` чистить у чорний, `Frame` у
     // свій колір неба, — тож маска береться від власного тла кожного.

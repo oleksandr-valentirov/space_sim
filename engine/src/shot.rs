@@ -56,7 +56,12 @@ impl Shot {
 /// Камера — [`frame::default_camera`]: той самий погляд, що й у вікні при
 /// старті, тож знімок показує саме те, що показало б вікно.
 pub fn take(gpu: &Gpu, width: u32, height: u32) -> Result<Shot, String> {
-    take_scene(gpu, width, height, &Scene::new(frame::default_camera()))
+    take_scene(
+        gpu,
+        width,
+        height,
+        &frame::default_scene(frame::default_camera()),
+    )
 }
 
 /// Те саме, але для сцени, яку зібрав хтось інший.

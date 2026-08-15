@@ -25,7 +25,7 @@ use crate::camera::Camera;
 use crate::cubesphere::{self, Patch};
 use crate::depth;
 use crate::gpu::Gpu;
-use crate::scene::Scene;
+use crate::scene::{Body, Scene, TileSet};
 use crate::sphere;
 
 /// Колір очищення. Не чорний навмисно: чорний кадр і кадр, якого не було,
@@ -74,21 +74,50 @@ pub fn default_camera() -> Camera {
     Camera::look_at([distance, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0])
 }
 
+/// Сцена зондів рушія: одне тіло радіуса Землі в початку координат.
+///
+/// З R1e кадр малює **лише** те, що є в [`Scene::bodies`], і порожня сцена
+/// означає порожнє небо. Тіло за замовчуванням не зникло — воно переїхало
+/// сюди, у фікстуру зондів, і це саме те, чим воно завжди було: рушій не
+/// знає, що таке Земля, і не має підставляти її нікому за спиною.
+///
+/// Гра свою сцену збирає сама (`game::view`), і цієї функції не кличе.
+pub fn default_scene(camera: Camera) -> Scene {
+    let mut scene = Scene::new(camera);
+    scene.bodies.push(Body {
+        centre: [0.0, 0.0, 0.0],
+        radius_m: sphere::EARTH_RADIUS_M,
+        // Одиничний кватерніон: зонди міряють геометрію, і поворот у них
+        // лише додав би до кожного числа привід сумніватися.
+        orientation: [1.0, 0.0, 0.0, 0.0],
+        tiles: TileSet::Smooth,
+    });
+    scene
+}
+
 #[derive(Clone, Copy)]
 struct Uniforms {
     projection: depth::Matrix,
+    /// Поворот тіла, помножений на його радіус: геометрія патча — одинична
+    /// сфера, спільна для всіх тіл (R1e).
+    model: depth::Matrix,
     light_dir: [f32; 4],
     colour: [f32; 4],
 }
+
+/// Скільки байтів займає [`Uniforms`] у буфері.
+const UNIFORM_BYTES: u64 = 160;
 
 impl Uniforms {
     /// Розкладка вручну — та сама причина, що в `sphere_render` (CLAUDE.md,
     /// інваріант 1: наш `unsafe` живе лише в `core-rs`, тут його й не треба).
     fn to_bytes(self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(96);
-        for column in self.projection {
-            for value in column {
-                bytes.extend_from_slice(&value.to_le_bytes());
+        let mut bytes = Vec::with_capacity(UNIFORM_BYTES as usize);
+        for matrix in [self.projection, self.model] {
+            for column in matrix {
+                for value in column {
+                    bytes.extend_from_slice(&value.to_le_bytes());
+                }
             }
         }
         for value in self.light_dir.iter().chain(self.colour.iter()) {
@@ -96,6 +125,51 @@ impl Uniforms {
         }
         bytes
     }
+}
+
+/// Матриця повороту з кватерніона `[w, x, y, z]`, у `f64`.
+///
+/// Рядками: `m[row][col]`, тобто `m · v` — звичайне множення на вектор-стовпець.
+/// У `f64`, бо цією ж матрицею повертаються початки патчів, а вони йдуть у
+/// віднімання камери — те єдине місце, де `f32` коштував би планету на
+/// півметра не там (ROADMAP F4).
+pub(crate) fn rotation(q: [f64; 4]) -> [[f64; 3]; 3] {
+    let [w, x, y, z] = q;
+    [
+        [
+            1.0 - 2.0 * (y * y + z * z),
+            2.0 * (x * y - w * z),
+            2.0 * (x * z + w * y),
+        ],
+        [
+            2.0 * (x * y + w * z),
+            1.0 - 2.0 * (x * x + z * z),
+            2.0 * (y * z - w * x),
+        ],
+        [
+            2.0 * (x * z - w * y),
+            2.0 * (y * z + w * x),
+            1.0 - 2.0 * (x * x + y * y),
+        ],
+    ]
+}
+
+/// Поворот тіла разом із його радіусом — те, що шейдер застосує до зсуву
+/// вершини всередині патча.
+///
+/// `f32` тут безпечний з тієї самої причини, що й самі зсуви: масштаб виносить
+/// множник, а не додає до великого числа мале. Одинична сфера, помножена на
+/// 6.4·10⁶, дає ту саму **відносну** похибку, що й вершина, порахована одразу
+/// в метрах, — тобто десяток сантиметрів на Землі, як і до R1e.
+fn model_matrix(rotation: [[f64; 3]; 3], radius: f64) -> depth::Matrix {
+    let mut m = [[0.0f32; 4]; 4];
+    for (col, column) in m.iter_mut().enumerate().take(3) {
+        for (row, value) in column.iter_mut().enumerate().take(3) {
+            *value = (rotation[row][col] * radius) as f32;
+        }
+    }
+    m[3][3] = 1.0;
+    m
 }
 
 /// Буфер глибини разом із розміром, під який його зроблено.
@@ -150,13 +224,35 @@ impl Frame {
     /// в неї. Десята частина висоти дає той самий порядок запасу, що F5
     /// узяв руками (near = 1 м при прольоті на 10 м).
     ///
+    /// Висота — над **найближчим** тілом сцени, а не над Землею в початку
+    /// координат (R1e): камера біля Місяця, яка міряє висоту від Землі,
+    /// отримала б near у 4·10⁷ м і зрізала б увесь Місяць.
+    ///
     /// Роздільність глибини від near не залежить узагалі — це виміряно на
     /// F3 (`Δz ≈ z·6·10⁻⁸`, near скорочується), тож тут немає чого
     /// підбирати заради z-fighting.
-    fn near_for(&self, camera: &Camera) -> f64 {
-        let p = camera.position();
-        let distance = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
-        let altitude = distance - sphere::EARTH_RADIUS_M;
+    /// Без `self` навмисно: це чиста арифметика над сценою, і перевіряти її
+    /// не має вимагати ні GPU, ні кадру.
+    fn near_for(scene: &Scene) -> f64 {
+        let eye = scene.camera.position();
+        let length = |v: [f64; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+
+        let mut altitude = f64::INFINITY;
+        for body in &scene.bodies {
+            let d = [
+                body.centre[0] - eye[0],
+                body.centre[1] - eye[1],
+                body.centre[2] - eye[2],
+            ];
+            altitude = altitude.min(length(d) - body.radius_m);
+        }
+
+        // Порожнє небо: міряти висоту нема над чим, лишається відстань до
+        // початку координат — там-таки й ламані, якщо вони є.
+        if !altitude.is_finite() {
+            altitude = length(eye);
+        }
+
         (altitude / 10.0).max(0.1)
     }
 
@@ -196,8 +292,9 @@ impl Frame {
     /// depth-текстурою чужого розміру. Тут це неможливо.
     ///
     /// Що саме малювати, каже [`Scene`] — і це вся межа між рушієм і грою
-    /// (PROJECT.md §6). Сфера поки не в сцені, а тут: у ассеті немає радіусів
-    /// тіл, тож перелічувати їх не з чого (`crate::scene`).
+    /// (PROJECT.md §6), тепер разом із тілами: з R1e кадр малює те, що лежить
+    /// у [`Scene::bodies`], а не одну сферу радіуса Землі в початку координат.
+    /// Порожній список тіл означає порожнє небо.
     pub fn draw(
         &mut self,
         gpu: &Gpu,
@@ -207,15 +304,14 @@ impl Frame {
         height: u32,
         scene: &Scene,
     ) {
-        let camera = &scene.camera;
         self.ensure_depth(gpu, width, height);
 
         let aspect = f64::from(width) / f64::from(height);
-        let projection = depth::reversed_infinite(FOV_Y, aspect, self.near_for(camera));
+        let projection = depth::reversed_infinite(FOV_Y, aspect, Frame::near_for(scene));
 
-        // Планета: камера віднімається раз на патч, у `double`, а поворот
+        // Планети: камера віднімається раз на патч, у `double`, а поворот
         // їде в матриці (R1d). Кількість роботи на CPU більше не залежить
-        // від кількості вершин — тільки від кількості патчів.
+        // від кількості вершин — тільки від кількості патчів і тіл.
         self.planet.upload(gpu, scene, projection);
 
         // Ламані проходять той самий шлях, що вершини сфери: віднімання й
@@ -254,7 +350,7 @@ impl Frame {
     }
 }
 
-/// Планета патчами кубосфери (ROADMAP-PLANETS.md, R1d).
+/// Планети патчами кубосфери (ROADMAP-PLANETS.md, R1d, R1e).
 ///
 /// Заміна UV-сфери, і суть заміни не в формі, а в тому, **хто рахує
 /// camera-relative**. Було: CPU щокадру проганяв кожну з 8385 вершин через
@@ -262,18 +358,22 @@ impl Frame {
 /// на грань замість тисячі, — а зсув вершини всередині патча в `f32` уже
 /// лежить у буфері й не переписується взагалі.
 ///
-/// Поворот при цьому переїхав у шейдер, у ту саму матрицю, що й проєкція:
-/// перенесення зробило віднімання на CPU в `double`, повороту байдуже до
-/// масштабу (`camera::Camera::view_rotation`).
+/// Поворот вигляду при цьому переїхав у шейдер, у ту саму матрицю, що й
+/// проєкція: перенесення зробило віднімання на CPU в `double`, повороту
+/// байдуже до масштабу (`camera::Camera::view_rotation`).
+///
+/// **Геометрія — одинична сфера, спільна для всіх тіл** (R1e). Радіус і
+/// поворот конкретного тіла приходять другою матрицею, а початок його патча
+/// рахується на CPU у `f64`: `центр + R·(q·s) − око`. Це головне, чого крок
+/// не мав права зламати: множення на радіус у `f32` після віднімання камери
+/// повернуло б катастрофу скорочення на низькій орбіті.
 ///
 /// Початки патчів їдуть **storage-буфером**, а не масивом uniform-буферів:
 /// D3D12 останніх не дає взагалі, і PROJECT.md §7 уже поклав per-object дані
 /// саме сюди.
 struct Planet {
     pipeline: wgpu::RenderPipeline,
-    bind_group: wgpu::BindGroup,
-    uniform_buffer: wgpu::Buffer,
-    origin_buffer: wgpu::Buffer,
+    bind_layout: wgpu::BindGroupLayout,
 
     offset_buffer: wgpu::Buffer,
     normal_buffer: wgpu::Buffer,
@@ -281,10 +381,31 @@ struct Planet {
     index_buffer: wgpu::Buffer,
     index_count: u32,
 
-    /// Початки патчів у світових координатах тіла — рахуються раз, бо форма
-    /// планети не змінюється; камера віднімається від них щокадру.
+    /// Початки патчів на **одиничній** сфері — рахуються раз, бо форма
+    /// кубосфери від тіла не залежить: радіус і поворот множаться на них
+    /// щокадру, разом із відніманням камери.
     origins: Vec<[f64; 3]>,
     origin_bytes: Vec<u8>,
+
+    /// По слоту на тіло сцени. Ростуть за потребою й не спадають — та сама
+    /// причина, що в [`Lines`]: тіла в кадрі з'являються й зникають (Місяць
+    /// за обрієм), а перестворювати буфери щокадру означало б платити за це
+    /// щокадру.
+    slots: Vec<BodySlot>,
+    /// Скільки слотів малювати цього кадру — стільки ж, скільки тіл у сцені.
+    drawn: usize,
+}
+
+/// Те, чим одне тіло відрізняється від іншого на GPU: своя матриця й свої
+/// початки патчів.
+///
+/// Виклик малювання на тіло — свідома ціна R1e. Якщо десятки тіл виявляться
+/// дорогими, відповідь не «повернути одне тіло», а R6: патчі всіх тіл одним
+/// буфером і `draw_indirect` (ROADMAP-PLANETS.md).
+struct BodySlot {
+    uniform_buffer: wgpu::Buffer,
+    origin_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
 }
 
 /// Рівень, на якому малюється планета. Без LOD — його приносить R2.
@@ -329,7 +450,9 @@ impl Planet {
         let mut base: u32 = 0;
 
         for (index, patch) in patches.iter().enumerate() {
-            let mesh = patch.mesh(sphere::EARTH_RADIUS_M);
+            // Одинична сфера: розмір тіла — множник у матриці моделі, а не
+            // друга копія тих самих вершин (R1e).
+            let mesh = patch.mesh(1.0);
             origins.push(mesh.origin);
 
             for (offset, normal) in mesh.offsets.iter().zip(mesh.normals.iter()) {
@@ -373,22 +496,6 @@ impl Planet {
         });
         gpu.queue.write_buffer(&index_buffer, 0, &index_bytes);
 
-        let uniform_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("patch uniforms"),
-            size: 96,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        // Чотири числа на патч, а не три: вирівнювання vec4 у std430, і
-        // четверте лишається нулем.
-        let origin_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("patch origins"),
-            size: (patches.len() * 16) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
         let bind_layout = gpu
             .device
             .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -416,21 +523,6 @@ impl Planet {
                     },
                 ],
             });
-
-        let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("patch"),
-            layout: &bind_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: origin_buffer.as_entire_binding(),
-                },
-            ],
-        });
 
         let layout = gpu
             .device
@@ -516,9 +608,7 @@ impl Planet {
 
         Planet {
             pipeline,
-            bind_group,
-            uniform_buffer,
-            origin_buffer,
+            bind_layout,
             offset_buffer,
             normal_buffer,
             patch_buffer,
@@ -526,48 +616,115 @@ impl Planet {
             index_count,
             origins,
             origin_bytes,
+            slots: Vec::new(),
+            drawn: 0,
         }
     }
 
-    /// Початки патчів відносно камери й матриця на цей кадр.
+    /// Слот під тіло — свій uniform, свої початки патчів, своя bind-група.
+    fn slot(&self, gpu: &Gpu) -> BodySlot {
+        let uniform_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("patch uniforms"),
+            size: UNIFORM_BYTES,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Чотири числа на патч, а не три: вирівнювання vec4 у std430, і
+        // четверте лишається нулем.
+        let origin_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("patch origins"),
+            size: (self.origins.len() * 16) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("patch"),
+            layout: &self.bind_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: origin_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        BodySlot {
+            uniform_buffer,
+            origin_buffer,
+            bind_group,
+        }
+    }
+
+    /// Початки патчів відносно камери й матриці на цей кадр — по тілу.
     ///
-    /// Оце і є весь CPU-прохід планети: шість віднімань у `double` замість
-    /// восьми з половиною тисяч.
+    /// Оце і є весь CPU-прохід планети: шість віднімань у `double` на тіло
+    /// замість восьми з половиною тисяч.
     fn upload(&mut self, gpu: &Gpu, scene: &Scene, projection: depth::Matrix) {
         let camera = &scene.camera;
         let eye = camera.position();
 
-        self.origin_bytes.clear();
-        for origin in &self.origins {
-            // Віднімання в `double`, звуження — останнім кроком, як завжди
-            // (ROADMAP F4). Поворот тут НЕ робиться: він у матриці, бо його
-            // однаково доведеться застосувати й до зсуву вершини.
-            for k in 0..3 {
-                let value = (origin[k] - eye[k]) as f32;
-                self.origin_bytes.extend_from_slice(&value.to_le_bytes());
-            }
-            self.origin_bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        while self.slots.len() < scene.bodies.len() {
+            let slot = self.slot(gpu);
+            self.slots.push(slot);
         }
-        gpu.queue
-            .write_buffer(&self.origin_buffer, 0, &self.origin_bytes);
+        self.drawn = scene.bodies.len();
 
-        let uniforms = Uniforms {
-            projection: depth::multiply(projection, camera.view_rotation()),
-            light_dir: [LIGHT_DIR[0], LIGHT_DIR[1], LIGHT_DIR[2], 0.0],
-            colour: COLOUR,
-        };
-        gpu.queue
-            .write_buffer(&self.uniform_buffer, 0, &uniforms.to_bytes());
+        // Поворот вигляду однаковий для всіх тіл — множиться раз, а не на тіло.
+        let view = depth::multiply(projection, camera.view_rotation());
+
+        for (body, slot) in scene.bodies.iter().zip(&self.slots) {
+            let rotation = rotation(body.orientation);
+
+            self.origin_bytes.clear();
+            for origin in &self.origins {
+                // Усе в `double`: поворот одиничного початку, множення на
+                // радіус, зсув до центра тіла й віднімання камери. Звуження до
+                // `f32` — останнім кроком, як завжди (ROADMAP F4).
+                for k in 0..3 {
+                    let turned = rotation[k][0] * origin[0]
+                        + rotation[k][1] * origin[1]
+                        + rotation[k][2] * origin[2];
+                    let value = (body.centre[k] + body.radius_m * turned - eye[k]) as f32;
+                    self.origin_bytes.extend_from_slice(&value.to_le_bytes());
+                }
+                self.origin_bytes.extend_from_slice(&0.0f32.to_le_bytes());
+            }
+            gpu.queue
+                .write_buffer(&slot.origin_buffer, 0, &self.origin_bytes);
+
+            let uniforms = Uniforms {
+                projection: view,
+                model: model_matrix(rotation, body.radius_m),
+                light_dir: [LIGHT_DIR[0], LIGHT_DIR[1], LIGHT_DIR[2], 0.0],
+                colour: COLOUR,
+            };
+            gpu.queue
+                .write_buffer(&slot.uniform_buffer, 0, &uniforms.to_bytes());
+        }
     }
 
     fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
+        if self.drawn == 0 {
+            return;
+        }
+
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_vertex_buffer(0, self.offset_buffer.slice(..));
         pass.set_vertex_buffer(1, self.normal_buffer.slice(..));
         pass.set_vertex_buffer(2, self.patch_buffer.slice(..));
         pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        pass.draw_indexed(0..self.index_count, 0, 0..1);
+
+        // Виклик на тіло: спільна геометрія, різні матриця й початки патчів.
+        for slot in &self.slots[..self.drawn] {
+            pass.set_bind_group(0, &slot.bind_group, &[]);
+            pass.draw_indexed(0..self.index_count, 0, 0..1);
+        }
     }
 }
 
@@ -775,5 +932,109 @@ impl Lines {
             }
             first += count;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Кватерніон із `[w, x, y, z]` повертає так, як обіцяє його `w`.
+    ///
+    /// Оракул — не «матриця схожа на матрицю», а образ осей при повороті на
+    /// 90° навколо z: `x → y`, `y → −x`, `z → z`. Саме це ловить переставлений
+    /// `w` (R1c: спряжений кватерніон лишається одиничним і обертає так само
+    /// добре, просто в інший бік).
+    #[test]
+    fn a_quarter_turn_about_z_takes_x_to_y() {
+        let half = std::f64::consts::FRAC_PI_4;
+        let q = [half.cos(), 0.0, 0.0, half.sin()];
+        let m = rotation(q);
+
+        let apply = |v: [f64; 3]| {
+            [
+                m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+                m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+                m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+            ]
+        };
+
+        let close = |a: [f64; 3], b: [f64; 3]| {
+            for k in 0..3 {
+                assert!((a[k] - b[k]).abs() < 1e-12, "{a:?} проти {b:?}");
+            }
+        };
+
+        close(apply([1.0, 0.0, 0.0]), [0.0, 1.0, 0.0]);
+        close(apply([0.0, 1.0, 0.0]), [-1.0, 0.0, 0.0]);
+        close(apply([0.0, 0.0, 1.0]), [0.0, 0.0, 1.0]);
+    }
+
+    /// Матриця моделі робить із зсуву те саме, що поворот із радіусом.
+    ///
+    /// Дві реалізації того самого перетворення тут навмисно поруч — як
+    /// `Camera::rotate` і `Camera::view_rotation` (R1d): CPU рахує нею початки
+    /// патчів, GPU — зсуви вершин, і розбіжність між ними дала б планету,
+    /// зшиту з двох різних планет.
+    #[test]
+    fn the_model_matrix_scales_and_turns_the_same_way_the_origins_do() {
+        let q = [0.923_880, 0.220_942, 0.220_942, 0.220_942];
+        let radius = sphere::EARTH_RADIUS_M;
+        let m = rotation(q);
+        let model = model_matrix(m, radius);
+
+        // Зсув на одиничній сфері — того ж порядку, що справжні зсуви патча.
+        let offset = [0.31, -0.42, 0.17];
+
+        for row in 0..3 {
+            let by_cpu =
+                radius * (m[row][0] * offset[0] + m[row][1] * offset[1] + m[row][2] * offset[2]);
+            // Так само, як шейдер: стовпці матриці на компоненти вектора.
+            let by_matrix = model[0][row] as f64 * offset[0]
+                + model[1][row] as f64 * offset[1]
+                + model[2][row] as f64 * offset[2];
+
+            // Півметра на 6.4·10⁶ м — це `f32` матриці, і нічого понад те.
+            assert!(
+                (by_cpu - by_matrix).abs() < 0.5,
+                "рядок {row}: {by_cpu} проти {by_matrix}"
+            );
+        }
+    }
+
+    /// Ближня площина міряється від найближчого тіла, а не від початку
+    /// координат (R1e).
+    ///
+    /// Оракул — Місяць: камера за 100 км над ним, а Земля за 4·10⁸ м. Висота
+    /// над Землею дала б near у мільйони метрів, тобто кадр, у якому Місяця
+    /// просто немає.
+    #[test]
+    fn the_near_plane_follows_the_nearest_body() {
+        let moon_centre = [4.0e8, 0.0, 0.0];
+        let moon_radius = 1.7374e6;
+        let altitude = 1.0e5;
+
+        let eye = [moon_centre[0] - moon_radius - altitude, 0.0, 0.0];
+        let camera = Camera::look_at(eye, moon_centre, [0.0, 0.0, 1.0]);
+
+        let mut scene = Scene::new(camera);
+        scene.bodies.push(Body {
+            centre: [0.0, 0.0, 0.0],
+            radius_m: sphere::EARTH_RADIUS_M,
+            orientation: [1.0, 0.0, 0.0, 0.0],
+            tiles: TileSet::Smooth,
+        });
+        scene.bodies.push(Body {
+            centre: moon_centre,
+            radius_m: moon_radius,
+            orientation: [1.0, 0.0, 0.0, 0.0],
+            tiles: TileSet::Smooth,
+        });
+
+        let near = Frame::near_for(&scene);
+        assert!(
+            (near - altitude / 10.0).abs() < 1.0,
+            "near {near} м — це не десята частина висоти над Місяцем"
+        );
     }
 }
