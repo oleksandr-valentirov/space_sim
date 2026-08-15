@@ -100,6 +100,11 @@ struct State {
     /// змінюється, а правило 5 забороняє кликати ефемериду з кадру.
     earth_radius_m: f64,
 
+    /// Проріджений слід на ланку (N2b). Живе тут, бо це стан **вигляду**:
+    /// жодне число світу від нього не залежить, і нитка симуляції про нього
+    /// не знає.
+    trails: crate::trail::Cache,
+
     /// Рельєф Місяця, завантажений у кадр при старті (D12).
     ///
     /// `Option`, і це не перестраховка: `Frame::load_terrain` законно
@@ -452,6 +457,7 @@ impl State {
             target,
             gpu,
             frame,
+            trails: crate::trail::Cache::new(),
             ui,
             input,
             // Англійська як основна (ROADMAP-UI.md, правило 7); перемикач —
@@ -787,11 +793,19 @@ impl State {
                 label: Some("game frame"),
             });
 
-        let mut scene = view::build_with_preview(
+        // Проріджений слід, а не повний: N1 виміряв 23.7 мс на кадр на
+        // тридцяти апаратах, N2b звів це до 11.8. Висота кадру — та, у яку
+        // зараз малюють, бо критерій екранний.
+        let mut thinning = view::Thinning {
+            cache: &mut self.trails,
+            height_px: self.target.height(),
+        };
+        let mut scene = view::build_thinned(
             &snapshot,
             self.orbit.camera(),
             self.preview.as_ref().map_or(&[], |p| p.legs.as_slice()),
             self.view_frame,
+            &mut thinning,
         );
         // Рельєф — після побудови сцени й тільки якщо він завантажився (D12).
         // `view` про кадр не знає, а хендл видає саме кадр.

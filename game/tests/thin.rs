@@ -32,11 +32,17 @@ fn gpu() -> Option<Gpu> {
     Gpu::for_tests()
 }
 
-fn viewport() -> view::Viewport {
-    view::Viewport {
-        width_px: SIZE,
-        height_px: SIZE,
-    }
+fn thinned(
+    snapshot: &game::snapshot::WorldSnapshot,
+    camera: engine::camera::Camera,
+    height_px: u32,
+) -> engine::scene::Scene {
+    let mut cache = game::trail::Cache::new();
+    let mut thinning = view::Thinning {
+        cache: &mut cache,
+        height_px,
+    };
+    view::build_thinned(snapshot, camera, &[], ViewFrame::Inertial, &mut thinning)
 }
 
 fn flown() -> game::snapshot::WorldSnapshot {
@@ -117,7 +123,7 @@ fn thinning_drops_vertices_and_keeps_the_picture() {
         let camera = || Orbit::at_altitude(altitude).camera();
 
         let full = view::build_in(&snapshot, camera(), ViewFrame::Inertial);
-        let thin = view::build_thinned(&snapshot, camera(), &[], ViewFrame::Inertial, viewport());
+        let thin = thinned(&snapshot, camera(), SIZE);
 
         // Перше твердження: вершин не більшає ніде, а на масштабі всієї місії
         // меншає в рази.
@@ -182,26 +188,8 @@ fn a_bigger_frame_keeps_more_vertices() {
     let snapshot = flown();
     let camera = || Orbit::at_altitude(mission::CAMERA_ALTITUDE_M).camera();
 
-    let small = view::build_thinned(
-        &snapshot,
-        camera(),
-        &[],
-        ViewFrame::Inertial,
-        view::Viewport {
-            width_px: 640,
-            height_px: 360,
-        },
-    );
-    let large = view::build_thinned(
-        &snapshot,
-        camera(),
-        &[],
-        ViewFrame::Inertial,
-        view::Viewport {
-            width_px: 2560,
-            height_px: 1440,
-        },
-    );
+    let small = thinned(&snapshot, camera(), 360);
+    let large = thinned(&snapshot, camera(), 1440);
 
     assert!(
         vertices(&large) > vertices(&small),

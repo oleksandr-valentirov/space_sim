@@ -50,6 +50,7 @@ pub mod sim;
 pub mod snapshot;
 pub mod text;
 pub mod thin;
+pub mod trail;
 pub mod view;
 pub mod world;
 pub mod zvc;

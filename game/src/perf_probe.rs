@@ -373,21 +373,27 @@ pub fn run(options: &app::Options, days: f64, frames: u32) -> Result<(), String>
         for (width, height) in [(1280u32, 720u32), (1920, 1080)] {
             // Проріджена сцена будується під **свою** роздільність: критерій
             // екранний, і на 1080p пів пікселя — це інша величина в метрах.
-            let viewport = view::Viewport {
-                width_px: width,
+            // Кеш новий на кожну роздільність: критерій від неї залежить, і
+            // теплий кеш чужої роздільності виміряв би не те.
+            let mut cache = crate::trail::Cache::new();
+            let mut thinning = view::Thinning {
+                cache: &mut cache,
                 height_px: height,
             };
+            // Перший прохід наповнює кеш, другий — те, що платить гра щокадру.
+            let _ = view::build_thinned(&snapshot, camera(), &[], frame, &mut thinning);
             let thinned_start = Instant::now();
-            let thinned = view::build_thinned(&snapshot, camera(), &[], frame, viewport);
+            let thinned = view::build_thinned(&snapshot, camera(), &[], frame, &mut thinning);
             let thinned_ms = thinned_start.elapsed().as_secs_f64() * 1000.0;
             let thinned_size = SceneSize::of(&thinned, &snapshot);
 
             println!(
                 "  {width}×{height}, проріджування: {} → {} вершин (×{:.0}), \
-                 побудова {thinned_ms:.3} мс",
+                 побудова з теплим кешем {thinned_ms:.3} мс, ланок у кеші {}",
                 size.vertices,
                 thinned_size.vertices,
-                size.vertices as f64 / thinned_size.vertices.max(1) as f64
+                size.vertices as f64 / thinned_size.vertices.max(1) as f64,
+                thinning.cache.len()
             );
 
             for (overlay, name) in [(Overlay::None, "немає"), (Overlay::Panels, "панелі")]

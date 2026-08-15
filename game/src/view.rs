@@ -43,15 +43,13 @@ use crate::palette;
 /// маркер має лишатися маркером — того самого розміру на екрані.
 const MARKER_FRACTION: f64 = 0.01;
 
-/// Розмір кадру в пікселях — усе, що проріджуванню треба знати про вікно.
+/// Що проріджуванню треба знати про вікно й що воно вже знає.
 ///
-/// Не `engine::ui::Viewport`: той несе ще й масштаб інтерфейсу й позицію
-/// курсора, а тут потрібні рівно два числа. Ширина потрібна разом із висотою,
-/// бо горизонтальний кут зору виводиться зі співвідношення сторін, і без неї
-/// відхилення по `x` міряли б у інших пікселях, ніж по `y`.
-#[derive(Clone, Copy)]
-pub struct Viewport {
-    pub width_px: u32,
+/// Висота кадру, і тільки вона: `fov_y` вертикальне, і `engine::lod::focal_px`
+/// виводить пікселі на радіан саме з неї. Ширина сюди не входить, бо допуск
+/// тепер у метрах (`crate::trail`), а не в пікселях екрана.
+pub struct Thinning<'a> {
+    pub cache: &'a mut crate::trail::Cache,
     pub height_px: u32,
 }
 
@@ -64,7 +62,7 @@ pub fn build_in(snapshot: &WorldSnapshot, camera: Camera, frame: ViewFrame) -> S
     build_with_preview(snapshot, camera, &[], frame)
 }
 
-/// Те саме, але сліди проріджені за екранним критерієм (N2a).
+/// Те саме, але сліди проріджені за екранним критерієм (N2a, N2b).
 ///
 /// Окремим входом, а не прапорцем у [`build_in`], і не заради сумісності:
 /// оракул кроку — це порівняння **двох** сцен, проріджена проти повної, тож
@@ -74,9 +72,12 @@ pub fn build_thinned(
     camera: Camera,
     preview: &[std::sync::Arc<crate::leg::Leg>],
     frame: ViewFrame,
-    viewport: Viewport,
+    thinning: &mut Thinning<'_>,
 ) -> Scene {
-    build_all(snapshot, camera, preview, frame, Some(viewport))
+    thinning.cache.begin_frame();
+    let scene = build_all(snapshot, camera, preview, frame, Some(thinning));
+    thinning.cache.sweep();
+    scene
 }
 
 /// Те саме, плюс спекулятивна лінія з планувальника (ROADMAP J5).
@@ -103,7 +104,7 @@ fn build_all(
     camera: Camera,
     preview: &[std::sync::Arc<crate::leg::Leg>],
     frame: ViewFrame,
-    thin: Option<Viewport>,
+    mut thin: Option<&mut Thinning<'_>>,
 ) -> Scene {
     let mut scene = Scene::new(camera);
 
@@ -173,42 +174,68 @@ fn build_all(
         let mut history: Vec<[f64; 3]> = Vec::new();
         let mut future: Vec<[f64; 3]> = Vec::new();
 
-        for leg in &vessel.legs {
-            let normals = plane_normals(&leg.samples);
-            for (index, sample) in leg.samples.iter().enumerate() {
-                let point = geocentric(sample);
-                // Кожна точка бере базис **своєї миті** — у цьому вся суть
-                // обертового фрейму: базис «зараз» дав би просто повернуту
-                // інерціальну траєкторію.
-                let point = match now {
-                    Some(s) => match sample_frame(sample, normals[index], &s) {
-                        Some(turned) => turned,
-                        // Виродженого базису на семплі бути не може, якщо він
-                        // є «зараз», — але мовчазний NaN коштував би дорожче
-                        // за цю гілку.
-                        None => continue,
-                    },
-                    None => point,
-                };
-
-                if sample.state.t <= snapshot.t {
-                    history.push(point);
-                } else {
-                    // Перша точка прогнозу повторює останню точку історії,
-                    // інакше між двома ламаними був би розрив завширшки в
-                    // крок інтегратора — тобто в години польоту.
-                    if future.is_empty() {
-                        if let Some(&last) = history.last() {
-                            future.push(last);
-                        }
+        // Кожна точка бере базис **своєї миті** — у цьому вся суть обертового
+        // фрейму: базис «зараз» дав би просто повернуту інерціальну
+        // траєкторію. Розкладає точку по історії й прогнозу час семпла, і
+        // після проріджування він приходить разом із точкою — індексів там уже
+        // немає.
+        let place = |t: f64, point: [f64; 3], history: &mut Vec<_>, future: &mut Vec<_>| {
+            if t <= snapshot.t {
+                history.push(point);
+            } else {
+                // Перша точка прогнозу повторює останню точку історії, інакше
+                // між двома ламаними був би розрив завширшки в крок
+                // інтегратора — тобто в години польоту.
+                if future.is_empty() {
+                    if let Some(&last) = history.last() {
+                        future.push(last);
                     }
-                    future.push(point);
+                }
+                future.push(point);
+            }
+        };
+
+        match thin.as_deref_mut() {
+            None => {
+                for leg in &vessel.legs {
+                    let normals = plane_normals(&leg.samples);
+                    for (index, sample) in leg.samples.iter().enumerate() {
+                        let point = match now {
+                            Some(s) => match sample_frame(sample, normals[index], &s) {
+                                Some(turned) => turned,
+                                // Виродженого базису на семплі бути не може,
+                                // якщо він є «зараз», — але мовчазний NaN
+                                // коштував би дорожче за цю гілку.
+                                None => continue,
+                            },
+                            None => geocentric(sample),
+                        };
+                        place(sample.state.t, point, &mut history, &mut future);
+                    }
+                }
+            }
+            Some(thinning) => {
+                let focal =
+                    engine::lod::focal_px(engine::frame::FOV_Y, f64::from(thinning.height_px));
+                for leg in &vessel.legs {
+                    // Точки приїжджають уже перетвореними й прорідженими: у
+                    // кадрі лишається тільки розкласти їх по двох ламаних.
+                    for &(t, point) in thinning.cache.points(
+                        leg,
+                        frame,
+                        now.as_ref(),
+                        &scene.camera,
+                        focal,
+                        crate::thin::TOLERANCE_PX,
+                    ) {
+                        place(t, point, &mut history, &mut future);
+                    }
                 }
             }
         }
 
-        push_trail(&mut scene, history, palette::HISTORY.scene(), thin);
-        push_trail(&mut scene, future, palette::PREDICTION.scene(), thin);
+        push_line(&mut scene, history, palette::HISTORY.scene());
+        push_line(&mut scene, future, palette::PREDICTION.scene());
 
         // Де апарат зараз. Позиція інтерпольована (снапшот), а Земля береться
         // з найближчого семпла: за крок інтегратора вона зсувається на частки
@@ -243,38 +270,16 @@ fn build_all(
             }
         }
     }
-    push_trail(&mut scene, speculative, palette::PREVIEW.scene(), thin);
+    // Прев'ю не проріджується: планувальник перебудовує його щоразу, тож
+    // кеш на ланку тут не мав би на чому триматися (ROADMAP.md, N2b).
+    push_line(&mut scene, speculative, palette::PREVIEW.scene());
 
     scene
 }
 
-/// Ламана сліду: та сама [`push_line`], але через критерій N2a, якщо просили.
-///
-/// Проріджуються **сліди**, а не всі ламані сцени. Хрест маркера — три
-/// відрізки по дві точки, і критерій над ними або нічого не зробить, або
-/// з'їсть маркер; крива нульової швидкості будується не з семплів, і в неї
-/// своя ціна (борг D11).
-fn push_trail(scene: &mut Scene, points: Vec<[f64; 3]>, colour: [f32; 4], thin: Option<Viewport>) {
-    let points = match thin {
-        None => points,
-        Some(viewport) => {
-            let kept = crate::thin::keep(
-                &points,
-                &scene.camera,
-                engine::frame::FOV_Y,
-                viewport.width_px,
-                viewport.height_px,
-                crate::thin::TOLERANCE_PX,
-            );
-            kept.into_iter().map(|index| points[index]).collect()
-        }
-    };
-    push_line(scene, points, colour);
-}
-
 /// Позиція семпла відносно Землі **тієї самої миті** — те, з чого починається
 /// будь-який із двох фреймів.
-fn geocentric(sample: &crate::leg::Sample) -> [f64; 3] {
+pub fn geocentric(sample: &crate::leg::Sample) -> [f64; 3] {
     [
         sample.state.r.x - sample.earth[0],
         sample.state.r.y - sample.earth[1],
@@ -283,7 +288,11 @@ fn geocentric(sample: &crate::leg::Sample) -> [f64; 3] {
 }
 
 /// Точка семпла в синодичному фреймі його власної миті, у масштабі `now`.
-fn sample_frame(sample: &crate::leg::Sample, normal: [f64; 3], now: &Synodic) -> Option<[f64; 3]> {
+pub fn sample_frame(
+    sample: &crate::leg::Sample,
+    normal: [f64; 3],
+    now: &Synodic,
+) -> Option<[f64; 3]> {
     let d = [
         sample.moon[0] - sample.earth[0],
         sample.moon[1] - sample.earth[1],
