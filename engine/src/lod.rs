@@ -184,6 +184,13 @@ pub struct Body {
     pub radius_m: f64,
     /// Поворот із системи тіла в систему світу.
     pub rotation: [[f64; 3]; 3],
+    /// Глибше за цей рівень вибір не спускається.
+    ///
+    /// Не те саме, що [`MAX_LEVEL`]: та стеля про арифметику критерію, а ця
+    /// — про дані. Тіло з тайлами не має сенсу ділити глибше за піраміду
+    /// тайлів (R5c), і різниця мусить бути видима в типі, а не захована в
+    /// кадрі.
+    pub max_level: u32,
 }
 
 impl Body {
@@ -193,6 +200,7 @@ impl Body {
             centre,
             radius_m,
             rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            max_level: MAX_LEVEL,
         }
     }
 
@@ -368,7 +376,7 @@ fn subdivide(patch: Patch, body: &Body, eye: [f64; 3], focal: f64, out: &mut Sel
         out.patches.push(patch);
         return;
     }
-    if patch.level >= MAX_LEVEL {
+    if patch.level >= body.max_level.min(MAX_LEVEL) {
         out.patches.push(patch);
         out.clamped += 1;
         return;

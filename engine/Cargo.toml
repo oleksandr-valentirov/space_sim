@@ -31,5 +31,12 @@ egui = "0.36"
 egui-wgpu = "0.36"
 egui-winit = { version = "0.36", default-features = false }
 
+# Тільки для тестів рельєфу (R5c): щоб перевірити, що тайл доїжджає до
+# кадру, тест мусить його скукувати. Залежність саме `dev-`, тобто в гру
+# кукер не лінкується — і напрямок `dem-cook → engine` від цього не
+# перевертається: `cargo` бачить цикл лише між звичайними залежностями.
+[dev-dependencies]
+dem-cook = { path = "../tools/dem-cook" }
+
 [lints]
 workspace = true

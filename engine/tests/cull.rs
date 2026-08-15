@@ -399,9 +399,8 @@ fn turning_the_body_turns_the_set_with_it() {
     );
     let (turned_patches, turned_visible) = run(
         lod::Body {
-            centre: [0.0, 0.0, 0.0],
-            radius_m: EARTH_RADIUS_M,
             rotation: turn,
+            ..lod::Body::still([0.0, 0.0, 0.0], EARTH_RADIUS_M)
         },
         Body::smooth([0.0, 0.0, 0.0], EARTH_RADIUS_M, turn),
         &turned_camera,

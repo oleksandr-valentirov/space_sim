@@ -35,3 +35,4 @@ __pycache__/
 # Компілятор Slang — 24 МБ бінарників, оновлюються щомісяця.
 # Ставиться scripts/fetch_slang.sh (ROADMAP P1).
 /tools/slang/
+engine/build/

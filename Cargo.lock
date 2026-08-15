@@ -528,6 +528,7 @@ name = "engine"
 version = "0.1.0"
 dependencies = [
  "core-rs",
+ "dem-cook",
  "egui",
  "egui-wgpu",
  "egui-winit",

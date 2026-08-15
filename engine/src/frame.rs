@@ -27,8 +27,9 @@ use crate::cull;
 use crate::depth;
 use crate::gpu::Gpu;
 use crate::lod;
-use crate::scene::{Body, Scene, TileSet};
+use crate::scene::{self, Body, Scene, TileSet};
 use crate::sphere;
+use crate::tiles;
 
 /// Колір очищення. Не чорний навмисно: чорний кадр і кадр, якого не було,
 /// виглядають однаково, і перевірка «щось намалювалось» на чорному нічого
@@ -55,7 +56,11 @@ const LINE_WGSL: &str = include_str!("../shaders/line.wgsl");
 
 pub const FOV_Y: f64 = std::f64::consts::PI / 3.0;
 
-const LIGHT_DIR: [f32; 3] = [0.4, 0.4, 0.82];
+/// Напрямок ДО джерела світла, світові осі. Тимчасовий, як і саме освітлення.
+///
+/// Публічний рівно тому, що на нього спирається перевірка: рельєф видно лише
+/// на освітленому боці, тож тест мусить знати, де той бік (R5c).
+pub const LIGHT_DIR: [f32; 3] = [0.4, 0.4, 0.82];
 const COLOUR: [f32; 4] = [0.2, 0.6, 0.9, 1.0];
 
 /// Висота камери за замовчуванням, метри над поверхнею.
@@ -105,10 +110,13 @@ struct Uniforms {
     model: depth::Matrix,
     light_dir: [f32; 4],
     colour: [f32; 4],
+    /// `x` — скільки одиниць одиничної сфери в одній одиниці зберігання
+    /// висоти, тобто `scale_m / radius_m`. Решта — нулі.
+    terrain: [f32; 4],
 }
 
 /// Скільки байтів займає [`Uniforms`] у буфері.
-const UNIFORM_BYTES: u64 = 160;
+const UNIFORM_BYTES: u64 = 176;
 
 impl Uniforms {
     /// Розкладка вручну — та сама причина, що в `sphere_render` (CLAUDE.md,
@@ -122,7 +130,12 @@ impl Uniforms {
                 }
             }
         }
-        for value in self.light_dir.iter().chain(self.colour.iter()) {
+        for value in self
+            .light_dir
+            .iter()
+            .chain(self.colour.iter())
+            .chain(self.terrain.iter())
+        {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
         bytes
@@ -282,6 +295,95 @@ impl Frame {
             lines: Lines::new(gpu, format),
             passes: Vec::with_capacity(MAX_PASSES),
         }
+    }
+
+    /// Завантажити рельєф у кадр і дістати хендл на нього
+    /// (ROADMAP-PLANETS.md, R5c).
+    ///
+    /// По **текстурі на тайл**, а не по шару спільного масиву: правило 6
+    /// етапу R вимагає bindless, і різниця не термінологічна. У
+    /// `texture_2d_array` спільний розмір і жорстка стеля шарів (256 у
+    /// downlevel-лімітах, тобто менше, ніж тайлів у першому ж асеті), у
+    /// bindless-масиву — ні того, ні того.
+    ///
+    /// Помилка тут гучна навмисно. Пристрій без bindless — це бекенд, який і
+    /// так не ціль (PROJECT.md §7 називає Vulkan, D3D12, Metal), і мовчазне
+    /// «намалюємо гладко» дало б планету без гір, яку ніхто не відрізнить від
+    /// планети, чий асет не завантажився.
+    pub fn load_terrain(
+        &mut self,
+        gpu: &Gpu,
+        terrain: &tiles::Terrain,
+    ) -> Result<scene::TerrainId, String> {
+        if self.planet.terrain.is_none() {
+            return Err(format!(
+                "рельєф вимагає bindless-масиву текстур, а адаптер його не має: {}",
+                gpu.describe()
+            ));
+        }
+        let count = tiles::Terrain::count(terrain.levels);
+        if count > MAX_TILES as usize {
+            return Err(format!(
+                "{count} тайлів проти стелі масиву {MAX_TILES} — підніміть MAX_TILES"
+            ));
+        }
+
+        let side = tiles::NODES as u32;
+        let mut views = Vec::with_capacity(count);
+        for index in 0..count {
+            let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("terrain tile"),
+                size: wgpu::Extent3d {
+                    width: side,
+                    height: side,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                // Цілі зі знаком, як у самому тайлі: жодного перетворення між
+                // асетом і текстурою, отже й жодного місця, де воно поїде.
+                format: wgpu::TextureFormat::R16Sint,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            gpu.queue.write_texture(
+                texture.as_image_copy(),
+                terrain.tile_bytes(index),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(side * 2),
+                    rows_per_image: Some(side),
+                },
+                wgpu::Extent3d {
+                    width: side,
+                    height: side,
+                    depth_or_array_layers: 1,
+                },
+            );
+            views.push(texture.create_view(&wgpu::TextureViewDescriptor::default()));
+        }
+
+        let borrowed: Vec<&wgpu::TextureView> = views.iter().collect();
+        let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("terrain tiles"),
+            layout: self
+                .planet
+                .tile_layout
+                .as_ref()
+                .expect("макет масиву є рівно тоді, коли є пайплайн рельєфу"),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureViewArray(&borrowed),
+            }],
+        });
+
+        self.planet.terrains.push(TerrainSlot {
+            data: terrain.clone(),
+            bind_group,
+            scale_m: terrain.scale_m,
+        });
+        Ok(scene::TerrainId(self.planet.terrains.len() - 1))
     }
 
     /// Ближня площина під поточну висоту камери.
@@ -549,8 +651,27 @@ impl Frame {
 ///   кеші. Дорого це стане тоді, коли патчів стануть тисячі, і відповідь на
 ///   це вже названа: R6 і `draw_indexed_indirect`.
 struct Planet {
-    pipeline: wgpu::RenderPipeline,
+    /// Два пайплайни, а не гілка в шейдері: гладке тіло й тіло з рельєфом
+    /// малюються різними програмами (R5c). Причина — уже спіймана пастка
+    /// F6: рантайм-перемикач за uniform-ом у вершинній стадії на ACO читався
+    /// мовчки неправильно. Друга причина простіша: у гладкого тіла немає
+    /// тайла, і `textureLoad` за невизначеним індексом не мусить навіть
+    /// потрапити в його програму.
+    smooth: wgpu::RenderPipeline,
+    terrain: Option<wgpu::RenderPipeline>,
     bind_layout: wgpu::BindGroupLayout,
+    tile_layout: Option<wgpu::BindGroupLayout>,
+    /// Група висот для тіла **без** рельєфу.
+    ///
+    /// Обидва пайплайни ділять один макет, тож група 1 мусить бути
+    /// прив'язана завжди — навіть у гладкої програми, яка до неї не
+    /// звертається. Один тайл 1×1 з нулем: `PARTIALLY_BOUND` дозволив би й
+    /// порожній масив, але порожній масив — це ще один шлях, який працює
+    /// не всюди однаково, а один нульовий тексель коштує чотирьох байтів.
+    no_tiles: Option<wgpu::BindGroup>,
+
+    /// Завантажені рельєфи: по текстурі на тайл.
+    terrains: Vec<TerrainSlot>,
 
     cache: PatchCache,
     /// Усі шістнадцять наборів індексів підряд: набір `m` починається з
@@ -577,6 +698,20 @@ struct Draw {
     mask: cubesphere::EdgeMask,
 }
 
+/// Завантажений рельєф: по текстурі на тайл плюс сам тайлсет.
+///
+/// Текстура на тайл, а не один шар масиву на тайл: правило 6 етапу R вимагає
+/// **bindless-масив**, а не `texture_2d_array`. Різниця не термінологічна —
+/// у масиву шарів спільний розмір і жорстка стеля (256 у downlevel-лімітах),
+/// у bindless-масиву ні того, ні того, і саме тому на нього й перейшли
+/// (PROJECT.md §7, розвідка P0: 10⁶ елементів на цій машині).
+struct TerrainSlot {
+    data: tiles::Terrain,
+    bind_group: wgpu::BindGroup,
+    /// Метрів на одиницю зберігання — множник для вершинного зсуву.
+    scale_m: f32,
+}
+
 /// Те, чим одне тіло відрізняється від іншого на GPU: своя матриця й свої
 /// початки патчів.
 ///
@@ -587,6 +722,13 @@ struct BodySlot {
     uniform_buffer: wgpu::Buffer,
     origin_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    /// Який рельєф зараз прив'язаний до цього слота.
+    ///
+    /// Bind-група тримає **посилання на текстури**, тож змінити рельєф тіла
+    /// без її перестворення не можна. Поле тут саме для того, щоб не
+    /// перестворювати її щокадру: тіла в сцені міняються рідко, а кадр іде
+    /// шістдесят разів на секунду.
+    terrain: Option<usize>,
 }
 
 /// Скільки вершин у сітці одного патча.
@@ -595,6 +737,15 @@ const PATCH_VERTICES: usize = (cubesphere::SIDE + 1) * (cubesphere::SIDE + 1);
 const PATCH_INDICES: usize = cubesphere::SIDE * cubesphere::SIDE * 6;
 /// З чого починається місткість кеша — далі вона тільки росте.
 const MIN_PATCHES: usize = 64;
+
+/// Скільки елементів оголошує bindless-масив висот.
+///
+/// Стеля макета, не кількість тайлів: `PARTIALLY_BOUND_BINDING_ARRAY` дозволяє
+/// прив'язати менше. Число взяте з того, що вже є: тайлсет Місяця на п'яти
+/// рівнях піраміди — 2046 тайлів (R5b), і 4096 лишає рівно один рівень запасу.
+/// Апаратна межа на порядки вища (10⁶ на цій машині, розвідка P0), тож
+/// упертися тут можна лише в асет, а не в GPU.
+const MAX_TILES: u32 = 4096;
 
 /// Кеш геометрії патчів: слот на патч, спільний для всіх тіл.
 ///
@@ -628,6 +779,13 @@ struct PatchCache {
     /// Номер слота, повторений на кожну вершину: саме ним шейдер адресує
     /// storage-буфер початків.
     slot_buffer: wgpu::Buffer,
+    /// Вузол сітки, спакований як `a | (b << 16)` — адреса в тайлі рельєфу.
+    ///
+    /// Окремим буфером, а не бітами в номері слота: місткість кеша росте
+    /// подвоєннями й не має стелі, тож ділити з нею 32 біти означало б
+    /// поставити стелю там, де її немає. Чотири байти на вершину — ціна,
+    /// яку видно, на відміну від тієї стелі.
+    node_buffer: wgpu::Buffer,
 }
 
 impl PatchCache {
@@ -653,6 +811,7 @@ impl PatchCache {
             offset_buffer: buffer("patch offsets", 12),
             normal_buffer: buffer("patch normals", 12),
             slot_buffer: buffer("patch slots", 4),
+            node_buffer: buffer("patch nodes", 4),
         }
     }
 
@@ -692,11 +851,24 @@ impl PatchCache {
             }
             slots.extend_from_slice(&(slot as u32).to_le_bytes());
         }
+        // Вузол сітки як адреса в текстурі тайла. Порядок вершин у
+        // `PatchMesh` — `a` зовнішнім циклом, `b` внутрішнім, і тайл лежить
+        // у тому самому порядку, тобто `a` це **рядок**, а `b` — стовпець.
+        // Текстура ж адресується `(x, y)`, тож пакується `b | (a << 16)`:
+        // переплутати їх місцями означало б транспонувати рельєф, а
+        // транспонований Місяць виглядає цілком як Місяць.
+        let mut nodes = Vec::with_capacity(PATCH_VERTICES * 4);
+        for a in 0..=cubesphere::SIDE as u32 {
+            for b in 0..=cubesphere::SIDE as u32 {
+                nodes.extend_from_slice(&(b | (a << 16)).to_le_bytes());
+            }
+        }
         gpu.queue
             .write_buffer(&self.offset_buffer, base * 12, &offsets);
         gpu.queue
             .write_buffer(&self.normal_buffer, base * 12, &normals);
         gpu.queue.write_buffer(&self.slot_buffer, base * 4, &slots);
+        gpu.queue.write_buffer(&self.node_buffer, base * 4, &nodes);
 
         self.resident[slot] = Some(patch);
         self.origins[slot] = mesh.origin;
@@ -762,11 +934,32 @@ impl Planet {
                 ],
             });
 
+        // ⚠ Масив висот — **окрема група**, і це вимога wgpu, а не смак:
+        // «bind groups may not contain both a binding array and a dynamically
+        // offset buffer». Динамічний зсув у групі 0 вибирає прохід глибини
+        // (R4a) і нікуди не подінеться, тож розійтися мусив масив.
+        let tile_layout = gpu.bindless.then(|| {
+            gpu.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("patch tiles"),
+                    entries: &[wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Sint,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: std::num::NonZeroU32::new(MAX_TILES),
+                    }],
+                })
+        });
+
         let layout = gpu
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("patch"),
-                bind_group_layouts: &[Some(&bind_layout)],
+                bind_group_layouts: &[Some(&bind_layout), tile_layout.as_ref()],
                 immediate_size: 0,
             });
 
@@ -786,65 +979,112 @@ impl Planet {
             shader_location: 2,
         }];
 
-        let pipeline = gpu
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("patch"),
-                layout: Some(&layout),
-                vertex: wgpu::VertexState {
-                    module: &module,
-                    entry_point: Some("vertex_main"),
-                    compilation_options: Default::default(),
-                    buffers: &[
-                        Some(wgpu::VertexBufferLayout {
-                            array_stride: 12,
-                            step_mode: wgpu::VertexStepMode::Vertex,
-                            attributes: &offset_attrs,
-                        }),
-                        Some(wgpu::VertexBufferLayout {
-                            array_stride: 12,
-                            step_mode: wgpu::VertexStepMode::Vertex,
-                            attributes: &normal_attrs,
-                        }),
-                        Some(wgpu::VertexBufferLayout {
-                            array_stride: 4,
-                            step_mode: wgpu::VertexStepMode::Vertex,
-                            attributes: &patch_attrs,
-                        }),
-                    ],
+        let node_attrs = [wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Uint32,
+            offset: 0,
+            shader_location: 3,
+        }];
+
+        let build = |vertex: &str, fragment: &str| {
+            gpu.device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("patch"),
+                    layout: Some(&layout),
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some(vertex),
+                        compilation_options: Default::default(),
+                        buffers: &[
+                            Some(wgpu::VertexBufferLayout {
+                                array_stride: 12,
+                                step_mode: wgpu::VertexStepMode::Vertex,
+                                attributes: &offset_attrs,
+                            }),
+                            Some(wgpu::VertexBufferLayout {
+                                array_stride: 12,
+                                step_mode: wgpu::VertexStepMode::Vertex,
+                                attributes: &normal_attrs,
+                            }),
+                            Some(wgpu::VertexBufferLayout {
+                                array_stride: 4,
+                                step_mode: wgpu::VertexStepMode::Vertex,
+                                attributes: &patch_attrs,
+                            }),
+                            Some(wgpu::VertexBufferLayout {
+                                array_stride: 4,
+                                step_mode: wgpu::VertexStepMode::Vertex,
+                                attributes: &node_attrs,
+                            }),
+                        ],
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some(fragment),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        // Без відсікання граней — той самий вибір, що був у
+                        // сфери: коректність тримається на тесті глибини, а не
+                        // на вгаданому порядку обходу вершин.
+                        cull_mode: None,
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: depth::FORMAT,
+                        depth_write_enabled: Some(true),
+                        depth_compare: Some(depth::COMPARE),
+                        stencil: wgpu::StencilState::default(),
+                        bias: wgpu::DepthBiasState::default(),
+                    }),
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                })
+        };
+
+        let no_tiles = tile_layout.as_ref().map(|layout| {
+            let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("no terrain"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
                 },
-                fragment: Some(wgpu::FragmentState {
-                    module: &module,
-                    entry_point: Some("fragment_main"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                primitive: wgpu::PrimitiveState {
-                    // Без відсікання граней — той самий вибір, що був у
-                    // сфери: коректність тримається на тесті глибини, а не
-                    // на вгаданому порядку обходу вершин.
-                    cull_mode: None,
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: depth::FORMAT,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(depth::COMPARE),
-                    stencil: wgpu::StencilState::default(),
-                    bias: wgpu::DepthBiasState::default(),
-                }),
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R16Sint,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
             });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("no terrain"),
+                layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureViewArray(&[&view]),
+                }],
+            })
+        });
+
+        let smooth = build("vertex_smooth", "fragment_smooth");
+        let terrain = gpu
+            .bindless
+            .then(|| build("vertex_terrain", "fragment_terrain"));
 
         Planet {
-            pipeline,
+            smooth,
+            terrain,
+            terrains: Vec::new(),
             bind_layout,
+            tile_layout,
+            no_tiles,
             cache: PatchCache::new(gpu, MIN_PATCHES),
             index_buffer,
             bodies: Vec::new(),
@@ -895,6 +1135,7 @@ impl Planet {
             uniform_buffer,
             origin_buffer,
             bind_group,
+            terrain: None,
         }
     }
 
@@ -934,11 +1175,25 @@ impl Planet {
         self.selections.clear();
         let mut needed = 0;
         for body in &scene.bodies {
+            // Глибше за піраміду тайлів вибір не йде, і це не обмеження, а
+            // те, що вже виміряне: клітинка патча рівня 4 на Місяці — 5.3 км
+            // проти 7.6 км відліку LOLA (R5b). Глибший рівень не приніс би
+            // жодного нового числа, зате вимагав би адресувати підпрямокутник
+            // чужого тайла. Деталь нижче за дані — це R7.
+            let ceiling = match body.tiles {
+                TileSet::Smooth => lod::MAX_LEVEL,
+                TileSet::Loaded(id) => self
+                    .terrains
+                    .get(id.0)
+                    .map(|t| t.data.levels - 1)
+                    .unwrap_or(lod::MAX_LEVEL),
+            };
             let selection = lod::select(
                 &lod::Body {
                     centre: body.centre,
                     radius_m: body.radius_m,
                     rotation: rotation(body.orientation),
+                    max_level: ceiling,
                 },
                 camera,
                 focal,
@@ -991,11 +1246,22 @@ impl Planet {
                 });
             }
 
+            // Рельєф тіла, якщо він є: множник висоти й таблиця тайлів.
+            let wanted = match body.tiles {
+                TileSet::Smooth => None,
+                TileSet::Loaded(id) => (id.0 < self.terrains.len()).then_some(id.0),
+            };
+            self.bodies[index].terrain = wanted;
+            let terrain = wanted.and_then(|id| self.terrains.get(id));
+            let height_scale = terrain
+                .map(|t| t.scale_m / body.radius_m as f32)
+                .unwrap_or(0.0);
+
             // Початки — на **слот**, а не на позицію в наборі: так номер
             // патча живе у вершинному буфері й не переписується щокадру.
             // Слоти, не зайняті цим тілом, лишаються нулями й не малюються.
             origin_bytes.clear();
-            for origin in &self.cache.origins {
+            for (slot, origin) in self.cache.origins.iter().enumerate() {
                 // Усе в `double`: поворот одиничного початку, множення на
                 // радіус, зсув до центра тіла й віднімання камери. Звуження до
                 // `f32` — останнім кроком, як завжди (ROADMAP F4).
@@ -1006,7 +1272,16 @@ impl Planet {
                     let value = (body.centre[k] + body.radius_m * turned - eye[k]) as f32;
                     origin_bytes.extend_from_slice(&value.to_le_bytes());
                 }
-                origin_bytes.extend_from_slice(&0.0f32.to_le_bytes());
+                // Четверте слово — номер тайла в bindless-масиві, а не
+                // вирівнювальний нуль: `PatchData` у шейдері саме такий.
+                let tile = match (terrain, self.cache.resident[slot]) {
+                    (Some(t), Some(patch)) => {
+                        let (covering, _) = t.data.covering(&patch);
+                        t.data.index(&covering).unwrap_or(0) as u32
+                    }
+                    _ => 0,
+                };
+                origin_bytes.extend_from_slice(&tile.to_le_bytes());
             }
             let slot = &self.bodies[index];
             gpu.queue
@@ -1019,6 +1294,7 @@ impl Planet {
                     model,
                     light_dir: [LIGHT_DIR[0], LIGHT_DIR[1], LIGHT_DIR[2], 0.0],
                     colour: COLOUR,
+                    terrain: [height_scale, 0.0, 0.0, 0.0],
                 };
                 gpu.queue.write_buffer(
                     &slot.uniform_buffer,
@@ -1035,18 +1311,32 @@ impl Planet {
         }
         let offset = (index as u64 * PASS_STRIDE) as u32;
 
-        pass.set_pipeline(&self.pipeline);
         pass.set_vertex_buffer(0, self.cache.offset_buffer.slice(..));
         pass.set_vertex_buffer(1, self.cache.normal_buffer.slice(..));
         pass.set_vertex_buffer(2, self.cache.slot_buffer.slice(..));
+        pass.set_vertex_buffer(3, self.cache.node_buffer.slice(..));
         pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
         // Виклик на патч: спільна геометрія в кеші, свій діапазон індексів на
-        // маску зшивання, `base_vertex` — на слот.
+        // маску зшивання, `base_vertex` — на слот. Пайплайн міняється лише
+        // разом із тілом: у нього або є рельєф, або немає.
         let mut bound = usize::MAX;
         for draw in &self.draws {
             if draw.body != bound {
-                pass.set_bind_group(0, &self.bodies[draw.body].bind_group, &[offset]);
+                let body = &self.bodies[draw.body];
+                pass.set_pipeline(match (&self.terrain, body.terrain) {
+                    (Some(terrain), Some(_)) => terrain,
+                    _ => &self.smooth,
+                });
+                pass.set_bind_group(0, &body.bind_group, &[offset]);
+                match body.terrain.and_then(|id| self.terrains.get(id)) {
+                    Some(slot) => pass.set_bind_group(1, &slot.bind_group, &[]),
+                    None => {
+                        if let Some(empty) = &self.no_tiles {
+                            pass.set_bind_group(1, empty, &[]);
+                        }
+                    }
+                }
                 bound = draw.body;
             }
             let first = u32::from(draw.mask) * PATCH_INDICES as u32;

@@ -7,6 +7,17 @@ pub struct Gpu {
     pub adapter: wgpu::Adapter,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
+    /// Чи вміє цей пристрій bindless-масиви текстур (ROADMAP-PLANETS.md, R5c).
+    ///
+    /// Полем, а не питанням до адаптера щоразу: рушій мусить знати відповідь
+    /// **один раз** і однаково в усіх місцях. Без цього рельєф не малюється
+    /// взагалі — правило 6 етапу R не дозволяє «спочатку класично».
+    ///
+    /// Три цілі проєкту (Vulkan, D3D12, Metal) це вміють — саме тому GL і
+    /// відпав (PROJECT.md §7). Отже `false` тут означає бекенд, який і так не
+    /// ціль, і мовчати про це не можна: той, хто просить рельєф, дістає
+    /// помилку з назвою адаптера, а не порожній кадр.
+    pub bindless: bool,
 }
 
 impl Gpu {
@@ -39,13 +50,34 @@ impl Gpu {
             })?,
         };
 
+        // Bindless просимо, лише якщо адаптер його має: інакше `request_device`
+        // впаде, і перша картинка не з'явилася б навіть там, де рельєф ніхто
+        // не просив.
+        let wanted = wgpu::Features::TEXTURE_BINDING_ARRAY
+            | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
+            | wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY;
+        let bindless = adapter.features().contains(wanted);
+
+        // downlevel_defaults, а не defaults: на етапі F нам нічого не
+        // бракує, а нижча планка означає, що перша картинка запуститься
+        // й там, де слабший бекенд. Піднімати — коли впремося.
+        let mut limits = wgpu::Limits::downlevel_defaults();
+        if bindless {
+            // Впираємось саме сюди, і число не з голови: тайлсет Місяця з
+            // п'ятьма рівнями піраміди — 2046 тайлів (R5b).
+            limits.max_binding_array_elements_per_shader_stage = wgpu::Limits::default()
+                .max_binding_array_elements_per_shader_stage
+                .max(4096);
+        }
+
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("engine"),
-            required_features: wgpu::Features::empty(),
-            // downlevel_defaults, а не defaults: на етапі F нам нічого не
-            // бракує, а нижча планка означає, що перша картинка запуститься
-            // й там, де слабший бекенд. Піднімати — коли впремося.
-            required_limits: wgpu::Limits::downlevel_defaults(),
+            required_features: if bindless {
+                wanted
+            } else {
+                wgpu::Features::empty()
+            },
+            required_limits: limits,
             memory_hints: wgpu::MemoryHints::default(),
             trace: wgpu::Trace::Off,
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
@@ -57,6 +89,7 @@ impl Gpu {
             adapter,
             device,
             queue,
+            bindless,
         })
     }
 
@@ -91,8 +124,15 @@ impl Gpu {
     pub fn describe(&self) -> String {
         let info = self.adapter.get_info();
         format!(
-            "{:?} — {} ({:?})",
-            info.backend, info.name, info.device_type
+            "{:?} — {} ({:?}){}",
+            info.backend,
+            info.name,
+            info.device_type,
+            if self.bindless {
+                ""
+            } else {
+                ", без bindless"
+            }
         )
     }
 }
