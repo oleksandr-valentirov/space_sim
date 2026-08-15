@@ -538,6 +538,9 @@ fn shape_says(shape: &egui::epaint::Shape, needle: &str) -> bool {
 
 /// Малює панель вигляду один раз і повертає, що вона віддала.
 fn click_view(frame: game::frame_view::ViewFrame, at: Option<egui::Pos2>) -> Option<ViewFrame> {
+    // Кривої тут немає навмисно: цей тест про перемикач, а підпис до кривої
+    // перевіряється окремо (U6b4).
+    let curve = None;
     let context = egui::Context::default();
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
 
@@ -549,7 +552,7 @@ fn click_view(frame: game::frame_view::ViewFrame, at: Option<egui::Pos2>) -> Opt
             ..Default::default()
         };
         let mut output = context.run_ui(input, |ui| {
-            chosen = hud::view_panel(ui, Language::English, frame);
+            chosen = hud::view_panel(ui, Language::English, frame, curve);
         });
         output.textures_delta.clear();
         chosen
@@ -579,6 +582,7 @@ fn click_view(frame: game::frame_view::ViewFrame, at: Option<egui::Pos2>) -> Opt
 }
 
 fn view_button_centre(frame: ViewFrame) -> egui::Pos2 {
+    let curve = None;
     let context = egui::Context::default();
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
 
@@ -588,7 +592,7 @@ fn view_button_centre(frame: ViewFrame) -> egui::Pos2 {
             ..Default::default()
         };
         let mut output = context.run_ui(input, |ui| {
-            hud::view_panel(ui, Language::English, frame);
+            hud::view_panel(ui, Language::English, frame, curve);
         });
         output.textures_delta.clear();
     }
@@ -637,4 +641,85 @@ fn choosing_a_frame_sends_no_command() {
     // Той самий клік по тих самих координатах, але в панель часу: команд
     // немає, бо там у цьому місці нічого немає.
     assert_eq!(click_at(&snapshot, Some(centre)), Vec::new());
+}
+
+/// Підпис до кривої з'являється разом із нею, і застереження — завжди.
+///
+/// Твердження друге тут головне: «довідка, а не межа» не може бути
+/// повідомленням про негаразди, яке з'являється в поганому випадку. Крива, яку
+/// показали як стіну хоч раз, уже збрехала — а гравець не має способу
+/// дізнатися, коли саме їй вірити.
+///
+/// Перевіряється через `read_curve` і `view_panel` разом: перше дістає числа зі
+/// снапшоту (без ефемериди, правило 5), друге їх показує лише в тому фреймі, де
+/// крива існує.
+#[test]
+fn the_curve_caption_appears_with_the_curve_and_warns_every_time() {
+    use game::frame_view::ViewFrame;
+    use game::text::{tr, Key};
+
+    let mut world = game::mission::world(&game::mission::default_asset()).expect("світ");
+    world.tick(8);
+    let snapshot = world.snapshot();
+
+    let curve = hud::read_curve(&snapshot).expect("C рахується в нитці світу");
+    println!(
+        "  C = {:.4}, апарат далеко: {}",
+        curve.jacobi, curve.far_away
+    );
+    assert!(
+        (2.0..4.0).contains(&curve.jacobi),
+        "C = {} — це вже не система Земля-Місяць",
+        curve.jacobi
+    );
+    assert!(
+        !curve.far_away,
+        "на старті місії апарат біля Місяця, а не за двома відстанями пари"
+    );
+
+    // Що саме намальовано, видно з тексту панелі: egui віддає його разом із
+    // формами, і це той самий шлях, яким його побачить гравець.
+    let drawn = |frame: ViewFrame| -> String {
+        let context = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
+        let mut text = String::new();
+        for _ in 0..2 {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            let mut output = context.run_ui(input, |ui| {
+                hud::view_panel(ui, Language::English, frame, Some(curve));
+            });
+            text = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(" | ");
+            output.textures_delta.clear();
+        }
+        text
+    };
+
+    let rotating = drawn(ViewFrame::Rotating);
+    let inertial = drawn(ViewFrame::Inertial);
+    println!("  обертовий: {rotating}");
+
+    let advice = tr(Language::English, Key::CurveIsAdvice);
+    assert!(
+        rotating.contains(advice),
+        "у обертовому фреймі немає застереження: {rotating}"
+    );
+    assert!(
+        rotating.contains(&format!("{:.4}", curve.jacobi)),
+        "панель не показала саму C: {rotating}"
+    );
+    assert!(
+        !inertial.contains(advice),
+        "в інерціальному фреймі кривої немає, а підпис до неї є: {inertial}"
+    );
 }

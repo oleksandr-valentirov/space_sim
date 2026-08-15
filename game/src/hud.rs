@@ -25,6 +25,7 @@ use crate::schedule::{Kind, Marker};
 use crate::sim::Command;
 use crate::snapshot::{VesselSnapshot, WorldSnapshot};
 use crate::text::{tr, Key, Language};
+use crate::world::{EARTH, MOON};
 
 /// Секунд у добі. Тут — не фізична стала, а одиниця показу.
 const DAY_S: f64 = 86400.0;
@@ -767,7 +768,57 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 ///
 /// `None` означає «гравець нічого не натиснув», а не «інерціальний»: різниця в
 /// тому, що перше нічого не перезаписує.
-pub fn view_panel(ui: &mut egui::Ui, language: Language, frame: ViewFrame) -> Option<ViewFrame> {
+/// Що панель каже про криву нульової швидкості (ROADMAP-UI.md, U6b4).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CurveReadout {
+    /// Константа Якобі, за якою крива побудована.
+    pub jacobi: f64,
+    /// Апарат далеко від пари — там `C` перестає щось означати.
+    pub far_away: bool,
+}
+
+/// Читає криву зі снапшоту: `C` апарата й те, чи він іще біля пари.
+///
+/// Виводиться зі снапшоту, не накопичується (правило 1 етапу U), і ефемериди
+/// не кличе (правило 5): `C` уже порахована в нитці світу, а відстань — це
+/// віднімання двох позицій, які тут-таки й лежать.
+///
+/// `far_away` міряється у **відстанях між тілами**: усе, що далі за дві, — це
+/// вже не околиця пари, а те, для чого CR3BP не писався. Виміряно на U6b1:
+/// саме там `C` уздовж місії перестає бути сталою й розмах стрибає з 0.08% до
+/// 82%.
+pub fn read_curve(snapshot: &WorldSnapshot) -> Option<CurveReadout> {
+    let vessel = snapshot.vessels.first()?;
+    let jacobi = vessel.jacobi?;
+
+    let body = |index: i32| snapshot.bodies.iter().find(|b| b.body == index);
+    let (earth, moon) = (body(EARTH)?, body(MOON)?);
+
+    let d = [
+        moon.position[0] - earth.position[0],
+        moon.position[1] - earth.position[1],
+        moon.position[2] - earth.position[2],
+    ];
+    let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    let from_earth = [
+        vessel.state.r.x - earth.position[0],
+        vessel.state.r.y - earth.position[1],
+        vessel.state.r.z - earth.position[2],
+    ];
+    let distance = (from_earth[0].powi(2) + from_earth[1].powi(2) + from_earth[2].powi(2)).sqrt();
+
+    Some(CurveReadout {
+        jacobi,
+        far_away: l > 0.0 && distance > 2.0 * l,
+    })
+}
+
+pub fn view_panel(
+    ui: &mut egui::Ui,
+    language: Language,
+    frame: ViewFrame,
+    curve: Option<CurveReadout>,
+) -> Option<ViewFrame> {
     let mut chosen = None;
 
     ui.heading(tr(language, Key::View));
@@ -798,6 +849,26 @@ pub fn view_panel(ui: &mut egui::Ui, language: Language, frame: ViewFrame) -> Op
     );
     if button(ui, FRAME, label) {
         chosen = Some(next);
+    }
+
+    // Крива існує лише в обертовому фреймі, тож і підпис до неї — теж.
+    //
+    // **Застереження друкується завжди, а не при негараздах.** Крива, показана
+    // як стіна, крізь яку апарат потім спокійно пролетить, гірша за відсутню:
+    // `C` зберігається в CR3BP, а гра літає в повній ефемериді.
+    if frame == ViewFrame::Rotating {
+        if let Some(curve) = curve {
+            ui.separator();
+            ui.label(format!(
+                "{} {:.4}",
+                tr(language, Key::ZeroVelocity),
+                curve.jacobi
+            ));
+            ui.label(tr(language, Key::CurveIsAdvice));
+            if curve.far_away {
+                ui.label(tr(language, Key::CurveFarAway));
+            }
+        }
     }
 
     chosen

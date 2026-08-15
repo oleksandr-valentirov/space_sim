@@ -731,6 +731,7 @@ impl State {
         // фрейму повертається сюди, а застосовується після кадру — як і
         // команди поруч.
         let view_frame = self.view_frame;
+        let curve = hud::read_curve(&snapshot);
         let mut chosen_frame = None;
         let mut plot_actions = Vec::new();
         let language = self.language;
@@ -777,7 +778,7 @@ impl State {
                         }
 
                         ui.separator();
-                        chosen_frame = hud::view_panel(ui, language, view_frame);
+                        chosen_frame = hud::view_panel(ui, language, view_frame, curve);
                     });
 
                 // Плот — праворуч, окремою панеллю: він квадратний і живе

@@ -107,6 +107,12 @@ pub enum Key {
     FrameInertial,
     /// Обертовий фрейм Земля-Місяць (кнопка перемикача).
     FrameRotating,
+    /// Підпис кривої нульової швидкості.
+    ZeroVelocity,
+    /// Головне застереження про криву: це довідка, а не межа.
+    CurveIsAdvice,
+    /// Апарат пішов від пари — там крива нічого не означає.
+    CurveFarAway,
 }
 
 /// Мова інтерфейсу. Дві, бо саме дві таблиці й перевіряються.
@@ -169,6 +175,9 @@ fn english(key: Key) -> &'static str {
         Key::Frame => "frame",
         Key::FrameInertial => "inertial",
         Key::FrameRotating => "earth-moon rotating",
+        Key::ZeroVelocity => "zero-velocity curve, C",
+        Key::CurveIsAdvice => "a guide, not a wall: C only holds in the CR3BP",
+        Key::CurveFarAway => "the vessel has left the pair - the curve means little there",
     }
 }
 
@@ -216,12 +225,15 @@ fn ukrainian(key: Key) -> &'static str {
         Key::Frame => "фрейм",
         Key::FrameInertial => "інерціальний",
         Key::FrameRotating => "обертовий Земля-Місяць",
+        Key::ZeroVelocity => "крива нульової швидкості, C",
+        Key::CurveIsAdvice => "довідка, а не межа: C зберігається лише в CR3BP",
+        Key::CurveFarAway => "апарат пішов від пари — там крива майже ні про що",
     }
 }
 
 /// Усі ключі — для перевірок і для того, хто колись малюватиме таблицю
 /// перекладу.
-pub const ALL: [Key; 42] = [
+pub const ALL: [Key; 45] = [
     Key::Time,
     Key::Day,
     Key::Warp,
@@ -264,6 +276,9 @@ pub const ALL: [Key; 42] = [
     Key::Frame,
     Key::FrameInertial,
     Key::FrameRotating,
+    Key::ZeroVelocity,
+    Key::CurveIsAdvice,
+    Key::CurveFarAway,
 ];
 
 #[cfg(test)]
