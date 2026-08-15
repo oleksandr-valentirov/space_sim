@@ -214,3 +214,351 @@ fn the_scene_carries_the_bodies_as_data() {
     // перевірка.
     assert_eq!([EARTH, MOON], [3, 4]);
 }
+
+// ---------------------------------------------------------------------------
+// Тіла в пікселях (ROADMAP-PLANETS.md, R1e)
+
+/// Око, з якого Земля й Місяць рівновіддалені.
+///
+/// Точка на серединному перпендикулярі до відрізка Земля-Місяць: відстань до
+/// обох однакова **за побудовою**. Тоді видимі розміри відносяться рівно як
+/// радіуси, без поправки на дальність, — інакше довелося б доводити, скільки
+/// саме дальність з'їла з різниці, а це вже не оракул, а підгонка.
+fn eye_beside(earth: [f64; 3], moon: [f64; 3], distance: f64) -> [f64; 3] {
+    let line = sub(moon, earth);
+    let mid = [
+        earth[0] + line[0] / 2.0,
+        earth[1] + line[1] / 2.0,
+        earth[2] + line[2] / 2.0,
+    ];
+    // Убік від лінії тіл — будь-куди, аби перпендикулярно.
+    let away = unit(cross(line, [0.0, 0.0, 1.0]));
+    [
+        mid[0] + away[0] * distance,
+        mid[1] + away[1] * distance,
+        mid[2] + away[2] * distance,
+    ]
+}
+
+fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn length(v: [f64; 3]) -> f64 {
+    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+}
+
+fn unit(v: [f64; 3]) -> [f64; 3] {
+    let n = length(v);
+    [v[0] / n, v[1] / n, v[2] / n]
+}
+
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// Радіус диска тіла в пікселях, коли воно **в центрі** кадру.
+///
+/// `asin(R/d)` — точний кут силуету опуклої сфери (F5), далі тангенс через
+/// половину поля зору: та сама арифметика, що в проєкційній матриці.
+///
+/// Тільки в центрі: збоку сфера проєктується в еліпс (тим помітніший, чим
+/// далі від осі), і кругла формула там просто не про ту фігуру. Саме тому
+/// розміри міряються трьома кадрами, а не одним.
+fn disc_radius_px(radius_m: f64, distance_m: f64, height: u32) -> f64 {
+    let half_angle = (radius_m / distance_m).asin();
+    half_angle.tan() / (frame::FOV_Y / 2.0).tan() * f64::from(height) / 2.0
+}
+
+fn is_lit(shot: &Shot, x: u32, y: u32) -> bool {
+    let p = shot.pixel(x, y);
+    [p[0], p[1], p[2]] != frame::CLEAR_BYTES
+}
+
+/// Скільки світлих пікселів у квадраті навколо точки, і де їхній центр ваги.
+fn blob(shot: &Shot, centre: [f32; 2], half: f64) -> (u64, [f64; 2]) {
+    let mut count = 0u64;
+    let mut sum = [0.0f64; 2];
+    for y in 0..shot.height {
+        for x in 0..shot.width {
+            if !is_lit(shot, x, y) {
+                continue;
+            }
+            if (f64::from(x) - f64::from(centre[0])).abs() > half
+                || (f64::from(y) - f64::from(centre[1])).abs() > half
+            {
+                continue;
+            }
+            count += 1;
+            sum[0] += f64::from(x) + 0.5;
+            sum[1] += f64::from(y) + 0.5;
+        }
+    }
+    let middle = if count == 0 {
+        [0.0, 0.0]
+    } else {
+        [sum[0] / count as f64, sum[1] / count as f64]
+    };
+    (count, middle)
+}
+
+/// Обидва тіла зі снапшоту — на своїх місцях і свого розміру.
+///
+/// Це те, чого не закрив R1c: сцена вже несла два тіла, а кадр і далі малював
+/// одну сферу радіуса Землі в початку координат.
+///
+/// Кадрів три, і це не марнотратство. Око в усіх одне — на серединному
+/// перпендикулярі, звідки тіла рівновіддалені. Перший кадр дивиться між ними
+/// й відповідає на «де вони»: центр ваги диска проти проєкції центра тіла,
+/// плюс порожнє небо навколо. Другий і третій дивляться на кожне тіло окремо
+/// й відповідають на «якого вони розміру»: рівно в центрі кадру силует —
+/// круг, і його радіус має точну формулу. Збоку той самий силует — еліпс
+/// (виміряно: 35×26 пікселів за 41° від осі), і круглий оракул там міряв би
+/// не те.
+#[test]
+fn both_bodies_land_where_they_are_and_at_the_size_they_are() {
+    let Some(gpu) = gpu() else { return };
+
+    const WIDTH: u32 = 2048;
+    const HEIGHT: u32 = 1024;
+    /// Стільки, щоб обидва тіла влізли в кадр і жодне не торкнулося краю.
+    const DISTANCE_M: f64 = 2.2e8;
+
+    let world = mission::world(&mission::default_asset()).expect("світ");
+    let snapshot = world.snapshot();
+
+    // Позиції — з тієї самої сцени, яку побачить кадр: інакше перевірялися б
+    // дві різні миті.
+    let probe = view::build(&snapshot, Orbit::at_altitude(1.0e6).camera());
+    let (earth, moon) = (probe.bodies[0], probe.bodies[1]);
+
+    let eye = eye_beside(earth.centre, moon.centre, DISTANCE_M);
+    let d_earth = length(sub(earth.centre, eye));
+    let d_moon = length(sub(moon.centre, eye));
+    assert!(
+        (d_earth - d_moon).abs() / d_earth < 1e-12,
+        "око не рівновіддалене: {d_earth:.6e} проти {d_moon:.6e}"
+    );
+
+    // Погляд між тілами, «вгору» — перпендикулярно до їхньої лінії, щоб вона
+    // лягла горизонтально й кожне тіло мало свою половину кадру.
+    let line = sub(moon.centre, earth.centre);
+    let mid = [
+        earth.centre[0] + line[0] / 2.0,
+        earth.centre[1] + line[1] / 2.0,
+        earth.centre[2] + line[2] / 2.0,
+    ];
+    let up = unit(cross(sub(mid, eye), line));
+    let together = view::build(&snapshot, engine::camera::Camera::look_at(eye, mid, up));
+    let taken = shot::take_scene(&gpu, WIDTH, HEIGHT, &together).expect("кадр");
+
+    // Де вони. Радіус диска тут потрібен лише як розмір вікна, а не як оракул:
+    // збоку силует еліптичний, і вікно взяте вдвічі більшим за круг саме тому.
+    let mut windows = Vec::new();
+    for (name, body) in [("Земля", earth), ("Місяць", moon)] {
+        let distance = length(sub(body.centre, eye));
+        let centre = together
+            .camera
+            .to_screen(frame::FOV_Y, WIDTH, HEIGHT, body.centre)
+            .expect("тіло попереду камери");
+        let half = 3.0 * disc_radius_px(body.radius_m, distance, HEIGHT) + 8.0;
+
+        let (count, middle) = blob(&taken, centre, half);
+        println!(
+            "  {name}: центр ваги ({:.1}, {:.1}) проти проєкції ({:.1}, {:.1}), {count} пікселів",
+            middle[0], middle[1], centre[0], centre[1]
+        );
+        assert!(count > 0, "{name}: у кадрі немає жодного пікселя тіла");
+        assert!(
+            (middle[0] - f64::from(centre[0])).hypot(middle[1] - f64::from(centre[1])) < 1.5,
+            "{name} намальований не там, де його проєкція"
+        );
+        windows.push((centre, half));
+    }
+
+    // Поза двома вікнами — порожнє небо: у сцені без прогнозу малювати більше
+    // нема чого, і жоден силует за своє вікно не виліз.
+    let mut outside = 0u64;
+    for y in 0..HEIGHT {
+        for x in 0..WIDTH {
+            if !is_lit(&taken, x, y) {
+                continue;
+            }
+            let inside = windows.iter().any(|(c, half)| {
+                (f64::from(x) - f64::from(c[0])).abs() <= *half
+                    && (f64::from(y) - f64::from(c[1])).abs() <= *half
+            });
+            if !inside {
+                outside += 1;
+            }
+        }
+    }
+    assert_eq!(outside, 0, "поза тілами світиться {outside} пікселів");
+
+    // Якого вони розміру. Те саме око, погляд просто на тіло — і силует стає
+    // кругом, для якого формула точна.
+    let mut drawn = Vec::new();
+    for (name, body) in [("Земля", earth), ("Місяць", moon)] {
+        let distance = length(sub(body.centre, eye));
+        let scene = view::build(
+            &snapshot,
+            engine::camera::Camera::look_at(eye, body.centre, up),
+        );
+        let shot = shot::take_scene(&gpu, WIDTH, HEIGHT, &scene).expect("кадр");
+
+        let expected = disc_radius_px(body.radius_m, distance, HEIGHT);
+        let centre = [WIDTH as f32 / 2.0, HEIGHT as f32 / 2.0];
+        let (count, _) = blob(&shot, centre, 2.0 * expected + 8.0);
+
+        // Радіус із площі, а не з габариту: площа збирає весь диск, тож
+        // дискретизація краю входить у неї коренем, а не в повний зріст.
+        let measured = (count as f64 / std::f64::consts::PI).sqrt();
+        println!("  {name} у центрі кадру: радіус {measured:.2} проти {expected:.2} px");
+        assert!(
+            (measured - expected).abs() < 1.0,
+            "{name}: диск радіуса {measured:.2} px замість {expected:.2} px"
+        );
+        drawn.push((measured, body.radius_m));
+    }
+
+    // І головне число кроку: розміри відносяться як радіуси. Відстань з нього
+    // випала — вона однакова, і саме заради цього око стоїть, де стоїть.
+    let ratio = drawn[0].0 / drawn[1].0;
+    let real = drawn[0].1 / drawn[1].1;
+    println!("  розміри: {ratio:.3} проти {real:.3} за радіусами");
+    assert!(
+        (ratio - real).abs() / real < 0.05,
+        "диски відносяться як {ratio:.3}, а радіуси як {real:.3}"
+    );
+}
+
+/// Повернуте тіло виглядає так само — і це не порожнє твердження.
+///
+/// Гладка сфера свого повороту показати **не може**: і силует, і нормаль у
+/// кожній точці переходять самі в себе. Тому перевіряється рівно те, що тут
+/// узагалі можна перевірити, і воно варте перевірки: поворот застосовано
+/// **однаково** до геометрії й до нормалей. Застосований до однієї з них — і
+/// кадр змінюється відразу: патчі роз'їжджаються або освітлення сповзає.
+///
+/// Виміряно, а не проголошено. Чверть оберту навколо x міняє 2382 пікселі на
+/// одну одиницю яскравості (інша діагональ трикутників у сітці) і 36 пікселів
+/// помітно — **усі 36 лежать за 0.1 пікселя від краю силуету**, де сітка
+/// кубосфери й справді не симетрична до повороту. Контроль поруч: зсув центра
+/// на один радіус міняє помітно 144414 пікселів, тобто в чотири тисячі разів
+/// більше.
+///
+/// Побачити поворот **очима** можна буде з R5, коли в тіла з'явиться поверхня;
+/// доти оракул орієнтації — числа R1c (полюс, RA нульового меридіана,
+/// швидкість обертання), а не пікселі.
+#[test]
+fn turning_a_smooth_sphere_moves_only_the_edge_of_its_silhouette() {
+    let Some(gpu) = gpu() else { return };
+
+    const SIDE: u32 = 512;
+    const ALTITUDE_M: f64 = 1.0e7;
+    /// Різниця, більша за цю, — вже не округлення інтерполяції.
+    const NOTABLE: i32 = 4;
+
+    let world = mission::world(&mission::default_asset()).expect("світ");
+    let snapshot = world.snapshot();
+
+    let scene = |orientation: Option<[f64; 4]>, shift: f64| {
+        let mut scene = view::build(&snapshot, Orbit::at_altitude(ALTITUDE_M).camera());
+        if let Some(q) = orientation {
+            scene.bodies[0].orientation = compose(q, scene.bodies[0].orientation);
+        }
+        scene.bodies[0].centre[1] += shift;
+        scene
+    };
+
+    let base = scene(None, 0.0);
+    let earth = base.bodies[0];
+    let radius_px = disc_radius_px(
+        earth.radius_m,
+        length(sub(earth.centre, base.camera.position())),
+        SIDE,
+    );
+    let taken = shot::take_scene(&gpu, SIDE, SIDE, &base).expect("кадр");
+
+    // Помітні розбіжності разом із тим, як далеко вони від краю силуету.
+    let notable = |other: &Shot| {
+        let mut count = 0u64;
+        let mut furthest = 0.0f64;
+        for y in 0..SIDE {
+            for x in 0..SIDE {
+                let (a, b) = (taken.pixel(x, y), other.pixel(x, y));
+                let difference = (0..3)
+                    .map(|k| (i32::from(a[k]) - i32::from(b[k])).abs())
+                    .max()
+                    .expect("три канали");
+                if difference <= NOTABLE {
+                    continue;
+                }
+                count += 1;
+                let dx = f64::from(x) + 0.5 - f64::from(SIDE) / 2.0;
+                let dy = f64::from(y) + 0.5 - f64::from(SIDE) / 2.0;
+                furthest = furthest.max((dx.hypot(dy) - radius_px).abs());
+            }
+        }
+        (count, furthest)
+    };
+
+    // Чверть оберту навколо трьох осей, а не однієї: переставлена компонента
+    // кватерніона збіглася б сама із собою на осі, яку вгадали.
+    let half = std::f64::consts::FRAC_PI_4;
+    for (name, axis) in [
+        ("x", [1.0, 0.0, 0.0]),
+        ("y", [0.0, 1.0, 0.0]),
+        ("z", [0.0, 0.0, 1.0]),
+    ] {
+        let turn = [
+            half.cos(),
+            half.sin() * axis[0],
+            half.sin() * axis[1],
+            half.sin() * axis[2],
+        ];
+        let turned = shot::take_scene(&gpu, SIDE, SIDE, &scene(Some(turn), 0.0)).expect("кадр");
+
+        let (count, furthest) = notable(&turned);
+        println!(
+            "  поворот на 90° навколо {name}: помітних пікселів {count}, \
+             найдальший за {furthest:.2} px від краю силуету"
+        );
+        assert!(
+            count < 100,
+            "поворот навколо {name} змінив {count} пікселів помітно — геометрія \
+             й нормалі поїхали різними шляхами"
+        );
+        assert!(
+            furthest < 1.0,
+            "поворот навколо {name} змінив піксель за {furthest:.2} px від краю \
+             силуету — це вже не край"
+        );
+    }
+
+    // Контроль: те саме порівняння на зсуві в один радіус. Без нього «нічого
+    // не змінилося» означало б лише те, що порівняння сліпе.
+    let shifted = shot::take_scene(&gpu, SIDE, SIDE, &scene(None, earth.radius_m)).expect("кадр");
+    let (count, _) = notable(&shifted);
+    println!("  зсув на один радіус: помітних пікселів {count}");
+    assert!(
+        count > 50_000,
+        "зсув на радіус змінив лише {count} пікселів — порівняння нічого не бачить"
+    );
+}
+
+/// Добуток кватерніонів `[w, x, y, z]`: спершу `b`, потім `a`.
+fn compose(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
+    let [aw, ax, ay, az] = a;
+    let [bw, bx, by, bz] = b;
+    [
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    ]
+}
