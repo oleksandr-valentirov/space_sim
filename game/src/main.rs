@@ -21,6 +21,7 @@ fn main() {
     let mut save_path: Option<PathBuf> = None;
     let mut frame = game::frame_view::ViewFrame::Inertial;
     let mut vsync_asked = false;
+    let mut perf_probe_days: Option<f64> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -36,6 +37,9 @@ fn main() {
             "--day" => day = Some(parse_f64(&value("--day"), "--day")),
             "--demo-plan" => options.demo_plan = true,
             "--rotating" => frame = game::frame_view::ViewFrame::Rotating,
+            "--perf-probe" => {
+                perf_probe_days = Some(parse_f64(&value("--perf-probe"), "--perf-probe"))
+            }
             "--load" => options.load = Some(PathBuf::from(value("--load"))),
             "--save" => save_path = Some(PathBuf::from(value("--save"))),
             "--width" => options.width = parse(&value("--width"), "--width"),
@@ -62,9 +66,12 @@ fn main() {
         options.vsync = false;
     }
 
-    let result = match shot_path {
-        Some(path) => take_shot(&path, &options, day, save_path.as_deref(), frame),
-        None => app::run(options),
+    let result = match (perf_probe_days, shot_path) {
+        // 300 кадрів — стільки ж, скільки міряє зонд рушія, щоб числа лягали
+        // в одну таблицю ROADMAP.
+        (Some(days), _) => game::perf_probe::run(&options, days, 300),
+        (None, Some(path)) => take_shot(&path, &options, day, save_path.as_deref(), frame),
+        (None, None) => app::run(options),
     };
 
     if let Err(e) = result {
@@ -85,7 +92,11 @@ const HELP: &str = "\
   --vsync         чекати на вертикальну синхронізацію
   --no-vsync      не чекати
   --width <px>    ширина, типово 1280
-  --height <px>   висота, типово 720";
+  --height <px>   висота, типово 720
+  --perf-probe <діб>
+                  заміряти справжній кадр гри після місії такої довжини:
+                  час кадру з панелями й без, вершини, пам'ять історії
+                  (скіл perf-probe, ROADMAP-UI.md U8). Тільки --release";
 
 /// Знімок місії, доведеної до кінця.
 ///

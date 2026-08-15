@@ -45,6 +45,36 @@ pub struct Stats {
 }
 
 impl Stats {
+    /// Статистика з уже зібраних зразків часу кадру, у мілісекундах.
+    ///
+    /// Винесено сюди, бо зондів стало два: цей і той, що в `game` міряє
+    /// справжній кадр гри з її панелями (U8). Формула мусить бути одна на
+    /// обидва — інакше їхні числа не можна класти в одну таблицю, а саме для
+    /// цього вони й рахуються.
+    pub fn from_samples(width: u32, height: u32, mut samples: Vec<f64>) -> Stats {
+        assert!(!samples.is_empty(), "статистика з нуля кадрів");
+        samples.sort_by(f64::total_cmp);
+
+        let frames = samples.len() as u32;
+        let min_ms = samples[0];
+        let max_ms = *samples.last().expect("непорожній");
+        let mean_ms = samples.iter().sum::<f64>() / f64::from(frames);
+
+        // Найближчий ранг, не інтерполяція — на кількасот кадрів різниця не
+        // помітна, а формула на порядок простіша.
+        let p95_index = ((f64::from(frames) * 0.95) as usize).min(samples.len() - 1);
+
+        Stats {
+            width,
+            height,
+            frames,
+            min_ms,
+            mean_ms,
+            p95_ms: samples[p95_index],
+            max_ms,
+        }
+    }
+
     pub fn fps(&self) -> f64 {
         1000.0 / self.mean_ms
     }
@@ -276,24 +306,5 @@ pub fn measure(
         samples.push(draw_once()?);
     }
 
-    samples.sort_by(f64::total_cmp);
-
-    let min_ms = samples[0];
-    let max_ms = *samples.last().expect("frames > 0");
-    let mean_ms = samples.iter().sum::<f64>() / f64::from(frames);
-
-    // Найближчий ранг, не інтерполяція — на кількасот кадрів різниця не
-    // помітна, а формула на порядок простіша.
-    let p95_index = ((f64::from(frames) * 0.95) as usize).min(samples.len() - 1);
-    let p95_ms = samples[p95_index];
-
-    Ok(Stats {
-        width,
-        height,
-        frames,
-        min_ms,
-        mean_ms,
-        p95_ms,
-        max_ms,
-    })
+    Ok(Stats::from_samples(width, height, samples))
 }

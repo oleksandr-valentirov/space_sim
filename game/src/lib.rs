@@ -40,6 +40,7 @@ pub mod leg;
 pub mod mission;
 pub mod node;
 pub mod palette;
+pub mod perf_probe;
 pub mod plan;
 pub mod planner;
 pub mod porkchop;
