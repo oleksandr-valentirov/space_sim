@@ -760,3 +760,101 @@ fn a_vessel_with_area_feels_the_sun() {
         "матриця мусить належати траєкторії, яку апарат справді летить"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Porkchop крізь межу (ROADMAP-UI.md, U5a)
+
+/// Клітинка плоту дорівнює прямому виклику Ламберта з тими самими аргументами.
+///
+/// Оракул кроку дослівно, і він саме такий тому, що це **не той самий код**:
+/// сітка йде крізь `porkchop_compute_eph`, а звірка — крізь `lambert_solve`,
+/// обидві через межу, але різними шляхами. Так ловляться переплутані осі
+/// сітки, а вони переплутуються: `t1` і `tof` обидва додатні, обидва в
+/// секундах, і транспонована сітка виглядає цілком правдоподібно.
+#[test]
+fn a_porkchop_cell_equals_a_direct_lambert_solve() {
+    let eph = load();
+    const EARTH: i32 = 3;
+    const MOON: i32 = 4;
+
+    let mu = eph.body_mu(EARTH);
+    assert!(mu > 0.0, "фікстура мусить знати масу Землі");
+
+    let t1_grid = [0.0, 3.0 * DAY, 6.0 * DAY];
+    let tof_grid = [4.0 * DAY, 5.0 * DAY];
+
+    let grid = core_rs::porkchop(&eph, EARTH, MOON, mu, true, &t1_grid, &tof_grid)
+        .expect("сітка мала порахуватися");
+    assert!(!grid.is_empty(), "жодної клітинки — звіряти нема чого");
+
+    for cell in &grid {
+        // Клітинка мусить лежати на сітці, а не десь між: це перше, що
+        // ламається при переплутаних осях.
+        assert!(
+            t1_grid.contains(&cell.t1),
+            "t1 = {} немає в сітці відходу",
+            cell.t1
+        );
+        assert!(
+            tof_grid.contains(&cell.tof),
+            "tof = {} немає в сітці перельоту",
+            cell.tof
+        );
+
+        let from = eph.body_state(EARTH, cell.t1).unwrap();
+        let to = eph.body_state(MOON, cell.t1 + cell.tof).unwrap();
+
+        let (v1, v2) = core_rs::lambert_solve(from.r, to.r, cell.tof, mu, true, 0)
+            .expect("той самий переліт мав зійтися й напряму");
+
+        let speed = |a: core_rs::Vec3d, b: core_rs::Vec3d| {
+            let (dx, dy, dz) = (a.x - b.x, a.y - b.y, a.z - b.z);
+            (dx * dx + dy * dy + dz * dz).sqrt()
+        };
+
+        let depart = speed(v1, from.v);
+        let arrive = speed(v2, to.v);
+
+        // Не бітово, і це названо чесно: обидва шляхи рахують те саме тими
+        // самими функціями, але компілятор вільний тримати проміжне в регістрі
+        // на одному шляху й не тримати на іншому. Частина з 10¹² — на дев'ять
+        // порядків нижче за все, що пережила б переплутана вісь.
+        assert!(
+            (cell.v_inf_depart - depart).abs() <= 1e-12 * depart,
+            "відхід: сітка {} проти Ламберта {depart}",
+            cell.v_inf_depart
+        );
+        assert!(
+            (cell.v_inf_arrive - arrive).abs() <= 1e-12 * arrive,
+            "прихід: сітка {} проти Ламберта {arrive}",
+            cell.v_inf_arrive
+        );
+    }
+}
+
+/// Порожня сітка — це помилка аргументу, а не порожній результат.
+///
+/// Різниця не формальна: порожній `Vec` виглядав би як «жодна клітинка не
+/// зійшлася», тобто як заборонена зона на весь плот.
+#[test]
+fn an_empty_grid_is_refused() {
+    let eph = load();
+    let mu = eph.body_mu(3);
+
+    assert_eq!(
+        core_rs::porkchop(&eph, 3, 4, mu, true, &[], &[86400.0]),
+        Err(CoreError::InvalidArg)
+    );
+    assert_eq!(
+        core_rs::porkchop(&eph, 3, 4, mu, true, &[0.0], &[]),
+        Err(CoreError::InvalidArg)
+    );
+}
+
+/// Невідоме тіло дає нульову `mu` — і сітку, яку нема з чим рахувати.
+#[test]
+fn an_unknown_body_has_no_mass() {
+    let eph = load();
+    assert_eq!(eph.body_mu(999), 0.0);
+    assert!(eph.body_mu(3) > 3.9e14, "GM Землі — близько 3.986·10¹⁴");
+}

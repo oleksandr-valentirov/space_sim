@@ -20,10 +20,15 @@
  *
  *   lam  <v1x> <v1y> <v1z> <v2x> <v2y> <v2z>   успішний розв'язок
  *   lerr <code>                                 код відмови
+ *   pork <k> <t1> <tof> <v_inf_depart> <v_inf_arrive>   клітинка сітки
  *
- * Запускається з кореня репозиторію (нічого не читає, але хай буде як усі). */
+ * `pork` з'явився з U5a: `porkchop_compute_eph` читає ефемериду, тож оракул
+ * тепер таки читає ассет — і запуск з кореня репозиторію став обов'язковим,
+ * а не косметичним. */
 
+#include "ephemeris.h"
 #include "lambert.h"
+#include "porkchop.h"
 
 #include <stdio.h>
 
@@ -42,6 +47,42 @@ static const Vec3d R1 = { 1.4959787e11, 0.0, 0.0 };
 static const Vec3d R2 = { -1.9e11, 1.1e11, 8.0e9 };
 
 #define TOF_S (2.5e7) /* ~289 діб, порядок реального вікна до Марса */
+
+#define ASSET "data/fixture/earth_moon.eph"
+#define DAY 86400.0
+
+/* Сітка Земля → Місяць: три дати відходу, два часи перельоту. Дрібна
+ * навмисно — оракул перевіряє розкладку й порядок полів, а не астрономію. */
+static void porkchop(void)
+{
+    EphemerisCtx *eph = NULL;
+    if (eph_load(ASSET, &eph) != CORE_OK) {
+        fprintf(stderr, "oracle_planning: не читається %s\n", ASSET);
+        fprintf(stderr, "  запускати з кореня репозиторію\n");
+        return;
+    }
+
+    const int EARTH = 3, MOON = 4;
+    double t1s[3] = { 0.0, 3.0 * DAY, 6.0 * DAY };
+    double tofs[2] = { 4.0 * DAY, 5.0 * DAY };
+
+    PorkchopPoint grid[6];
+    size_t n = 0;
+    if (porkchop_compute_eph(eph, EARTH, MOON, eph_body_mu(eph, EARTH), 1,
+                             t1s, 3, tofs, 2, grid, 6, &n) != CORE_OK) {
+        fprintf(stderr, "oracle_planning: сітка не порахувалась\n");
+        eph_free(eph);
+        return;
+    }
+
+    for (size_t k = 0; k < n; k++) {
+        printf("pork %zu %.17g %.17g %.17g %.17g\n",
+               k, grid[k].t1, grid[k].tof,
+               grid[k].v_inf_depart, grid[k].v_inf_arrive);
+    }
+
+    eph_free(eph);
+}
 
 static void print_pair(const char *tag, Vec3d v1, Vec3d v2)
 {
@@ -79,6 +120,8 @@ int main(void)
     Vec3d opposite = { -R1.x, -R1.y, -R1.z };
     printf("lerr %d\n",
            (int)lambert_solve(R1, opposite, TOF_S, MU_SUN, 1, 0, &v1, &v2));
+
+    porkchop();
 
     return 0;
 }

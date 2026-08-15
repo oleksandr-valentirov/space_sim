@@ -170,6 +170,18 @@ impl Ephemeris {
         Ok(state)
     }
 
+    /// Гравітаційний параметр тіла, м³/с² (ROADMAP-UI.md, U5a).
+    ///
+    /// Той самий контракт, що в [`Ephemeris::body_radius`]: читання поля,
+    /// нуль для невідомого тіла. Потрібне тому, хто рахує переліт: `mu`
+    /// **мусить** бути з того самого ассета, що й траєкторія, інакше
+    /// планувальник цілиться біля іншої Землі, ніж літає інтегратор.
+    pub fn body_mu(&self, body: i32) -> f64 {
+        // SAFETY: той самий контекст, що в body_state; C читає поле й нічого
+        // не пише.
+        unsafe { core_sys::eph_body_mu(self.ctx, body) }
+    }
+
     /// Середній радіус тіла, метри; нуль, якщо ассет не каже (ROADMAP U2a).
     ///
     /// Це та сама сфера, від якої міряють висоту атмосфера (K7a) і подія
@@ -706,6 +718,78 @@ impl fmt::Debug for Propagator {
 /// println!("{v1:?}");
 /// # Ok::<(), core_rs::CoreError>(())
 /// ```
+/// Клітинка porkchop-сітки: коли летіти, скільки летіти й чого це коштує.
+///
+/// `v_inf` — швидкість відносно тіла на своєму кінці: перша каже, з чим треба
+/// відірватися, друга — з чим прилетиш.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PorkchopPoint {
+    pub t1: f64,
+    pub tof: f64,
+    pub v_inf_depart: f64,
+    pub v_inf_arrive: f64,
+}
+
+/// Сітка porkchop, порахована з ефемериди (ROADMAP-UI.md, U5a).
+///
+/// Буфер дає Rust, C заповнює й повертає кількість (PROJECT.md §5, правило 1),
+/// тож питання «хто звільняє» тут не виникає взагалі. Розмір буфера — уся
+/// сітка: клітинок не може бути більше, ніж пар, а менше — легко, бо там, де
+/// Ламберт не зійшовся, клітинка **пропускається**, і це очікувана частина
+/// плоту, а не помилка (ROADMAP, G-етап).
+///
+/// Обгортка над `porkchop_compute_eph`, а не над `porkchop_compute`: та бере
+/// колбеки, і саме тому крізь межу не проходить (інваріант 7). Розв'язок
+/// живе в C — див. `core/planning/porkchop.h`.
+pub fn porkchop(
+    eph: &Ephemeris,
+    depart_body: i32,
+    arrive_body: i32,
+    mu: f64,
+    prograde: bool,
+    t1_grid: &[f64],
+    tof_grid: &[f64],
+) -> Result<Vec<PorkchopPoint>> {
+    if t1_grid.is_empty() || tof_grid.is_empty() {
+        return Err(CoreError::InvalidArg);
+    }
+
+    let mut out = vec![core_sys::PorkchopPoint::default(); t1_grid.len() * tof_grid.len()];
+    let mut count: usize = 0;
+
+    // SAFETY: контекст живий (позичений), обидві сітки — зрізи Rust із
+    // власними довжинами, буфер наш і рівно тієї місткості, яку ми
+    // оголошуємо. C не володіє нічим із цього після повернення.
+    let code = unsafe {
+        core_sys::porkchop_compute_eph(
+            eph.ctx,
+            depart_body,
+            arrive_body,
+            mu,
+            i32::from(prograde),
+            t1_grid.as_ptr(),
+            t1_grid.len(),
+            tof_grid.as_ptr(),
+            tof_grid.len(),
+            out.as_mut_ptr(),
+            out.len(),
+            &mut count,
+        )
+    };
+    check(code)?;
+
+    out.truncate(count);
+    Ok(out
+        .into_iter()
+        .map(|p| PorkchopPoint {
+            t1: p.t1,
+            tof: p.tof,
+            v_inf_depart: p.v_inf_depart,
+            v_inf_arrive: p.v_inf_arrive,
+        })
+        .collect())
+}
+
 pub fn lambert_solve(
     r1: Vec3d,
     r2: Vec3d,

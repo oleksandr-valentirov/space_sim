@@ -154,6 +154,21 @@ pub struct CoreEvent {
     pub param: f64,
 }
 
+/// Клітинка porkchop-сітки (`core/planning/porkchop.h`).
+///
+/// `v_inf` обидва — це швидкість **відносно тіла** на своєму кінці, тобто те,
+/// у що обходиться відхід і прихід. Поля в тому самому порядку, що в C;
+/// переставлені `t1` і `tof` дали б цілком правдоподібний плот, і саме тому
+/// оракул звіряє їх бітово.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PorkchopPoint {
+    pub t1: f64,
+    pub tof: f64,
+    pub v_inf_depart: f64,
+    pub v_inf_arrive: f64,
+}
+
 extern "C" {
     /// Завантажує скукований ассет. `path` має бути C-рядком із `\0`.
     ///
@@ -176,6 +191,14 @@ extern "C" {
     /// Не повертає [`CoreResult`], бо в C це просто читання поля контексту —
     /// без часу, без чебишевського обчислення й без способу не вдатися.
     pub fn eph_body_radius(ctx: *const EphemerisCtx, body: c_int) -> f64;
+
+    /// Гравітаційний параметр тіла, м³/с² (ROADMAP-UI.md, U5a).
+    ///
+    /// Той самий контракт, що в [`eph_body_radius`]: читання поля, нуль для
+    /// невідомого тіла, жодного коду повернення. Приїхала разом із
+    /// porkchop-сіткою, якій `mu` потрібне аргументом — і брати його з
+    /// константи в грі означало б літати біля іншої Землі, ніж інтегратор.
+    pub fn eph_body_mu(ctx: *const EphemerisCtx, body: c_int) -> f64;
 
     /// Положення й швидкість тіла в момент `t`.
     ///
@@ -279,6 +302,33 @@ extern "C" {
     /// Повертає [`CORE_ERR_INVALID_ARG`] для `dt <= 0`, `mu <= 0`,
     /// `n_revs != 0` та колінеарних `r1`, `r2` через початок координат;
     /// [`CORE_ERR_TOLERANCE_NOT_MET`] — якщо Ньютон не зійшовся.
+    /// Сітка porkchop, порахована **з ефемериди** (ROADMAP-UI.md, U5a).
+    ///
+    /// Десята функція межі й друга поза зоною детермінізму. Наявний
+    /// `porkchop_compute` бере два колбеки — і саме тому крізь межу не
+    /// проходить (інваріант 7): колбек означав би, що C кличе Rust усередині
+    /// свого циклу. Розв'язок у C, а не в Rust: обгортка сама подає
+    /// `eph_body_state`, а межа лишається пакетною — Rust дав буфер, C
+    /// заповнив і повернув кількість.
+    ///
+    /// `out_count` заповнюється й тоді, коли повернено
+    /// [`CORE_ERR_BUFFER_TOO_SMALL`]: це та сама угода, що в `prop_run`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn porkchop_compute_eph(
+        eph: *const EphemerisCtx,
+        depart_body: c_int,
+        arrive_body: c_int,
+        mu: f64,
+        prograde: c_int,
+        t1_grid: *const f64,
+        n_t1: usize,
+        tof_grid: *const f64,
+        n_tof: usize,
+        out: *mut PorkchopPoint,
+        out_cap: usize,
+        out_count: *mut usize,
+    ) -> CoreResult;
+
     pub fn lambert_solve(
         r1: Vec3d,
         r2: Vec3d,

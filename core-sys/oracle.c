@@ -20,6 +20,7 @@
  *
  *   eph  <body> <t> <x> <y> <z> <vx> <vy> <vz>
  *   rad  <body> <metres>                         середній радіус тіла
+ *   mu   <body> <m^3/s^2>                        гравітаційний параметр
  *   samp <k> <t> <x> <y> <z> <vx> <vy> <vz>      семпл прогону
  *   run  <count> <stop> <event> <step>           підсумок прогону
  *   end  <t> <x> <y> <z> <vx> <vy> <vz>          кінцевий стан прогону
@@ -229,6 +230,7 @@ int main(void)
         }
 
         printf("rad %d %.17g\n", BODIES[b], eph_body_radius(eph, BODIES[b]));
+        printf("mu %d %.17g\n", BODIES[b], eph_body_mu(eph, BODIES[b]));
     }
 
     /* And a body the asset has never heard of (ROADMAP U2a). The zero it

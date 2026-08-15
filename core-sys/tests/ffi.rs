@@ -19,8 +19,9 @@ use std::path::Path;
 use std::process::Command;
 
 use core_sys::{
-    eph_body_radius, eph_body_state, eph_free, eph_load, prop_create, prop_free, prop_run,
-    prop_run_stm, CoreEvent, CoreResult, EphemerisCtx, PropConfig, PropagatorCtx, State,
+    eph_body_mu, eph_body_radius, eph_body_state, eph_free, eph_load, porkchop_compute_eph,
+    prop_create, prop_free, prop_run, prop_run_stm, CoreEvent, CoreResult, EphemerisCtx,
+    PorkchopPoint, PropConfig, PropagatorCtx, State, CORE_ERR_BUFFER_TOO_SMALL,
     CORE_ERR_INVALID_ARG, CORE_EVENT_PERIAPSIS, CORE_INTEG_DOP853, CORE_OK, CORE_STOP_EVENT,
 };
 
@@ -758,5 +759,124 @@ fn lambert_refusals_cross_the_boundary() {
             got, CORE_ERR_INVALID_ARG,
             "{label}: і це мав бути саме CORE_ERR_INVALID_ARG"
         );
+    }
+}
+
+/// `mu` теж звіряється бітово — на тих самих тілах, що й радіуси.
+///
+/// Окремим тестом, а не рядком у попередньому: це різні поля контексту, і
+/// зсув на одне тіло в масиві `mu` виглядав би як цілком розумна гравітація.
+#[test]
+fn gravitational_parameters_match_the_c_oracle_bit_for_bit() {
+    let records = oracle_records();
+    let mus = tagged(&records, "mu");
+    assert!(!mus.is_empty(), "оракул не дав жодного рядка mu");
+
+    unsafe {
+        let ctx = load_fixture();
+
+        for record in &mus {
+            let body = record.values[0] as i32;
+            let expected = record.values[1];
+            let got = eph_body_mu(ctx, body);
+
+            assert_eq!(
+                got.to_bits(),
+                expected.to_bits(),
+                "тіло {body}: C дав {expected:e}, а межа {got:e}"
+            );
+            assert!(got > 0.0, "тіло {body} у фікстурі мусить мати масу");
+        }
+
+        assert_eq!(
+            eph_body_mu(ctx, 999),
+            0.0,
+            "невідоме тіло — нуль, як і радіус"
+        );
+
+        eph_free(ctx);
+    }
+}
+
+/// Сітка porkchop перетинає межу бітово (ROADMAP-UI.md, U5a).
+///
+/// Функція повертає **масив структур**, і це нове на межі: досі туди їздили
+/// або скаляри, або `State`. Переставлені `t1` і `tof` дали б цілком
+/// правдоподібний плот — обидва додатні, обидва в секундах, — тож звіряються
+/// всі чотири поля кожної клітинки.
+#[test]
+fn the_porkchop_grid_matches_the_c_oracle_bit_for_bit() {
+    let records = records_from(ORACLE_PLANNING);
+    let cells = tagged(&records, "pork");
+    assert!(!cells.is_empty(), "оракул не дав жодного рядка pork");
+
+    unsafe {
+        let ctx = load_fixture();
+
+        const EARTH: i32 = 3;
+        const MOON: i32 = 4;
+        let day = 86400.0;
+        let t1s = [0.0, 3.0 * day, 6.0 * day];
+        let tofs = [4.0 * day, 5.0 * day];
+
+        let mut grid = [PorkchopPoint::default(); 6];
+        let mut count: usize = 0;
+        let result = porkchop_compute_eph(
+            ctx,
+            EARTH,
+            MOON,
+            eph_body_mu(ctx, EARTH),
+            1,
+            t1s.as_ptr(),
+            t1s.len(),
+            tofs.as_ptr(),
+            tofs.len(),
+            grid.as_mut_ptr(),
+            grid.len(),
+            &mut count,
+        );
+
+        assert_eq!(result, CORE_OK);
+        assert_eq!(count, cells.len(), "кількість клітинок розійшлася");
+
+        for (k, cell) in cells.iter().enumerate() {
+            let got = grid[k];
+            for (name, from_c, from_rust) in [
+                ("t1", cell.values[1], got.t1),
+                ("tof", cell.values[2], got.tof),
+                ("v_inf_depart", cell.values[3], got.v_inf_depart),
+                ("v_inf_arrive", cell.values[4], got.v_inf_arrive),
+            ] {
+                assert_eq!(
+                    from_c.to_bits(),
+                    from_rust.to_bits(),
+                    "клітинка {k}, {name}: C дав {from_c:e}, межа {from_rust:e}"
+                );
+            }
+        }
+
+        // Замалий буфер — це відмова з кількістю, а не тиша: та сама угода,
+        // що в `prop_run`, і перевіряти її треба тут, бо саме нею викликач
+        // дізнається, скільки місця просити.
+        let mut one = [PorkchopPoint::default(); 1];
+        let mut written: usize = 0;
+        let squeezed = porkchop_compute_eph(
+            ctx,
+            EARTH,
+            MOON,
+            eph_body_mu(ctx, EARTH),
+            1,
+            t1s.as_ptr(),
+            t1s.len(),
+            tofs.as_ptr(),
+            tofs.len(),
+            one.as_mut_ptr(),
+            one.len(),
+            &mut written,
+        );
+        assert_eq!(squeezed, CORE_ERR_BUFFER_TOO_SMALL);
+        assert_eq!(written, 1, "кількість написаного мала дійти й при відмові");
+
+        eph_free(ctx);
     }
 }

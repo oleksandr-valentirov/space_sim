@@ -1,9 +1,12 @@
 /* Porkchop-plot grid (ROADMAP.md, M3, "Планування"). */
 
+#include "ephemeris.h"
+#include "lambert.h"
 #include "porkchop.h"
 #include "test.h"
 
 #include <math.h>
+#include <stdio.h>
 
 #define MU_SUN   1.32712440018e20
 #define R_EARTH  1.495978707e11 /* 1 AU */
@@ -134,6 +137,67 @@ int main(void)
         CHECK(porkchop_compute(circular_state, &earth, circular_state, &mars,
                                MU_SUN, 1, t1_grid, 0, tof_grid, N_TOF, out, 1, &n)
               == CORE_ERR_INVALID_ARG);
+    }
+
+    /* The batch entry point that can cross into Rust (ROADMAP-UI.md U5a).
+     *
+     * The oracle is the one the step named: a cell of the plot must equal a
+     * direct lambert_solve with the same arguments. Not the same code - the
+     * same result. That is what catches swapped grid axes, and they do get
+     * swapped: a grid of t1 by tof transposed still fills every cell with
+     * plausible speeds. */
+    {
+        EphemerisCtx *eph = NULL;
+        if (eph_load("data/fixture/earth_moon.eph", &eph) != CORE_OK) {
+            fprintf(stderr, "test_porkchop: фікстура не читається; "
+                            "запускати з кореня репозиторію\n");
+            return 1;
+        }
+
+        const int EARTH_BODY = 3, MOON_BODY = 4;
+        double mu = eph_body_mu(eph, EARTH_BODY);
+        CHECK(mu > 0.0);
+
+        double t1s[3] = { 0.0, 3.0 * 86400.0, 6.0 * 86400.0 };
+        double tofs[2] = { 4.0 * 86400.0, 5.0 * 86400.0 };
+
+        PorkchopPoint grid[6];
+        size_t n = 0;
+        CHECK(porkchop_compute_eph(eph, EARTH_BODY, MOON_BODY, mu, 1,
+                                   t1s, 3, tofs, 2, grid, 6, &n) == CORE_OK);
+        CHECK(n > 0);
+
+        for (size_t i = 0; i < n; i++) {
+            State from, to;
+            CHECK(eph_body_state(eph, EARTH_BODY, grid[i].t1, &from) == CORE_OK);
+            CHECK(eph_body_state(eph, MOON_BODY, grid[i].t1 + grid[i].tof, &to)
+                  == CORE_OK);
+
+            Vec3d v1, v2;
+            CHECK(lambert_solve(from.r, to.r, grid[i].tof, mu, 1, 0, &v1, &v2)
+                  == CORE_OK);
+
+            double dvx = v1.x - from.v.x, dvy = v1.y - from.v.y, dvz = v1.z - from.v.z;
+            double depart = sqrt(dvx * dvx + dvy * dvy + dvz * dvz);
+            double ax = v2.x - to.v.x, ay = v2.y - to.v.y, az = v2.z - to.v.z;
+            double arrive = sqrt(ax * ax + ay * ay + az * az);
+
+            /* Bitwise would be overreach - the wrapper computes the same
+             * quantities through the same functions, but the compiler is free
+             * to keep an intermediate in a register on one path and not the
+             * other. A part in 10^12 is far below anything a swapped axis or
+             * a wrong body could survive. */
+            CHECK(fabs(grid[i].v_inf_depart - depart) <= 1e-12 * depart);
+            CHECK(fabs(grid[i].v_inf_arrive - arrive) <= 1e-12 * arrive);
+        }
+
+        /* And a NULL ephemeris is refused rather than dereferenced. */
+        size_t none = 0;
+        CHECK(porkchop_compute_eph(NULL, EARTH_BODY, MOON_BODY, mu, 1,
+                                   t1s, 3, tofs, 2, grid, 6, &none)
+              == CORE_ERR_INVALID_ARG);
+
+        eph_free(eph);
     }
 
     return TEST_RESULT();
