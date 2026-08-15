@@ -17,6 +17,7 @@
 use engine::egui;
 
 use crate::clock::Stall;
+use crate::frame_view::ViewFrame;
 use crate::mission;
 use crate::plan::{Frame, Manoeuvre, Plan};
 use crate::porkchop::{cell_at, colour, Grid};
@@ -756,6 +757,54 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
+
+/// Панель вигляду: у якому фреймі показана сцена (ROADMAP-UI.md, U6a4).
+///
+/// Повертає **новий фрейм**, а не команду, і це не дрібниця: команда пішла б у
+/// нитку світу, а фрейм не змінює в світі жодного числа — це стан вигляду,
+/// який правило 1 етапу U прямо дозволяє тримати в UI. Тому й повернення інше,
+/// ніж у `time_panel`: та надсилає команди, ця віддає вибір.
+///
+/// `None` означає «гравець нічого не натиснув», а не «інерціальний»: різниця в
+/// тому, що перше нічого не перезаписує.
+pub fn view_panel(ui: &mut egui::Ui, language: Language, frame: ViewFrame) -> Option<ViewFrame> {
+    let mut chosen = None;
+
+    ui.heading(tr(language, Key::View));
+    ui.label(format!(
+        "{}: {}",
+        tr(language, Key::Frame),
+        tr(
+            language,
+            match frame {
+                ViewFrame::Inertial => Key::FrameInertial,
+                ViewFrame::Rotating => Key::FrameRotating,
+            }
+        )
+    ));
+
+    // Одна кнопка-перемикач, а не дві: фреймів рівно два, і пара кнопок
+    // означала б стан «жоден не натиснутий», якого не буває.
+    let next = match frame {
+        ViewFrame::Inertial => ViewFrame::Rotating,
+        ViewFrame::Rotating => ViewFrame::Inertial,
+    };
+    let label = tr(
+        language,
+        match next {
+            ViewFrame::Inertial => Key::FrameInertial,
+            ViewFrame::Rotating => Key::FrameRotating,
+        },
+    );
+    if button(ui, FRAME, label) {
+        chosen = Some(next);
+    }
+
+    chosen
+}
+
+/// Стала адреса кнопки перемикача фрейму — з тієї ж причини, що [`PAUSE`].
+pub const FRAME: &str = "hud.view.frame";
 
 #[cfg(test)]
 mod tests {

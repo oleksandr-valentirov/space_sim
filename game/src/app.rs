@@ -30,6 +30,7 @@ use engine::ui::{Ui, Viewport, WindowInput};
 use engine::window::{self, Target};
 
 use crate::clock::Stall;
+use crate::frame_view::ViewFrame;
 use crate::hud;
 use crate::leg::restart_at;
 use crate::mission;
@@ -130,6 +131,12 @@ struct State {
     grid: Option<Grid>,
     /// `mu` Землі з ассета, прочитана **один раз**, як і радіус вище.
     earth_mu: f64,
+
+    /// У якому фреймі показувати сцену (ROADMAP-UI.md, U6a4).
+    ///
+    /// Стан вигляду, не стан світу: у нитку світу він не їде й жодного числа
+    /// снапшоту не міняє. Тому й живе тут, а не в `sim`.
+    view_frame: ViewFrame,
 }
 
 /// Світ за опціями — спільне для вікна й для знімка.
@@ -386,6 +393,7 @@ impl State {
             grab: None,
             draft_changed: false,
             plot: hud::PlotState::default(),
+            view_frame: ViewFrame::default(),
             grid: None,
             earth_mu,
         })
@@ -710,9 +718,7 @@ impl State {
                 &snapshot,
                 self.orbit.camera(),
                 self.preview.as_ref().map_or(&[], |p| p.legs.as_slice()),
-                // Перемикач фрейму приносить U6a4; поки вибір тут один, і
-                // названий він явно, а не полем, якого ніхто не пише.
-                crate::frame_view::ViewFrame::Inertial,
+                self.view_frame,
             ),
         );
 
@@ -721,6 +727,11 @@ impl State {
         // канал, а панель знає лише про те, що намальовано.
         let mut commands = Vec::new();
         let mut plan_actions = Vec::new();
+        // Замикання панелей позичає `self` лише через копії, тож вибір
+        // фрейму повертається сюди, а застосовується після кадру — як і
+        // команди поруч.
+        let view_frame = self.view_frame;
+        let mut chosen_frame = None;
         let mut plot_actions = Vec::new();
         let language = self.language;
         let radius = self.earth_radius_m;
@@ -764,6 +775,9 @@ impl State {
                                 notice.as_deref(),
                             ));
                         }
+
+                        ui.separator();
+                        chosen_frame = hud::view_panel(ui, language, view_frame);
                     });
 
                 // Плот — праворуч, окремою панеллю: він квадратний і живе
@@ -785,6 +799,9 @@ impl State {
         }
         for action in plot_actions {
             self.apply_porkchop_action(action, &snapshot);
+        }
+        if let Some(frame) = chosen_frame {
+            self.view_frame = frame;
         }
 
         // Вузли для наступного кадру: подія миші прийде між кадрами, а

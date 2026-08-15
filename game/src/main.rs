@@ -19,6 +19,7 @@ fn main() {
     let mut shot_path: Option<PathBuf> = None;
     let mut day: Option<f64> = None;
     let mut save_path: Option<PathBuf> = None;
+    let mut frame = game::frame_view::ViewFrame::Inertial;
     let mut vsync_asked = false;
 
     let mut args = std::env::args().skip(1);
@@ -34,6 +35,7 @@ fn main() {
             "--asset" => options.asset = PathBuf::from(value("--asset")),
             "--day" => day = Some(parse_f64(&value("--day"), "--day")),
             "--demo-plan" => options.demo_plan = true,
+            "--rotating" => frame = game::frame_view::ViewFrame::Rotating,
             "--load" => options.load = Some(PathBuf::from(value("--load"))),
             "--save" => save_path = Some(PathBuf::from(value("--save"))),
             "--width" => options.width = parse(&value("--width"), "--width"),
@@ -61,7 +63,7 @@ fn main() {
     }
 
     let result = match shot_path {
-        Some(path) => take_shot(&path, &options, day, save_path.as_deref()),
+        Some(path) => take_shot(&path, &options, day, save_path.as_deref(), frame),
         None => app::run(options),
     };
 
@@ -76,6 +78,8 @@ const HELP: &str = "\
   --asset <файл>  ефемерида; типово data/fixture/earth_moon.eph
   --day <N>       зупинити курсор на добі N місії (для --shot); типово кінець
   --demo-plan     додати показовий маневр на 10-й добі (ROADMAP J3)
+  --rotating      знімок у обертовому фреймі Земля-Місяць (U6a); типово
+                  інерціальний. У вікні це кнопка панелі «VIEW»
   --load <файл>   підняти гру з сейву замість нової місії (ROADMAP J6)
   --save <файл>   записати сейв після прогону (для --shot); у вікні це F5
   --vsync         чекати на вертикальну синхронізацію
@@ -94,6 +98,7 @@ fn take_shot(
     options: &app::Options,
     day: Option<f64>,
     save_path: Option<&std::path::Path>,
+    frame: game::frame_view::ViewFrame,
 ) -> Result<(), String> {
     let gpu = Gpu::new(wgpu::Instance::default(), None)?;
     println!("адаптер: {}", gpu.describe());
@@ -133,7 +138,7 @@ fn take_shot(
     }
 
     let camera = engine::orbit::Orbit::at_altitude(mission::CAMERA_ALTITUDE_M).camera();
-    let scene = view::build(&snapshot, camera);
+    let scene = view::build_in(&snapshot, camera, frame);
 
     let taken = shot::take_scene(&gpu, options.width, options.height, &scene)?;
     taken.write_png(path)?;

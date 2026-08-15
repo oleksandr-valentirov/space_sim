@@ -13,6 +13,7 @@
 use engine::egui;
 
 use game::clock::Stall;
+use game::frame_view::ViewFrame;
 use game::hud;
 use game::mission;
 use game::sim::Command;
@@ -527,4 +528,110 @@ fn shape_says(shape: &egui::epaint::Shape, needle: &str) -> bool {
         egui::epaint::Shape::Vec(shapes) => shapes.iter().any(|s| shape_says(s, needle)),
         _ => false,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Панель вигляду (ROADMAP-UI.md, U6a4)
+
+/// Малює панель вигляду один раз і повертає, що вона віддала.
+fn click_view(frame: game::frame_view::ViewFrame, at: Option<egui::Pos2>) -> Option<ViewFrame> {
+    let context = egui::Context::default();
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
+
+    let draw = |events: Vec<egui::Event>| -> Option<ViewFrame> {
+        let mut chosen = None;
+        let input = egui::RawInput {
+            screen_rect: Some(screen),
+            events,
+            ..Default::default()
+        };
+        let mut output = context.run_ui(input, |ui| {
+            chosen = hud::view_panel(ui, Language::English, frame);
+        });
+        output.textures_delta.clear();
+        chosen
+    };
+
+    draw(Vec::new());
+
+    let events = match at {
+        Some(pos) => vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            },
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            },
+        ],
+        None => Vec::new(),
+    };
+    draw(events)
+}
+
+fn view_button_centre(frame: ViewFrame) -> egui::Pos2 {
+    let context = egui::Context::default();
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
+
+    for _ in 0..2 {
+        let input = egui::RawInput {
+            screen_rect: Some(screen),
+            ..Default::default()
+        };
+        let mut output = context.run_ui(input, |ui| {
+            hud::view_panel(ui, Language::English, frame);
+        });
+        output.textures_delta.clear();
+    }
+
+    context
+        .read_response(egui::Id::new(hud::FRAME))
+        .map(|response| response.rect.center())
+        .unwrap_or_else(|| panic!("кнопки «{}» немає в панелі", hud::FRAME))
+}
+
+/// Клік перемикає фрейм, і туди, і назад.
+///
+/// Обидва напрямки, бо перемикач, який завжди повертає «обертовий», пройшов би
+/// перевірку в один бік. І окремо — кадр без кліку: панель, що обирає фрейм
+/// щокадру, зробила б перемикач некерованим так само, як панель, що щокадру
+/// шле команду (той самий урок, що в `a_panel_nobody_touched_sends_nothing`).
+#[test]
+fn the_frame_button_switches_both_ways_and_only_when_clicked() {
+    assert_eq!(click_view(ViewFrame::Inertial, None), None);
+    assert_eq!(click_view(ViewFrame::Rotating, None), None);
+
+    let centre = view_button_centre(ViewFrame::Inertial);
+    assert_eq!(
+        click_view(ViewFrame::Inertial, Some(centre)),
+        Some(ViewFrame::Rotating)
+    );
+
+    let centre = view_button_centre(ViewFrame::Rotating);
+    assert_eq!(
+        click_view(ViewFrame::Rotating, Some(centre)),
+        Some(ViewFrame::Inertial)
+    );
+}
+
+/// Перемикач фрейму не надсилає в світ нічого.
+///
+/// Це і є та властивість, заради якої він повертає фрейм, а не команду: вибір
+/// вигляду не має права торкнутися ні часу, ні плану (правило 1 етапу U).
+/// Перевіряється поруч із панеллю часу на тому самому кліку: якби фрейм ішов
+/// каналом, тут була б команда.
+#[test]
+fn choosing_a_frame_sends_no_command() {
+    let snapshot = snapshot(1000.0, None);
+    let centre = view_button_centre(ViewFrame::Inertial);
+
+    // Той самий клік по тих самих координатах, але в панель часу: команд
+    // немає, бо там у цьому місці нічого немає.
+    assert_eq!(click_at(&snapshot, Some(centre)), Vec::new());
 }

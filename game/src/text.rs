@@ -98,6 +98,15 @@ pub enum Key {
     PickWindow,
     /// Прогноз ще не відійшов від курсора — сітку нема на чому будувати.
     NoGridYet,
+
+    /// Заголовок панелі вигляду.
+    View,
+    /// Фрейм, у якому показана сцена.
+    Frame,
+    /// Інерціальний фрейм (кнопка перемикача).
+    FrameInertial,
+    /// Обертовий фрейм Земля-Місяць (кнопка перемикача).
+    FrameRotating,
 }
 
 /// Мова інтерфейсу. Дві, бо саме дві таблиці й перевіряються.
@@ -156,6 +165,10 @@ fn english(key: Key) -> &'static str {
         Key::NoSolution => "no transfer here",
         Key::PickWindow => "point at the plot",
         Key::NoGridYet => "the forecast has not run far enough yet",
+        Key::View => "VIEW",
+        Key::Frame => "frame",
+        Key::FrameInertial => "inertial",
+        Key::FrameRotating => "earth-moon rotating",
     }
 }
 
@@ -199,12 +212,16 @@ fn ukrainian(key: Key) -> &'static str {
         Key::NoSolution => "тут перельоту немає",
         Key::PickWindow => "наведіть на плот",
         Key::NoGridYet => "прогноз ще не відійшов достатньо далеко",
+        Key::View => "ВИГЛЯД",
+        Key::Frame => "фрейм",
+        Key::FrameInertial => "інерціальний",
+        Key::FrameRotating => "обертовий Земля-Місяць",
     }
 }
 
 /// Усі ключі — для перевірок і для того, хто колись малюватиме таблицю
 /// перекладу.
-pub const ALL: [Key; 38] = [
+pub const ALL: [Key; 42] = [
     Key::Time,
     Key::Day,
     Key::Warp,
@@ -243,6 +260,10 @@ pub const ALL: [Key; 38] = [
     Key::NoSolution,
     Key::PickWindow,
     Key::NoGridYet,
+    Key::View,
+    Key::Frame,
+    Key::FrameInertial,
+    Key::FrameRotating,
 ];
 
 #[cfg(test)]
