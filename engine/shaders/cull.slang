@@ -99,13 +99,19 @@ void cull_main(uint3 id : SV_DispatchThreadID)
     Cone cone = cones[candidate.slot];
 
     // Горизонт: найбільше, на що патч здатний, — це cos(β − α), розкладене в
-    // cos β cos α + sin β sin α. Дослівно `cull::beyond_limb`.
+    // cos β cos α + sin β sin α. Дослівно `cull::beyond_limb`, разом із
+    // окремим випадком «око всередині конуса»: там косинус парний і формула
+    // повернула б кут до КРАЮ шапки замість нуля, тобто викинула б патч,
+    // над яким стоїть камера. Правити треба обидві копії разом.
     float cos_beta = clamp(dot(cone.axis, params.to_eye.xyz), -1.0, 1.0);
-    float sin_beta = sqrt(max(1.0 - cos_beta * cos_beta, 0.0));
-    float best = cos_beta * cone.cos_half + sin_beta * cone.sin_half;
-    if (best <= params.to_eye.w)
+    if (cos_beta < cone.cos_half)
     {
-        return;
+        float sin_beta = sqrt(max(1.0 - cos_beta * cos_beta, 0.0));
+        float best = cos_beta * cone.cos_half + sin_beta * cone.sin_half;
+        if (best <= params.to_eye.w)
+        {
+            return;
+        }
     }
 
     // Frustum: обмежувальна сфера патча проти чотирьох бічних площин.

@@ -54,9 +54,12 @@ fn cull_main(@builtin(global_invocation_id) id_0 : vec3<u32>)
     var candidate_0 : PatchDraw_std430_0 = candidates_0[index_0];
     var cone_0 : Cone_std430_0 = cones_0[candidate_0.slot_0];
     var cos_beta_0 : f32 = clamp(dot(cone_0.axis_0, params_0.to_eye_0.xyz), -1.0f, 1.0f);
-    if((cos_beta_0 * cone_0.cos_half_0 + sqrt(max(1.0f - cos_beta_0 * cos_beta_0, 0.0f)) * cone_0.sin_half_0) <= (params_0.to_eye_0.w))
+    if(cos_beta_0 < (cone_0.cos_half_0))
     {
-        return;
+        if((cos_beta_0 * cone_0.cos_half_0 + sqrt(max(1.0f - cos_beta_0 * cos_beta_0, 0.0f)) * cone_0.sin_half_0) <= (params_0.to_eye_0.w))
+        {
+            return;
+        }
     }
     var _S1 : PatchData_std430_0 = origins_0[candidate_0.slot_0];
     var radius_0 : f32 = params_0.body_0.x * sqrt(max(2.0f - 2.0f * cone_0.cos_half_0, 0.0f));

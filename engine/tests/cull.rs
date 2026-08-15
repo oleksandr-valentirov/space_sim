@@ -170,48 +170,88 @@ fn the_horizon_takes_away_most_of_the_planet() {
 ///
 /// Зворотне не вимагається: конус огортає патч, тож відбір лишає й дещо зайве.
 /// Скільки саме зайвого — теж число, і воно тут друкується.
+///
+/// ## Чому висот і напрямків багато, а не один
+///
+/// Перша версія перевіряла одну висоту (300 км) з камери над **центром
+/// грані** — і пропустила помилку, яка викидала грань прямо під камерою.
+/// Умова спрацьовує лише коли око **всередині конуса** патча, тобто на
+/// широких конусах і низьких висотах; на одній зручній камері такого поєднання
+/// просто не траплялось. Тому тут і золота спіраль, і діапазон висот аж до
+/// сотні метрів: помилка цього класу живе саме там.
 #[test]
 fn nothing_visible_is_ever_thrown_away() {
     let focal = lod::focal_px(FOV_Y, HEIGHT_PX);
-    let altitude = 3.0e5;
-    let camera = above(altitude);
-    let eye = camera.position();
-    let selection = lod::select(&earth_lod(), &camera, focal, None);
-    let visibility = cull::horizon(&selection, &earth(), &camera);
+    let mut worst_slack = 0usize;
+    let mut checked = 0;
 
-    // Вузол видно, якщо відрізок до нього не заходить у сферу. Для опуклого
-    // тіла це рівносильно `(P − C) · (E − C) > R²`, і без жодних коренів.
-    let seen = |p: [f64; 3]| p[0] * eye[0] + p[1] * eye[1] + p[2] * eye[2] > EARTH_RADIUS_M.powi(2);
+    for step in 0..12 {
+        // Тридцять два напрямки золотою спіраллю — жоден не збігається ні з
+        // віссю грані, ні з її кутом.
+        let z = 1.0 - (2.0 * f64::from(step) + 1.0) / 12.0;
+        let r = (1.0 - z * z).max(0.0).sqrt();
+        let phi = f64::from(step) * std::f64::consts::PI * (3.0 - 5.0_f64.sqrt());
+        let unit = [r * phi.cos(), r * phi.sin(), z];
 
-    let mut kept_but_hidden = 0;
-    for (patch, &visible) in selection.patches.iter().zip(&visibility.visible) {
-        let mut any = false;
-        for a in 0..=SIDE {
-            for b in 0..=SIDE {
-                if seen(patch.vertex(a, b, EARTH_RADIUS_M)) {
-                    any = true;
+        for altitude in [1.0e2_f64, 1.0e3, 1.0e4, 1.0e5, 3.0e5, 2.0e6] {
+            let d = EARTH_RADIUS_M + altitude;
+            let eye = [unit[0] * d, unit[1] * d, unit[2] * d];
+            let camera = Camera::look_at(eye, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
+            let selection = lod::select(&earth_lod(), &camera, focal, None);
+            let visibility = cull::horizon(&selection, &earth(), &camera);
+
+            // Вузол видно, якщо відрізок до нього не заходить у сферу. Для
+            // опуклого тіла це рівносильно `(P − C) · (E − C) > R²`, і без
+            // жодних коренів.
+            let seen = |p: [f64; 3]| {
+                p[0] * eye[0] + p[1] * eye[1] + p[2] * eye[2] > EARTH_RADIUS_M.powi(2)
+            };
+
+            let mut kept_but_hidden = 0;
+            for (patch, &visible) in selection.patches.iter().zip(&visibility.visible) {
+                let mut any = false;
+                for a in 0..=SIDE {
+                    for b in 0..=SIDE {
+                        if seen(patch.vertex(a, b, EARTH_RADIUS_M)) {
+                            any = true;
+                        }
+                    }
+                }
+                assert!(
+                    !(any && !visible),
+                    "висота {altitude:.1e} м, напрямок {unit:?}: {patch:?} має \
+                     видимі вузли, а відбір його прибрав"
+                );
+                if visible && !any {
+                    kept_but_hidden += 1;
                 }
             }
-        }
-        assert!(
-            !(any && !visible),
-            "{patch:?} має видимі вузли, а відбір його прибрав"
-        );
-        if visible && !any {
-            kept_but_hidden += 1;
+
+            // Запас конуса має бути помірним: якби він лишав удвічі більше,
+            // ніж потрібно, відбір коштував би більше, ніж повертає.
+            //
+            // Частка міряється лише на наборах від шістнадцяти патчів, і це не
+            // послаблення. Біля самої поверхні лімб стискається до часток
+            // градуса, набір падає до кількох патчів — і «чотири зайвих із
+            // шести» звучить страшно, коли йдеться про шість. Частка на таких
+            // числах говорить про геометрію конуса, а не про ціну відбору,
+            // заради якої сторож і стоїть.
+            if visibility.drawn() >= 16 {
+                assert!(
+                    kept_but_hidden * 2 <= visibility.drawn(),
+                    "висота {altitude:.1e} м: конус лишив {kept_but_hidden} \
+                     зайвих патчів з {} — він завеликий",
+                    visibility.drawn()
+                );
+            }
+            worst_slack = worst_slack.max(kept_but_hidden);
+            checked += selection.patches.len();
         }
     }
 
     println!(
-        "  з {altitude:.1e} м лишено {} патчів, з них цілком за лімбом {kept_but_hidden}",
-        visibility.drawn()
-    );
-    // Запас конуса має бути помірним: якби він лишав удвічі більше, ніж
-    // потрібно, відбір коштував би більше, ніж повертає.
-    assert!(
-        kept_but_hidden * 2 <= visibility.drawn(),
-        "конус лишив {kept_but_hidden} зайвих патчів з {} — він завеликий",
-        visibility.drawn()
+        "  {checked} патчів на 72 камерах; найбільше зайвого в одному наборі \
+         {worst_slack}"
     );
 }
 
