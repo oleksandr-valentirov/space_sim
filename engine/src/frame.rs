@@ -25,6 +25,7 @@ use crate::camera::Camera;
 use crate::cubesphere::{self, Patch};
 use crate::depth;
 use crate::gpu::Gpu;
+use crate::lod;
 use crate::scene::{Body, Scene, TileSet};
 use crate::sphere;
 
@@ -312,7 +313,8 @@ impl Frame {
         // Планети: камера віднімається раз на патч, у `double`, а поворот
         // їде в матриці (R1d). Кількість роботи на CPU більше не залежить
         // від кількості вершин — тільки від кількості патчів і тіл.
-        self.planet.upload(gpu, scene, projection);
+        self.planet
+            .upload(gpu, scene, projection, f64::from(height));
 
         // Ламані проходять той самий шлях, що вершини сфери: віднімання й
         // поворот у double, звуження до f32 останнім кроком. Інакше
@@ -350,7 +352,7 @@ impl Frame {
     }
 }
 
-/// Планети патчами кубосфери (ROADMAP-PLANETS.md, R1d, R1e).
+/// Планети патчами кубосфери (ROADMAP-PLANETS.md, R1d, R1e, R2c).
 ///
 /// Заміна UV-сфери, і суть заміни не в формі, а в тому, **хто рахує
 /// camera-relative**. Було: CPU щокадру проганяв кожну з 8385 вершин через
@@ -371,29 +373,50 @@ impl Frame {
 /// Початки патчів їдуть **storage-буфером**, а не масивом uniform-буферів:
 /// D3D12 останніх не дає взагалі, і PROJECT.md §7 уже поклав per-object дані
 /// саме сюди.
+///
+/// ## Що приніс LOD (R2c)
+///
+/// Набір патчів більше не сталий: [`crate::lod::select`] дає його щокадру,
+/// на тіло. Звідси три рішення, і кожне випливає з правила 1 етапу R — патч
+/// є одиницею всього:
+///
+/// - **геометрія патча кешується за самим патчем.** Зсуви вершин не залежать
+///   ні від камери, ні від тіла (одинична сфера), тож патч, який уже був у
+///   кадрі, не рахується вдруге. Без кеша LOD коштував би десятки тисяч
+///   `tan` щокадру — рівно та ціна, яку R1d щойно прибрав;
+/// - **індексні набори лежать усі шістнадцять поспіль** в одному буфері, і
+///   зшивання вибирає діапазон, а не буфер. Вони не залежать ні від патча,
+///   ні від тіла — це адресація сітки;
+/// - **виклик малювання — на патч**, `base_vertex` вказує на його слот у
+///   кеші. Дорого це стане тоді, коли патчів стануть тисячі, і відповідь на
+///   це вже названа: R6 і `draw_indexed_indirect`.
 struct Planet {
     pipeline: wgpu::RenderPipeline,
     bind_layout: wgpu::BindGroupLayout,
 
-    offset_buffer: wgpu::Buffer,
-    normal_buffer: wgpu::Buffer,
-    patch_buffer: wgpu::Buffer,
+    cache: PatchCache,
+    /// Усі шістнадцять наборів індексів підряд: набір `m` починається з
+    /// `m · PATCH_INDICES`.
     index_buffer: wgpu::Buffer,
-    index_count: u32,
-
-    /// Початки патчів на **одиничній** сфері — рахуються раз, бо форма
-    /// кубосфери від тіла не залежить: радіус і поворот множаться на них
-    /// щокадру, разом із відніманням камери.
-    origins: Vec<[f64; 3]>,
-    origin_bytes: Vec<u8>,
 
     /// По слоту на тіло сцени. Ростуть за потребою й не спадають — та сама
     /// причина, що в [`Lines`]: тіла в кадрі з'являються й зникають (Місяць
     /// за обрієм), а перестворювати буфери щокадру означало б платити за це
     /// щокадру.
-    slots: Vec<BodySlot>,
-    /// Скільки слотів малювати цього кадру — стільки ж, скільки тіл у сцені.
-    drawn: usize,
+    bodies: Vec<BodySlot>,
+    /// Що малювати цього кадру, у порядку тіл.
+    draws: Vec<Draw>,
+
+    /// Набори цього кадру — поле, а не змінна, щоб не виділяти вектор щокадру.
+    selections: Vec<lod::Selection>,
+}
+
+/// Один виклик малювання: чиє тіло, який слот кеша, який набір індексів.
+#[derive(Clone, Copy)]
+struct Draw {
+    body: usize,
+    slot: u32,
+    mask: cubesphere::EdgeMask,
 }
 
 /// Те, чим одне тіло відрізняється від іншого на GPU: своя матриця й свої
@@ -408,12 +431,122 @@ struct BodySlot {
     bind_group: wgpu::BindGroup,
 }
 
-/// Рівень, на якому малюється планета. Без LOD — його приносить R2.
+/// Скільки вершин у сітці одного патча.
+const PATCH_VERTICES: usize = (cubesphere::SIDE + 1) * (cubesphere::SIDE + 1);
+/// Скільки індексів в одному наборі.
+const PATCH_INDICES: usize = cubesphere::SIDE * cubesphere::SIDE * 6;
+/// З чого починається місткість кеша — далі вона тільки росте.
+const MIN_PATCHES: usize = 64;
+
+/// Кеш геометрії патчів: слот на патч, спільний для всіх тіл.
 ///
-/// Нуль означає «патч на грань»: шість патчів, 32 відрізки на бік, тобто той
-/// самий кутовий крок силуету, що в UV-сфери 64×128 (32 сегменти на 90°).
-/// Саме тому знімок до й після можна звіряти маскою, а не «схожістю».
-const PLANET_LEVEL: u32 = 0;
+/// ## Чому кеш, а не перерахунок
+///
+/// Зсуви вершин патча не залежать ні від камери, ні від тіла: геометрія —
+/// одинична сфера (R1e), а патч на ній стоїть нерухомо. Отже єдине, що
+/// змінюється щокадру, — **які** патчі потрібні, і це рівно та задача, під
+/// яку кеш і існує. Сусідні кадри ділять майже весь набір: LOD міняє його
+/// по одному патчу, а не цілком.
+///
+/// ## Витіснення — курсором, а не історією звернень
+///
+/// Місткість тримається щонайменше вдвічі більшою за потребу кадру, тож
+/// слот, не потрібний **цього** кадру, знайдеться завжди. Шукає його курсор,
+/// що йде по колу: LRU тут дав би той самий результат за більші гроші, бо
+/// набір міняється поступово, а не стрибками.
+struct PatchCache {
+    capacity: usize,
+    slot: std::collections::HashMap<Patch, u32>,
+    resident: Vec<Option<Patch>>,
+    /// Номер кадру, у якому слот востаннє знадобився.
+    stamp: Vec<u64>,
+    /// Початок патча на **одиничній** сфері, за слотом.
+    origins: Vec<[f64; 3]>,
+    cursor: usize,
+    frame: u64,
+
+    offset_buffer: wgpu::Buffer,
+    normal_buffer: wgpu::Buffer,
+    /// Номер слота, повторений на кожну вершину: саме ним шейдер адресує
+    /// storage-буфер початків.
+    slot_buffer: wgpu::Buffer,
+}
+
+impl PatchCache {
+    fn new(gpu: &Gpu, capacity: usize) -> PatchCache {
+        let vertices = (capacity * PATCH_VERTICES) as u64;
+        let buffer = |label: &str, stride: u64| {
+            gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: vertices * stride,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        };
+
+        PatchCache {
+            capacity,
+            slot: std::collections::HashMap::new(),
+            resident: vec![None; capacity],
+            stamp: vec![0; capacity],
+            origins: vec![[0.0; 3]; capacity],
+            cursor: 0,
+            frame: 0,
+            offset_buffer: buffer("patch offsets", 12),
+            normal_buffer: buffer("patch normals", 12),
+            slot_buffer: buffer("patch slots", 4),
+        }
+    }
+
+    /// Слот патча — той, що вже є, або щойно зайнятий і заповнений.
+    fn intern(&mut self, gpu: &Gpu, patch: Patch) -> u32 {
+        if let Some(&slot) = self.slot.get(&patch) {
+            self.stamp[slot as usize] = self.frame;
+            return slot;
+        }
+
+        // Слот, не потрібний цього кадру. Він є завжди: місткість тримається
+        // вдвічі більшою за потребу (див. `Planet::reserve`).
+        let slot = loop {
+            let candidate = self.cursor;
+            self.cursor = (self.cursor + 1) % self.capacity;
+            if self.stamp[candidate] < self.frame {
+                break candidate;
+            }
+        };
+
+        if let Some(old) = self.resident[slot] {
+            self.slot.remove(&old);
+        }
+
+        let mesh = patch.mesh(1.0);
+        let base = (slot * PATCH_VERTICES) as u64;
+
+        let mut offsets = Vec::with_capacity(PATCH_VERTICES * 12);
+        let mut normals = Vec::with_capacity(PATCH_VERTICES * 12);
+        let mut slots = Vec::with_capacity(PATCH_VERTICES * 4);
+        for (offset, normal) in mesh.offsets.iter().zip(mesh.normals.iter()) {
+            for value in offset {
+                offsets.extend_from_slice(&value.to_le_bytes());
+            }
+            for value in normal {
+                normals.extend_from_slice(&value.to_le_bytes());
+            }
+            slots.extend_from_slice(&(slot as u32).to_le_bytes());
+        }
+        gpu.queue
+            .write_buffer(&self.offset_buffer, base * 12, &offsets);
+        gpu.queue
+            .write_buffer(&self.normal_buffer, base * 12, &normals);
+        gpu.queue.write_buffer(&self.slot_buffer, base * 4, &slots);
+
+        self.resident[slot] = Some(patch);
+        self.origins[slot] = mesh.origin;
+        self.stamp[slot] = self.frame;
+        self.slot.insert(patch, slot as u32);
+        slot as u32
+    }
+}
 
 impl Planet {
     fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Planet {
@@ -424,74 +557,14 @@ impl Planet {
                 source: wgpu::ShaderSource::Wgsl(PATCH_WGSL.into()),
             });
 
-        // Шість граней на нульовому рівні; на рівні L їх 6·4^L.
-        let side = 1u32 << PLANET_LEVEL;
-        let mut patches = Vec::new();
-        for face in 0..cubesphere::FACES {
-            for i in 0..side {
-                for j in 0..side {
-                    patches.push(Patch {
-                        face,
-                        level: PLANET_LEVEL,
-                        i,
-                        j,
-                    });
-                }
+        // Усі шістнадцять наборів індексів одразу: їх стільки, скільки
+        // комбінацій чотирьох ребер, і всі відомі до першого кадру.
+        let mut index_bytes = Vec::with_capacity(cubesphere::MASKS * PATCH_INDICES * 4);
+        for mask in 0..cubesphere::MASKS {
+            for i in cubesphere::indices(mask as cubesphere::EdgeMask) {
+                index_bytes.extend_from_slice(&i.to_le_bytes());
             }
         }
-
-        // Геометрія збирається раз: зсуви й нормалі від камери не залежать,
-        // а індекс патча — тим паче.
-        let mut offset_bytes = Vec::new();
-        let mut normal_bytes = Vec::new();
-        let mut patch_bytes = Vec::new();
-        let mut index_bytes = Vec::new();
-        let mut origins = Vec::new();
-        let mut base: u32 = 0;
-
-        // Індекси однакові для всіх патчів: вони адресують сітку, а не місце
-        // на сфері. Зшиті набори приносить R2.
-        let elements = cubesphere::indices(0);
-
-        for (index, patch) in patches.iter().enumerate() {
-            // Одинична сфера: розмір тіла — множник у матриці моделі, а не
-            // друга копія тих самих вершин (R1e).
-            let mesh = patch.mesh(1.0);
-            origins.push(mesh.origin);
-
-            for (offset, normal) in mesh.offsets.iter().zip(mesh.normals.iter()) {
-                for value in offset {
-                    offset_bytes.extend_from_slice(&value.to_le_bytes());
-                }
-                for value in normal {
-                    normal_bytes.extend_from_slice(&value.to_le_bytes());
-                }
-                patch_bytes.extend_from_slice(&(index as u32).to_le_bytes());
-            }
-
-            for i in &elements {
-                index_bytes.extend_from_slice(&(base + i).to_le_bytes());
-            }
-            base += mesh.offsets.len() as u32;
-        }
-
-        let index_count = (index_bytes.len() / 4) as u32;
-
-        let vertex_buffer = |label: &str, bytes: &[u8]| {
-            let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size: bytes.len() as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            gpu.queue.write_buffer(&buffer, 0, bytes);
-            buffer
-        };
-
-        let offset_buffer = vertex_buffer("patch offsets", &offset_bytes);
-        let normal_buffer = vertex_buffer("patch normals", &normal_bytes);
-        let patch_buffer = vertex_buffer("patch indices", &patch_bytes);
-
         let index_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("patch elements"),
             size: index_bytes.len() as u64,
@@ -608,20 +681,14 @@ impl Planet {
                 cache: None,
             });
 
-        let origin_bytes = Vec::with_capacity(patches.len() * 16);
-
         Planet {
             pipeline,
             bind_layout,
-            offset_buffer,
-            normal_buffer,
-            patch_buffer,
+            cache: PatchCache::new(gpu, MIN_PATCHES),
             index_buffer,
-            index_count,
-            origins,
-            origin_bytes,
-            slots: Vec::new(),
-            drawn: 0,
+            bodies: Vec::new(),
+            draws: Vec::new(),
+            selections: Vec::new(),
         }
     }
 
@@ -635,10 +702,11 @@ impl Planet {
         });
 
         // Чотири числа на патч, а не три: вирівнювання vec4 у std430, і
-        // четверте лишається нулем.
+        // четверте лишається нулем. Індексується слотом кеша, тобто буфер
+        // рівно такий, як кеш.
         let origin_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("patch origins"),
-            size: (self.origins.len() * 16) as u64,
+            size: (self.cache.capacity * 16) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -665,28 +733,84 @@ impl Planet {
         }
     }
 
-    /// Початки патчів відносно камери й матриці на цей кадр — по тілу.
+    /// Місткість кеша під потребу кадру — **вдвічі** більша за неї.
     ///
-    /// Оце і є весь CPU-прохід планети: шість віднімань у `double` на тіло
-    /// замість восьми з половиною тисяч.
-    fn upload(&mut self, gpu: &Gpu, scene: &Scene, projection: depth::Matrix) {
+    /// Удвічі, а не рівно: витіснення шукає слот, не потрібний цього кадру, і
+    /// при місткості впритул такого слота могло б не бути взагалі. Запас
+    /// перетворює пошук на завжди успішний, і саме тому в ньому немає гілки
+    /// «а якщо ні».
+    ///
+    /// Росте й не спадає, а зростання скидає кеш: буфери перестворюються, і
+    /// те, що в них лежало, більше не за тими адресами. Платиться це один раз
+    /// на кожне подвоєння за всю сесію.
+    fn reserve(&mut self, gpu: &Gpu, needed: usize) {
+        if needed * 2 <= self.cache.capacity {
+            return;
+        }
+        let capacity = (needed * 2).next_power_of_two().max(MIN_PATCHES);
+        self.cache = PatchCache::new(gpu, capacity);
+        // Буфери початків були під стару місткість, а bind-групи — під ті
+        // буфери. Слоти тіл перестворяться при наступному ж проході.
+        self.bodies.clear();
+    }
+
+    /// Набори патчів, їхня геометрія й початки — усе, що кадр рахує на CPU.
+    ///
+    /// Оце і є прохід планети: вибір рівня на тіло, звіряння з кешем і
+    /// віднімання камери від початку кожного патча, у `double`.
+    fn upload(&mut self, gpu: &Gpu, scene: &Scene, projection: depth::Matrix, height_px: f64) {
         let camera = &scene.camera;
         let eye = camera.position();
+        let focal = lod::focal_px(FOV_Y, height_px);
 
-        while self.slots.len() < scene.bodies.len() {
-            let slot = self.slot(gpu);
-            self.slots.push(slot);
+        // Вибір рівня — на тіло, і до всякого дотику до GPU: місткість кеша
+        // мусить бути відома до першого `intern`.
+        self.selections.clear();
+        let mut needed = 0;
+        for body in &scene.bodies {
+            let selection = lod::select(
+                &lod::Body {
+                    centre: body.centre,
+                    radius_m: body.radius_m,
+                },
+                camera,
+                focal,
+            );
+            needed += selection.patches.len();
+            self.selections.push(selection);
         }
-        self.drawn = scene.bodies.len();
+        self.reserve(gpu, needed);
+        self.cache.frame += 1;
+
+        while self.bodies.len() < scene.bodies.len() {
+            let slot = self.slot(gpu);
+            self.bodies.push(slot);
+        }
 
         // Поворот вигляду однаковий для всіх тіл — множиться раз, а не на тіло.
         let view = depth::multiply(projection, camera.view_rotation());
 
-        for (body, slot) in scene.bodies.iter().zip(&self.slots) {
-            let rotation = rotation(body.orientation);
+        self.draws.clear();
+        let mut origin_bytes: Vec<u8> = Vec::with_capacity(self.cache.capacity * 16);
 
-            self.origin_bytes.clear();
-            for origin in &self.origins {
+        for (index, body) in scene.bodies.iter().enumerate() {
+            let rotation = rotation(body.orientation);
+            let selection = &self.selections[index];
+
+            for (patch, &mask) in selection.patches.iter().zip(&selection.masks) {
+                let slot = self.cache.intern(gpu, *patch);
+                self.draws.push(Draw {
+                    body: index,
+                    slot,
+                    mask,
+                });
+            }
+
+            // Початки — на **слот**, а не на позицію в наборі: так номер
+            // патча живе у вершинному буфері й не переписується щокадру.
+            // Слоти, не зайняті цим тілом, лишаються нулями й не малюються.
+            origin_bytes.clear();
+            for origin in &self.cache.origins {
                 // Усе в `double`: поворот одиничного початку, множення на
                 // радіус, зсув до центра тіла й віднімання камери. Звуження до
                 // `f32` — останнім кроком, як завжди (ROADMAP F4).
@@ -695,12 +819,13 @@ impl Planet {
                         + rotation[k][1] * origin[1]
                         + rotation[k][2] * origin[2];
                     let value = (body.centre[k] + body.radius_m * turned - eye[k]) as f32;
-                    self.origin_bytes.extend_from_slice(&value.to_le_bytes());
+                    origin_bytes.extend_from_slice(&value.to_le_bytes());
                 }
-                self.origin_bytes.extend_from_slice(&0.0f32.to_le_bytes());
+                origin_bytes.extend_from_slice(&0.0f32.to_le_bytes());
             }
+            let slot = &self.bodies[index];
             gpu.queue
-                .write_buffer(&slot.origin_buffer, 0, &self.origin_bytes);
+                .write_buffer(&slot.origin_buffer, 0, &origin_bytes);
 
             let uniforms = Uniforms {
                 projection: view,
@@ -714,20 +839,30 @@ impl Planet {
     }
 
     fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
-        if self.drawn == 0 {
+        if self.draws.is_empty() {
             return;
         }
 
         pass.set_pipeline(&self.pipeline);
-        pass.set_vertex_buffer(0, self.offset_buffer.slice(..));
-        pass.set_vertex_buffer(1, self.normal_buffer.slice(..));
-        pass.set_vertex_buffer(2, self.patch_buffer.slice(..));
+        pass.set_vertex_buffer(0, self.cache.offset_buffer.slice(..));
+        pass.set_vertex_buffer(1, self.cache.normal_buffer.slice(..));
+        pass.set_vertex_buffer(2, self.cache.slot_buffer.slice(..));
         pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
-        // Виклик на тіло: спільна геометрія, різні матриця й початки патчів.
-        for slot in &self.slots[..self.drawn] {
-            pass.set_bind_group(0, &slot.bind_group, &[]);
-            pass.draw_indexed(0..self.index_count, 0, 0..1);
+        // Виклик на патч: спільна геометрія в кеші, свій діапазон індексів на
+        // маску зшивання, `base_vertex` — на слот.
+        let mut bound = usize::MAX;
+        for draw in &self.draws {
+            if draw.body != bound {
+                pass.set_bind_group(0, &self.bodies[draw.body].bind_group, &[]);
+                bound = draw.body;
+            }
+            let first = u32::from(draw.mask) * PATCH_INDICES as u32;
+            pass.draw_indexed(
+                first..first + PATCH_INDICES as u32,
+                (draw.slot as usize * PATCH_VERTICES) as i32,
+                0..1,
+            );
         }
     }
 }
