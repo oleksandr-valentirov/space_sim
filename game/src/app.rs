@@ -732,7 +732,7 @@ impl State {
         // команди поруч.
         let view_frame = self.view_frame;
         let curve = hud::read_curve(&snapshot);
-        let mut chosen_frame = None;
+        let mut view_choice = hud::ViewChoice::default();
         let mut plot_actions = Vec::new();
         let language = self.language;
         let radius = self.earth_radius_m;
@@ -778,7 +778,7 @@ impl State {
                         }
 
                         ui.separator();
-                        chosen_frame = hud::view_panel(ui, language, view_frame, curve);
+                        view_choice = hud::view_panel(ui, language, view_frame, curve);
                     });
 
                 // Плот — праворуч, окремою панеллю: він квадратний і живе
@@ -801,8 +801,13 @@ impl State {
         for action in plot_actions {
             self.apply_porkchop_action(action, &snapshot);
         }
-        if let Some(frame) = chosen_frame {
+        if let Some(frame) = view_choice.frame {
             self.view_frame = frame;
+        }
+        // Мова — стан UI і більше нічий: у снапшот вона не входить, у сейв не
+        // потрапляє, світу про неї знати нема чого (правило 1 етапу).
+        if let Some(language) = view_choice.language {
+            self.language = language;
         }
 
         // Вузли для наступного кадру: подія миші прийде між кадрами, а

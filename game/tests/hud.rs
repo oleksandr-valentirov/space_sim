@@ -537,22 +537,26 @@ fn shape_says(shape: &egui::epaint::Shape, needle: &str) -> bool {
 // Панель вигляду (ROADMAP-UI.md, U6a4)
 
 /// Малює панель вигляду один раз і повертає, що вона віддала.
-fn click_view(frame: game::frame_view::ViewFrame, at: Option<egui::Pos2>) -> Option<ViewFrame> {
+fn click_view(
+    frame: game::frame_view::ViewFrame,
+    language: Language,
+    at: Option<egui::Pos2>,
+) -> hud::ViewChoice {
     // Кривої тут немає навмисно: цей тест про перемикач, а підпис до кривої
     // перевіряється окремо (U6b4).
     let curve = None;
     let context = egui::Context::default();
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
 
-    let draw = |events: Vec<egui::Event>| -> Option<ViewFrame> {
-        let mut chosen = None;
+    let draw = |events: Vec<egui::Event>| -> hud::ViewChoice {
+        let mut chosen = hud::ViewChoice::default();
         let input = egui::RawInput {
             screen_rect: Some(screen),
             events,
             ..Default::default()
         };
         let mut output = context.run_ui(input, |ui| {
-            chosen = hud::view_panel(ui, Language::English, frame, curve);
+            chosen = hud::view_panel(ui, language, frame, curve);
         });
         output.textures_delta.clear();
         chosen
@@ -581,7 +585,7 @@ fn click_view(frame: game::frame_view::ViewFrame, at: Option<egui::Pos2>) -> Opt
     draw(events)
 }
 
-fn view_button_centre(frame: ViewFrame) -> egui::Pos2 {
+fn view_button_centre(frame: ViewFrame, language: Language, id: &str) -> egui::Pos2 {
     let curve = None;
     let context = egui::Context::default();
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
@@ -592,15 +596,15 @@ fn view_button_centre(frame: ViewFrame) -> egui::Pos2 {
             ..Default::default()
         };
         let mut output = context.run_ui(input, |ui| {
-            hud::view_panel(ui, Language::English, frame, curve);
+            hud::view_panel(ui, language, frame, curve);
         });
         output.textures_delta.clear();
     }
 
     context
-        .read_response(egui::Id::new(hud::FRAME))
+        .read_response(egui::Id::new(id))
         .map(|response| response.rect.center())
-        .unwrap_or_else(|| panic!("кнопки «{}» немає в панелі", hud::FRAME))
+        .unwrap_or_else(|| panic!("кнопки «{id}» немає в панелі"))
 }
 
 /// Клік перемикає фрейм, і туди, і назад.
@@ -611,19 +615,108 @@ fn view_button_centre(frame: ViewFrame) -> egui::Pos2 {
 /// шле команду (той самий урок, що в `a_panel_nobody_touched_sends_nothing`).
 #[test]
 fn the_frame_button_switches_both_ways_and_only_when_clicked() {
-    assert_eq!(click_view(ViewFrame::Inertial, None), None);
-    assert_eq!(click_view(ViewFrame::Rotating, None), None);
+    let english = Language::English;
+    assert_eq!(click_view(ViewFrame::Inertial, english, None).frame, None);
+    assert_eq!(click_view(ViewFrame::Rotating, english, None).frame, None);
 
-    let centre = view_button_centre(ViewFrame::Inertial);
+    let centre = view_button_centre(ViewFrame::Inertial, english, hud::FRAME);
     assert_eq!(
-        click_view(ViewFrame::Inertial, Some(centre)),
+        click_view(ViewFrame::Inertial, english, Some(centre)).frame,
         Some(ViewFrame::Rotating)
     );
 
-    let centre = view_button_centre(ViewFrame::Rotating);
+    let centre = view_button_centre(ViewFrame::Rotating, english, hud::FRAME);
     assert_eq!(
-        click_view(ViewFrame::Rotating, Some(centre)),
+        click_view(ViewFrame::Rotating, english, Some(centre)).frame,
         Some(ViewFrame::Inertial)
+    );
+}
+
+/// Клік по перемикачу мови міняє мову — і **тільки** її.
+///
+/// Друга половина тут головна: обидва перемикачі живуть в одній панелі, і
+/// панель, що на будь-який клік віддає обидва поля, зробила б фрейм
+/// некерованим рівно тоді, коли гравець вибирає мову.
+///
+/// Обидва напрямки, бо перемикач, який завжди повертає українську, пройшов би
+/// перевірку в один бік — і зламався б рівно тоді, коли нею скористаються.
+#[test]
+fn the_language_button_switches_both_ways_and_touches_nothing_else() {
+    for (from, to) in [
+        (Language::English, Language::Ukrainian),
+        (Language::Ukrainian, Language::English),
+    ] {
+        let centre = view_button_centre(ViewFrame::Inertial, from, hud::LANGUAGE);
+        let choice = click_view(ViewFrame::Inertial, from, Some(centre));
+
+        assert_eq!(
+            choice.language,
+            Some(to),
+            "з {from:?} мали перемкнути на {to:?}"
+        );
+        assert_eq!(
+            choice.frame, None,
+            "вибір мови зачепив фрейм — панель віддає обидва поля на один клік"
+        );
+    }
+
+    // І навпаки: клік по фрейму не міняє мови.
+    let centre = view_button_centre(ViewFrame::Inertial, Language::English, hud::FRAME);
+    let choice = click_view(ViewFrame::Inertial, Language::English, Some(centre));
+    assert_eq!(choice.frame, Some(ViewFrame::Rotating));
+    assert_eq!(choice.language, None, "вибір фрейму зачепив мову");
+}
+
+/// Панель справді розмовляє обома мовами.
+///
+/// Тест на таблицю (`text.rs`) доводить, що рядки **існують**; цей — що вони
+/// **доходять до екрана**. Між ними та сама різниця, що між «ключ є» і
+/// «віджет його взяв»: літерал, забутий у коді панелі, проходить перший тест
+/// і валить другий.
+#[test]
+fn the_panel_speaks_both_languages() {
+    use game::text::{tr, Key};
+
+    let drawn = |language: Language| -> String {
+        let context = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
+        let mut text = String::new();
+        for _ in 0..2 {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            let mut output = context.run_ui(input, |ui| {
+                hud::view_panel(ui, language, ViewFrame::Inertial, None);
+            });
+            text = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            output.textures_delta.clear();
+        }
+        text
+    };
+
+    let english = drawn(Language::English);
+    let ukrainian = drawn(Language::Ukrainian);
+
+    assert!(
+        english.contains(tr(Language::English, Key::View)),
+        "англійський заголовок не потрапив у панель: {english}"
+    );
+    assert!(
+        ukrainian.contains(tr(Language::Ukrainian, Key::View)),
+        "українського заголовка немає в панелі: {ukrainian}"
+    );
+    assert_ne!(
+        english, ukrainian,
+        "панель намалювала те саме обома мовами — рядки не йдуть через таблицю"
     );
 }
 
@@ -636,7 +729,7 @@ fn the_frame_button_switches_both_ways_and_only_when_clicked() {
 #[test]
 fn choosing_a_frame_sends_no_command() {
     let snapshot = snapshot(1000.0, None);
-    let centre = view_button_centre(ViewFrame::Inertial);
+    let centre = view_button_centre(ViewFrame::Inertial, Language::English, hud::FRAME);
 
     // Той самий клік по тих самих координатах, але в панель часу: команд
     // немає, бо там у цьому місці нічого немає.

@@ -813,13 +813,26 @@ pub fn read_curve(snapshot: &WorldSnapshot) -> Option<CurveReadout> {
     })
 }
 
+/// Те, що гравець вибрав у панелі вигляду за цей кадр.
+///
+/// Структура, а не пара `Option`ів: два `Option` того самого розміру
+/// переставляються місцями мовчки, і компілятор про це не скаже. Обидва поля
+/// читаються в `app::draw` — інакше їх тут не було б.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ViewChoice {
+    /// Новий фрейм, якщо натиснули перемикач.
+    pub frame: Option<ViewFrame>,
+    /// Нова мова, якщо натиснули її перемикач.
+    pub language: Option<Language>,
+}
+
 pub fn view_panel(
     ui: &mut egui::Ui,
     language: Language,
     frame: ViewFrame,
     curve: Option<CurveReadout>,
-) -> Option<ViewFrame> {
-    let mut chosen = None;
+) -> ViewChoice {
+    let mut choice = ViewChoice::default();
 
     ui.heading(tr(language, Key::View));
     ui.label(format!(
@@ -848,7 +861,7 @@ pub fn view_panel(
         },
     );
     if button(ui, FRAME, label) {
-        chosen = Some(next);
+        choice.frame = Some(next);
     }
 
     // Крива існує лише в обертовому фреймі, тож і підпис до неї — теж.
@@ -871,11 +884,33 @@ pub fn view_panel(
         }
     }
 
-    chosen
+    // Мова — теж властивість вигляду, і тому живе в цій панелі, а не в
+    // окремій: прохід egui має лишитися одним (U1b виміряв, що платить саме
+    // прохід, а не віджети). Внизу, бо перемикають її раз і назавжди, а
+    // фрейм — постійно.
+    //
+    // Кнопка підписана назвою мови, **на яку перемкне**, а не поточної. Той
+    // самий вибір, що в перемикача фрейму вище, і з тієї ж причини: підпис
+    // поточного стану на кнопці читається як «натисни, щоб лишити як є».
+    ui.separator();
+    ui.label(format!(
+        "{}: {}",
+        tr(language, Key::Language),
+        tr(language, language.name_key())
+    ));
+    let next_language = language.next();
+    if button(ui, LANGUAGE, tr(language, next_language.name_key())) {
+        choice.language = Some(next_language);
+    }
+
+    choice
 }
 
 /// Стала адреса кнопки перемикача фрейму — з тієї ж причини, що [`PAUSE`].
 pub const FRAME: &str = "hud.view.frame";
+
+/// Те саме для перемикача мови.
+pub const LANGUAGE: &str = "hud.view.language";
 
 #[cfg(test)]
 mod tests {

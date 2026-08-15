@@ -113,6 +113,13 @@ pub enum Key {
     CurveIsAdvice,
     /// Апарат пішов від пари — там крива нічого не означає.
     CurveFarAway,
+
+    /// Підпис перемикача мови.
+    Language,
+    /// Назва англійської — **власною мовою, в обох таблицях**.
+    LanguageEnglish,
+    /// Назва української — так само.
+    LanguageUkrainian,
 }
 
 /// Мова інтерфейсу. Дві, бо саме дві таблиці й перевіряються.
@@ -121,6 +128,27 @@ pub enum Language {
     #[default]
     English,
     Ukrainian,
+}
+
+impl Language {
+    /// Наступна мова по колу — під перемикач, той самий патерн, що у
+    /// `ViewFrame`: мов рівно дві, і пара кнопок означала б стан «жодна не
+    /// вибрана», якого не буває.
+    pub fn next(self) -> Language {
+        match self {
+            Language::English => Language::Ukrainian,
+            Language::Ukrainian => Language::English,
+        }
+    }
+
+    /// Ключ із власною назвою мови — щоб кнопка була читабельна тому, хто
+    /// поточної мови не знає.
+    pub fn name_key(self) -> Key {
+        match self {
+            Language::English => Key::LanguageEnglish,
+            Language::Ukrainian => Key::LanguageUkrainian,
+        }
+    }
 }
 
 /// Рядок за ключем.
@@ -178,6 +206,16 @@ fn english(key: Key) -> &'static str {
         Key::ZeroVelocity => "zero-velocity curve, C",
         Key::CurveIsAdvice => "a guide, not a wall: C only holds in the CR3BP",
         Key::CurveFarAway => "the vessel has left the pair - the curve means little there",
+        Key::Language => "language",
+        // Назви мов — ендоніми, і тому однакові в обох таблицях. Кнопка, що
+        // пропонує «Ukrainian» англійською, читається лише тим, хто вже
+        // читає англійською, — тобто саме тим, кому вона не потрібна.
+        //
+        // Побічний наслідок, важливіший за саму кнопку: **кирилиця потрібна
+        // навіть в англійському інтерфейсі**, бо цей рядок є в англійській
+        // таблиці. U7b перевіряє гліфи не заради українського перекладу.
+        Key::LanguageEnglish => "English",
+        Key::LanguageUkrainian => "Українська",
     }
 }
 
@@ -228,12 +266,15 @@ fn ukrainian(key: Key) -> &'static str {
         Key::ZeroVelocity => "крива нульової швидкості, C",
         Key::CurveIsAdvice => "довідка, а не межа: C зберігається лише в CR3BP",
         Key::CurveFarAway => "апарат пішов від пари — там крива майже ні про що",
+        Key::Language => "мова",
+        Key::LanguageEnglish => "English",
+        Key::LanguageUkrainian => "Українська",
     }
 }
 
 /// Усі ключі — для перевірок і для того, хто колись малюватиме таблицю
 /// перекладу.
-pub const ALL: [Key; 45] = [
+pub const ALL: [Key; 48] = [
     Key::Time,
     Key::Day,
     Key::Warp,
@@ -279,6 +320,9 @@ pub const ALL: [Key; 45] = [
     Key::ZeroVelocity,
     Key::CurveIsAdvice,
     Key::CurveFarAway,
+    Key::Language,
+    Key::LanguageEnglish,
+    Key::LanguageUkrainian,
 ];
 
 #[cfg(test)]
@@ -299,6 +343,34 @@ mod tests {
                     "{key:?} у {language:?} — порожній рядок"
                 );
             }
+        }
+    }
+
+    /// Назви мов однакові в обох таблицях — і це навмисно.
+    ///
+    /// Ендонім лишається собою в будь-якому інтерфейсі: перекласти
+    /// «Українська» на «Ukrainian» означало б зробити кнопку нечитабельною
+    /// рівно для того, хто її шукає. Перевірка тут тому, що правило легко
+    /// зламати з найкращих міркувань.
+    #[test]
+    fn the_names_of_languages_are_the_same_in_both_tables() {
+        for key in [Key::LanguageEnglish, Key::LanguageUkrainian] {
+            assert_eq!(
+                tr(Language::English, key),
+                tr(Language::Ukrainian, key),
+                "{key:?} переклали, а мав лишитись ендонімом"
+            );
+        }
+    }
+
+    /// Перемикач ходить по колу й повертається до себе.
+    #[test]
+    fn the_switch_comes_back_to_where_it_started() {
+        for language in [Language::English, Language::Ukrainian] {
+            assert_ne!(language.next(), language, "перемикач стоїть на місці");
+            assert_eq!(language.next().next(), language);
+            // Кнопка підписується назвою тієї мови, на яку перемкне.
+            assert!(!tr(language, language.next().name_key()).is_empty());
         }
     }
 
