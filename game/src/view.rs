@@ -22,9 +22,10 @@
 //! Тут це видно буквально: змінюється лише те, з чим порівнюють `sample.t`.
 
 use engine::camera::Camera;
-use engine::scene::{Polyline, Scene};
+use engine::scene::{Body, Polyline, Scene, TileSet};
 
 use crate::snapshot::WorldSnapshot;
+use crate::world::EARTH;
 
 /// Прогноз — той самий колір, яким H5 малював живу траєкторію.
 const PREDICTION: [f32; 4] = [0.9, 0.6, 0.2, 1.0];
@@ -56,6 +57,32 @@ pub fn build_with_preview(
     preview: &[std::sync::Arc<crate::leg::Leg>],
 ) -> Scene {
     let mut scene = Scene::new(camera);
+
+    // Тіла — те саме віднімання Землі, що й для ламаних, і з тієї ж причини:
+    // кадр геоцентричний (див. вступ модуля). Земля опиняється рівно в
+    // початку координат, Місяць — там, де він відносно неї в цю мить, а
+    // орієнтація не чіпається зовсім: поворот тіла навколо власного центра
+    // від вибору початку координат не залежить.
+    if let Some(earth) = snapshot.bodies.iter().find(|b| b.body == EARTH) {
+        for body in &snapshot.bodies {
+            // Тіло без розміру малювати нема як: радіус нуль — це «ассет не
+            // каже», а не «крапка».
+            if body.radius_m <= 0.0 {
+                continue;
+            }
+            scene.bodies.push(Body {
+                centre: [
+                    body.position[0] - earth.position[0],
+                    body.position[1] - earth.position[1],
+                    body.position[2] - earth.position[2],
+                ],
+                radius_m: body.radius_m,
+                orientation: body.orientation,
+                // Рельєфу ще немає в жодного тіла — його приносить R5.
+                tiles: TileSet::Smooth,
+            });
+        }
+    }
 
     for vessel in &snapshot.vessels {
         let mut history: Vec<[f64; 3]> = Vec::new();

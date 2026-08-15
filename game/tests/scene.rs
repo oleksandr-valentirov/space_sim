@@ -111,3 +111,106 @@ fn the_camera_moves_the_prediction_too() {
         "обертання камери змінило лише {differing} пікселів — ламана її не слухає"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Тіла в сцені (ROADMAP-PLANETS.md, R1c)
+
+/// Сцена несе тіла як **дані**: центр, розмір, поворот.
+///
+/// Оракул — не пікселі (R1c нічого ще не малює по-новому), а три твердження
+/// про числа, кожне з яких ловить свою помилку:
+///
+/// 1. Земля рівно в початку координат — кадр геоцентричний, і якби віднімання
+///    робилося не від неї, вона поїхала б на 1.5·10¹¹ м;
+/// 2. Місяць за 3.6–4.1·10⁸ м від неї — тобто це справді Місяць, а не
+///    баріцентрична позиція, яку забули перевести;
+/// 3. Земля повернута, а її поворот змінюється з часом — інакше в сцену
+///    приїхала б одиниця, яку ніхто б не помітив, доки на планеті не з'явиться
+///    рельєф.
+#[test]
+fn the_scene_carries_the_bodies_as_data() {
+    use game::world::{EARTH, MOON};
+
+    let mut world = mission::world(&mission::default_asset()).expect("світ");
+    let orbit = Orbit::at_altitude(mission::CAMERA_ALTITUDE_M);
+
+    let scene = view::build(&world.snapshot(), orbit.camera());
+    assert_eq!(scene.bodies.len(), 2, "у фікстурі два тіла з розміром");
+
+    let earth = scene.bodies[0];
+    let moon = scene.bodies[1];
+
+    // 1. Земля — початок координат кадру.
+    assert_eq!(earth.centre, [0.0, 0.0, 0.0]);
+    assert!(
+        (earth.radius_m - 6.371e6).abs() < 1.0e4,
+        "радіус Землі з ассета: {}",
+        earth.radius_m
+    );
+
+    // 2. Місяць — на відстані Місяця.
+    let distance =
+        (moon.centre[0].powi(2) + moon.centre[1].powi(2) + moon.centre[2].powi(2)).sqrt();
+    println!(
+        "  Місяць за {:.4e} м, радіус {:.4e} м",
+        distance, moon.radius_m
+    );
+    assert!(
+        (3.6e8..4.1e8).contains(&distance),
+        "Місяць опинився за {distance:.3e} м — це не орбіта Місяця"
+    );
+    assert!(
+        (moon.radius_m - 1.7374e6).abs() < 1.0e4,
+        "радіус Місяця з ассета: {}",
+        moon.radius_m
+    );
+
+    // 3. Поворот є, він одиничний за довжиною й змінюється з часом.
+    let length = |q: [f64; 4]| (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+    assert!((length(earth.orientation) - 1.0).abs() < 1e-9);
+    assert_ne!(
+        earth.orientation,
+        [1.0, 0.0, 0.0, 0.0],
+        "Земля приїхала неповернутою — орієнтацію десь загубили"
+    );
+
+    // Через кілька годин поворот інший, і саме Землі: Місяць за той самий час
+    // повертається помітно менше (доба проти місяця).
+    // Шість годин по годиннику світу. Спершу порахувати прогноз, інакше
+    // курсор упреться в горизонт і нікуди не зрушить.
+    world.tick(64);
+    let want = world.snapshot().t + 6.0 * 3600.0;
+    while world.snapshot().t < want {
+        world.step(6.0 * 3600.0 / mission::DEFAULT_WARP, 64);
+    }
+    let later = view::build(&world.snapshot(), orbit.camera());
+    assert_ne!(
+        later.bodies[0].orientation, earth.orientation,
+        "за шість годин Земля не повернулася"
+    );
+
+    let turned = |a: [f64; 4], b: [f64; 4]| {
+        // Кут між двома кватерніонами: 2·acos|⟨a, b⟩|.
+        let d = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]).abs();
+        2.0 * d.clamp(-1.0, 1.0).acos()
+    };
+    let earth_turn = turned(earth.orientation, later.bodies[0].orientation);
+    let moon_turn = turned(moon.orientation, later.bodies[1].orientation);
+    println!(
+        "  за 6 год: Земля на {:.3}°, Місяць на {:.3}°",
+        earth_turn.to_degrees(),
+        moon_turn.to_degrees()
+    );
+    assert!(
+        earth_turn > moon_turn * 10.0,
+        "Земля повернулася на {:.3}°, Місяць на {:.3}° — за шість годин \
+         різниця мала б бути в десятки разів",
+        earth_turn.to_degrees(),
+        moon_turn.to_degrees()
+    );
+
+    // Індекси тіл лишилися в грі, а не поїхали в рушій: `Body` про них не
+    // знає взагалі, і саме тому цей рядок тут — як нагадування, а не як
+    // перевірка.
+    assert_eq!([EARTH, MOON], [3, 4]);
+}

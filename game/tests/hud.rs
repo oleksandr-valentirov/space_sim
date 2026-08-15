@@ -27,6 +27,9 @@ fn snapshot(warp: f64, stall: Option<Stall>) -> WorldSnapshot {
         t: mission::start().t + 3.5 * 86400.0,
         warp,
         stall,
+        // Тіл у цій панелі немає: час і warp від них не залежать, а порожній
+        // список — законний стан сцени, а не заглушка.
+        bodies: Vec::new(),
         vessels: Vec::new(),
     }
 }

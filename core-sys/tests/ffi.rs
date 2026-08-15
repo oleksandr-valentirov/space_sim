@@ -19,9 +19,9 @@ use std::path::Path;
 use std::process::Command;
 
 use core_sys::{
-    eph_body_mu, eph_body_radius, eph_body_state, eph_free, eph_load, porkchop_compute_eph,
-    prop_create, prop_free, prop_run, prop_run_stm, CoreEvent, CoreResult, EphemerisCtx,
-    PorkchopPoint, PropConfig, PropagatorCtx, State, CORE_ERR_BUFFER_TOO_SMALL,
+    eph_body_mu, eph_body_orientation, eph_body_radius, eph_body_state, eph_free, eph_load,
+    porkchop_compute_eph, prop_create, prop_free, prop_run, prop_run_stm, CoreEvent, CoreResult,
+    EphemerisCtx, PorkchopPoint, PropConfig, PropagatorCtx, Quat, State, CORE_ERR_BUFFER_TOO_SMALL,
     CORE_ERR_INVALID_ARG, CORE_EVENT_PERIAPSIS, CORE_INTEG_DOP853, CORE_OK, CORE_STOP_EVENT,
 };
 
@@ -185,6 +185,69 @@ fn states_match_the_c_oracle_bit_for_bit() {
             expected.t = t;
             same_bits(&expected, &state, &format!("тіло {body}, момент {t}"));
         }
+
+        eph_free(ctx);
+    }
+}
+
+/// Орієнтація звіряється бітово, всі чотири компоненти (R1c).
+///
+/// Найлегша помилка тут — не арифметична, а домовленісна: половина світу
+/// пише кватерніон як `(x, y, z, w)`, і переставлений `w` лишається цілком
+/// правильним обертанням, просто не тим. Ні код повернення, ні довжина
+/// (вона одинична за будь-якої перестановки) цього не покажуть — лише
+/// покомпонентна звірка з C.
+///
+/// Друге, що тут закріплюється: тіло без моделі обертання віддає **одиничний**
+/// кватерніон і `CORE_OK`. «Не змодельовано» не має права з часом перетворитися
+/// на «не вдалося»: у фікстурі таких тіл вісім із десяти.
+#[test]
+fn orientations_match_the_c_oracle_bit_for_bit() {
+    let records = oracle_records();
+    let quats = tagged(&records, "quat");
+    assert!(!quats.is_empty(), "оракул не дав жодного рядка quat");
+
+    unsafe {
+        let ctx = load_fixture();
+
+        let mut turning = 0;
+        for record in &quats {
+            let body = record.values[0] as i32;
+            let t = record.values[1];
+
+            let mut got = Quat::default();
+            let result = eph_body_orientation(ctx, body, t, &mut got);
+            assert_eq!(result, CORE_OK, "тіло {body} у момент {t}");
+
+            for (k, (name, expected)) in [
+                ("w", record.values[2]),
+                ("x", record.values[3]),
+                ("y", record.values[4]),
+                ("z", record.values[5]),
+            ]
+            .iter()
+            .enumerate()
+            {
+                let component = [got.w, got.x, got.y, got.z][k];
+                assert_eq!(
+                    component.to_bits(),
+                    expected.to_bits(),
+                    "тіло {body}, момент {t}, компонента {name}: C дав \
+                     {expected}, а межа {component}"
+                );
+            }
+
+            // Одиничний кватерніон — це «не обертається»; звірка самих
+            // одиничних пройшла б і на функції, яка нічого не читає.
+            if got != Quat::default() {
+                turning += 1;
+            }
+        }
+
+        assert!(
+            turning > 0,
+            "усі кватерніони одиничні — звірка нічого не перевірила"
+        );
 
         eph_free(ctx);
     }

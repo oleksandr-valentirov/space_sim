@@ -231,6 +231,26 @@ int main(void)
 
         printf("rad %d %.17g\n", BODIES[b], eph_body_radius(eph, BODIES[b]));
         printf("mu %d %.17g\n", BODIES[b], eph_body_mu(eph, BODIES[b]));
+
+        /* Orientation, and all four components printed separately on purpose
+         * (ROADMAP-PLANETS.md R1c). Half the world writes a quaternion as
+         * (x, y, z, w) and the other half as (w, x, y, z); a declaration that
+         * picked the wrong one would still be a valid rotation, just not this
+         * one, and the only place it would show is a planet facing the wrong
+         * way. Two of the fixture's bodies carry rotation channels and eight
+         * do not - the latter answer with the identity, which is also worth
+         * pinning: "not modelled" must not drift into "failed". */
+        for (size_t k = 0; k < N_TIMES; k++) {
+            Quat q;
+            if (eph_body_orientation(eph, BODIES[b], TIMES[k], &q) != CORE_OK) {
+                fprintf(stderr, "oracle: orientation of %d at t = %g failed\n",
+                        BODIES[b], TIMES[k]);
+                eph_free(eph);
+                return 1;
+            }
+            printf("quat %d %.17g %.17g %.17g %.17g %.17g\n",
+                   BODIES[b], TIMES[k], q.w, q.x, q.y, q.z);
+        }
     }
 
     /* And a body the asset has never heard of (ROADMAP U2a). The zero it

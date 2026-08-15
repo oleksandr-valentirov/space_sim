@@ -26,7 +26,7 @@ use core_rs::{CoreError, Ephemeris, PropConfig, Propagator, State, VesselParams}
 use crate::clock::{Clock, Stall};
 use crate::leg::{Leg, Sample, Trajectory};
 use crate::plan::Plan;
-use crate::snapshot::{VesselSnapshot, WorldSnapshot};
+use crate::snapshot::{BodySnapshot, VesselSnapshot, WorldSnapshot};
 
 /// Індекси тіл у порядку кукера (`core/cook/cook_fixture.c`).
 pub const EARTH: i32 = 3;
@@ -600,6 +600,7 @@ impl World {
             t,
             warp: self.clock.warp(),
             stall: self.clock.stall(),
+            bodies: self.bodies_at(t),
             vessels: self
                 .vessels
                 .iter()
@@ -621,6 +622,34 @@ impl World {
                 })
                 .collect(),
         }
+    }
+
+    /// Тіла, які видно в кадрі, у момент `t` (ROADMAP-PLANETS.md, R1c).
+    ///
+    /// **Рахується тут, у нитці світу, а не в кадрі** — і це те саме рішення,
+    /// що вже зроблене для `state_at`: два споживачі, кожен зі своїм викликом
+    /// ефемериди, бачили б два різні «зараз» в одному кадрі. Плюс правило 5
+    /// етапу U: панель і рендер ефемериду не кличуть.
+    ///
+    /// Радіус і орієнтація приходять із ассета — розмір і поворот Землі не
+    /// властивості рушія. Помилку ефемериди тут ковтати нема куди й нема
+    /// навіщо: тіло без моделі обертання й так віддає одиничний кватерніон, а
+    /// час поза проміжком ассета для курсора неможливий — його не пускає
+    /// горизонт. Тому невдача читається як «тіла в кадрі немає», і це видно.
+    fn bodies_at(&self, t: f64) -> Vec<BodySnapshot> {
+        [EARTH, MOON]
+            .iter()
+            .filter_map(|&body| {
+                let state = self.eph.body_state(body, t).ok()?;
+                let q = self.eph.body_orientation(body, t).ok()?;
+                Some(BodySnapshot {
+                    body,
+                    position: [state.r.x, state.r.y, state.r.z],
+                    radius_m: self.eph.body_radius(body),
+                    orientation: [q.w, q.x, q.y, q.z],
+                })
+            })
+            .collect()
     }
 }
 
