@@ -49,3 +49,4 @@ pub mod snapshot;
 pub mod text;
 pub mod view;
 pub mod world;
+pub mod zvc;

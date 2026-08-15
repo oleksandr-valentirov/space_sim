@@ -113,6 +113,18 @@ pub fn build_with_preview(
         }
     }
 
+    // Крива нульової швидкості — тільки в обертовому фреймі, і це не
+    // обмеження реалізації: вона живе в площині синодичної системи й в
+    // інерціальному кадрі оберталася б разом із парою, показуючи стіну там,
+    // де її щойно не було.
+    if now.is_some() {
+        if let (Some(mu), Some(c)) = (mass_ratio(snapshot), current_jacobi(snapshot)) {
+            scene
+                .polylines
+                .extend(crate::zvc::curves(mu, c, frame_view::SYNODIC_SCALE_M));
+        }
+    }
+
     for vessel in &snapshot.vessels {
         let mut history: Vec<[f64; 3]> = Vec::new();
         let mut future: Vec<[f64; 3]> = Vec::new();
@@ -252,6 +264,24 @@ pub fn plane_normals(samples: &[crate::leg::Sample]) -> Vec<[f64; 3]> {
             cross(line(&samples[i]), rate)
         })
         .collect()
+}
+
+/// Частка маси пари з ассета — визначення системи, у якій живуть і крива, і
+/// точки Лагранжа. Рахує її `/core`, а не Rust (U6b2).
+fn mass_ratio(snapshot: &WorldSnapshot) -> Option<f64> {
+    let earth = snapshot.bodies.iter().find(|b| b.body == EARTH)?;
+    let moon = snapshot.bodies.iter().find(|b| b.body == MOON)?;
+    Some(core_rs::cr3bp_mu(earth.mu, moon.mu))
+}
+
+/// `C` апарата, за яким малюється крива.
+///
+/// Першого апарата, а не всіх: крива одна на кадр, і десять напівпрозорих
+/// кривих одна поверх одної не сказали б нічого нікому. Апаратів у грі поки
+/// один; коли їх стане більше, крива належатиме **обраному** — це вибір
+/// інтерфейсу, і робити його наперед тут нема з чого.
+fn current_jacobi(snapshot: &WorldSnapshot) -> Option<f64> {
+    snapshot.vessels.first()?.jacobi
 }
 
 /// Місяць відносно Землі в мить снапшоту.

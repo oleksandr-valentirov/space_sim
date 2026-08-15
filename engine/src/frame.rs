@@ -800,7 +800,12 @@ impl Lines {
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
-                        blend: None,
+                        // Змішування ввімкнене саме тут і саме для ламаних:
+                        // PROJECT.md §7 вимагає крив нульової швидкості
+                        // «напівпрозорим шаром», а це і є ламані з альфою
+                        // менше одиниці (U6b3). Решта ламаних мають альфу 1.0
+                        // і від цього не змінюються — перевірено знімком.
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                 }),

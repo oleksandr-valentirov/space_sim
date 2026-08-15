@@ -604,24 +604,45 @@ impl World {
             vessels: self
                 .vessels
                 .iter()
-                .map(|v| VesselSnapshot {
-                    id: v.id,
-                    name: v.name.clone(),
+                .map(|v| {
                     // Інтерполяція робиться тут, а не в рендері, і це не
                     // економія: два споживачі, кожен зі своїм `state_at`,
-                    // бачили б два різні «зараз» в одному кадрі.
-                    state: v.trajectory.state_at(t),
-                    legs: v.trajectory.share(),
-                    plan: v.plan.clone(),
-                    start: v.trajectory.start(),
-                    tip: v.tip,
-                    computed_to: v.computed_to(),
-                    horizon_end: v.horizon_end,
-                    params: v.params,
-                    failed: v.failed,
+                    // бачили б два різні «зараз» в одному кадрі. З тієї ж
+                    // причини `C` рахується з **цього** стану, а не з другої
+                    // інтерполяції.
+                    let state = v.trajectory.state_at(t);
+                    VesselSnapshot {
+                        id: v.id,
+                        name: v.name.clone(),
+                        state,
+                        jacobi: self.jacobi_at(t, &state),
+                        legs: v.trajectory.share(),
+                        plan: v.plan.clone(),
+                        start: v.trajectory.start(),
+                        tip: v.tip,
+                        computed_to: v.computed_to(),
+                        horizon_end: v.horizon_end,
+                        params: v.params,
+                        failed: v.failed,
+                    }
                 })
                 .collect(),
         }
+    }
+
+    /// Константа Якобі апарата в синодичному фреймі пари (ROADMAP-UI.md, U6b3).
+    ///
+    /// Один виклик ефемериди на снапшот, у нитці світу — рівно там, де вже
+    /// рахуються тіла. Помилка означає «фрейму немає», а не нуль: нуль — це
+    /// теж значення `C`, і воно намалювало б криву не там.
+    fn jacobi_at(&self, t: f64, state: &State) -> Option<f64> {
+        let frame = self.eph.synodic_frame(EARTH, MOON, t).ok()?;
+        let synodic = frame.from_inertial(state);
+        Some(core_rs::cr3bp_jacobi(
+            synodic.r,
+            synodic.v,
+            frame.mass_ratio(),
+        ))
     }
 
     /// Тіла, які видно в кадрі, у момент `t` (ROADMAP-PLANETS.md, R1c).

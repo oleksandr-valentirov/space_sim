@@ -137,7 +137,20 @@ fn take_shot(
         println!("сейв: {}", save_path.display());
     }
 
-    let camera = engine::orbit::Orbit::at_altitude(mission::CAMERA_ALTITUDE_M).camera();
+    // У обертовому фреймі камера дивиться **згори на площину пари**, а не
+    // збоку: уся карта — крива нульової швидкості, точки Лагранжа, петля
+    // halo — лежить у z = 0, і збоку вона проєктується в лінію. У вікні це
+    // робить гравець мишею; знімку робити це нема кому.
+    let camera = match frame {
+        game::frame_view::ViewFrame::Rotating => engine::camera::Camera::look_at(
+            [0.0, 0.0, mission::CAMERA_ALTITUDE_M],
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+        ),
+        game::frame_view::ViewFrame::Inertial => {
+            engine::orbit::Orbit::at_altitude(mission::CAMERA_ALTITUDE_M).camera()
+        }
+    };
     let scene = view::build_in(&snapshot, camera, frame);
 
     let taken = shot::take_scene(&gpu, options.width, options.height, &scene)?;
