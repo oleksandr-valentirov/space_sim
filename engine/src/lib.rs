@@ -42,6 +42,7 @@ pub mod flight_probe;
 pub mod frame;
 pub mod gpu;
 pub mod live;
+pub mod lod;
 pub mod orbit;
 pub mod perf_probe;
 pub mod rotating_probe;
