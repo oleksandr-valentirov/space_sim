@@ -22,6 +22,7 @@ fn main() {
     let mut flight_probe = false;
     let mut trajectory_probe = false;
     let mut live_probe = false;
+    let mut rotating_probe = false;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -48,6 +49,7 @@ fn main() {
             "--flight-probe" => flight_probe = true,
             "--trajectory-probe" => trajectory_probe = true,
             "--live-probe" => live_probe = true,
+            "--rotating-probe" => rotating_probe = true,
             "--help" | "-h" => {
                 println!("{}", HELP);
                 return;
@@ -72,6 +74,9 @@ fn main() {
         run_trajectory_probe()
     } else if live_probe {
         run_live_probe()
+    } else if rotating_probe {
+        engine::rotating_probe::report();
+        Ok(())
     } else {
         match shot_path {
             Some(path) => take_shot(&path, options.width, options.height),
@@ -94,6 +99,7 @@ const HELP: &str = "\
   --flight-probe    проліт 10 м -> 10⁷ м над сферою (ROADMAP F5)
   --trajectory-probe  halo-орбіта з фікстури, два фрейми (ROADMAP F6)
   --live-probe      та сама орбіта, порахована зараз через core-rs (ROADMAP H5)
+  --rotating-probe  де рахувати обертовий фрейм: f32 на GPU чи f64 на CPU (U6a1)
   --width <px>      ширина, типово 1280
   --height <px>     висота, типово 720";
 

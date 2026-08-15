@@ -44,6 +44,7 @@ pub mod gpu;
 pub mod live;
 pub mod orbit;
 pub mod perf_probe;
+pub mod rotating_probe;
 pub mod scene;
 pub mod shot;
 pub mod sphere;
