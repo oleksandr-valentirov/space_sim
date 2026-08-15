@@ -250,3 +250,121 @@ fn the_halo_holds_the_neighbours_own_node() {
         flat * 100.0
     );
 }
+
+/// **Нахил на спільному ребрі — бітово одне число з обох боків** (R7c).
+///
+/// Це головна умова, під якою процедурній деталі взагалі можна дозволити
+/// існувати. Амплітуда шуму йде від нахилу; якби нахил на спільному вузлі
+/// різнився, деталь розірвала б поверхню рівно там, де R2b тріщину прибрав —
+/// і виглядало б це не як помилка амплітуди, а як тріщина в геометрії.
+///
+/// Чому це може вийти бітово, а не «майже»: чотири значення центральної
+/// різниці з обох боків — **ті самі числа**. Наш ореол `(−1, k)` є сусідів
+/// вузол `(SIDE − 1, k)`, наш вузол `(1, k)` є його ореол, а `(0, k ± 1)`
+/// лежать на самому ребрі й спільні. За ребром куба осі можуть помінятися
+/// місцями й знаком — і саме тому амплітуда бере **довжину** градієнта:
+/// додавання комутативне, квадрат знак з'їдає.
+///
+/// Перевіряються два випадки, і другий важливіший: патчі **глибші за
+/// піраміду**, тобто ті, які й буде видно зблизька, коли деталь має сенс.
+#[test]
+fn the_slope_is_one_number_from_both_sides_of_an_edge() {
+    use engine::cubesphere::{Edge, EDGES};
+
+    let grid = grid();
+    let terrain = build(&grid, LEVELS);
+
+    // Вузол ребра з боку того, хто через нього дивиться.
+    let node = |edge: Edge, k: usize| match edge {
+        Edge::AMin => (0, k),
+        Edge::AMax => (SIDE, k),
+        Edge::BMin => (k, 0),
+        Edge::BMax => (k, SIDE),
+    };
+
+    // Чи дістає стенсил центральної різниці до кута куба.
+    //
+    // Не «чи це сам кут»: стенсил тягнеться на `delta` вузлів **тайла**, тож
+    // зіпсованим виявляється не вузол, а смуга навколо кута. У вузлах патча
+    // її ширина — `delta · 2^deeper`.
+    let tainted = |patch: &Patch, a: usize, b: usize| {
+        let (tile, deeper) = terrain.covering(patch);
+        let deepest = terrain.levels - 1;
+        let delta = 2f64.powi(tile.level as i32 - deepest as i32);
+        let reach = delta * f64::from(1u32 << deeper);
+
+        let n = (SIDE << patch.level) as f64;
+        let u = f64::from(patch.i * SIDE as u32 + a as u32);
+        let v = f64::from(patch.j * SIDE as u32 + b as u32);
+        u.min(n - u) <= reach && v.min(n - v) <= reach
+    };
+
+    let mut compared = 0;
+    let mut across_faces = 0;
+    let mut corners = 0;
+    let mut worst_corner: f64 = 0.0;
+    for level in [LEVELS - 1, LEVELS + 1] {
+        let side = 1u32 << level;
+        for face in 0..FACES {
+            // Кути грані й одна клітинка всередині: там, де сходяться ребра
+            // куба, помилка найімовірніша.
+            for (i, j) in [(0, 0), (side - 1, side - 1), (0, side - 1), (1, 1)] {
+                let patch = Patch { face, level, i, j };
+                for edge in EDGES {
+                    let there = patch.neighbour(edge);
+                    if there.patch.face != face {
+                        across_faces += 1;
+                    }
+                    for k in [0, 1, SIDE / 3, SIDE / 2, SIDE - 1, SIDE] {
+                        let (ma, mb) = node(edge, k);
+                        let (ta, tb) = node(there.edge, k);
+                        let mine = terrain.slope_at(&patch, ma, mb);
+                        let theirs = terrain.slope_at(&there.patch, ta, tb);
+
+                        if tainted(&patch, ma, mb) {
+                            // Смуга навколо кута куба: там стенсил однієї
+                            // грані тягнеться в сусідню, а стенсил сусідньої —
+                            // у третю, бо на куті сходяться ТРИ грані. Це межа
+                            // конструкції, названа числом, а не похибка (Q3).
+                            corners += 1;
+                            worst_corner = worst_corner.max(
+                                (mine - theirs).abs() / mine.max(theirs).max(f64::MIN_POSITIVE),
+                            );
+                            continue;
+                        }
+
+                        assert_eq!(
+                            mine.to_bits(),
+                            theirs.to_bits(),
+                            "{patch:?} / {edge:?} вузол {k}: нахил {mine:.9e} проти \
+                             {theirs:.9e} у {:?}",
+                            there.patch
+                        );
+                        compared += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    println!(
+        "  {compared} вузлів ребра, з них через ребро куба {across_faces} \
+         сусідств — нахил збігся бітово скрізь"
+    );
+    println!(
+        "  вузлів у смузі навколо кутів пропущено {corners}; найгірша відносна \
+         розбіжність там {:.1}%",
+        worst_corner * 100.0
+    );
+    assert!(across_faces > 0, "жодного ребра куба серед перевірених");
+    assert!(
+        corners > 0,
+        "жодного вузла в смузі навколо кута — виняток не перевірено"
+    );
+    // Смуга мусить лишатися смугою: якщо в неї потрапить помітна частка
+    // вузлів, виняток перестане бути винятком.
+    assert!(
+        corners * 4 < compared,
+        "{corners} зіпсованих вузлів проти {compared} чистих — це вже не смуга"
+    );
+}
