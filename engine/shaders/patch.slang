@@ -39,6 +39,12 @@ struct Uniforms
     // x — скільки одиниць одиничної сфери в одній одиниці зберігання висоти,
     // тобто `scale_m / radius_m`. Решта — запас, свідомо нульовий.
     float4 terrain;
+    // Процедурний детайл (R7c): x — радіус тіла в метрах, y — множник
+    // «різниця в одиницях зберігання → нахил» (`Terrain::slope_rise`),
+    // z — довжина хвилі найгрубішої октави (`detail::base_m`, тобто радіус
+    // тіла поділений на сталу, а НЕ глибина піраміди: та є станом кукера),
+    // w — пікселів на радіан (`lod::focal_px`).
+    float4 detail;
 };
 
 ConstantBuffer<Uniforms> uniforms;
@@ -64,7 +70,9 @@ struct PatchData
     // незалежні вікна розійшлися б, і різницю було б видно тріщиною.
     float2 window_origin;
     float window_step;
-    float _pad;
+    // Крок центральної різниці у вузлах цього ж тайла (R7c). Один для патчів
+    // глибше за піраміду, частка вузла для грубших — `Terrain::delta_nodes`.
+    float window_delta;
 };
 
 StructuredBuffer<PatchData> patches;
@@ -116,6 +124,13 @@ static const uint NODES = SIDE + 1;
 // за сітку патча на дві смуги, тож вузол `(a, b)` патча лежить у текселі
 // `(a + HALO, b + HALO)`. Зсув робиться в одному місці — при `Load`.
 static const int HALO = 1;
+
+// Процедурний детайл (R7c). Числа — дослівно `engine::detail`; звіряє їх
+// `engine::tests::detail`, бо константа тут і константа там — два місця.
+static const uint OCTAVES = 6u;
+static const float STEEPNESS = 0.5;
+static const float FADE_LO_PX = 4.0;
+static const float FADE_HI_PX = 16.0;
 
 struct VertexInput
 {
@@ -247,19 +262,161 @@ float sample_height(PatchData patch, uint2 grid)
     return top * (1.0 - tx) + bottom * tx;
 }
 
+// Висота в ДОВІЛЬНІЙ точці тайла — двійник `Terrain::units_at` (R7c).
+//
+// Різниця з `sample_height` рівно одна й вона свідома: тут затискання йде по
+// `SIDE + HALO`, тобто вибірка має право зайти в ореол. Саме заради цього
+// ореол і існує: центральна різниця на краю патча інакше впиралася б у край
+// тайла й давала двом бокам межі різні нахили.
+float units_at(PatchData patch, float x, float y)
+{
+    float x0 = floor(x);
+    float y0 = floor(y);
+    float tx = x - x0;
+    float ty = y - y0;
+
+    int top = int(SIDE) + HALO;
+    int xi = int(x0);
+    int yi = int(y0);
+    int xi1 = min(xi + 1, top);
+    int yi1 = min(yi + 1, top);
+
+    float h00 = float(tiles[patch.tile].Load(int3(yi + HALO, xi + HALO, 0)).x);
+    float h01 = float(tiles[patch.tile].Load(int3(yi1 + HALO, xi + HALO, 0)).x);
+    float h10 = float(tiles[patch.tile].Load(int3(yi + HALO, xi1 + HALO, 0)).x);
+    float h11 = float(tiles[patch.tile].Load(int3(yi1 + HALO, xi1 + HALO, 0)).x);
+
+    float left = h00 * (1.0 - ty) + h01 * ty;
+    float right = h10 * (1.0 - ty) + h11 * ty;
+    return left * (1.0 - tx) + right * tx;
+}
+
+// Нахил поверхні у вузлі — двійник `Terrain::slope_at`.
+float sample_slope(PatchData patch, uint2 grid)
+{
+    float x = patch.window_origin.x + float(grid.x) * patch.window_step;
+    float y = patch.window_origin.y + float(grid.y) * patch.window_step;
+    float d = patch.window_delta;
+
+    float du = units_at(patch, x + d, y) - units_at(patch, x - d, y);
+    float dv = units_at(patch, x, y + d) - units_at(patch, x, y - d);
+
+    float rise = uniforms.detail.y;
+    return sqrt(du * du * rise * rise + dv * dv * rise * rise);
+}
+
+// Хеш трьох цілих у [0, 1) — двійник `engine::detail::hash`.
+float detail_hash(int x, int y, int z)
+{
+    uint h = uint(x) * 0x9E3779B1u ^ uint(y) * 0x85EBCA6Bu ^ uint(z) * 0xC2B2AE35u;
+    h ^= h >> 15u;
+    h = h * 0x2545F491u;
+    h ^= h >> 13u;
+    h = h * 0x27D4EB2Fu;
+    h ^= h >> 16u;
+    return float(h >> 8u) / 16777216.0;
+}
+
+float detail_smooth(float t)
+{
+    return t * t * (3.0 - 2.0 * t);
+}
+
+// Значеннєвий шум — двійник `engine::detail::value_noise`.
+float value_noise(float3 p)
+{
+    float3 cell = floor(p);
+    float3 t = float3(detail_smooth(p.x - cell.x),
+                      detail_smooth(p.y - cell.y),
+                      detail_smooth(p.z - cell.z));
+    int x = int(cell.x);
+    int y = int(cell.y);
+    int z = int(cell.z);
+
+    float out = 0.0;
+    for (int dx = 0; dx < 2; ++dx)
+    {
+        float wx = dx == 0 ? 1.0 - t.x : t.x;
+        for (int dy = 0; dy < 2; ++dy)
+        {
+            float wy = dy == 0 ? 1.0 - t.y : t.y;
+            for (int dz = 0; dz < 2; ++dz)
+            {
+                float wz = dz == 0 ? 1.0 - t.z : t.z;
+                out += detail_hash(x + dx, y + dy, z + dz) * wx * wy * wz;
+            }
+        }
+    }
+    return out;
+}
+
+// Вага октави — двійник `engine::detail::octave_weight`.
+//
+// Залежить від довжини хвилі, відстані й фокуса, і НІ ВІД ЧОГО більше.
+// Зокрема не від рівня патча: сусіди різняться на рівень за побудовою, і
+// критерій, що дивиться на рівень, дав би на спільному вузлі дві висоти.
+float octave_weight(float wavelength, float distance, float focal)
+{
+    float px = wavelength / max(distance, 1.0) * focal;
+    if (px <= FADE_LO_PX) { return 0.0; }
+    if (px >= FADE_HI_PX) { return 1.0; }
+    return detail_smooth((px - FADE_LO_PX) / (FADE_HI_PX - FADE_LO_PX));
+}
+
+// Процедурна деталь у вузлі, метри — двійник `engine::detail::height_m`.
+//
+// `unit` — одиничний напрямок вузла з центра тіла, тобто нормаль з буфера
+// геометрії. Саме вона, а не позиція відносно патча: на спільному ребрі
+// нормаль бітово одна (R2b), тож деталь неперервна не за домовленістю, а за
+// побудовою.
+float detail_m(float3 unit, float slope, float distance)
+{
+    float radius = uniforms.detail.x;
+    float base = uniforms.detail.z;
+    float focal = uniforms.detail.w;
+
+    float out = 0.0;
+    for (uint octave = 0u; octave < OCTAVES; ++octave)
+    {
+        float wavelength = base / float(1u << octave);
+        float weight = octave_weight(wavelength, distance, focal);
+        if (weight <= 0.0) { break; }
+        float scale = radius / wavelength;
+        out += (value_noise(unit * scale) - 0.5) * STEEPNESS * slope * wavelength * weight;
+    }
+    return out;
+}
+
 [shader("vertex")]
 VertexOutput vertex_terrain(VertexInput input)
 {
     PatchDraw draw = draws[input.instance];
     Node node = node_of(input.vertex, draw.slot, draw.mask);
     PatchVertex vertex = vertices[node.index];
+    PatchData patch = patches[draw.slot];
 
-    float height = sample_height(patches[draw.slot], node.grid);
+    float height = sample_height(patch, node.grid);
 
-    // Висота зсуває вершину вздовж нормалі патча — на ОДИНИЧНІЙ сфері, бо
-    // радіус і поворот застосовує та сама матриця, що й до самого зсуву.
-    // Множник `terrain.x` і є `scale_m / radius_m`.
-    float3 offset = vertex.offset + vertex.normal * (height * uniforms.terrain.x);
+    // Відстань до камери береться по НЕЗСУНУТІЙ вершині, і це не недогляд:
+    // `origin` уже camera-relative, тож довжина суми і є відстанню. Рахувати
+    // її після зсуву означало б залежність деталі від самої себе, а виграшу
+    // не дало б — деталь це метри проти сотень.
+    //
+    // По вершині, а не по патчу: `length(origin)` було б однакове для всього
+    // патча, тобто вага октави стала б функцією патча, а не позиції — і два
+    // сусіди різних рівнів розійшлися б на спільному вузлі (правило 3).
+    float3 base_world = patch.origin + mul(uniforms.model, float4(vertex.offset, 0.0)).xyz;
+    float distance = length(base_world);
+
+    float slope = sample_slope(patch, node.grid);
+    float detail = detail_m(vertex.normal, slope, distance);
+
+    // Обидві висоти зсувають вершину вздовж нормалі патча — на ОДИНИЧНІЙ
+    // сфері, бо радіус і поворот застосовує та сама матриця, що й до самого
+    // зсуву. Множник `terrain.x` і є `scale_m / radius_m`; деталь приходить
+    // одразу в метрах, тож ділиться на радіус.
+    float lift = height * uniforms.terrain.x + detail / uniforms.detail.x;
+    float3 offset = vertex.offset + vertex.normal * lift;
     return place(draw.slot, vertex, offset);
 }
 

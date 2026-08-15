@@ -40,6 +40,7 @@ pub mod cull;
 pub mod demo;
 pub mod depth;
 pub mod depth_probe;
+pub mod detail;
 pub mod flight_probe;
 pub mod frame;
 pub mod gpu;

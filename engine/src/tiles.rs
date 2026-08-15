@@ -279,12 +279,7 @@ impl Terrain {
     /// рахують ту саму точку.
     pub fn slope_at(&self, patch: &Patch, a: usize, b: usize) -> f64 {
         let (index, origin, step) = self.window(patch);
-        let (tile, _) = self.covering(patch);
-
-        let deepest = self.levels.saturating_sub(1);
-        // Крок різниці у вузлах тайла, що накриває: одиниця на найглибшому
-        // рівні піраміди й дрібніше на грубших.
-        let delta = 2f64.powi(tile.level as i32 - deepest as i32);
+        let delta = self.delta_nodes(patch);
 
         let x = origin[0] + a as f64 * step;
         let y = origin[1] + b as f64 * step;
@@ -292,13 +287,39 @@ impl Terrain {
         let du = self.units_at(index, x + delta, y) - self.units_at(index, x - delta, y);
         let dv = self.units_at(index, x, y + delta) - self.units_at(index, x, y - delta);
 
-        // Метрів на один крок різниці.
-        let nodes_per_face = f64::from(SIDE as u32 * (1u32 << tile.level));
-        let metres_per_step =
-            std::f64::consts::FRAC_PI_2 * self.reference_m / nodes_per_face * delta;
-
-        let rise = f64::from(self.scale_m) / (2.0 * metres_per_step);
+        let rise = self.slope_rise();
         ((du * rise).powi(2) + (dv * rise).powi(2)).sqrt()
+    }
+
+    /// Крок центральної різниці у вузлах тайла, що накриває цей патч.
+    ///
+    /// Одиниця для патчів глибше за піраміду — а це всі, де деталь видно, —
+    /// і частка вузла для грубших. Значення завжди степінь двійки, тож
+    /// арифметика вибірки лишається точною.
+    pub fn delta_nodes(&self, patch: &Patch) -> f64 {
+        let (tile, _) = self.covering(patch);
+        let deepest = self.levels.saturating_sub(1);
+        2f64.powi(tile.level as i32 - deepest as i32)
+    }
+
+    /// Довжина кроку різниці в метрах — **одна на весь тайлсет**.
+    ///
+    /// Це не збіг, а те саме рішення, записане з іншого боку: крок узятий на
+    /// найдрібнішому вузлі піраміди, а `delta_nodes` перераховує його в
+    /// координати того тайла, який патч читає. Множники скорочуються, і
+    /// лишається відстань, що не знає ні про рівень патча, ні про рівень
+    /// тайла. Саме тому нахил на спільному ребрі виходить бітово один.
+    ///
+    /// Це й довжина хвилі найгрубішої октави процедурної деталі
+    /// ([`crate::detail`]): деталь починається рівно там, де кінчаються дані.
+    pub fn step_m(&self) -> f64 {
+        let nodes = f64::from(SIDE as u32 * (1u32 << self.levels.saturating_sub(1)));
+        std::f64::consts::FRAC_PI_2 * self.reference_m / nodes
+    }
+
+    /// Множник «різниця в одиницях зберігання → нахил».
+    pub fn slope_rise(&self) -> f64 {
+        f64::from(self.scale_m) / (2.0 * self.step_m())
     }
 
     /// Найнижча точка всього рельєфу, метри над опорним радіусом.

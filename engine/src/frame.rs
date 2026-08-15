@@ -25,6 +25,7 @@ use crate::camera::Camera;
 use crate::cubesphere::{self, Patch};
 use crate::cull;
 use crate::depth;
+use crate::detail;
 use crate::gpu::Gpu;
 use crate::lod;
 use crate::scene::{self, Body, Scene, TileSet};
@@ -116,10 +117,14 @@ struct Uniforms {
     /// `x` — скільки одиниць одиничної сфери в одній одиниці зберігання
     /// висоти, тобто `scale_m / radius_m`. Решта — нулі.
     terrain: [f32; 4],
+    /// Процедурний детайл (R7c): радіус тіла, множник нахилу
+    /// (`Terrain::slope_rise`), довжина хвилі найгрубішої октави
+    /// (`detail::base_m`) і пікселів на радіан.
+    detail: [f32; 4],
 }
 
 /// Скільки байтів займає [`Uniforms`] у буфері.
-const UNIFORM_BYTES: u64 = 176;
+const UNIFORM_BYTES: u64 = 192;
 
 impl Uniforms {
     /// Розкладка вручну — та сама причина, що в `sphere_render` (CLAUDE.md,
@@ -138,6 +143,7 @@ impl Uniforms {
             .iter()
             .chain(self.colour.iter())
             .chain(self.terrain.iter())
+            .chain(self.detail.iter())
         {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
@@ -1530,22 +1536,21 @@ impl Planet {
                 // `(0, 0)` і `1`, тобто те саме, що робив точний `Load`. Для
                 // глибшого — підпрямокутник предка, і рахує його
                 // `Terrain::window`, той самий код, що й `height_m` на CPU.
-                let (tile, origin_uv, step) = match (terrain, self.cache.resident[slot]) {
+                let (tile, origin_uv, step, delta) = match (terrain, self.cache.resident[slot]) {
                     (Some(t), Some(patch)) => {
                         let (index, origin_uv, step) = t.data.window(&patch);
-                        (index as u32, origin_uv, step)
+                        (index as u32, origin_uv, step, t.data.delta_nodes(&patch))
                     }
-                    _ => (0, [0.0, 0.0], 1.0),
+                    _ => (0, [0.0, 0.0], 1.0, 1.0),
                 };
                 origin_bytes.extend_from_slice(&tile.to_le_bytes());
                 origin_bytes.extend_from_slice(&(origin_uv[0] as f32).to_le_bytes());
                 origin_bytes.extend_from_slice(&(origin_uv[1] as f32).to_le_bytes());
                 origin_bytes.extend_from_slice(&(step as f32).to_le_bytes());
-                // Вирівнювання до 32 байтів: `float3 origin` у Slang вимагає
-                // 16-байтового кроку, тож структура з семи слів однаково
-                // займає вісім. Нуль тут — місце під наступне число, а не
-                // забудькуватість.
-                origin_bytes.extend_from_slice(&0.0f32.to_le_bytes());
+                // Восьме слово — крок центральної різниці у вузлах цього ж
+                // тайла (R7c). Було вирівнювальним нулем; місце під нього тут
+                // і трималося.
+                origin_bytes.extend_from_slice(&(delta as f32).to_le_bytes());
             }
             let slot = &self.bodies[index];
             gpu.queue
@@ -1559,6 +1564,18 @@ impl Planet {
                     light_dir: [LIGHT_DIR[0], LIGHT_DIR[1], LIGHT_DIR[2], 0.0],
                     colour: COLOUR,
                     terrain: [height_scale, 0.0, 0.0, 0.0],
+                    // Процедурний детайл (R7c). Гладке тіло дістає нулі: без
+                    // тайлів нахилу нема звідки взяти, а деталь без нахилу —
+                    // це рівний килим, тобто рівно те, чого крок не робить.
+                    detail: match terrain {
+                        Some(t) => [
+                            body.radius_m as f32,
+                            t.data.slope_rise() as f32,
+                            detail::base_m(body.radius_m) as f32,
+                            focal as f32,
+                        ],
+                        None => [0.0; 4],
+                    },
                 };
                 gpu.queue.write_buffer(
                     &slot.uniform_buffer,
