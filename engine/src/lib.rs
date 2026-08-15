@@ -51,6 +51,7 @@ pub mod scene;
 pub mod shot;
 pub mod sphere;
 pub mod sphere_render;
+pub mod tiles;
 pub mod trajectory;
 pub mod trajectory_render;
 pub mod ui;

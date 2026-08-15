@@ -22,6 +22,7 @@
 #   make hashes           показати фактичні хеші сценаріїв
 #   make flags            показати фактичні прапорці (звірка з build.rs на M1)
 #   make cook             перегенерувати ассет-фікстуру (робити свідомо!)
+#   make cook-dem         скукувати тайли рельєфу з data/lola у /assets/
 #   make cook ANCHOR_BARYCENTRE=0   те саме, без закріплення баріцентру —
 #                         лише щоб зміряти ефект, у гру їде анкерований ассет
 #   make csv              вивести результати ядра у build/csv/*.csv
@@ -201,7 +202,7 @@ DEP := $(CORE_OBJ:.o=.d) $(OFFLINE_OBJ:.o=.d) $(PLANNING_OBJ:.o=.d) \
 -include $(DEP)
 
 .PHONY: all test unit asan valgrind check-libm determinism determinism-bless \
-        hashes cook csv plots bench flags clean
+        hashes cook cook-dem csv plots bench flags clean
 
 all: $(LIB) $(LIB_OFFLINE) $(LIB_PLANNING)
 
@@ -409,6 +410,15 @@ cook: $(COOK_BIN)
 	@echo ""
 	@echo "Перегенеровано. Перевірте git diff і що визначає зміну:"
 	@echo "  зміна тут змінює всі хеші сценаріїв, які читають ассет."
+
+# --- Кукер рельєфу (ROADMAP-PLANETS.md, R5b) -------------------------------
+#
+# Окремою ціллю від `cook`, і не з педантизму: той перегенеровує ассет-фікстуру
+# в git і міняє всі хеші сценаріїв, а цей пише в `/assets/`, якого в git немає
+# взагалі. Плутати їх дорого рівно в один бік.
+.PHONY: cook-dem
+cook-dem:
+	cargo run --release -p dem-cook
 
 # --- Поставка M0: подивитися очима ----------------------------------------
 #
