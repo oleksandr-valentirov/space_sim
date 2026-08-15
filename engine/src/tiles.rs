@@ -133,23 +133,39 @@ impl Terrain {
         &self.tiles[at + 4..at + TILE_BYTES]
     }
 
+    /// Куди патч дивиться в тайлі, який його накриває (R7a).
+    ///
+    /// Три числа, і саме їх бракувало GPU-шляху: індекс тайла в піраміді,
+    /// зсув патча всередині нього **у вузлах** і крок — скільки вузлів
+    /// предка припадає на один вузол патча. При `deeper == 0` це `(0, 0)` і
+    /// `1.0`, тобто рівно те, що робив точний `Load` до цього кроку.
+    ///
+    /// Винесено з [`Terrain::height_m`], а не написано поруч: шейдер робить
+    /// ту саму вибірку, і два незалежні обчислення того самого вікна
+    /// розійшлися б — не одразу, а на четвертій правці. Тепер це одна
+    /// формула, і тест звіряє GPU з нею, а не з другою її копією.
+    pub fn window(&self, patch: &Patch) -> (usize, [f64; 2], f64) {
+        let (tile, deeper) = self.covering(patch);
+        let index = self.index(&tile).expect("covering вже опустив рівень");
+
+        // `SIDE` вузлів предка на `2^deeper` дітей — отже крок дробовий.
+        let step = 1.0 / f64::from(1u32 << deeper);
+        let offset = |index: u32| f64::from(index % (1 << deeper)) * SIDE as f64 * step;
+        (index, [offset(patch.i), offset(patch.j)], step)
+    }
+
     /// Висота у вузлі `(a, b)` заданого патча, метри.
     ///
     /// Якщо патч глибший за піраміду, висота береться з тайла предка
     /// білінійно: вузол патча лежить між вузлами грубішого тайла.
     pub fn height_m(&self, patch: &Patch, a: usize, b: usize) -> f64 {
-        let (tile, deeper) = self.covering(patch);
-        let index = self.index(&tile).expect("covering вже опустив рівень");
-        if deeper == 0 {
+        let (index, origin, step) = self.window(patch);
+        if step == 1.0 {
             return f64::from(self.node(index, a, b)) * f64::from(self.scale_m);
         }
 
-        // Куди вузол `(a, b)` патча падає в сітці предка. `SIDE` вузлів на
-        // `2^deeper` дітей — отже крок `SIDE / 2^deeper`, і він дробовий.
-        let step = 1.0 / f64::from(1u32 << deeper);
-        let offset = |index: u32| f64::from(index % (1 << deeper)) * SIDE as f64 * step;
-        let x = offset(patch.i) + a as f64 * step;
-        let y = offset(patch.j) + b as f64 * step;
+        let x = origin[0] + a as f64 * step;
+        let y = origin[1] + b as f64 * step;
 
         let (x0, y0) = (x.floor(), y.floor());
         let (tx, ty) = (x - x0, y - y0);
@@ -255,5 +271,154 @@ impl Terrain {
             scale_m,
             tiles,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Піраміда, у якій висота вузла — відома функція його позиції на грані.
+    ///
+    /// Лінійна за обома координатами навмисно: білінійна вибірка відтворює
+    /// лінійну функцію **точно**, тож будь-яка розбіжність у тесті нижче — це
+    /// помилка адресації, а не похибка інтерполяції. Оракул, який плутає одне
+    /// з одним, не оракул.
+    fn ramp(levels: u32) -> Terrain {
+        let mut grids = Vec::with_capacity(Terrain::count(levels));
+        for level in 0..levels {
+            let side = 1u32 << level;
+            for face in 0..FACES {
+                for i in 0..side {
+                    for j in 0..side {
+                        // Вузол у частках грані — величина, однакова на всіх
+                        // рівнях. Саме це робить піраміду узгодженою: тайли
+                        // рівня 0 і рівня 2 в тій самій точці грані несуть те
+                        // саме число, як і має бути в справжній піраміді.
+                        //
+                        // Множники підібрані так, щоб значення лишалися
+                        // цілими на вузлах кожного рівня: інакше округлення до
+                        // `i16` саме створило б розбіжність, яку тест шукає.
+                        let span = (SIDE << level) as f64;
+                        let mut grid = Vec::with_capacity(NODES * NODES);
+                        for a in 0..NODES {
+                            for b in 0..NODES {
+                                let x = (i as usize * SIDE + a) as f64 / span;
+                                let y = (j as usize * SIDE + b) as f64 / span;
+                                grid.push((2048.0 * x + 4096.0 * y) as i16);
+                            }
+                        }
+                        grids.push(grid);
+                    }
+                }
+            }
+        }
+        Terrain::build(levels, 1_000_000.0, 1.0, &grids)
+    }
+
+    /// Патч, глибший за піраміду, у вузлі предка дає **рівно** висоту предка.
+    ///
+    /// Це найпростіше твердження про адресацію, і воно ловить найгрубішу
+    /// помилку: вікно, зсунуте не туди, дасть тут сусідній вузол, а не той
+    /// самий.
+    #[test]
+    fn a_node_that_coincides_with_the_parent_reads_the_parents_height() {
+        let levels = 3;
+        let terrain = ramp(levels);
+
+        // Рівень 3 при трьох рівнях піраміди (0..2) — рівно на один глибше.
+        let deep = Patch {
+            face: 2,
+            level: levels,
+            i: 5,
+            j: 3,
+        };
+        let (parent, deeper) = terrain.covering(&deep);
+        assert_eq!(deeper, 1, "предок мав бути рівно на рівень вище");
+
+        // Вузол (0,0) патча завжди збігається з вузлом предка.
+        let from_deep = terrain.height_m(&deep, 0, 0);
+        let (index, origin, step) = terrain.window(&deep);
+        assert_eq!(step, 0.5, "крок для одного рівня глибше — половина вузла");
+
+        let (x, y) = (origin[0] as usize, origin[1] as usize);
+        let direct = f64::from(terrain.node(index, x, y)) * f64::from(terrain.scale_m);
+        assert_eq!(
+            from_deep, direct,
+            "вузол (0,0) глибокого патча прочитався не з того місця предка \
+             (предок {parent:?}, вікно {origin:?})"
+        );
+    }
+
+    /// Спільна точка двох сусідніх глибоких патчів дає ту саму висоту.
+    ///
+    /// Це і є вимога «тріщин рельєф не додає», перенесена на рівні, глибші за
+    /// дані. Перевіряються **обидва** випадки, і другий важливіший:
+    ///
+    /// 1. сусіди всередині одного предка — тут працює сама арифметика вікна;
+    /// 2. сусіди по різні боки межі предків — тут вікна різні, тайли різні, і
+    ///    висота збігається лише тому, що вузол на спільному ребрі лежить в
+    ///    обох тайлах (R5b). Помилка на одиницю у зсуві ламає саме цей випадок,
+    ///    а перший лишає зеленим.
+    #[test]
+    fn neighbouring_deep_patches_agree_on_their_shared_edge() {
+        let levels = 3;
+        let terrain = ramp(levels);
+        let level = levels + 1; // на два рівні глибше за піраміду
+
+        let at = |i: u32, j: u32| Patch {
+            face: 1,
+            level,
+            i,
+            j,
+        };
+
+        // `i` росте разом із координатою `a`, тож ребро між (i, j) і (i+1, j) —
+        // це вузли a = SIDE у лівого й a = 0 у правого.
+        let pairs = [
+            // Обидва всередині одного тайла предка: 4 дітей на предка при
+            // deeper = 2, отже 0..3 — один предок.
+            (0u32, 1u32),
+            // Через межу предків: 3 і 4 належать різним тайлам.
+            (3, 4),
+        ];
+
+        for (left, right) in pairs {
+            let (l_index, _, _) = terrain.window(&at(left, 0));
+            let (r_index, _, _) = terrain.window(&at(right, 0));
+            let across_parents = l_index != r_index;
+
+            for b in [0usize, 7, SIDE / 2, SIDE] {
+                let from_left = terrain.height_m(&at(left, 0), SIDE, b);
+                let from_right = terrain.height_m(&at(right, 0), 0, b);
+                assert_eq!(
+                    from_left, from_right,
+                    "патчі {left} і {right} розійшлись на спільному ребрі у \
+                     вузлі b = {b} (різні предки: {across_parents})"
+                );
+            }
+        }
+    }
+
+    /// Вікно самого патча, який має власний тайл, — тотожне.
+    ///
+    /// Сторож проти регресії в інший бік: якщо `window` почне зсувати те, що
+    /// зсувати не треба, рельєф поїде на всіх звичайних рівнях одразу, а не
+    /// лише на глибоких.
+    #[test]
+    fn a_patch_with_its_own_tile_reads_itself_unchanged() {
+        let terrain = ramp(3);
+        for level in 0..3 {
+            let patch = Patch {
+                face: 4,
+                level,
+                i: 0,
+                j: 0,
+            };
+            let (index, origin, step) = terrain.window(&patch);
+            assert_eq!(origin, [0.0, 0.0], "власний тайл зсунувся");
+            assert_eq!(step, 1.0, "власний тайл змінив крок");
+            assert_eq!(index, terrain.index(&patch).expect("тайл є"));
+        }
     }
 }

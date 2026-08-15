@@ -203,6 +203,14 @@ pub const MAX_PASSES: usize = 4;
 /// коли заводити другий діапазон.
 const DECADES_PER_PASS: f64 = 7.0;
 
+/// Скільки байтів займає `PatchData` у шейдері (R7a).
+///
+/// Вісім слів: початок (три), номер тайла, вікно в тайлі (зсув-два й крок) і
+/// одне слово запасу. Сім із них читаються; восьме існує тому, що `float3` у
+/// Slang вимагає 16-байтового вирівнювання, і структура з семи слів однаково
+/// займала б вісім.
+const PATCH_DATA_BYTES: usize = 32;
+
 /// Назви проходів за зростанням відстані. Нульовий — найближчий.
 const PASS_LABELS: [&str; MAX_PASSES] = [
     "depth range 0",
@@ -1190,12 +1198,12 @@ impl Planet {
             mapped_at_creation: false,
         });
 
-        // Чотири числа на патч, а не три: вирівнювання vec4 у std430, і
-        // четверте лишається нулем. Індексується слотом кеша, тобто буфер
-        // рівно такий, як кеш.
+        // Вісім слів на патч: початок (три) плюс номер тайла, тоді вікно в
+        // тайлі (зсув-два й крок) і одне слово запасу на вирівнювання
+        // (R7a). Індексується слотом кеша, тобто буфер рівно такий, як кеш.
         let origin_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("patch origins"),
-            size: (self.cache.capacity * 16) as u64,
+            size: (self.cache.capacity * PATCH_DATA_BYTES) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -1345,19 +1353,19 @@ impl Planet {
         self.selections.clear();
         let mut needed = 0;
         for body in &scene.bodies {
-            // Глибше за піраміду тайлів вибір не йде, і це не обмеження, а
-            // те, що вже виміряне: клітинка патча рівня 4 на Місяці — 5.3 км
-            // проти 7.6 км відліку LOLA (R5b). Глибший рівень не приніс би
-            // жодного нового числа, зате вимагав би адресувати підпрямокутник
-            // чужого тайла. Деталь нижче за дані — це R7.
-            let ceiling = match body.tiles {
-                TileSet::Smooth => lod::MAX_LEVEL,
-                TileSet::Loaded(id) => self
-                    .terrains
-                    .get(id.0)
-                    .map(|t| t.data.levels - 1)
-                    .unwrap_or(lod::MAX_LEVEL),
-            };
+            // **Стелю даних знято (R7a).** До цього кроку вибір не йшов
+            // глибше за піраміду тайлів, і причина була не в кількості
+            // деталей, а в адресації: патч глибшого рівня читав би тайл
+            // предка за **своїми** локальними координатами, тобто не в тому
+            // місці. Тепер вікно в тайлі приїжджає в `PatchData`
+            // (`Terrain::window`), і глибший патч читає підпрямокутник предка
+            // білінійно — рівно те, що `Terrain::height_m` рахує на CPU.
+            //
+            // Само по собі це нових висот не додає: інтерполяція між вузлами
+            // LOLA — це та сама поверхня, лише дрібнішою сіткою. Сенс з'явиться
+            // з процедурною деталлю (R7c), якій треба, куди сідати; передумова
+            // ж мусила бути закрита окремо й з власним оракулом.
+            let ceiling = lod::MAX_LEVEL;
             let selection = lod::select(
                 &lod::Body {
                     centre: body.centre,
@@ -1383,7 +1391,7 @@ impl Planet {
         // раз, а не на тіло й не на прохід.
         let view_rotation = camera.view_rotation();
 
-        let mut origin_bytes: Vec<u8> = Vec::with_capacity(self.cache.capacity * 16);
+        let mut origin_bytes: Vec<u8> = Vec::with_capacity(self.cache.capacity * PATCH_DATA_BYTES);
         let mut draw_bytes: Vec<u8> = Vec::with_capacity(self.cache.capacity * 8);
 
         for (index, body) in scene.bodies.iter().enumerate() {
@@ -1505,14 +1513,28 @@ impl Planet {
                 }
                 // Четверте слово — номер тайла в bindless-масиві, а не
                 // вирівнювальний нуль: `PatchData` у шейдері саме такий.
-                let tile = match (terrain, self.cache.resident[slot]) {
+                //
+                // Далі — **вікно в цьому тайлі** (R7a): зсув патча всередині
+                // нього у вузлах і крок. Для патча, який має власний тайл, це
+                // `(0, 0)` і `1`, тобто те саме, що робив точний `Load`. Для
+                // глибшого — підпрямокутник предка, і рахує його
+                // `Terrain::window`, той самий код, що й `height_m` на CPU.
+                let (tile, origin_uv, step) = match (terrain, self.cache.resident[slot]) {
                     (Some(t), Some(patch)) => {
-                        let (covering, _) = t.data.covering(&patch);
-                        t.data.index(&covering).unwrap_or(0) as u32
+                        let (index, origin_uv, step) = t.data.window(&patch);
+                        (index as u32, origin_uv, step)
                     }
-                    _ => 0,
+                    _ => (0, [0.0, 0.0], 1.0),
                 };
                 origin_bytes.extend_from_slice(&tile.to_le_bytes());
+                origin_bytes.extend_from_slice(&(origin_uv[0] as f32).to_le_bytes());
+                origin_bytes.extend_from_slice(&(origin_uv[1] as f32).to_le_bytes());
+                origin_bytes.extend_from_slice(&(step as f32).to_le_bytes());
+                // Вирівнювання до 32 байтів: `float3 origin` у Slang вимагає
+                // 16-байтового кроку, тож структура з семи слів однаково
+                // займає вісім. Нуль тут — місце під наступне число, а не
+                // забудькуватість.
+                origin_bytes.extend_from_slice(&0.0f32.to_le_bytes());
             }
             let slot = &self.bodies[index];
             gpu.queue

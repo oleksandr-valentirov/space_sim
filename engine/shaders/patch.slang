@@ -52,6 +52,19 @@ struct PatchData
 {
     float3 origin;
     uint tile;
+    // Вікно цього патча в його тайлі (R7a): зсув у вузлах і крок — скільки
+    // вузлів тайла припадає на один вузол патча.
+    //
+    // Патч, що має власний тайл, дає `(0, 0)` і `1`, тобто точний `Load`, як
+    // було до R7a. Патч, глибший за піраміду, дивиться в підпрямокутник
+    // предка, і крок стає дробовим — звідси білінійна вибірка нижче.
+    //
+    // Числа рахує `Terrain::window` на CPU, тим самим кодом, що й
+    // `Terrain::height_m`. Другого обчислення тут немає навмисно: два
+    // незалежні вікна розійшлися б, і різницю було б видно тріщиною.
+    float2 window_origin;
+    float window_step;
+    float _pad;
 };
 
 StructuredBuffer<PatchData> patches;
@@ -184,6 +197,46 @@ VertexOutput vertex_smooth(VertexInput input)
     return place(draw.slot, vertex, vertex.offset);
 }
 
+// Висота у вузлі патча, в одиницях зберігання (R7a).
+//
+// Дослівний двійник `Terrain::height_m` — рівно так само, як `cull.slang` є
+// двійником `engine::cull`. Оракул той самий: числа з обох боків мусять
+// збігтися, і тест їх звіряє.
+//
+// Тайл лежить вузол у вузол із сіткою патча, і `a` в ньому — рядок, тобто
+// `y` текстури. Коли патч має власний тайл, `window_step == 1`, зсув нульовий,
+// і всі чотири відліки падають в один вузол — вибірка вироджується в точний
+// `Load`, який тут і був до R7a.
+float sample_height(PatchData patch, uint2 grid)
+{
+    float x = patch.window_origin.x + float(grid.x) * patch.window_step;
+    float y = patch.window_origin.y + float(grid.y) * patch.window_step;
+
+    float x0 = floor(x);
+    float y0 = floor(y);
+    float tx = x - x0;
+    float ty = y - y0;
+
+    // Затискання по верхньому вузлу: правий і нижній краї тайла не мають
+    // сусіда всередині нього. Крок ділить `SIDE` націло, тож затиснута
+    // вибірка трапляється рівно на межі, де `tx` або `ty` вже нульові, і на
+    // результат не впливає.
+    int xi = int(x0);
+    int yi = int(y0);
+    int xi1 = min(xi + 1, int(SIDE));
+    int yi1 = min(yi + 1, int(SIDE));
+
+    // `Load` бере (x, y, mip) текстури = (b, a, 0): `b` — стовпець, `a` — рядок.
+    float h00 = float(tiles[patch.tile].Load(int3(yi, xi, 0)).x);
+    float h01 = float(tiles[patch.tile].Load(int3(yi1, xi, 0)).x);
+    float h10 = float(tiles[patch.tile].Load(int3(yi, xi1, 0)).x);
+    float h11 = float(tiles[patch.tile].Load(int3(yi1, xi1, 0)).x);
+
+    float top = h00 * (1.0 - ty) + h01 * ty;
+    float bottom = h10 * (1.0 - ty) + h11 * ty;
+    return top * (1.0 - tx) + bottom * tx;
+}
+
 [shader("vertex")]
 VertexOutput vertex_terrain(VertexInput input)
 {
@@ -191,14 +244,12 @@ VertexOutput vertex_terrain(VertexInput input)
     Node node = node_of(input.vertex, draw.slot, draw.mask);
     PatchVertex vertex = vertices[node.index];
 
-    // Тайл лежить вузол у вузол із сіткою патча, і `a` в ньому — рядок.
-    int height = tiles[patches[draw.slot].tile]
-        .Load(int3(int(node.grid.y), int(node.grid.x), 0)).x;
+    float height = sample_height(patches[draw.slot], node.grid);
 
     // Висота зсуває вершину вздовж нормалі патча — на ОДИНИЧНІЙ сфері, бо
     // радіус і поворот застосовує та сама матриця, що й до самого зсуву.
     // Множник `terrain.x` і є `scale_m / radius_m`.
-    float3 offset = vertex.offset + vertex.normal * (float(height) * uniforms.terrain.x);
+    float3 offset = vertex.offset + vertex.normal * (height * uniforms.terrain.x);
     return place(draw.slot, vertex, offset);
 }
 

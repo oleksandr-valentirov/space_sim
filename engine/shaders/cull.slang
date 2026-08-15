@@ -60,7 +60,25 @@ StructuredBuffer<PatchDraw> candidates;
 StructuredBuffer<Cone> cones;
 // Початок патча відносно камери, у світових осях — він же центр
 // обмежувальної сфери. Той самий буфер, що читає вершинна стадія.
-StructuredBuffer<float4> origins;
+//
+// ⚠ Структура мусить збігатися з `PatchData` у `patch.slang` **полем у поле**:
+// це один буфер, і крок у ньому один. Спільного оголошення між двома
+// шейдерами немає, тож копії дві — рівно як `SIDE` і `node_of`, і з тим самим
+// висновком: правити треба обидві.
+//
+// Розбіжність тут не тиха: `gpu_driven::the_gpu_draws_exactly_as_many_patches_as_the_cpu_kept`
+// падає першим же кадром, бо зсунутий крок дає чужий центр, а з ним і чужий
+// відбір. Так вона й знайшлася на R7a.
+struct PatchData
+{
+    float3 origin;
+    uint tile;
+    float2 window_origin;
+    float window_step;
+    float _pad;
+};
+
+StructuredBuffer<PatchData> origins;
 
 RWStructuredBuffer<PatchDraw> visible;
 // Аргументи `draw_indirect`: [vertex_count, instance_count, first_vertex,
@@ -93,7 +111,7 @@ void cull_main(uint3 id : SV_DispatchThreadID)
     // Frustum: обмежувальна сфера патча проти чотирьох бічних площин.
     // Центр — початок патча (він лежить на осі конуса), радіус — хорда до
     // найдальшого вузла. Дослівно `cull::bounding_sphere` і `cull::frustum`.
-    float3 centre = origins[candidate.slot].xyz;
+    float3 centre = origins[candidate.slot].origin;
     float radius = params.body.x * sqrt(max(2.0 - 2.0 * cone.cos_half, 0.0));
 
     float3 view = float3(

@@ -27,7 +27,16 @@ struct Cone_std430_0
 
 @binding(2) @group(0) var<storage, read> cones_0 : array<Cone_std430_0>;
 
-@binding(3) @group(0) var<storage, read> origins_0 : array<vec4<f32>>;
+struct PatchData_std430_0
+{
+    @align(16) origin_0 : vec3<f32>,
+    @align(4) tile_0 : u32,
+    @align(16) window_origin_0 : vec2<f32>,
+    @align(8) window_step_0 : f32,
+    @align(4) _pad_0 : f32,
+};
+
+@binding(3) @group(0) var<storage, read> origins_0 : array<PatchData_std430_0>;
 
 @binding(5) @group(0) var<storage, read_write> indirect_0 : array<atomic<u32>>;
 
@@ -49,21 +58,21 @@ fn cull_main(@builtin(global_invocation_id) id_0 : vec3<u32>)
     {
         return;
     }
-    var centre_0 : vec3<f32> = origins_0[candidate_0.slot_0].xyz;
+    var _S1 : PatchData_std430_0 = origins_0[candidate_0.slot_0];
     var radius_0 : f32 = params_0.body_0.x * sqrt(max(2.0f - 2.0f * cone_0.cos_half_0, 0.0f));
-    var _S1 : f32 = dot(centre_0, params_0.view_right_0.xyz);
-    var _S2 : f32 = dot(centre_0, params_0.view_up_0.xyz);
-    var _S3 : f32 = dot(centre_0, params_0.view_back_0.xyz);
+    var _S2 : f32 = dot(_S1.origin_0, params_0.view_right_0.xyz);
+    var _S3 : f32 = dot(_S1.origin_0, params_0.view_up_0.xyz);
+    var _S4 : f32 = dot(_S1.origin_0, params_0.view_back_0.xyz);
     var ty_0 : f32 = params_0.frustum_0.y;
-    var _S4 : f32 = params_0.frustum_0.x * _S3;
+    var _S5 : f32 = params_0.frustum_0.x * _S4;
     var outside_0 : bool;
-    if(((_S1 + _S4) * params_0.frustum_0.z) > radius_0)
+    if(((_S2 + _S5) * params_0.frustum_0.z) > radius_0)
     {
         outside_0 = true;
     }
     else
     {
-        outside_0 = ((- _S1 + _S4) * params_0.frustum_0.z) > radius_0;
+        outside_0 = ((- _S2 + _S5) * params_0.frustum_0.z) > radius_0;
     }
     if(outside_0)
     {
@@ -71,7 +80,7 @@ fn cull_main(@builtin(global_invocation_id) id_0 : vec3<u32>)
     }
     else
     {
-        outside_0 = ((_S2 + ty_0 * _S3) * params_0.frustum_0.w) > radius_0;
+        outside_0 = ((_S3 + ty_0 * _S4) * params_0.frustum_0.w) > radius_0;
     }
     if(outside_0)
     {
@@ -79,7 +88,7 @@ fn cull_main(@builtin(global_invocation_id) id_0 : vec3<u32>)
     }
     else
     {
-        outside_0 = ((- _S2 + ty_0 * _S3) * params_0.frustum_0.w) > radius_0;
+        outside_0 = ((- _S3 + ty_0 * _S4) * params_0.frustum_0.w) > radius_0;
     }
     if(outside_0)
     {
