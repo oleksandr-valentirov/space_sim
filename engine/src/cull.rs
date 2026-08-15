@@ -40,6 +40,23 @@
 //! принесе, він мусить братися **з тайла** — там уже є min/max висоти. Це
 //! записано тут, а не «колись згадається»: [`Body::occluder_radius_m`] існує
 //! окремим полем саме заради того дня.
+//!
+//! ## Frustum — після горизонту, і рівно тому, що дешевший буває другим
+//!
+//! Порядок не з естетики: горизонт прибирає половину планети за один
+//! скалярний добуток, frustum вимагає обмежувальної сфери в камерному
+//! просторі й чотирьох площин. Дешевше спершу викинути те, чого немає, ніж
+//! питати в дорогого критерію про те, що вже викинуто. Скільки frustum додає
+//! **понад** горизонт — окреме поле [`Visibility::outside_frustum`], бо
+//! «важливіший» без числа лишається цитатою.
+//!
+//! ## Поворот тіла входить у відбір, і це не дрібниця
+//!
+//! Конус патча живе в системі **тіла**, а камера — у системі світу. Поки
+//! орієнтація одинична, різниці немає, і саме тому помилка такого роду
+//! знаходиться не тоді, коли її зробили. Тому напрямок на камеру тут
+//! переводиться в систему тіла транспонованою матрицею повороту — один раз на
+//! тіло, а не на патч.
 
 use crate::camera::Camera;
 use crate::cubesphere::Patch;
@@ -56,16 +73,43 @@ pub struct Body {
     pub centre: [f64; 3],
     pub radius_m: f64,
     pub occluder_radius_m: f64,
+    /// Поворот із системи тіла в систему світу — той самий, яким кадр
+    /// повертає початки патчів.
+    pub rotation: [[f64; 3]; 3],
 }
 
 impl Body {
     /// Тіло без рельєфу: затуляє рівно своя сфера.
-    pub fn smooth(centre: [f64; 3], radius_m: f64) -> Body {
+    pub fn smooth(centre: [f64; 3], radius_m: f64, rotation: [[f64; 3]; 3]) -> Body {
         Body {
             centre,
             radius_m,
             occluder_radius_m: radius_m,
+            rotation,
         }
+    }
+
+    /// Напрямок зі світу — у систему тіла. Поворот ортогональний, тож
+    /// зворотний до нього — транспонований, без жодного оберненого.
+    fn in_body(&self, world: [f64; 3]) -> [f64; 3] {
+        let mut out = [0.0; 3];
+        for (k, value) in out.iter_mut().enumerate() {
+            *value = self.rotation[0][k] * world[0]
+                + self.rotation[1][k] * world[1]
+                + self.rotation[2][k] * world[2];
+        }
+        out
+    }
+
+    /// Точка тіла — у світ.
+    fn in_world(&self, local: [f64; 3]) -> [f64; 3] {
+        let mut out = self.centre;
+        for (k, value) in out.iter_mut().enumerate() {
+            *value += self.rotation[k][0] * local[0]
+                + self.rotation[k][1] * local[1]
+                + self.rotation[k][2] * local[2];
+        }
+        out
     }
 }
 
@@ -75,6 +119,9 @@ pub struct Visibility {
     pub visible: Vec<bool>,
     /// Скільки патчів прибрав горизонт.
     pub past_limb: usize,
+    /// Скільки додав frustum **понад** горизонт — тобто тих, які горизонт
+    /// лишив, а межі кадру прибрали.
+    pub outside_frustum: usize,
 }
 
 impl Visibility {
@@ -122,9 +169,12 @@ pub fn horizon(selection: &Selection, body: &Body, camera: &Camera) -> Visibilit
     };
     let limb = limb_cos(body, distance);
 
+    let to_eye = body.in_body(to_eye);
+
     let mut out = Visibility {
         visible: Vec::with_capacity(selection.patches.len()),
         past_limb: 0,
+        outside_frustum: 0,
     };
     for patch in &selection.patches {
         let hidden = beyond_limb(patch, to_eye, limb);
@@ -134,4 +184,60 @@ pub fn horizon(selection: &Selection, body: &Body, camera: &Camera) -> Visibilit
         out.visible.push(!hidden);
     }
     out
+}
+
+/// Обмежувальна сфера патча у світових координатах.
+///
+/// Центр — точка поверхні на осі конуса, радіус — хорда до найдальшого вузла:
+/// `R·|p − axis| = R·√(2 − 2·cos α)`. Це не оцінка згори «з запасом», а точна
+/// межа для того самого конуса, яким користується горизонт — і саме тому два
+/// критерії не можуть розійтися в тому, що вважають патчем.
+fn bounding_sphere(patch: &Patch, body: &Body) -> ([f64; 3], f64) {
+    let cone = patch.cone();
+    let centre = body.in_world([
+        cone.axis[0] * body.radius_m,
+        cone.axis[1] * body.radius_m,
+        cone.axis[2] * body.radius_m,
+    ]);
+    let radius = body.radius_m * (2.0 - 2.0 * cone.cos_half).max(0.0).sqrt();
+    (centre, radius)
+}
+
+/// Відбір за межами кадру — **поверх** уже готового відбору за горизонтом.
+///
+/// Чотири бічні площини, і жодної ближньої чи дальньої: далека площина
+/// нескінченна (reversed-Z, F3), а ближня менша за будь-який патч на кілька
+/// порядків. Патч позаду камери відкидають ті самі чотири площини — усі
+/// одразу, бо позаду вони сходяться.
+pub fn frustum(
+    visibility: &mut Visibility,
+    selection: &Selection,
+    body: &Body,
+    camera: &Camera,
+    fov_y: f64,
+    aspect: f64,
+) {
+    let t = (fov_y / 2.0).tan();
+    let (tx, ty) = (aspect * t, t);
+    // Нормування площин — щоб порівнювати з радіусом у метрах, а не з
+    // величиною, у якій сховався масштаб.
+    let (nx, ny) = ((1.0 + tx * tx).sqrt(), (1.0 + ty * ty).sqrt());
+
+    for (patch, visible) in selection.patches.iter().zip(visibility.visible.iter_mut()) {
+        if !*visible {
+            continue;
+        }
+        let (centre, radius) = bounding_sphere(patch, body);
+        let p = camera.relative64(centre);
+        // Камера дивиться вздовж −z, отже попереду `z` від'ємне, і «зовні»
+        // для кожної площини — це додатна відстань більша за радіус.
+        let outside = (p[0] + tx * p[2]) / nx > radius
+            || (-p[0] + tx * p[2]) / nx > radius
+            || (p[1] + ty * p[2]) / ny > radius
+            || (-p[1] + ty * p[2]) / ny > radius;
+        if outside {
+            *visible = false;
+            visibility.outside_frustum += 1;
+        }
+    }
 }

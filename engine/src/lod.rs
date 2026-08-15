@@ -136,7 +136,7 @@ fn sagitta(patch: &Patch, a0: usize, b0: usize, a1: usize, b1: usize) -> f64 {
 /// дешево: чотири кути й центр. Не до центру: патч нульового рівня завширшки
 /// в чверть планети, і центр його може бути вдесятеро далі за край, який
 /// камера бачить упритул.
-pub fn error_px(patch: &Patch, body: &Body, camera: &Camera, focal_px: f64) -> f64 {
+pub fn error_px(patch: &Patch, body: &Body, eye_in_body: [f64; 3], focal_px: f64) -> f64 {
     let mut nearest = f64::INFINITY;
     for (a, b) in [
         (0, 0),
@@ -146,11 +146,10 @@ pub fn error_px(patch: &Patch, body: &Body, camera: &Camera, focal_px: f64) -> f
         (SIDE / 2, SIDE / 2),
     ] {
         let local = patch.vertex(a, b, body.radius_m);
-        let eye = camera.position();
         let d = [
-            body.centre[0] + local[0] - eye[0],
-            body.centre[1] + local[1] - eye[1],
-            body.centre[2] + local[2] - eye[2],
+            local[0] - eye_in_body[0],
+            local[1] - eye_in_body[1],
+            local[2] - eye_in_body[2],
         ];
         nearest = nearest.min((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt());
     }
@@ -164,13 +163,55 @@ pub fn error_px(patch: &Patch, body: &Body, camera: &Camera, focal_px: f64) -> f
 
 /// Тіло, для якого вибирається рівень.
 ///
-/// Своя структура, а не [`crate::scene::Body`]: вибору рівня потрібні тільки
-/// центр і радіус, а поворот тіла на нього не впливає взагалі — сфера
-/// однакова з усіх боків. Брати сюди `Body` означало б натякати, що впливає.
+/// Своя структура, а не [`crate::scene::Body`]: вибору рівня не потрібні ні
+/// набір тайлів, ні кватерніон — потрібне те, з чого рахується відстань.
+///
+/// ## Поворот тут таки є, і колись його тут не було
+///
+/// Спершу здається, що поворот на вибір рівня не впливає: сфера однакова з
+/// усіх боків, і **якість** набору справді не міняється. Міняється інше —
+/// **який саме патч** отримає який рівень. Патч живе в системі тіла; коли
+/// тіло повернуте, він стоїть у світі не там, де його кладе власна
+/// координата, і дрібна ділянка лишилася б там, куди камера вже не
+/// дивиться. Помітно це стане з рельєфом (R5), а неправильно було завжди.
+///
+/// Замість повертати кожну вершину, у систему тіла переводиться **око** —
+/// один раз на тіло замість тисячі разів на патч. Поворот ортогональний, тож
+/// зворотний до нього транспонований.
 #[derive(Clone, Copy, Debug)]
 pub struct Body {
     pub centre: [f64; 3],
     pub radius_m: f64,
+    /// Поворот із системи тіла в систему світу.
+    pub rotation: [[f64; 3]; 3],
+}
+
+impl Body {
+    /// Тіло, яке не обертається.
+    pub fn still(centre: [f64; 3], radius_m: f64) -> Body {
+        Body {
+            centre,
+            radius_m,
+            rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        }
+    }
+
+    /// Позиція камери в системі тіла: спершу відняти центр, тоді повернути
+    /// назад.
+    pub fn eye_in_body(&self, eye: [f64; 3]) -> [f64; 3] {
+        let d = [
+            eye[0] - self.centre[0],
+            eye[1] - self.centre[1],
+            eye[2] - self.centre[2],
+        ];
+        let mut out = [0.0; 3];
+        for (k, value) in out.iter_mut().enumerate() {
+            *value = self.rotation[0][k] * d[0]
+                + self.rotation[1][k] * d[1]
+                + self.rotation[2][k] * d[2];
+        }
+        out
+    }
 }
 
 /// Набір патчів для цієї камери й цього тіла — вибраний, вирівняний, зшитий.
@@ -186,6 +227,7 @@ pub fn select(body: &Body, camera: &Camera, focal_px: f64) -> Selection {
         clamped: 0,
         balanced: 0,
     };
+    let eye = body.eye_in_body(camera.position());
     for face in 0..FACES {
         subdivide(
             Patch {
@@ -195,7 +237,7 @@ pub fn select(body: &Body, camera: &Camera, focal_px: f64) -> Selection {
                 j: 0,
             },
             body,
-            camera,
+            eye,
             focal_px,
             &mut out,
         );
@@ -321,8 +363,8 @@ fn stitching(patches: &[Patch]) -> Vec<EdgeMask> {
         .collect()
 }
 
-fn subdivide(patch: Patch, body: &Body, camera: &Camera, focal: f64, out: &mut Selection) {
-    if error_px(&patch, body, camera, focal) <= TOLERANCE_PX {
+fn subdivide(patch: Patch, body: &Body, eye: [f64; 3], focal: f64, out: &mut Selection) {
+    if error_px(&patch, body, eye, focal) <= TOLERANCE_PX {
         out.patches.push(patch);
         return;
     }
@@ -341,7 +383,7 @@ fn subdivide(patch: Patch, body: &Body, camera: &Camera, focal: f64, out: &mut S
                 j: patch.j * 2 + dj,
             },
             body,
-            camera,
+            eye,
             focal,
             out,
         );

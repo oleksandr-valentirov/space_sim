@@ -315,7 +315,7 @@ impl Frame {
         // їде в матриці (R1d). Кількість роботи на CPU більше не залежить
         // від кількості вершин — тільки від кількості патчів і тіл.
         self.planet
-            .upload(gpu, scene, projection, f64::from(height));
+            .upload(gpu, scene, projection, f64::from(width), f64::from(height));
 
         // Ламані проходять той самий шлях, що вершини сфери: віднімання й
         // поворот у double, звуження до f32 останнім кроком. Інакше
@@ -759,7 +759,15 @@ impl Planet {
     ///
     /// Оце і є прохід планети: вибір рівня на тіло, звіряння з кешем і
     /// віднімання камери від початку кожного патча, у `double`.
-    fn upload(&mut self, gpu: &Gpu, scene: &Scene, projection: depth::Matrix, height_px: f64) {
+    fn upload(
+        &mut self,
+        gpu: &Gpu,
+        scene: &Scene,
+        projection: depth::Matrix,
+        width_px: f64,
+        height_px: f64,
+    ) {
+        let aspect = width_px / height_px;
         let camera = &scene.camera;
         let eye = camera.position();
         let focal = lod::focal_px(FOV_Y, height_px);
@@ -773,6 +781,7 @@ impl Planet {
                 &lod::Body {
                     centre: body.centre,
                     radius_m: body.radius_m,
+                    rotation: rotation(body.orientation),
                 },
                 camera,
                 focal,
@@ -802,11 +811,11 @@ impl Planet {
             // тому відбір починається з нього, а не з frustum. Набір
             // будується цілим — маски зшивання рахуються з нього, — а
             // сюди доходить лише те, що малюється.
-            let visibility = cull::horizon(
-                selection,
-                &cull::Body::smooth(body.centre, body.radius_m),
-                camera,
-            );
+            let occluder = cull::Body::smooth(body.centre, body.radius_m, rotation);
+            let mut visibility = cull::horizon(selection, &occluder, camera);
+            // Frustum — другим, і саме тому, що дорожчий: питати про межі
+            // кадру в патча, якого вже немає за лімбом, нема сенсу (R3b).
+            cull::frustum(&mut visibility, selection, &occluder, camera, FOV_Y, aspect);
             for ((patch, &mask), &visible) in selection
                 .patches
                 .iter()

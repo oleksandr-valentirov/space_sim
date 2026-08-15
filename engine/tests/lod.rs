@@ -16,10 +16,7 @@ const EARTH_RADIUS_M: f64 = 6_371_000.0;
 const HEIGHT_PX: f64 = 720.0;
 
 fn earth() -> Body {
-    Body {
-        centre: [0.0, 0.0, 0.0],
-        radius_m: EARTH_RADIUS_M,
-    }
+    Body::still([0.0, 0.0, 0.0], EARTH_RADIUS_M)
 }
 
 /// Камера на висоті `altitude` над точкою, яку видно з грані `+X`.

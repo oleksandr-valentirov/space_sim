@@ -192,10 +192,7 @@ fn an_unstitched_joint_would_be_thinner_than_a_pixel() {
     let eye = scene.camera.position();
     let radius = sphere::EARTH_RADIUS_M;
     let selection = lod::select(
-        &LodBody {
-            centre: [0.0, 0.0, 0.0],
-            radius_m: radius,
-        },
+        &LodBody::still([0.0, 0.0, 0.0], radius),
         &scene.camera,
         focal,
     );
