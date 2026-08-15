@@ -181,13 +181,20 @@ pub fn measure(
     height: u32,
     frames: u32,
     overlay: Overlay,
+    altitude_m: f64,
 ) -> Result<Stats, String> {
     let mut frame = Frame::new(gpu, shot::FORMAT);
     let mut interface = crate::ui::Ui::new(gpu, shot::FORMAT);
     // Сцена без ламаних: вимір лишається порівнюваним із числами I3, де їх
     // ще не було. Коли прогноз стане частиною сцени, це буде окремий рядок
     // таблиці, а не тихо інше число в тому самому (скіл `perf-probe`).
-    let scene = frame::default_scene(frame::default_camera());
+    // Висота параметром, а не сталою (R8): від неї залежить кількість патчів,
+    // тобто головне, що LOD додав до вартості кадру. Один рядок таблиці більше
+    // не описує кадру — потрібні два, здалеку й з низької орбіти.
+    let distance = crate::sphere::EARTH_RADIUS_M + altitude_m;
+    let camera =
+        crate::camera::Camera::look_at([distance, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
+    let scene = frame::default_scene(camera);
 
     // COPY_SRC свідомо відсутній: цей вимір не читає пікселі назад, а
     // читання назад — окрема вартість, якої немає в реальному кадрі

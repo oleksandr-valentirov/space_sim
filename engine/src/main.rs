@@ -197,6 +197,14 @@ fn run_perf_probe() -> Result<(), String> {
     use engine::perf_probe::{camera_pass_ms, measure, patch_pass_ms, Overlay};
 
     const FRAMES: u32 = 300;
+
+    // Дві висоти, а не одна (R8): здалеку LOD віддає планеті кілька патчів,
+    // з низької орбіти — десятки. Одне число тут перестало описувати кадр
+    // рівно тоді, коли набір патчів став залежати від камери.
+    const ALTITUDES_M: [(f64, &str); 2] = [
+        (engine::frame::DEFAULT_ALTITUDE_M, "10⁷ м"),
+        (1.0e5, "100 км"),
+    ];
     const BUDGET_60: f64 = 1000.0 / 60.0;
     const BUDGET_30: f64 = 1000.0 / 30.0;
 
@@ -213,26 +221,37 @@ fn run_perf_probe() -> Result<(), String> {
     println!(
         "{FRAMES} кадрів на роздільність, синхронний submit+poll (верхня межа, не конвеєр).\n\
          профіль: {profile}\n\
-         сцена: одне тіло радіуса Землі, шість патчів 32×32 — 6534 вершини / \
-         12288 трикутників, camera-relative раз на патч (R1d), виклик \
-         малювання на тіло (R1e)\n"
+         сцена: одне тіло радіуса Землі, патчі 32×32, набір вибирає LOD за \
+         екранною похибкою (R2a); відбір за лімбом і кадром — у compute, \
+         малювання — `draw_indirect`, один виклик на тіло (R6)\n"
     );
     println!(
-        "{:>10} {:>10} {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>9}",
-        "розд.", "інтерфейс", "min мс", "mean мс", "p95 мс", "max мс", "fps", "запас60", "запас30"
+        "{:>8} {:>10} {:>10} {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>9}",
+        "висота",
+        "розд.",
+        "інтерфейс",
+        "min мс",
+        "mean мс",
+        "p95 мс",
+        "max мс",
+        "fps",
+        "запас60",
+        "запас30"
     );
 
     // Три рядки на роздільність в одному прогоні, а не три прогони: різниця
     // між прогонами на одній машині більша за те, що коштує панель.
-    for (width, height) in [(1280, 720), (1920, 1080)] {
-        for (overlay, label) in [
-            (Overlay::None, "немає"),
-            (Overlay::EmptyUi, "порожній"),
-            (Overlay::Panel, "панель"),
-        ] {
-            let stats = measure(&gpu, width, height, FRAMES, overlay)?;
-            println!(
-                "{:>5}×{:<4} {:>10} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.1} {:>+9.3} {:>+9.3}",
+    for (altitude, altitude_label) in ALTITUDES_M {
+        for (width, height) in [(1280, 720), (1920, 1080)] {
+            for (overlay, label) in [
+                (Overlay::None, "немає"),
+                (Overlay::EmptyUi, "порожній"),
+                (Overlay::Panel, "панель"),
+            ] {
+                let stats = measure(&gpu, width, height, FRAMES, overlay, altitude)?;
+                println!(
+                "{:>8} {:>5}×{:<4} {:>10} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.1} {:>+9.3} {:>+9.3}",
+                altitude_label,
                 width,
                 height,
                 label,
@@ -244,6 +263,7 @@ fn run_perf_probe() -> Result<(), String> {
                 stats.headroom_ms(BUDGET_60),
                 stats.headroom_ms(BUDGET_30),
             );
+            }
         }
     }
 
@@ -254,7 +274,7 @@ fn run_perf_probe() -> Result<(), String> {
     println!(
         "\nCPU-прохід планети:\n  \
          було (UV-сфера, 8385 вершин щокадру): {:.1} мкс = {:.2}% бюджету 60 Hz\n  \
-         стало (шість патчів, по одному початку): {:.3} мкс = {:.4}%\n  \
+         стало (по одному початку на патч): {:.3} мкс = {:.4}%\n  \
          виграш: у {:.0} разів",
         was_ms * 1000.0,
         100.0 * was_ms / BUDGET_60,
