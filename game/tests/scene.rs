@@ -582,7 +582,6 @@ fn compose(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
 #[test]
 fn the_rotating_frame_agrees_with_the_formula_checked_against_c() {
     use game::frame_view::ViewFrame;
-    use game::world::{EARTH, MOON};
 
     let mut world = mission::world(&mission::default_asset()).expect("світ");
     world.tick(16);
@@ -591,20 +590,8 @@ fn the_rotating_frame_agrees_with_the_formula_checked_against_c() {
     let camera = || Orbit::at_altitude(mission::CAMERA_ALTITUDE_M).camera();
     let scene = view::build_in(&snapshot, camera(), ViewFrame::Rotating);
 
-    // Теперішня відстань Земля-Місяць — той самий масштаб, яким гра множить.
-    let body = |index: i32| {
-        snapshot
-            .bodies
-            .iter()
-            .find(|b| b.body == index)
-            .expect("тіло у снапшоті")
-    };
-    let d = [
-        body(MOON).position[0] - body(EARTH).position[0],
-        body(MOON).position[1] - body(EARTH).position[1],
-        body(MOON).position[2] - body(EARTH).position[2],
-    ];
-    let scale = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    // Той самий сталий масштаб, яким гра множить безрозмірні координати.
+    let scale = game::frame_view::SYNODIC_SCALE_M;
 
     // Те, що мала б дати гра: формула рушія на тих самих семплах і тих самих
     // нормалях, помножена на масштаб.
@@ -739,5 +726,134 @@ fn the_pair_sits_on_the_axis_in_the_rotating_frame() {
             "{name} зійшла з осі x: {:?}",
             body.centre
         );
+    }
+}
+
+/// У синодичному фреймі Місяць стоїть; в інерціальному — за три доби йде геть.
+///
+/// Це і є та властивість, заради якої карта переходить в обертову систему,
+/// перевірена в пікселях, а не в числах: камера націлена на Місяць у мить A і
+/// не рухається, а світ проживає три доби. У синодичному фреймі кадр B
+/// збігається з кадром A; в інерціальному Місяць за той самий час проходить
+/// близько 36° орбіти — тобто чверть мільярда метрів — і з поля зору
+/// завширшки 5.8·10⁷ м зникає цілком.
+///
+/// Ламані зі сцени навмисно прибрані: вони рухаються в обох фреймах (апарат
+/// летить, прогноз довшає), і без цього кадр міряв би дві речі одразу.
+#[test]
+fn the_moon_stands_still_in_the_rotating_frame_and_leaves_the_inertial_one() {
+    use game::frame_view::ViewFrame;
+    use game::world::{EARTH, MOON};
+
+    let Some(gpu) = gpu() else { return };
+
+    const SIDE: u32 = 512;
+    /// Звідки дивитись на Місяць: 5·10⁷ м дають диск близько 30 пікселів.
+    const DISTANCE_M: f64 = 5.0e7;
+    const DAYS: f64 = 3.0;
+
+    let mut world = mission::world(&mission::default_asset()).expect("світ");
+    world.tick(16);
+    let before = world.snapshot();
+
+    // Камера на кожен фрейм своя — націлена туди, де Місяць у мить A саме в
+    // цьому фреймі. Спільної камери тут бути не може: координати різні.
+    let aim = |frame: ViewFrame| -> engine::camera::Camera {
+        let scene = view::build_in(&before, Orbit::at_altitude(1.0e9).camera(), frame);
+        let moon = scene.bodies[1].centre;
+        // Збоку від лінії Земля-Місяць, щоб Земля не влізла в кадр.
+        let side = [-moon[1], moon[0], 0.0];
+        let n = (side[0] * side[0] + side[1] * side[1]).sqrt();
+        let eye = [
+            moon[0] + side[0] / n * DISTANCE_M,
+            moon[1] + side[1] / n * DISTANCE_M,
+            moon[2],
+        ];
+        engine::camera::Camera::look_at(eye, moon, [0.0, 0.0, 1.0])
+    };
+
+    // Три доби світу. Прогноз спершу порахований, інакше курсор упреться в
+    // горизонт і нікуди не зрушить.
+    let want = before.t + DAYS * 86400.0;
+    while world.snapshot().t < want {
+        world.step(DAYS * 86400.0 / mission::DEFAULT_WARP, 64);
+    }
+    let after = world.snapshot();
+
+    // За цей час Місяць справді пройшов те, що мав, — інакше «зник з кадру»
+    // нічого не доводило б.
+    let moon_at = |snapshot: &game::snapshot::WorldSnapshot| {
+        let body = |index: i32| {
+            snapshot
+                .bodies
+                .iter()
+                .find(|b| b.body == index)
+                .expect("тіло у снапшоті")
+        };
+        let (earth, moon) = (body(EARTH), body(MOON));
+        [
+            moon.position[0] - earth.position[0],
+            moon.position[1] - earth.position[1],
+            moon.position[2] - earth.position[2],
+        ]
+    };
+    let (a, b) = (moon_at(&before), moon_at(&after));
+    let travelled = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+    println!("  за {DAYS} доби Місяць пройшов {travelled:.3e} м");
+    assert!(
+        travelled > 1.0e8,
+        "Місяць пройшов лише {travelled:.3e} м — світ не рухався"
+    );
+
+    for frame in [ViewFrame::Rotating, ViewFrame::Inertial] {
+        let camera = aim(frame);
+        let shoot = |snapshot: &game::snapshot::WorldSnapshot, camera| {
+            let mut scene = view::build_in(snapshot, camera, frame);
+            // Тільки тіла: ламані рухаються в будь-якому фреймі.
+            scene.polylines.clear();
+            shot::take_scene(&gpu, SIDE, SIDE, &scene).expect("кадр")
+        };
+
+        let first = shoot(&before, camera);
+        let second = shoot(&after, aim(frame));
+
+        let differing = (0..SIDE)
+            .flat_map(|y| (0..SIDE).map(move |x| (x, y)))
+            .filter(|&(x, y)| first.pixel(x, y) != second.pixel(x, y))
+            .count();
+        let (lit_first, lit_second) = (lit(&first), lit(&second));
+
+        println!("  {frame:?}: диск {lit_first} → {lit_second} пікселів, різних {differing}");
+        // Диск Місяця з 5·10⁷ м — 15 пікселів радіуса, тобто близько 730
+        // пікселів площі. Менше означало б, що камера дивиться не туди.
+        assert!(
+            lit_first > 500,
+            "{frame:?}: у першому кадрі лише {lit_first} пікселів — Місяця не видно"
+        );
+
+        match frame {
+            // Стоїть: той самий диск на тих самих пікселях. Допуск — край
+            // силуету, той самий, що виміряв R1e (36 пікселів на поворот).
+            ViewFrame::Rotating => assert!(
+                differing < 100,
+                "у синодичному фреймі за три доби змінилося {differing} пікселів — \
+                 Місяць не стоїть"
+            ),
+            // Пішов: у кадрі, націленому на його вчорашнє місце, лишилось небо.
+            ViewFrame::Inertial => {
+                assert!(
+                    lit_second == 0,
+                    "інерціально Місяць лишив у кадрі {lit_second} пікселів — \
+                     він мав піти цілком"
+                );
+                // Змінився кожен піксель, який був диском, — не «багато», а
+                // рівно весь Місяць.
+                assert!(
+                    differing as u64 >= lit_first,
+                    "інерціально змінилося {differing} пікселів із {lit_first} — \
+                     диск зник не цілком"
+                );
+            }
+        }
     }
 }

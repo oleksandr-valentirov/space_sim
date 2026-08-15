@@ -290,14 +290,13 @@ fn synodic_now(snapshot: &WorldSnapshot) -> Option<Synodic> {
         d[0] * rate[1] - d[1] * rate[0],
     ];
 
-    // Масштаб — теперішня відстань: у ній міряються всі семпли, і саме тому
-    // Місяць у кадрі стоїть.
-    let scale = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
     let total = earth.mu + moon.mu;
     if total <= 0.0 {
         return None;
     }
-    Synodic::new(d, normal, scale, moon.mu / total)
+    // Масштаб сталий (`SYNODIC_SCALE_M`), а не теперішня відстань: саме
+    // сталість тримає Місяць нерухомим між кадрами.
+    Synodic::new(d, normal, frame_view::SYNODIC_SCALE_M, moon.mu / total)
 }
 
 fn push_line(scene: &mut Scene, points: Vec<[f64; 3]>, colour: [f32; 4]) {
