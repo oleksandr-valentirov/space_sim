@@ -22,6 +22,7 @@ fn main() {
     let mut frame = game::frame_view::ViewFrame::Inertial;
     let mut vsync_asked = false;
     let mut perf_probe_days: Option<f64> = None;
+    let mut moon_altitude_km: Option<f64> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -37,6 +38,7 @@ fn main() {
             "--day" => day = Some(parse_f64(&value("--day"), "--day")),
             "--demo-plan" => options.demo_plan = true,
             "--rotating" => frame = game::frame_view::ViewFrame::Rotating,
+            "--moon" => moon_altitude_km = Some(parse_f64(&value("--moon"), "--moon")),
             "--perf-probe" => {
                 perf_probe_days = Some(parse_f64(&value("--perf-probe"), "--perf-probe"))
             }
@@ -70,7 +72,14 @@ fn main() {
         // 300 кадрів — стільки ж, скільки міряє зонд рушія, щоб числа лягали
         // в одну таблицю ROADMAP.
         (Some(days), _) => game::perf_probe::run(&options, days, 300),
-        (None, Some(path)) => take_shot(&path, &options, day, save_path.as_deref(), frame),
+        (None, Some(path)) => take_shot(
+            &path,
+            &options,
+            day,
+            save_path.as_deref(),
+            frame,
+            moon_altitude_km,
+        ),
         (None, None) => app::run(options),
     };
 
@@ -91,6 +100,8 @@ const HELP: &str = "\
   --save <файл>   записати сейв після прогону (для --shot); у вікні це F5
   --vsync         чекати на вертикальну синхронізацію
   --no-vsync      не чекати
+  --moon <км>     знімок Місяця зблизька, з рельєфом: камера на такій висоті
+                  над ним, ціль на лімбі (для --shot; D12)
   --width <px>    ширина, типово 1280
   --height <px>   висота, типово 720
   --perf-probe <діб>
@@ -110,6 +121,7 @@ fn take_shot(
     day: Option<f64>,
     save_path: Option<&std::path::Path>,
     frame: game::frame_view::ViewFrame,
+    moon_altitude_km: Option<f64>,
 ) -> Result<(), String> {
     let gpu = Gpu::new(wgpu::Instance::default(), None)?;
     println!("адаптер: {}", gpu.describe());
@@ -146,6 +158,14 @@ fn take_shot(
     if let Some(save_path) = save_path {
         game::save::write_world(&world, save_path)?;
         println!("сейв: {}", save_path.display());
+    }
+
+    // Камера біля Місяця, якщо просили: орбітальна камера гри дивиться на
+    // Землю й нікуди більше (`engine::orbit`), тож рельєф Місяця з неї — це
+    // кілька пікселів. Знімок — єдиний спосіб подивитись на нього до того,
+    // як у гри з'явиться камера з вибором цілі (D12).
+    if let Some(altitude_km) = moon_altitude_km {
+        return shoot_moon(&gpu, path, options, &snapshot, altitude_km);
     }
 
     // У обертовому фреймі камера дивиться **згори на площину пари**, а не
@@ -189,4 +209,104 @@ fn parse(text: &str, name: &str) -> u32 {
 fn fail(message: &str) -> ! {
     eprintln!("{message}");
     std::process::exit(1);
+}
+
+/// Знімок Місяця зблизька, з рельєфом (D12).
+///
+/// ## Чому окремим шляхом, а не `shot::take_scene`
+///
+/// `take_scene` створює кадр усередині себе й одразу малює. Рельєф так не
+/// показати: тайли завантажуються **в кадр** (`Frame::load_terrain`, R5c), і
+/// між створенням і малюванням має бути крок, якого в тій функції немає. Тому
+/// тут кадр свій — рівно як у демо рушія, і з тієї ж причини.
+///
+/// ## Куди дивиться камера
+///
+/// На точку **на лімбі**, а не в підкамерну точку: погляд прямо вниз з низької
+/// орбіти дає рівне поле кольору й не показує нічого (це вже з'ясувало демо).
+/// Ціль — точка рівно на горизонті, `acos(R / (R + h))` від підкамерної,
+/// порахована, а не підібрана.
+fn shoot_moon(
+    gpu: &Gpu,
+    path: &std::path::Path,
+    options: &app::Options,
+    snapshot: &game::snapshot::WorldSnapshot,
+    altitude_km: f64,
+) -> Result<(), String> {
+    use game::world::{EARTH, MOON};
+
+    let body = |id: i32| {
+        snapshot
+            .bodies
+            .iter()
+            .find(|b| b.body == id)
+            .ok_or_else(|| format!("тіла {id} немає в снапшоті"))
+    };
+    let earth = body(EARTH)?;
+    let moon = body(MOON)?;
+
+    // Сцена геоцентрична (`view.rs`), тож і камера мусить бути в тих самих
+    // координатах: Місяць відносно Землі.
+    let centre = [
+        moon.position[0] - earth.position[0],
+        moon.position[1] - earth.position[1],
+        moon.position[2] - earth.position[2],
+    ];
+    let radius = moon.radius_m;
+    if radius <= 0.0 {
+        return Err("у Місяця немає радіуса в ассеті — нема навколо чого літати".into());
+    }
+
+    let altitude = altitude_km * 1000.0;
+    let distance = radius + altitude;
+    // Камера над «північним» боком тіла, ціль — на горизонті в напрямку +x.
+    let eye = [centre[0], centre[1], centre[2] + distance];
+    let horizon = (radius / distance).acos();
+    let target = [
+        centre[0] + radius * horizon.sin(),
+        centre[1],
+        centre[2] + radius * horizon.cos(),
+    ];
+    // Вертикаль кадру — назовні від тіла, тобто небо вгорі, поверхня внизу.
+    // Та сама угода, що в `engine::demo::along_limb`, і причина та сама.
+    let camera = engine::camera::Camera::look_at(eye, target, [0.0, 0.0, 1.0]);
+
+    let mut scene = view::build(snapshot, camera);
+    let mut frame = engine::frame::Frame::new(gpu, shot::FORMAT);
+    match app::load_moon_terrain(gpu, &mut frame) {
+        Some(id) => game::view::attach_terrain(&mut scene, snapshot, MOON, id),
+        None => println!("знімок буде з гладким Місяцем"),
+    }
+
+    let (width, height) = (options.width, options.height);
+    let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("moon shot"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: shot::FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let target_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut encoder = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("moon shot"),
+        });
+    frame.draw(gpu, &mut encoder, &target_view, width, height, &scene);
+
+    let taken = shot::read_back(gpu, encoder, &texture, width, height)?;
+    taken.write_png(path)?;
+
+    println!(
+        "знімок: {} ({width}×{height}), Місяць з {altitude_km:.0} км, ціль на лімбі",
+        path.display()
+    );
+    Ok(())
 }

@@ -22,7 +22,7 @@
 //! Тут це видно буквально: змінюється лише те, з чим порівнюють `sample.t`.
 
 use engine::camera::Camera;
-use engine::scene::{Body, Polyline, Scene, TileSet};
+use engine::scene::{Body, Polyline, Scene, TerrainId, TileSet};
 
 use crate::frame_view::{self, Synodic, ViewFrame};
 use crate::snapshot::WorldSnapshot;
@@ -107,7 +107,9 @@ pub fn build_with_preview(
                     Some(s) => frame_view::compose(s.rotation(), body.orientation),
                     None => body.orientation,
                 },
-                // Рельєфу ще немає в жодного тіла — його приносить R5.
+                // Гладке за замовчуванням; рельєф вмикає `attach_terrain`
+                // після побудови, бо хендл тайлів видає кадр, а не снапшот
+                // (D12).
                 tiles: TileSet::Smooth,
             });
         }
@@ -380,5 +382,46 @@ fn push_marker(scene: &mut Scene, position: [f64; 3]) {
             points: vec![a, b],
             colour: palette::VESSEL.scene(),
         });
+    }
+}
+
+/// Вмикає рельєф тілу, для якого його завантажили (D12).
+///
+/// ## Чому окремим викликом, а не параметром `build`
+///
+/// `TerrainId` видає **кадр** (`Frame::load_terrain`, R5c), а `view::build`
+/// про кадр не знає нічого й не має знати: він перетворює снапшот на сцену, і
+/// це чиста функція від стану гри. Проносити крізь неї хендл, якого вона не
+/// розуміє, означало б зробити двадцять наявних викликів довшими заради того,
+/// що стосується двох.
+///
+/// Тому рельєф — це те, що **додається до готової сцени** тим, хто знає, що
+/// саме завантажено. Формулювання чесне й для майбутнього: тіло може мати
+/// рельєф на одній машині й не мати на іншій, якщо адаптер не дав bindless
+/// (`Frame::load_terrain` там відмовляє), а сцена від цього не стає іншою.
+///
+/// ## Як тіло знаходиться в сцені
+///
+/// `engine::scene::Body` не несе ідентифікатора — рушієві він не потрібен, і
+/// давати йому знати про `EARTH`/`MOON` означало б навчити рушій грі. Тому
+/// індекс рахується **тим самим правилом, яким `build` клав тіла**: порядок
+/// `snapshot.bodies`, пропускаючи ті, що без радіуса. Правило одне на дві
+/// функції, і саме тому воно тут написане, а не вгадане.
+///
+/// Мовчить, якщо тіла в сцені немає: снапшот без Місяця — законний стан, а не
+/// привід падати.
+pub fn attach_terrain(scene: &mut Scene, snapshot: &WorldSnapshot, body: i32, terrain: TerrainId) {
+    let mut index = 0;
+    for candidate in &snapshot.bodies {
+        if candidate.radius_m <= 0.0 {
+            continue;
+        }
+        if candidate.body == body {
+            if index < scene.bodies.len() {
+                scene.bodies[index].tiles = TileSet::Loaded(terrain);
+            }
+            return;
+        }
+        index += 1;
     }
 }

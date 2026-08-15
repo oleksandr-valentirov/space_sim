@@ -853,3 +853,91 @@ fn the_moon_stands_still_in_the_rotating_frame_and_leaves_the_inertial_one() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Рельєф у грі (D12)
+
+/// Гра вмикає рельєф тому тілу, для якого його завантажили, — і тільки йому.
+///
+/// Друга половина тут головна. `attach_terrain`, який ставить `Loaded` усім
+/// тілам, пройшов би перевірку «Місяць має рельєф» і зіпсував би Землю, для
+/// якої DEM у репозиторії немає взагалі: вона малювалася б місячними
+/// висотами. Тому перевіряються обидва тіла, а не одне.
+#[test]
+fn the_game_attaches_terrain_to_the_moon_and_leaves_the_earth_smooth() {
+    use engine::scene::{TerrainId, TileSet};
+    use game::world::{EARTH, MOON};
+
+    let mut world = mission::world(&mission::default_asset()).expect("світ");
+    world.tick(8);
+    let snapshot = world.snapshot();
+
+    let camera = || Orbit::at_altitude(mission::CAMERA_ALTITUDE_M).camera();
+    let mut scene = view::build(&snapshot, camera());
+
+    // До виклику — гладкі всі, тобто те, що гра малювала до D12.
+    assert!(
+        scene.bodies.iter().all(|b| b.tiles == TileSet::Smooth),
+        "сцена приїхала з рельєфом ще до того, як його ввімкнули"
+    );
+
+    // Хендл тут вигаданий навмисно: перевіряється, кому його поставили, а не
+    // що в ньому лежить, — а справжній вимагав би GPU з bindless.
+    let id = TerrainId(0);
+    view::attach_terrain(&mut scene, &snapshot, MOON, id);
+
+    // Порядок тіл у сцені той самий, що в снапшоті, без тих, що без радіуса.
+    let with_radius: Vec<i32> = snapshot
+        .bodies
+        .iter()
+        .filter(|b| b.radius_m > 0.0)
+        .map(|b| b.body)
+        .collect();
+    assert_eq!(
+        with_radius.len(),
+        scene.bodies.len(),
+        "правило порядку тіл розійшлося між build і attach_terrain"
+    );
+
+    for (body, drawn) in with_radius.iter().zip(&scene.bodies) {
+        let expected = if *body == MOON {
+            TileSet::Loaded(id)
+        } else {
+            TileSet::Smooth
+        };
+        assert_eq!(
+            drawn.tiles, expected,
+            "тіло {body} отримало не той набір тайлів"
+        );
+    }
+
+    // І окремо — що Земля справді була в кадрі. Без цього рядка перевірка
+    // «Земля гладка» пройшла б і на сцені, у якій Землі немає.
+    assert!(
+        with_radius.contains(&EARTH) && with_radius.contains(&MOON),
+        "у сцені мали бути обидва тіла, а є {with_radius:?}"
+    );
+}
+
+/// Тіло, якого в сцені немає, не валить виклик.
+///
+/// Сцена без Місяця — законний стан (ассет без нього, тіло без радіуса), і
+/// `attach_terrain` мусить це пережити: рельєф — оздоблення, а не інваріант.
+#[test]
+fn attaching_terrain_to_a_body_that_is_not_there_does_nothing() {
+    use engine::scene::TerrainId;
+
+    let mut world = mission::world(&mission::default_asset()).expect("світ");
+    world.tick(8);
+    let snapshot = world.snapshot();
+
+    let camera = Orbit::at_altitude(mission::CAMERA_ALTITUDE_M).camera();
+    let mut scene = view::build(&snapshot, camera);
+    let before: Vec<_> = scene.bodies.iter().map(|b| b.tiles).collect();
+
+    // 99 — тіла з таким номером в ассеті немає.
+    view::attach_terrain(&mut scene, &snapshot, 99, TerrainId(0));
+
+    let after: Vec<_> = scene.bodies.iter().map(|b| b.tiles).collect();
+    assert_eq!(before, after, "невідоме тіло змінило чужі тайли");
+}

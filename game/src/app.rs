@@ -94,6 +94,14 @@ struct State {
     /// змінюється, а правило 5 забороняє кликати ефемериду з кадру.
     earth_radius_m: f64,
 
+    /// Рельєф Місяця, завантажений у кадр при старті (D12).
+    ///
+    /// `Option`, і це не перестраховка: `Frame::load_terrain` законно
+    /// відмовляє там, де адаптер не дав bindless, а ассета може просто не
+    /// бути (`make cook-dem` його робить, і в git він не лежить). Гра з
+    /// гладким Місяцем — робочий стан, а не помилка.
+    moon_terrain: Option<engine::scene::TerrainId>,
+
     /// Світ живе у власній нитці; тут лише ручка до неї (`crate::sim`).
     /// Головна нитка світ не рахує й не чіпає — вона його читає.
     sim: Sim,
@@ -137,6 +145,52 @@ struct State {
     /// Стан вигляду, не стан світу: у нитку світу він не їде й жодного числа
     /// снапшоту не міняє. Тому й живе тут, а не в `sim`.
     view_frame: ViewFrame,
+}
+
+/// Скукований рельєф Місяця, від кореня репозиторію.
+///
+/// Той самий файл, що читає демо рушія (`engine::demo::TERRAIN_ASSET`), але
+/// шлях повторений тут, а не позичений: демо — фікстура рушія, і гра, що
+/// бере з неї константу, зав'язалась би на його налагоджувальний інструмент.
+pub const MOON_TERRAIN_ASSET: &str = "assets/moon.dem";
+
+/// Читає рельєф Місяця в кадр (D12).
+///
+/// **Гучно каже, коли не вийшло, і йде далі.** Три причини не мати рельєфу
+/// законні: ассета немає (в git він не лежить, його робить `make cook-dem`),
+/// адаптер без bindless, зіпсований файл. Жодна з них не робить гру
+/// непридатною — вона малює гладкий Місяць, як робила до цього кроку. А от
+/// **тихий** гладкий Місяць був би точно тим, чим D12 і був: рельєфом, який
+/// начебто є, а на екрані його нема, і ніхто не знає чому.
+pub fn load_moon_terrain(gpu: &Gpu, frame: &mut Frame) -> Option<engine::scene::TerrainId> {
+    let bytes = match std::fs::read(MOON_TERRAIN_ASSET) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("рельєфу Місяця немає ({MOON_TERRAIN_ASSET}: {e}) — малюємо гладкий.");
+            eprintln!("полікувати: make cook-dem");
+            return None;
+        }
+    };
+
+    let terrain = match engine::tiles::Terrain::from_bytes(&bytes) {
+        Ok(terrain) => terrain,
+        Err(e) => {
+            eprintln!("рельєф {MOON_TERRAIN_ASSET} не читається ({e}) — малюємо гладкий.");
+            return None;
+        }
+    };
+
+    let levels = terrain.levels;
+    match frame.load_terrain(gpu, &terrain) {
+        Ok(id) => {
+            println!("рельєф Місяця: {MOON_TERRAIN_ASSET}, {levels} рівнів піраміди");
+            Some(id)
+        }
+        Err(e) => {
+            eprintln!("рельєф не завантажився в кадр ({e}) — малюємо гладкий.");
+            None
+        }
+    }
 }
 
 /// Світ за опціями — спільне для вікна й для знімка.
@@ -357,7 +411,8 @@ impl State {
             },
         )?;
 
-        let frame = Frame::new(&gpu, target.format());
+        let mut frame = Frame::new(&gpu, target.format());
+        let moon_terrain = load_moon_terrain(&gpu, &mut frame);
         let ui = Ui::new(&gpu, target.format());
         // Приладова палітра (U7c) — раз при старті, а не щокадру: `Style`
         // всередині контексту живе далі сам, а перевстановлення його в кадрі
@@ -389,6 +444,7 @@ impl State {
             // у панелі вигляду (U7a).
             language: Language::default(),
             earth_radius_m,
+            moon_terrain,
             orbit: Orbit::at_altitude(mission::CAMERA_ALTITUDE_M),
             sim,
             planner,
@@ -717,18 +773,25 @@ impl State {
                 label: Some("game frame"),
             });
 
+        let mut scene = view::build_with_preview(
+            &snapshot,
+            self.orbit.camera(),
+            self.preview.as_ref().map_or(&[], |p| p.legs.as_slice()),
+            self.view_frame,
+        );
+        // Рельєф — після побудови сцени й тільки якщо він завантажився (D12).
+        // `view` про кадр не знає, а хендл видає саме кадр.
+        if let Some(terrain) = self.moon_terrain {
+            view::attach_terrain(&mut scene, &snapshot, MOON, terrain);
+        }
+
         self.frame.draw(
             &self.gpu,
             &mut encoder,
             &view,
             self.target.width(),
             self.target.height(),
-            &view::build_with_preview(
-                &snapshot,
-                self.orbit.camera(),
-                self.preview.as_ref().map_or(&[], |p| p.legs.as_slice()),
-                self.view_frame,
-            ),
+            &scene,
         );
 
         // Інтерфейс — останнім проходом, у ту саму текстуру (U1b). Панель
