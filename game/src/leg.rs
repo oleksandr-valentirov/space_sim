@@ -154,38 +154,52 @@ impl Trajectory {
     /// момент, коли апарат очевидно десь є, означало б змусити кожного
     /// викликача вигадувати, що з цим робити.
     pub fn state_at(&self, t: f64) -> State {
-        if t <= self.start.t || self.legs.is_empty() {
-            return self.start;
-        }
-
-        let leg_index = self.legs.partition_point(|leg| leg.t1 < t);
-        let Some(leg) = self.legs.get(leg_index) else {
-            // Пізніше за все пораховане.
-            return self
-                .legs
-                .last()
-                .and_then(|leg| leg.samples.last())
-                .map_or(self.start, |s| s.state);
-        };
-
-        let index = leg.samples.partition_point(|s| s.state.t < t);
-        let Some(after) = leg.samples.get(index) else {
-            // Ланка закінчується раніше за t лише якщо вона порожня, а таких
-            // ми не зберігаємо (`world::World::extend`).
-            return self.start;
-        };
-
-        // На початку ланки лівий вузол — її `entry`, а НЕ останній семпл
-        // попередньої: після маневру це різні стани, і різняться вони рівно
-        // на Δv.
-        let before = if index > 0 {
-            leg.samples[index - 1].state
-        } else {
-            leg.entry
-        };
-
-        hermite(&before, &after.state, t)
+        state_at(&self.legs, self.start, t)
     }
+}
+
+/// Стан у момент `t` по вже порахованих ланках — та сама інтерполяція, але
+/// доступна тому, хто має лише снапшот.
+///
+/// Вільна функція з тієї самої причини, що [`restart_at`]: правило мусить бути
+/// **одне**. Світ читає траєкторію через [`Trajectory::state_at`], а панель і
+/// планувальник — зі снапшоту, де є лише `legs` і `start`; дві реалізації
+/// однієї інтерполяції розійшлися б тихо, у третьому знаку.
+///
+/// За межами порахованого віддає крайню точку, а не `None`, — і саме тому
+/// викликач, якому потрібен стан **у майбутньому**, зобов'язаний спершу
+/// звіритися з `computed_to`: крайня точка виглядає як звичайний стан.
+pub fn state_at(legs: &[Arc<Leg>], start: State, t: f64) -> State {
+    if t <= start.t || legs.is_empty() {
+        return start;
+    }
+
+    let leg_index = legs.partition_point(|leg| leg.t1 < t);
+    let Some(leg) = legs.get(leg_index) else {
+        // Пізніше за все пораховане.
+        return legs
+            .last()
+            .and_then(|leg| leg.samples.last())
+            .map_or(start, |s| s.state);
+    };
+
+    let index = leg.samples.partition_point(|s| s.state.t < t);
+    let Some(after) = leg.samples.get(index) else {
+        // Ланка закінчується раніше за t лише якщо вона порожня, а таких
+        // ми не зберігаємо (`world::World::extend`).
+        return start;
+    };
+
+    // На початку ланки лівий вузол — її `entry`, а НЕ останній семпл
+    // попередньої: після маневру це різні стани, і різняться вони рівно
+    // на Δv.
+    let before = if index > 0 {
+        leg.samples[index - 1].state
+    } else {
+        leg.entry
+    };
+
+    hermite(&before, &after.state, t)
 }
 
 /// Звідки продовжувати після того, як хвіст траєкторії відкинули.

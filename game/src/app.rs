@@ -507,9 +507,15 @@ impl State {
     ) {
         match action {
             hud::PorkchopAction::Compute => {
+                let Some(vessel) = snapshot.vessels.first() else {
+                    return;
+                };
                 self.next_request += 1;
-                self.planner
-                    .request(Request::Grid(self.grid_request(snapshot.t)));
+                if let Some(request) = self.grid_request(snapshot.t, vessel) {
+                    self.planner.request(Request::Grid(request));
+                } else {
+                    self.notice = Some(tr(self.language, TextKey::NoGridYet).to_string());
+                }
             }
             // Вибір вікна поки що лишається на екрані: перетворити його на
             // маневр — окремий крок із власним оракулом (U5d).
@@ -517,23 +523,47 @@ impl State {
         }
     }
 
-    /// Осі сітки: від «зараз» уперед, перельоти від доби до двох тижнів.
+    /// Осі сітки: моменти відходу з траєкторії, перельоти — від пів доби.
     ///
-    /// Числа тут — властивість **цієї місії**, а не плоту: 40 діб уперед
-    /// покривають те, що ассет-фікстура взагалі знає (120 діб від епохи), а
-    /// переліт Земля—Місяць реально триває від трьох до семи діб, тож вікно
-    /// від однієї до чотирнадцяти лишає видимими обидва краї заборонених зон.
-    /// Клітинок 40×28 = 1120, тобто близько 3 мс роботи нитки (U5b).
-    fn grid_request(&self, now: f64) -> GridRequest {
-        GridRequest {
+    /// Відхід іде **не далі за пораховане**, і це не обережність, а умова
+    /// правильності: `leg::state_at` за горизонтом віддає крайню точку, тож
+    /// сітка, побудована на ній, показувала б переліт із місця, де апарата не
+    /// буде. `None` означає «прогноз ще не відійшов від курсора» — тоді
+    /// рахувати нема з чого, і сказати про це чесніше, ніж намалювати рядок
+    /// із самих дірок.
+    ///
+    /// Решта чисел — властивість цієї місії, а не плоту: переліт Земля—Місяць
+    /// триває від трьох до семи діб, тож вісь від пів доби до чотирнадцяти
+    /// лишає видимими обидва краї заборонених зон.
+    fn grid_request(
+        &self,
+        now: f64,
+        vessel: &crate::snapshot::VesselSnapshot,
+    ) -> Option<GridRequest> {
+        const DAY: f64 = 86400.0;
+        const COLUMNS: usize = 40;
+
+        // Крок осі відходу: рівно стільки, щоб сорок стовпців улягалися в
+        // пораховане. Порожній горизонт — це `None` вище.
+        let span = vessel.computed_to - now;
+        if span < DAY {
+            return None;
+        }
+        let step = (span / COLUMNS as f64).min(DAY);
+
+        let depart = (0..COLUMNS)
+            .map(|i| crate::leg::state_at(&vessel.legs, vessel.start, now + i as f64 * step))
+            .collect();
+
+        Some(GridRequest {
             id: self.next_request,
-            depart_body: EARTH,
+            depart,
             arrive_body: MOON,
+            centre_body: EARTH,
             mu: self.earth_mu,
             prograde: true,
-            t1: (0..40).map(|i| now + f64::from(i) * 86400.0).collect(),
-            tof: (1..=28).map(|j| f64::from(j) * 0.5 * 86400.0).collect(),
-        }
+            tof: (1..=28).map(|j| f64::from(j) * 0.5 * DAY).collect(),
+        })
     }
 
     /// Летіти показаним планом.

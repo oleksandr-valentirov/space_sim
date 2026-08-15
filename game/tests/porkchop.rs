@@ -35,16 +35,32 @@ fn ephemeris() -> Arc<core_rs::Ephemeris> {
     Arc::new(core_rs::Ephemeris::load(&mission::default_asset()).expect("фікстура"))
 }
 
-/// Сітка, що цілком лежить у проміжку ассета: 120 діб від J2000, тобто
-/// відхід до 60-ї доби плюс переліт до 10 діб — із запасом усередині.
+/// Стани відходу для сітки.
+///
+/// Беруться з початкового стану місії, зсунутого в часі, а не з живої
+/// траєкторії, і це навмисно: розгортці байдуже, звідки прийшли стани, а
+/// прогін світу коштував би секунди на кожен тест. Те, що стани справді
+/// беруться з траєкторії, перевіряє окремий тест наприкінці.
+fn departures(count: usize, step: f64, from: f64) -> Vec<core_rs::State> {
+    let base = mission::start();
+    (0..count)
+        .map(|i| core_rs::State {
+            t: from + i as f64 * step,
+            ..base
+        })
+        .collect()
+}
+
+/// Сітка, що цілком лежить у проміжку ассета: фікстура знає 120 діб від
+/// J2000, тож відхід до 60-ї доби плюс переліт до 10 — із запасом усередині.
 fn inside(id: u64, mu: f64) -> GridRequest {
     GridRequest {
         id,
-        depart_body: EARTH,
+        depart: departures(40, 1.5 * DAY, mission::start().t),
         arrive_body: MOON,
+        centre_body: EARTH,
         mu,
         prograde: true,
-        t1: (0..40).map(|i| f64::from(i) * 1.5 * DAY).collect(),
         tof: (0..30).map(|i| (1.0 + f64::from(i) * 0.3) * DAY).collect(),
     }
 }
@@ -61,15 +77,23 @@ fn ask_for(planner: &Planner, request: &GridRequest) -> Grid {
     got.expect("щойно перевірили")
 }
 
-/// Клітинка з нитки — та сама, що з прямого виклику межі, і в тому самому місці.
+/// Клітинка каже правду про перельот, і перевіряє це не сама розгортка.
 ///
-/// Бітово, і це чесно: обидва шляхи кличуть **ту саму** функцію C з тими
-/// самими аргументами (U5a вже звірив її з `lambert_solve` окремо, і там
-/// допуск був потрібен). Отже все, що ця перевірка може спіймати, — це
-/// розкладання пласкої відповіді C по рядках і стовпцях, а воно або точне,
-/// або зовсім не те.
+/// Оракул тут навмисно **не** «сітка проти `porkchop_compute_eph`»: обидва
+/// шляхи розв'язували б ту саму задачу Ламберта, а помилка вибору системи
+/// координат по обидва боки скоротилася б. Саме так вона й прожила від U5a до
+/// цього тесту — з баріцентричною фікстурою дуга будувалася навколо початку
+/// координат із `mu` Землі, тобто навколо Сонця з масою Землі, і числа
+/// виглядали правдоподібно (2–9.6 км/с).
+///
+/// Тому перевіряється сама фізика клітинки, трьома незалежними твердженнями:
+///
+/// 1. апарат, що отримав `dv` і полетів **двома тілами**, приходить туди, де
+///    в цей момент буде тіло призначення (кеплерівська дуга, не інтегратор);
+/// 2. `dv_m_s` — це довжина `dv`, а не інше число поруч;
+/// 3. `v_inf_arrive` — швидкість відносно тіла, а не відносно центра.
 #[test]
-fn a_grid_from_the_thread_is_the_boundary_call_laid_out_in_rows() {
+fn a_cell_is_a_transfer_that_actually_arrives() {
     let eph = ephemeris();
     let mu = eph.body_mu(EARTH);
     assert!(mu > 0.0, "фікстура мусить знати масу Землі");
@@ -81,58 +105,136 @@ fn a_grid_from_the_thread_is_the_boundary_call_laid_out_in_rows() {
     let grid = ask_for(&planner, &request);
     let took = started.elapsed();
 
-    assert_eq!(grid.cells.len(), request.t1.len() * request.tof.len());
-    assert_eq!(grid.t1, request.t1);
+    assert_eq!(grid.cells.len(), request.depart.len() * request.tof.len());
+    assert_eq!(grid.t1, request.t1());
     assert_eq!(grid.tof, request.tof);
 
-    let direct = core_rs::porkchop(&eph, EARTH, MOON, mu, true, &request.t1, &request.tof)
-        .expect("прямий виклик межі");
-
     let mut checked = 0;
-    for cell in &direct {
-        let i = request
-            .t1
-            .iter()
-            .position(|t| *t == cell.t1)
-            .expect("t1 клітинки мусить бути на осі");
-        let j = request
-            .tof
-            .iter()
-            .position(|t| *t == cell.tof)
-            .expect("tof клітинки мусить бути на осі");
+    let mut wild = 0;
+    let mut worst_miss: f64 = 0.0;
+    for i in 0..grid.t1.len() {
+        for j in 0..grid.tof.len() {
+            let Some(cell) = grid.at(i, j) else { continue };
+            let (t1, tof) = (grid.t1[i], grid.tof[j]);
 
-        let ours = grid
-            .at(i, j)
-            .unwrap_or_else(|| panic!("клітинка ({i}, {j}) зійшлася напряму, а в сітці її немає"));
-        assert_eq!(
-            ours.v_inf_depart.to_bits(),
-            cell.v_inf_depart.to_bits(),
-            "відхід у ({i}, {j})"
-        );
-        assert_eq!(
-            ours.v_inf_arrive.to_bits(),
-            cell.v_inf_arrive.to_bits(),
-            "прихід у ({i}, {j})"
-        );
-        checked += 1;
+            // Скажені клітинки — повз перевірку, і межа тут не про фізику, а
+            // про **власний розв'язувач цього тесту**: на дузі в сотню
+            // кілометрів за секунду універсальна змінна втрачає знаки на
+            // гіперболічних косинусах, і перевірка починає падати на своїй
+            // точності, а не на чужій помилці. Такого вікна гравець і не
+            // обере — воно на порядок дорожче за все, чим літають.
+            if cell.dv_m_s > 10_000.0 || cell.v_inf_arrive > 10_000.0 {
+                wild += 1;
+                continue;
+            }
+
+            // Стан апарата в момент відходу — той самий, що ми подали, — і
+            // маневр із клітинки поверх нього.
+            let from = request.depart[i];
+            let centre = eph.body_state(EARTH, t1).expect("Земля в межах ассета");
+            let target = eph
+                .body_state(MOON, t1 + tof)
+                .expect("Місяць у межах ассета");
+            let centre_then = eph
+                .body_state(EARTH, t1 + tof)
+                .expect("Земля в межах ассета");
+
+            // Довжина маневру — довжина вектора маневру. Дрібниця, яку легко
+            // порушити, показавши поруч сусіднє число.
+            let length = (cell.dv[0].powi(2) + cell.dv[1].powi(2) + cell.dv[2].powi(2)).sqrt();
+            assert!(
+                (length - cell.dv_m_s).abs() <= 1e-9 * length.max(1.0),
+                "({i}, {j}): |dv| = {length}, а показано {}",
+                cell.dv_m_s
+            );
+
+            // Куди приведе ця дуга. Кеплер, а не наш інтегратор: клітинка й
+            // рахувалася кеплерівською задачею, і питання рівно в тому, чи
+            // зроблено це в правильній системі координат.
+            let r0 = [
+                from.r.x - centre.r.x,
+                from.r.y - centre.r.y,
+                from.r.z - centre.r.z,
+            ];
+            let v0 = [
+                from.v.x - centre.v.x + cell.dv[0],
+                from.v.y - centre.v.y + cell.dv[1],
+                from.v.z - centre.v.z + cell.dv[2],
+            ];
+            let (arrive, arrive_v) = kepler(r0, v0, tof, mu);
+
+            let want = [
+                target.r.x - centre_then.r.x,
+                target.r.y - centre_then.r.y,
+                target.r.z - centre_then.r.z,
+            ];
+            let miss = ((arrive[0] - want[0]).powi(2)
+                + (arrive[1] - want[1]).powi(2)
+                + (arrive[2] - want[2]).powi(2))
+            .sqrt();
+            let distance = (want[0].powi(2) + want[1].powi(2) + want[2].powi(2)).sqrt();
+
+            // Допуск — частка відстані, а не метри: порівнюються два
+            // розв'язки тієї самої кеплерівської задачі різними методами
+            // (Ламберт проти універсальної змінної). Помилка ж, яку тест
+            // ловить, інша за порядком узагалі: не той центр — 1.5·10¹¹ м,
+            // не те тіло — 4·10⁸ м.
+            assert!(
+                miss <= 1e-6 * distance,
+                "({i}, {j}): дуга промахнулася повз Місяць на {miss:.3e} м \
+                 при відстані {distance:.3e} м — це не той переліт",
+            );
+            worst_miss = worst_miss.max(miss / distance);
+
+            // Швидкість на приході — відносно **тіла**, а не відносно центра.
+            // Різниця — це швидкість Місяця, близько кілометра за секунду:
+            // помітно на око в панелі й ніяк не помітно в коді.
+            let moon_v = [
+                target.v.x - centre_then.v.x,
+                target.v.y - centre_then.v.y,
+                target.v.z - centre_then.v.z,
+            ];
+            let relative = ((arrive_v[0] - moon_v[0]).powi(2)
+                + (arrive_v[1] - moon_v[1]).powi(2)
+                + (arrive_v[2] - moon_v[2]).powi(2))
+            .sqrt();
+            // Допуск той самий і з тієї ж причини: помилка «відносно
+            // центра» становила б швидкість Місяця, тобто кілометр за
+            // секунду — на дев'ять порядків більше.
+            assert!(
+                (relative - cell.v_inf_arrive).abs() <= 1e-6 * relative,
+                "({i}, {j}): відносно Місяця виходить {relative:.1} м/с, \
+                 а клітинка каже {:.1}",
+                cell.v_inf_arrive
+            );
+
+            checked += 1;
+        }
     }
 
-    // Стільки ж клітинок, скільки й у прямого виклику: інакше сітка десь
-    // домалювала те, чого межа не рахувала.
-    assert_eq!(
-        grid.cells.iter().flatten().count(),
-        direct.len(),
-        "у сітці інша кількість клітинок, ніж віддала межа"
+    // Сорок — не кругле число, а запас під те, скільки їх тут насправді:
+    // стани відходу в цьому тесті штучні (позиція стоїть, Місяць їде), тож
+    // більшість вікон виходить скаженими. Важить, що перевірених достатньо
+    // й що вони не зникли зовсім.
+    assert!(
+        checked >= 40,
+        "перевірено лише {checked} клітинок, ще {wild} відкинуто як скажені"
+    );
+    println!(
+        "  перевірено {checked} клітинок, {wild} скажених повз; \
+         найгірший промах перевірки {worst_miss:.1e} від відстані"
     );
 
-    let (low, high) = grid.range().expect("сітка, де нічого не зійшлося");
+    let (low, high) = grid.scale().expect("сітка, де нічого не зійшлося");
     let (i, j, best) = grid.best().expect("найкраще вікно");
     println!(
-        "  {checked} клітинок за {took:?}; ціна від {low:.0} до {high:.0} м/с;\n  \
-         найдешевше: відхід на добі {:.1}, переліт {:.1} доби, {:.0} м/с",
-        request.t1[i] / DAY,
-        request.tof[j] / DAY,
-        best.total()
+        "  {checked} клітинок із {} за {took:?}; ціна від {low:.0} до {high:.0} м/с;\n  \
+         найдешевше: відхід на добі {:.1}, переліт {:.1} доби, {:.0} + {:.0} м/с",
+        grid.cells.len(),
+        (grid.t1[i] - mission::start().t) / DAY,
+        grid.tof[j] / DAY,
+        best.dv_m_s,
+        best.v_inf_arrive
     );
 
     // Найкраще вікно — справді найдешевше з усіх, а не перше-ліпше.
@@ -143,6 +245,93 @@ fn a_grid_from_the_thread_is_the_boundary_call_laid_out_in_rows() {
         (low - best.total()).abs() < 1e-9,
         "межа шкали й мінімум різні"
     );
+}
+
+/// Кеплерівське просування стану на `dt` — універсальна змінна, поділ навпіл.
+///
+/// Друга реалізація тієї самої фізики, і саме тому вона тут: якби перевірка
+/// кликала `lambert_solve`, вона порівнювала б розгортку саму з собою.
+/// Повертає позицію й швидкість: перша каже, чи дуга справді приводить до
+/// Місяця, друга — чи `v_inf_arrive` порахована відносно тіла.
+///
+/// Поділ навпіл, а не Ньютон, і це не лінощі: час як функція універсальної
+/// аномалії монотонно зростає, тож пошук у вилці збігається завжди, тоді як
+/// Ньютон із наближенням для еліпса розлітається на гіперболічній дузі —
+/// а маневр із halo-орбіти до Місяця буває саме гіперболічним. Тест, який
+/// падає через власний розв'язувач, гірший за відсутній: він каже, що
+/// зламане те, що ціле.
+fn kepler(r0: [f64; 3], v0: [f64; 3], dt: f64, mu: f64) -> ([f64; 3], [f64; 3]) {
+    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let r = dot(r0, r0).sqrt();
+    let alpha = 2.0 / r - dot(v0, v0) / mu; // 1/a
+    let rv = dot(r0, v0);
+    let root = mu.sqrt();
+
+    // Час, до якого приводить універсальна аномалія x.
+    let time_of = |x: f64| -> f64 {
+        let (c, s) = stumpff(alpha * x * x);
+        (rv / root * x * x * c + (1.0 - alpha * r) * x * x * x * s + r * x) / root
+    };
+
+    // Вилка: розсуваємо верхню межу, доки не перескочимо dt.
+    let mut low = 0.0;
+    let mut high = 1.0;
+    while time_of(high) < dt {
+        high *= 2.0;
+        assert!(high < 1e12, "дуга не досягає {dt} с за жодної аномалії");
+    }
+
+    // Сто поділів — це 2⁻¹⁰⁰ від початкової вилки, тобто далеко за подвійну
+    // точність; зупиняє цикл сама рівність меж.
+    for _ in 0..100 {
+        let mid = 0.5 * (low + high);
+        if mid <= low || mid >= high {
+            break;
+        }
+        if time_of(mid) < dt {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+
+    let x = 0.5 * (low + high);
+    let z = alpha * x * x;
+    let (c, s) = stumpff(z);
+    let f = 1.0 - x * x / r * c;
+    let g = dt - x * x * x / root * s;
+
+    let position = [
+        f * r0[0] + g * v0[0],
+        f * r0[1] + g * v0[1],
+        f * r0[2] + g * v0[2],
+    ];
+
+    let r_new =
+        (position[0] * position[0] + position[1] * position[1] + position[2] * position[2]).sqrt();
+    let fdot = root / (r * r_new) * x * (z * s - 1.0);
+    let gdot = 1.0 - x * x / r_new * c;
+
+    let velocity = [
+        fdot * r0[0] + gdot * v0[0],
+        fdot * r0[1] + gdot * v0[1],
+        fdot * r0[2] + gdot * v0[2],
+    ];
+
+    (position, velocity)
+}
+
+/// Функції Стампфа C(z) і S(z), рядами біля нуля.
+fn stumpff(z: f64) -> (f64, f64) {
+    if z > 1e-6 {
+        let sz = z.sqrt();
+        ((1.0 - sz.cos()) / z, (sz - sz.sin()) / (z * sz))
+    } else if z < -1e-6 {
+        let sz = (-z).sqrt();
+        ((sz.cosh() - 1.0) / -z, (sz.sinh() - sz) / (-z * sz))
+    } else {
+        (0.5 - z / 24.0, 1.0 / 6.0 - z / 120.0)
+    }
 }
 
 /// За краєм ассета клітинка **зникає**, а не коштує нуль.
@@ -161,11 +350,11 @@ fn a_window_past_the_end_of_the_asset_is_a_hole_not_a_bargain() {
     // всередині 120 діб, останні — вже за краєм.
     let request = GridRequest {
         id: 7,
-        depart_body: EARTH,
+        depart: departures(1, DAY, 115.0 * DAY),
         arrive_body: MOON,
+        centre_body: EARTH,
         mu,
         prograde: true,
-        t1: vec![115.0 * DAY],
         tof: (1..=12).map(|i| f64::from(i) * DAY).collect(),
     };
 
@@ -208,11 +397,11 @@ fn an_empty_axis_leaves_the_thread_working() {
 
     planner.request(Request::Grid(GridRequest {
         id: 1,
-        depart_body: EARTH,
+        depart: Vec::new(),
         arrive_body: MOON,
+        centre_body: EARTH,
         mu,
         prograde: true,
-        t1: Vec::new(),
         tof: vec![DAY],
     }));
 
@@ -298,7 +487,8 @@ fn handmade() -> Grid {
                 None
             } else {
                 Some(Cell {
-                    v_inf_depart: 100.0 * (i + 1) as f64,
+                    dv: [100.0 * (i + 1) as f64, 0.0, 0.0],
+                    dv_m_s: 100.0 * (i + 1) as f64,
                     v_inf_arrive: 10.0 * (j + 1) as f64,
                 })
             });
@@ -321,11 +511,13 @@ fn handmade() -> Grid {
 #[test]
 fn a_hole_is_transparent_and_a_price_is_not() {
     let cheap = Cell {
-        v_inf_depart: 100.0,
+        dv: [100.0, 0.0, 0.0],
+        dv_m_s: 100.0,
         v_inf_arrive: 10.0,
     };
     let costly = Cell {
-        v_inf_depart: 900.0,
+        dv: [900.0, 0.0, 0.0],
+        dv_m_s: 900.0,
         v_inf_arrive: 90.0,
     };
     let (low, high) = (cheap.total(), costly.total());
@@ -351,7 +543,8 @@ fn the_scale_goes_one_way() {
     let (low, high) = (100.0, 1000.0);
     let mut previous = colour(
         Some(Cell {
-            v_inf_depart: low,
+            dv: [low, 0.0, 0.0],
+            dv_m_s: low,
             v_inf_arrive: 0.0,
         }),
         low,
@@ -360,7 +553,8 @@ fn the_scale_goes_one_way() {
 
     for step in 1..=9 {
         let cell = Cell {
-            v_inf_depart: low + f64::from(step) * 100.0,
+            dv: [low + f64::from(step) * 100.0, 0.0, 0.0],
+            dv_m_s: low + f64::from(step) * 100.0,
             v_inf_arrive: 0.0,
         };
         let now = colour(Some(cell), low, high);
@@ -442,10 +636,7 @@ fn the_readout_shows_the_cell_under_the_cursor() {
 
     let cell = grid.at(2, 0).expect("клітинка (2, 0) не дірка");
     assert!(
-        all.contains(&format!(
-            "{:.0} / {:.0}",
-            cell.v_inf_depart, cell.v_inf_arrive
-        )),
+        all.contains(&format!("{:.0} / {:.0}", cell.dv_m_s, cell.v_inf_arrive)),
         "серед намальованого немає чисел клітинки (2, 0): {all}"
     );
     assert!(

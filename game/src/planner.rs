@@ -236,14 +236,14 @@ fn run(
 /// різати нема сенсу, грубіше — означало б чекати на сітку, яку вже ніхто не
 /// питає.
 fn sweep(eph: &Arc<Ephemeris>, request: &GridRequest, requests: &Receiver<Request>) -> Outcome {
-    if request.t1.is_empty() || request.tof.is_empty() {
+    if request.depart.is_empty() || request.tof.is_empty() {
         // Порожня вісь — це не сітка з нуля клітинок, а запит ні про що.
         // Малювати тут нічого, і мовчання чесніше за порожній плот.
         return Outcome::Nothing;
     }
 
-    let mut cells = Vec::with_capacity(request.t1.len() * request.tof.len());
-    for i in 0..request.t1.len() {
+    let mut cells = Vec::with_capacity(request.depart.len() * request.tof.len());
+    for i in 0..request.depart.len() {
         match requests.try_recv() {
             Ok(newer) => return Outcome::Cancelled(newer),
             Err(TryRecvError::Disconnected) => return Outcome::Gone,
@@ -254,7 +254,7 @@ fn sweep(eph: &Arc<Ephemeris>, request: &GridRequest, requests: &Receiver<Reques
 
     Outcome::Sheet(Grid {
         id: request.id,
-        t1: request.t1.clone(),
+        t1: request.t1(),
         tof: request.tof.clone(),
         cells,
     })

@@ -96,6 +96,8 @@ pub enum Key {
     NoSolution,
     /// Підказка: наведіть або клікніть, щоб побачити вікно.
     PickWindow,
+    /// Прогноз ще не відійшов від курсора — сітку нема на чому будувати.
+    NoGridYet,
 }
 
 /// Мова інтерфейсу. Дві, бо саме дві таблиці й перевіряються.
@@ -153,6 +155,7 @@ fn english(key: Key) -> &'static str {
         Key::Vinf => "v-inf out / in",
         Key::NoSolution => "no transfer here",
         Key::PickWindow => "point at the plot",
+        Key::NoGridYet => "the forecast has not run far enough yet",
     }
 }
 
@@ -195,12 +198,13 @@ fn ukrainian(key: Key) -> &'static str {
         Key::Vinf => "v-inf туди / там",
         Key::NoSolution => "тут перельоту немає",
         Key::PickWindow => "наведіть на плот",
+        Key::NoGridYet => "прогноз ще не відійшов достатньо далеко",
     }
 }
 
 /// Усі ключі — для перевірок і для того, хто колись малюватиме таблицю
 /// перекладу.
-pub const ALL: [Key; 37] = [
+pub const ALL: [Key; 38] = [
     Key::Time,
     Key::Day,
     Key::Warp,
@@ -238,6 +242,7 @@ pub const ALL: [Key; 37] = [
     Key::Vinf,
     Key::NoSolution,
     Key::PickWindow,
+    Key::NoGridYet,
 ];
 
 #[cfg(test)]

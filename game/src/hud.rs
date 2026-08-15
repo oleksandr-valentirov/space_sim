@@ -481,10 +481,13 @@ pub fn porkchop_panel(
             ));
             match readout.cell {
                 Some(cell) => {
+                    // Два числа, розділені скісною: маневр відходу — той, що
+                    // піде в план, — і швидкість відносно тіла на приході,
+                    // тобто ціна ще не порахованого гальмування.
                     ui.label(format!(
                         "{}: {:.0} / {:.0} м/с",
                         tr(language, Key::Vinf),
-                        cell.v_inf_depart,
+                        cell.dv_m_s,
                         cell.v_inf_arrive
                     ));
                 }
@@ -537,7 +540,7 @@ fn cell_centre(rect: egui::Rect, grid: &Grid, i_t1: usize, i_tof: usize) -> egui
 /// Переворот саме тут, в одному місці: далі його знає лише [`from_bottom`],
 /// і обидва підпорядковані одній угоді — `tof` росте вгору.
 fn image_of(grid: &Grid) -> egui::ColorImage {
-    let (low, high) = grid.range().unwrap_or((0.0, 1.0));
+    let (low, high) = grid.scale().unwrap_or((0.0, 1.0));
     let (w, h) = (grid.t1.len(), grid.tof.len());
 
     let mut pixels = vec![egui::Color32::TRANSPARENT; w * h];
