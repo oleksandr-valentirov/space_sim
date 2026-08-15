@@ -943,3 +943,118 @@ fn the_porkchop_grid_matches_the_c_oracle_bit_for_bit() {
         eph_free(ctx);
     }
 }
+
+/// CR3BP через межу дає біт у біт те саме, що C (ROADMAP-UI.md, U6b2).
+///
+/// Ці чотири функції відрізняються від решти межі тим, що працюють у
+/// **безрозмірній** нормалізації, а не в метрах. Помилка тут не падає й навіть
+/// не виглядає дивно: константа Якобі 3.11 і константа Якобі 3.14 однаково
+/// схожі на правду. Тому звірка бітова, а зміст перевіряється окремо, числами
+/// ззовні (`core-rs/tests/cr3bp.rs`).
+///
+/// Дві з них беруть `Vec3d` **за значенням** — те саме, на чому наполягає
+/// `lambert_solve`: 24 байти йдуть через пам'ять на всіх наших ABI, і
+/// переплутаний порядок аргументів `(r, v, mu)` дав би правдоподібне число.
+#[test]
+fn cr3bp_crosses_the_boundary_unchanged() {
+    let records = oracle_records();
+
+    let cmu = tagged(&records, "cmu");
+    assert_eq!(
+        cmu.len(),
+        1,
+        "оракул мав надрукувати рівно одну частку маси"
+    );
+    let (gm1, gm2, mu_c) = (cmu[0].values[0], cmu[0].values[1], cmu[0].values[2]);
+
+    let mu = unsafe { core_sys::cr3bp_mu(gm1, gm2) };
+    assert_eq!(
+        mu.to_bits(),
+        mu_c.to_bits(),
+        "mu: C дав {mu_c:e}, межа {mu:e}"
+    );
+
+    let jac = tagged(&records, "jac");
+    assert_eq!(jac.len(), 1);
+    let (x, z, vy, mu_from_c, c_from_c) = (
+        jac[0].values[0],
+        jac[0].values[1],
+        jac[0].values[2],
+        jac[0].values[3],
+        jac[0].values[4],
+    );
+    let c = unsafe {
+        core_sys::cr3bp_jacobi(
+            core_sys::Vec3d { x, y: 0.0, z },
+            core_sys::Vec3d {
+                x: 0.0,
+                y: vy,
+                z: 0.0,
+            },
+            mu_from_c,
+        )
+    };
+    assert_eq!(
+        c.to_bits(),
+        c_from_c.to_bits(),
+        "константа Якобі: C дала {c_from_c:e}, межа {c:e}"
+    );
+
+    for row in tagged(&records, "lag") {
+        let point = row.values[0] as i32;
+        let mut out = core_sys::Vec3d {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let result = unsafe { core_sys::cr3bp_lagrange(mu, point, &mut out) };
+        assert_eq!(result, CORE_OK, "L{point} не порахувалася");
+        for (name, from_c, from_rust) in [
+            ("x", row.values[1], out.x),
+            ("y", row.values[2], out.y),
+            ("z", row.values[3], out.z),
+        ] {
+            assert_eq!(
+                from_c.to_bits(),
+                from_rust.to_bits(),
+                "L{point}.{name}: C дав {from_c:e}, межа {from_rust:e}"
+            );
+        }
+    }
+
+    // Обидва боки воріт біля L1: перетин є і перетину немає. Другий рядок —
+    // саме той випадок, який легко списати на збій, тому він і в оракулі, і
+    // тут.
+    let zvc = tagged(&records, "zvc");
+    assert_eq!(zvc.len(), 2, "оракул мав дати обидва боки воріт");
+    for row in zvc {
+        let (c, result_c, r_c) = (row.values[0], row.values[1] as i32, row.values[2]);
+        let mut r = 0.0;
+        let result = unsafe {
+            core_sys::cr3bp_zvc_radius(
+                mu,
+                c,
+                core_sys::Vec3d {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                core_sys::Vec3d {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                0.95,
+                &mut r,
+            )
+        };
+        assert_eq!(result, result_c, "код відповіді при C = {c}");
+        if result == CORE_OK {
+            assert_eq!(
+                r.to_bits(),
+                r_c.to_bits(),
+                "радіус при C = {c}: C дав {r_c:e}, межа {r:e}"
+            );
+        }
+    }
+}

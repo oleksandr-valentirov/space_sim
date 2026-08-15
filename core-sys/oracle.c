@@ -24,6 +24,11 @@
  *   samp <k> <t> <x> <y> <z> <vx> <vy> <vz>      семпл прогону
  *   run  <count> <stop> <event> <step>           підсумок прогону
  *   end  <t> <x> <y> <z> <vx> <vy> <vz>          кінцевий стан прогону
+ *   cmu  <gm1> <gm2> <mu>                        частка маси пари (CR3BP)
+ *   jac  <x> <z> <vy> <mu> <C>                   константа Якобі
+ *   lag  <point> <x> <y> <z>                     точка Лагранжа
+ *   zvc  <c> <result> <r>                        промінь до кривої нульової
+ *                                                швидкості
  *
  * Прогонів два: без подій до заданого часу і з озброєним перицентром.
  * Другий важливий окремо — він проходить через `CoreEvent`, а структура з
@@ -35,6 +40,7 @@
  *
  * Запускається з кореня репозиторію. */
 
+#include "cr3bp.h"
 #include "ephemeris.h"
 #include "prop.h"
 
@@ -262,6 +268,50 @@ int main(void)
      * in-range index would keep answering plausibly. */
     printf("rad %d %.17g\n", NO_SUCH_BODY,
            eph_body_radius(eph, NO_SUCH_BODY));
+
+    /* CR3BP: частка маси пари, константа Якобі, точки Лагранжа й промінь до
+     * кривої нульової швидкості (ROADMAP-UI.md, U6b2).
+     *
+     * Числа безрозмірні, і саме тому вони тут: декларація, яка переплутала б
+     * порядок аргументів `cr3bp_jacobi(r, v, mu)`, повернула б цілком
+     * правдоподібну константу — просто не ту. Стан узятий із каталогу JPL
+     * (halo 1151), а не вигаданий: у `core/test/test_correct.c` він же
+     * названий x = 1.169, vy = -0.194. */
+    {
+        double mu = cr3bp_mu(eph_body_mu(eph, 3), eph_body_mu(eph, 4));
+        printf("cmu %.17g %.17g %.17g\n", eph_body_mu(eph, 3),
+               eph_body_mu(eph, 4), mu);
+
+        static const double HALO[3] = { 1.1690, -0.0980, -0.1940 };
+        Vec3d r = vec3(HALO[0], 0.0, HALO[1]);
+        Vec3d v = vec3(0.0, HALO[2], 0.0);
+        printf("jac %.17g %.17g %.17g %.17g %.17g\n", HALO[0], HALO[1],
+               HALO[2], mu, cr3bp_jacobi(r, v, mu));
+
+        for (int point = 1; point <= 5; point++) {
+            Vec3d l;
+            if (cr3bp_lagrange(mu, point, &l) != CORE_OK) {
+                fprintf(stderr, "oracle: lagrange %d failed\n", point);
+                eph_free(eph);
+                return 1;
+            }
+            printf("lag %d %.17g %.17g %.17g\n", point, l.x, l.y, l.z);
+        }
+
+        /* Ворота біля L1: трохи вище за C(L1) — перетин є, трохи нижче —
+         * променю відповіді немає взагалі, і це відповідь, а не збій. */
+        Vec3d l1;
+        cr3bp_lagrange(mu, 1, &l1);
+        double c1 = cr3bp_jacobi(l1, vec3_zero(), mu);
+        const double DELTA[2] = { 0.01, -0.01 };
+        for (size_t k = 0; k < 2; k++) {
+            double r_out = 0.0;
+            CoreResult result = cr3bp_zvc_radius(mu, c1 + DELTA[k], vec3_zero(),
+                                                 vec3(1.0, 0.0, 0.0), 0.95,
+                                                 &r_out);
+            printf("zvc %.17g %d %.17g\n", c1 + DELTA[k], (int)result, r_out);
+        }
+    }
 
     if (!propagate(eph)) {
         eph_free(eph);
