@@ -327,3 +327,71 @@ fn only_the_latest_request_is_answered() {
     assert_eq!(last.id, 20, "дійшло не останнє прев'ю");
     assert!(!last.legs.is_empty(), "останнє прев'ю порожнє");
 }
+
+/// Запит, що **перервав** прогін, сам без відповіді не лишається.
+///
+/// Перевірка вище шле пачку одним махом, і тому нічого не доводить про цей
+/// випадок: усі двадцять уже лежать у каналі, коли нитка бере перший, і їх
+/// забирає звичайне вичерпування черги. Тут інакше — другий запит прилітає
+/// **посеред** прогону першого, тобто його бачить саме перевірка скасування.
+/// Вона повідомлення з каналу виймає, і питання рівно одне: куди воно потім
+/// дінеться.
+///
+/// Так виглядає кінець тягнення вузла: гравець відпустив мишу, полетів
+/// останній запит, і після нього не буде жодного. Якщо його з'їдає
+/// скасування, нитка засинає на `recv()`, а на екрані лишається лінія
+/// передостаннього положення — назавжди.
+///
+/// Пауза тут потрібна саме тесту: прев'ю рахується близько 50 мс (вимір цієї
+/// сесії), а перевірка каналу трапляється між ланками, тож п'яти мілісекунд
+/// досить, щоб другий запит застав перший у роботі, і мало, щоб той устиг
+/// добігти до кінця.
+#[test]
+fn the_request_that_cancelled_the_work_is_answered_too() {
+    let sim = Sim::spawn(mission::world(&mission::default_asset()).expect("світ"))
+        .expect("нитка симуляції");
+    sim.send(Command::TogglePause);
+
+    let burn_t = mission::start().t + 30.0 * DAY;
+    wait_until("горизонт", || {
+        sim.snapshot().vessels[0].computed_to > burn_t
+    });
+
+    let snapshot = sim.snapshot();
+    let vessel = &snapshot.vessels[0];
+    let restart = restart_at(&vessel.legs, vessel.start, burn_t);
+
+    let planner = Planner::spawn(sim.ephemeris(), mission::config()).expect("планувальник");
+
+    let ask = |id: u64| {
+        let mut plan = Plan::new();
+        plan.insert(Manoeuvre {
+            t: burn_t,
+            dv: [-(id as f64), 0.0, 0.0],
+            frame: Frame::Inertial,
+        });
+        planner.request(Request {
+            id,
+            vessel: VesselId(0),
+            from: restart.state,
+            step: restart.step,
+            plan,
+            params: None,
+            horizon_end: vessel.horizon_end,
+        });
+    };
+
+    ask(1);
+    std::thread::sleep(Duration::from_millis(5));
+    ask(2);
+
+    let mut last = None;
+    wait_until("прев'ю на другий запит", || {
+        if let Some(preview) = planner.latest() {
+            last = Some(preview);
+        }
+        last.as_ref().is_some_and(|p| p.id == 2)
+    });
+
+    assert_eq!(last.expect("щойно перевірили").id, 2);
+}

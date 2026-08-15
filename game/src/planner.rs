@@ -129,41 +129,76 @@ impl Drop for Planner {
     }
 }
 
+/// Чим скінчилася одна одиниця роботи.
+///
+/// Чотири стани, а не `Option`, рівно тому, що «скасовано» мусить **нести
+/// той запит, який скасував**: інакше він губиться, і губиться саме
+/// найновіший — див. [`Outcome::Cancelled`].
+enum Outcome {
+    /// Порахували.
+    Ready(Preview),
+    /// Прогін не почався (світ не побудувався). Відповіді не буде, але й
+    /// чекати нема на що — це не скасування.
+    Nothing,
+    /// Скасовано, і ось той запит, що скасував.
+    ///
+    /// Він повертається нагору, а не відкидається, і це не дрібниця:
+    /// перевірка каналу **виймає** повідомлення, тож відкинути його означало
+    /// б згубити рівно останній рух миші — той, після якого гравець і
+    /// дивиться на екран. Нитка тоді засинала б на `recv()` зі старим прев'ю
+    /// на екрані й чекала б запиту, який ніхто вже не пошле.
+    Cancelled(Request),
+    /// Канал запитів закрито — виходимо.
+    Gone,
+}
+
 fn run(
     eph: &Arc<Ephemeris>,
     cfg: PropConfig,
     requests: &Receiver<Request>,
     previews: &Sender<Preview>,
 ) {
-    while let Ok(first) = requests.recv() {
-        // Поки ми спали, могло прилетіти ще кілька. Актуальний — останній.
-        let mut request = first;
+    let Ok(first) = requests.recv() else {
+        return;
+    };
+    let mut pending = Some(first);
+
+    while let Some(request) = pending.take() {
+        // Поки ми рахували (або спали), могло прилетіти ще кілька.
+        // Актуальний — останній.
+        let mut request = request;
         while let Ok(newer) = requests.try_recv() {
             request = newer;
         }
 
-        if let Some(preview) = compute(eph, cfg, &request, requests) {
-            if previews.send(preview).is_err() {
-                return;
+        match compute(eph, cfg, &request, requests) {
+            Outcome::Ready(preview) => {
+                if previews.send(preview).is_err() {
+                    return;
+                }
+                pending = requests.recv().ok();
             }
+            Outcome::Nothing => pending = requests.recv().ok(),
+            // Далі рахуємо саме його, а не чекаємо наступного.
+            Outcome::Cancelled(newer) => pending = Some(newer),
+            Outcome::Gone => return,
         }
     }
 }
 
 /// Рахує прогноз, кидаючи роботу, щойно прилетів новіший запит.
-///
-/// `None` означає «скасовано» — і саме тому воно `Option`, а не порожній
-/// результат: порожнє прев'ю викликач намалював би.
 fn compute(
     eph: &Arc<Ephemeris>,
     cfg: PropConfig,
     request: &Request,
     requests: &Receiver<Request>,
-) -> Option<Preview> {
+) -> Outcome {
     // Звичайнісінький світ. Той самий код, той самий `step`, той самий
     // `PropConfig` — і саме тому результат бітово збігається з тим, що
     // порахує `Sim`.
-    let mut world = World::with_ephemeris(eph.clone(), cfg, request.from.t, 1.0).ok()?;
+    let Ok(mut world) = World::with_ephemeris(eph.clone(), cfg, request.from.t, 1.0) else {
+        return Outcome::Nothing;
+    };
     let vessel = world.add_planned_vessel(
         "preview",
         request.from,
@@ -176,8 +211,9 @@ fn compute(
     loop {
         match requests.try_recv() {
             // Новіший запит або зниклий канал — цей результат уже не
-            // потрібен.
-            Ok(_) | Err(TryRecvError::Disconnected) => return None,
+            // потрібен. Новіший іде нагору, а не в смітник.
+            Ok(newer) => return Outcome::Cancelled(newer),
+            Err(TryRecvError::Disconnected) => return Outcome::Gone,
             Err(TryRecvError::Empty) => {}
         }
 
@@ -189,7 +225,7 @@ fn compute(
     }
 
     let vessel = &world.vessels()[vessel.0 as usize];
-    Some(Preview {
+    Outcome::Ready(Preview {
         id: request.id,
         vessel: request.vessel,
         plan: request.plan.clone(),
