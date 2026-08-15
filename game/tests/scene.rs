@@ -18,13 +18,9 @@ use game::{mission, view};
 const SIZE: u32 = 256;
 
 fn gpu() -> Option<Gpu> {
-    match Gpu::new(wgpu::Instance::default(), None) {
-        Ok(gpu) => Some(gpu),
-        Err(_) => {
-            eprintln!("ПРОПУЩЕНО: немає адаптера wgpu (немає драйвера або GPU)");
-            None
-        }
-    }
+    // Спільний помічник рушія: він же вирішує, чи пропуск дозволений
+    // (`SPACE_SIM_REQUIRE_GPU`, U6c), і друкує назву адаптера в лог.
+    Gpu::for_tests()
 }
 
 /// Скільки пікселів не є фоном.

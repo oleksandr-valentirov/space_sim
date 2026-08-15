@@ -29,8 +29,7 @@ fn lit_pixels(shot: &engine::shot::Shot) -> u64 {
 
 #[test]
 fn both_frames_draw_visible_pixels() {
-    let Ok(gpu) = Gpu::new(wgpu::Instance::default(), None) else {
-        eprintln!("ПРОПУЩЕНО: немає адаптера wgpu");
+    let Some(gpu) = Gpu::for_tests() else {
         return;
     };
 

@@ -36,13 +36,9 @@ const PANEL: f32 = 128.0;
 const SLIDER: egui::Pos2 = egui::Pos2::new(60.0, 45.0);
 
 fn gpu() -> Option<Gpu> {
-    match Gpu::new(wgpu::Instance::default(), None) {
-        Ok(gpu) => Some(gpu),
-        Err(_) => {
-            eprintln!("ПРОПУЩЕНО: немає адаптера wgpu (немає драйвера або GPU)");
-            None
-        }
-    }
+    // Спільний помічник рушія: він же вирішує, чи пропуск дозволений
+    // (`SPACE_SIM_REQUIRE_GPU`, U6c), і друкує назву адаптера в лог.
+    Gpu::for_tests()
 }
 
 /// Що робить миша цього кадру.

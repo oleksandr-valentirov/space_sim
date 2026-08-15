@@ -29,15 +29,9 @@ const WIDE: u32 = 1280;
 const TALL: u32 = 720;
 
 fn gpu() -> Option<Gpu> {
-    // Пропуск гучний і названий — як у решті тестів рушія: мовчазний пропуск
-    // це зелений тест, який нічого не робить.
-    match Gpu::new(wgpu::Instance::default(), None) {
-        Ok(gpu) => Some(gpu),
-        Err(_) => {
-            eprintln!("ПРОПУЩЕНО: немає адаптера wgpu (немає драйвера або GPU)");
-            None
-        }
-    }
+    // Спільний помічник рушія: він же вирішує, чи пропуск дозволений
+    // (`SPACE_SIM_REQUIRE_GPU`, U6c), і друкує назву адаптера в лог.
+    Gpu::for_tests()
 }
 
 fn target(gpu: &Gpu, width: u32, height: u32) -> (wgpu::Texture, wgpu::TextureView) {

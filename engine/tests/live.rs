@@ -125,8 +125,7 @@ fn the_live_trajectory_draws_in_both_frames() {
 
     const SIZE: u32 = 256;
 
-    let Ok(gpu) = Gpu::new(wgpu::Instance::default(), None) else {
-        eprintln!("ПРОПУЩЕНО: немає адаптера wgpu");
+    let Some(gpu) = Gpu::for_tests() else {
         return;
     };
 

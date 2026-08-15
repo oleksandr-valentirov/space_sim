@@ -20,10 +20,7 @@ const STEPS: u32 = 12;
 const STEP_M: f64 = 0.1;
 
 fn shifts(relative: bool, distance: f64) -> Option<Vec<f64>> {
-    let Ok(gpu) = Gpu::new(wgpu::Instance::default(), None) else {
-        eprintln!("ПРОПУЩЕНО: немає адаптера wgpu");
-        return None;
-    };
+    let gpu = Gpu::for_tests()?;
 
     let steps = sweep_at(&gpu, SIZE, relative, STEPS, STEP_M, distance).expect("замір мав пройти");
 

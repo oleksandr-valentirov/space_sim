@@ -18,10 +18,7 @@ const SIZE: u32 = 128;
 const NEAR: f64 = 0.1;
 
 fn near_wins(reversed: bool, distance: f64, gap: f64) -> Option<f64> {
-    let Ok(gpu) = Gpu::new(wgpu::Instance::default(), None) else {
-        eprintln!("ПРОПУЩЕНО: немає адаптера wgpu");
-        return None;
-    };
+    let gpu = Gpu::for_tests()?;
 
     let measured = measure(
         &gpu,

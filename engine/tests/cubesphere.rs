@@ -455,8 +455,7 @@ fn the_cubesphere_draws_the_same_silhouette_as_the_uv_sphere() {
     const WIDTH: u32 = 1280;
     const HEIGHT: u32 = 720;
 
-    let Ok(gpu) = Gpu::new(wgpu::Instance::default(), None) else {
-        eprintln!("ПРОПУЩЕНО: немає адаптера wgpu");
+    let Some(gpu) = Gpu::for_tests() else {
         return;
     };
 

@@ -19,15 +19,9 @@ use engine::{flight_probe, sphere};
 const SIZE: u32 = 128;
 
 fn gpu() -> Option<Gpu> {
-    // На машині без жодного адаптера перевіряти нічого. Пропуск гучний і
-    // названий: мовчазний пропуск — це зелений тест, який нічого не робить.
-    match Gpu::new(wgpu::Instance::default(), None) {
-        Ok(gpu) => Some(gpu),
-        Err(_) => {
-            eprintln!("ПРОПУЩЕНО: немає адаптера wgpu (немає драйвера або GPU)");
-            None
-        }
-    }
+    // Спільний помічник рушія: він же вирішує, чи пропуск дозволений
+    // (`SPACE_SIM_REQUIRE_GPU`, U6c), і друкує назву адаптера в лог.
+    Gpu::for_tests()
 }
 
 fn coverage(shot: &Shot) -> f64 {

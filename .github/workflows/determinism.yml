@@ -293,6 +293,33 @@ jobs:
           RUSTUP_TOOLCHAIN: stable-x86_64-pc-windows-gnu
         run: cargo test --release -p core-sys -p core-rs
 
+      # Пікселеві тести на Windows, через WARP (ROADMAP-UI.md, U6c).
+      #
+      # Це те «окреме рішення», яке крок вище відкладав. Діра, яку воно
+      # закриває, дорога: `Gpu::for_tests` без адаптера друкує «ПРОПУЩЕНО» й
+      # повертає зелене, тож увесь пікселевий доказ (силует планети R1e,
+      # нерухомий Місяць U6a3, панелі U1c) на Windows не виконувався взагалі —
+      # а саме Windows колись спіймав UB, якого не бачила жодна інша
+      # платформа (K7b).
+      #
+      # WARP — програмний растеризатор D3D12, він є в системі за
+      # замовчуванням. `Gpu::new` бере його сам: апаратного адаптера на
+      # раннері немає, і другий запит іде з `force_fallback_adapter`.
+      #
+      # SPACE_SIM_REQUIRE_GPU перетворює пропуск на помилку: без цього крок
+      # був би зеленим і тоді, коли WARP не знайшовся, тобто перевіряв би
+      # рівно нічого. Назву адаптера кожен тест друкує в лог — саме за нею
+      # видно, що це WARP, а не щось інше.
+      - name: GPU tests (WARP)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CC: ${{ matrix.cc }}
+          RUSTUP_TOOLCHAIN: stable-x86_64-pc-windows-gnu
+          WGPU_BACKEND: dx12
+          SPACE_SIM_REQUIRE_GPU: '1'
+        run: cargo test -p engine -p game -- --nocapture
+
       - name: Clippy
         if: matrix.name == 'linux-gcc'
         env:
