@@ -62,6 +62,15 @@ impl Gpu {
         // бракує, а нижча планка означає, що перша картинка запуститься
         // й там, де слабший бекенд. Піднімати — коли впремося.
         let mut limits = wgpu::Limits::downlevel_defaults();
+        // Відбір у compute (R6b) читає п'ять storage-буферів: кандидати,
+        // конуси, початки, вижилі й аргументи indirect. Downlevel дає чотири,
+        // тож планка піднімається — це і є те «коли впремося», про яке
+        // говорить коментар нижче. Просимо мінімум із того, що є в адаптера, і
+        // того, що треба: більше не потрібно, менше не працює.
+        limits.max_storage_buffers_per_shader_stage = limits
+            .max_storage_buffers_per_shader_stage
+            .max(6)
+            .min(adapter.limits().max_storage_buffers_per_shader_stage);
         if bindless {
             // Впираємось саме сюди, і число не з голови: тайлсет Місяця з
             // п'ятьма рівнями піраміди — 2046 тайлів (R5b).

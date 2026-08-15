@@ -100,3 +100,121 @@ fn the_shader_and_the_code_agree_on_the_patch_size() {
          cubesphere::SIDE, і кадр малюватиме інші трикутники"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Відбір у compute (R6b)
+
+use engine::camera::Camera;
+use engine::cull;
+use engine::frame::{Frame, FOV_Y};
+use engine::gpu::Gpu;
+use engine::lod;
+use engine::scene::{Body, Scene, TileSet};
+use engine::shot;
+
+const SIZE: u32 = 256;
+const EARTH_RADIUS_M: f64 = 6_371_000.0;
+
+/// **Оракул, заради якого R3 робився на CPU.**
+///
+/// Кількість патчів, яку намалював GPU, мусить збігтися з тією, яку відібрав
+/// CPU, — на тих самих вісьмох камерах, що в R2c. Два незалежні шляхи, одне
+/// число. Без цього помилка GPU-відбору виглядає як «десь щось не
+/// намалювалось» і шукається очима.
+///
+/// Збіг вимагається **точний**, і це не самовпевненість: обидва шляхи рахують
+/// ту саму формулу, а різниця арифметики (`f64` на CPU проти `f32` на GPU)
+/// може зіграти лише на патчі, який стоїть рівно на межі відбору. План кроку
+/// назвав цю розвилку наперед: якщо збіг не досягається, звужувати треба
+/// твердження, а не допуск. Виміряно — звужувати не довелося.
+#[test]
+fn the_gpu_draws_exactly_as_many_patches_as_the_cpu_kept() {
+    let Some(gpu) = Gpu::for_tests() else { return };
+
+    let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("cull shot"),
+        size: wgpu::Extent3d {
+            width: SIZE,
+            height: SIZE,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: shot::FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut frame = Frame::new(&gpu, shot::FORMAT);
+
+    let focal = lod::focal_px(FOV_Y, f64::from(SIZE));
+    let aspect = 1.0;
+    let mut checked = 0;
+
+    for &x in &[-1.0f64, 1.0] {
+        for &y in &[-1.0f64, 1.0] {
+            for &z in &[-1.0f64, 1.0] {
+                for altitude in [1.0e5, 3.0e5, 4.0e6] {
+                    let length = (x * x + y * y + z * z).sqrt();
+                    let distance = EARTH_RADIUS_M + altitude;
+                    let eye = [
+                        x / length * distance,
+                        y / length * distance,
+                        z / length * distance,
+                    ];
+                    let camera = Camera::look_at(eye, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
+
+                    // Шлях CPU: той самий вибір рівня, той самий відбір.
+                    let body = lod::Body::still([0.0, 0.0, 0.0], EARTH_RADIUS_M);
+                    let selection = lod::select(&body, &camera, focal);
+                    let occluder =
+                        cull::Body::smooth([0.0, 0.0, 0.0], EARTH_RADIUS_M, body.rotation);
+                    let mut visibility = cull::horizon(&selection, &occluder, &camera);
+                    cull::frustum(
+                        &mut visibility,
+                        &selection,
+                        &occluder,
+                        &camera,
+                        FOV_Y,
+                        aspect,
+                    );
+
+                    // Шлях GPU: намалювати кадр і спитати лічильник indirect.
+                    let mut scene =
+                        Scene::new(Camera::look_at(eye, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]));
+                    scene.bodies.push(Body {
+                        centre: [0.0, 0.0, 0.0],
+                        radius_m: EARTH_RADIUS_M,
+                        orientation: [1.0, 0.0, 0.0, 0.0],
+                        tiles: TileSet::Smooth,
+                    });
+                    let mut encoder =
+                        gpu.device
+                            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                label: Some("cull"),
+                            });
+                    frame.draw(&gpu, &mut encoder, &view, SIZE, SIZE, &scene);
+                    gpu.queue.submit([encoder.finish()]);
+
+                    let drawn = frame
+                        .drawn_patches(&gpu)
+                        .expect("лічильник мав прочитатися");
+
+                    assert_eq!(
+                        drawn[0] as usize,
+                        visibility.drawn(),
+                        "напрямок ({x}, {y}, {z}), висота {altitude:.1e} м: GPU \
+                         намалював {} патчів, CPU лишив {} з {}",
+                        drawn[0],
+                        visibility.drawn(),
+                        selection.patches.len()
+                    );
+                    checked += 1;
+                }
+            }
+        }
+    }
+
+    println!("  {checked} камер: GPU і CPU відібрали порівну на кожній");
+}

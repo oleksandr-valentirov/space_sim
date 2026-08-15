@@ -51,6 +51,9 @@ pub const CLEAR_BYTES: [u8; 3] = [5, 8, 20];
 /// `scripts/build_shaders.sh` і комітиться (ROADMAP F2).
 const PATCH_WGSL: &str = include_str!("../shaders/patch.wgsl");
 
+/// Відбір патчів у compute (ROADMAP-PLANETS.md, R6b).
+const CULL_WGSL: &str = include_str!("../shaders/cull.wgsl");
+
 /// Те саме для ламаних (ROADMAP J1).
 const LINE_WGSL: &str = include_str!("../shaders/line.wgsl");
 
@@ -386,6 +389,47 @@ impl Frame {
         Ok(scene::TerrainId(self.planet.terrains.len() - 1))
     }
 
+    /// Скільки патчів GPU справді намалював для кожного тіла останнього кадру
+    /// (ROADMAP-PLANETS.md, R6b).
+    ///
+    /// Існує заради оракула, і це не приховується: R3 робив відбір на CPU не
+    /// тому, що так простіше, а щоб R6b мав із чим звірити своє число. Читати
+    /// це в кадрі не можна — тут `poll(Wait)`, тобто повна зупинка конвеєра.
+    pub fn drawn_patches(&self, gpu: &Gpu) -> Result<Vec<u32>, String> {
+        let mut out = Vec::with_capacity(self.planet.bodies.len());
+        for body in &self.planet.bodies {
+            let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("indirect readback"),
+                size: 16,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut encoder = gpu
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("indirect readback"),
+                });
+            encoder.copy_buffer_to_buffer(&body.indirect_buffer, 0, &staging, 0, 16);
+            gpu.queue.submit([encoder.finish()]);
+
+            let slice = staging.slice(..);
+            slice.map_async(wgpu::MapMode::Read, |_| {});
+            gpu.device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: None,
+                })
+                .map_err(|e| format!("не дочекалися GPU: {e}"))?;
+            let data = slice
+                .get_mapped_range()
+                .map_err(|e| format!("буфер не відобразився: {e}"))?;
+            out.push(u32::from_le_bytes(data[4..8].try_into().unwrap()));
+            drop(data);
+            staging.unmap();
+        }
+        Ok(out)
+    }
+
     /// Ближня площина під поточну висоту камери.
     ///
     /// Не стала: камера рухається від поверхні до орбіти, а F5 показав, що
@@ -493,6 +537,11 @@ impl Frame {
         // поворот у double, звуження до f32 останнім кроком. Інакше
         // траєкторія за 4·10⁸ м від камери тремтіла б, а сфера поруч — ні.
         self.lines.upload(gpu, scene, &self.passes);
+
+        // Відбір — до проходів кадру, окремим compute-проходом (R6b). Бар'єри
+        // між ним і читанням `indirect` розставляє wgpu сам: він бачить, що
+        // той самий буфер щойно писали.
+        self.planet.cull(encoder);
 
         let depth = self.depth.as_ref().expect("ensure_depth щойно її створив");
 
@@ -661,6 +710,10 @@ struct Planet {
     terrain: Option<wgpu::RenderPipeline>,
     bind_layout: wgpu::BindGroupLayout,
     tile_layout: Option<wgpu::BindGroupLayout>,
+    /// Відбір у compute (R6b): та сама арифметика, що в `crate::cull`, але
+    /// на тих даних, які вже лежать на GPU.
+    cull_pipeline: wgpu::ComputePipeline,
+    cull_layout: wgpu::BindGroupLayout,
     /// Група висот для тіла **без** рельєфу.
     ///
     /// Обидва пайплайни ділять один макет, тож група 1 мусить бути
@@ -680,21 +733,9 @@ struct Planet {
     /// за обрієм), а перестворювати буфери щокадру означало б платити за це
     /// щокадру.
     bodies: Vec<BodySlot>,
-    /// Скільки інстансів у кожного тіла цього кадру.
-    drawn: Vec<Drawn>,
 
     /// Набори цього кадру — поле, а не змінна, щоб не виділяти вектор щокадру.
     selections: Vec<lod::Selection>,
-}
-
-/// Скільки інстансів малює кожне тіло цього кадру.
-///
-/// Із R6a виклик малювання один **на тіло**, а не на патч: усі його патчі
-/// їдуть інстансами одного `draw`. Один виклик на всі тіла разом зробила б
-/// лише індексація uniform-ів за інстансом, і це вже R6b з indirect.
-#[derive(Clone, Copy, Default)]
-struct Drawn {
-    instances: u32,
 }
 
 /// Завантажений рельєф: по текстурі на тайл плюс сам тайлсет.
@@ -720,8 +761,15 @@ struct TerrainSlot {
 struct BodySlot {
     uniform_buffer: wgpu::Buffer,
     origin_buffer: wgpu::Buffer,
-    /// Що малює кожен інстанс: слот кеша й маска зшивання.
-    draw_buffer: wgpu::Buffer,
+    /// Кандидати на малювання: увесь вибраний набір, до відбору.
+    candidate_buffer: wgpu::Buffer,
+    /// Параметри відбору на цей кадр.
+    cull_uniform: wgpu::Buffer,
+    /// Аргументи `draw_indirect`; друге слово — лічильник вижилих.
+    indirect_buffer: wgpu::Buffer,
+    cull_bind_group: wgpu::BindGroup,
+    /// Скільки кандидатів подано цього кадру — стільки треба груп compute.
+    candidates: u32,
     bind_group: wgpu::BindGroup,
     /// Який рельєф зараз прив'язаний до цього слота.
     ///
@@ -740,6 +788,16 @@ const PATCH_INDICES: usize = cubesphere::SIDE * cubesphere::SIDE * 6;
 
 /// Скільки байтів займає `PatchVertex` у std430: два `vec3` з вирівнюванням 16.
 const VERTEX_BYTES: u64 = 32;
+
+/// Скільки байтів займає `Cone` у std430.
+const CONE_BYTES: u64 = 32;
+
+/// Скільки байтів займає `CullParams`: сім `vec4`.
+const CULL_BYTES: u64 = 112;
+
+/// Скільки патчів обробляє одна група compute — те саме число, що в
+/// `[numthreads(64, 1, 1)]` у `shaders/cull.slang`.
+const CULL_GROUP: u32 = 64;
 /// З чого починається місткість кеша — далі вона тільки росте.
 const MIN_PATCHES: usize = 64;
 
@@ -786,6 +844,13 @@ struct PatchCache {
     /// підміну арифметикою, і шістнадцять індексних наборів разом із викликом
     /// малювання на патч зникають обидва.
     vertex_buffer: wgpu::Buffer,
+    /// Конус кожного патча в системі **тіла** — те, з чого compute рахує
+    /// відбір за лімбом (R6b).
+    ///
+    /// За слотом кеша, а не за позицією в наборі: конус не залежить ні від
+    /// камери, ні від тіла, тож рахується раз при заселенні слота — там же,
+    /// де й геометрія.
+    cone_buffer: wgpu::Buffer,
 }
 
 impl PatchCache {
@@ -803,6 +868,12 @@ impl PatchCache {
             vertex_buffer: gpu.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("patch vertices"),
                 size: vertices * VERTEX_BYTES,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            cone_buffer: gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("patch cones"),
+                size: capacity as u64 * CONE_BYTES,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
@@ -849,6 +920,19 @@ impl PatchCache {
             bytes.extend_from_slice(&0.0f32.to_le_bytes());
         }
         gpu.queue.write_buffer(&self.vertex_buffer, base, &bytes);
+
+        // Конус — розкладка `Cone` у std430: `vec3` з вирівнюванням 16, потім
+        // два `float`, з яких другий знову вирівняний на 16.
+        let cone = patch.cone();
+        let mut cone_bytes = Vec::with_capacity(CONE_BYTES as usize);
+        for value in cone.axis {
+            cone_bytes.extend_from_slice(&(value as f32).to_le_bytes());
+        }
+        cone_bytes.extend_from_slice(&(cone.cos_half as f32).to_le_bytes());
+        cone_bytes.extend_from_slice(&(cone.sin_half as f32).to_le_bytes());
+        cone_bytes.resize(CONE_BYTES as usize, 0);
+        gpu.queue
+            .write_buffer(&self.cone_buffer, slot as u64 * CONE_BYTES, &cone_bytes);
 
         self.resident[slot] = Some(patch);
         self.origins[slot] = mesh.origin;
@@ -994,6 +1078,63 @@ impl Planet {
                 })
         };
 
+        let cull_module = gpu
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("cull"),
+                source: wgpu::ShaderSource::Wgsl(CULL_WGSL.into()),
+            });
+
+        let storage = |binding: u32, read_only: bool| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let cull_layout = gpu
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("cull"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    storage(1, true),
+                    storage(2, true),
+                    storage(3, true),
+                    storage(4, false),
+                    storage(5, false),
+                ],
+            });
+        let cull_pipeline_layout =
+            gpu.device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("cull"),
+                    bind_group_layouts: &[Some(&cull_layout)],
+                    immediate_size: 0,
+                });
+        let cull_pipeline = gpu
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("cull"),
+                layout: Some(&cull_pipeline_layout),
+                module: &cull_module,
+                entry_point: Some("cull_main"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+
         let no_tiles = tile_layout.as_ref().map(|layout| {
             let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("no terrain"),
@@ -1031,10 +1172,11 @@ impl Planet {
             terrains: Vec::new(),
             bind_layout,
             tile_layout,
+            cull_pipeline,
+            cull_layout,
             no_tiles,
             cache: PatchCache::new(gpu, MIN_PATCHES),
             bodies: Vec::new(),
-            drawn: Vec::new(),
             selections: Vec::new(),
         }
     }
@@ -1058,13 +1200,73 @@ impl Planet {
             mapped_at_creation: false,
         });
 
+        // Список того, що справді малюється: його пише compute, а читає
+        // вершинна стадія. Полем структури він не стає — обидві bind-групи
+        // тримають його самі, а поле, якого ніхто не читає, гірше за свою
+        // відсутність (CLAUDE.md).
+        //
         // По вісім байтів на інстанс, і інстансів не більше за місткість
         // кеша: патч, якого немає в кеші, намалювати нема з чого.
         let draw_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("patch draws"),
             size: (self.cache.capacity * 8) as u64,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        let candidate_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("patch candidates"),
+            size: (self.cache.capacity * 8) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
+        });
+        let cull_uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("cull params"),
+            size: CULL_BYTES,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        // `COPY_SRC` тут не для кадру, а для перевірки: R6b звіряє кількість
+        // намальованих патчів із CPU-відбором, і прочитати її можна лише
+        // звідси (`Frame::drawn_patches`).
+        let indirect_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("patch indirect"),
+            size: 16,
+            usage: wgpu::BufferUsages::INDIRECT
+                | wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        let cull_bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("cull"),
+            layout: &self.cull_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: cull_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: candidate_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.cache.cone_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: origin_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: draw_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: indirect_buffer.as_entire_binding(),
+                },
+            ],
         });
 
         let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1097,7 +1299,11 @@ impl Planet {
         BodySlot {
             uniform_buffer,
             origin_buffer,
-            draw_buffer,
+            candidate_buffer,
+            cull_uniform,
+            indirect_buffer,
+            cull_bind_group,
+            candidates: 0,
             bind_group,
             terrain: None,
         }
@@ -1177,8 +1383,6 @@ impl Planet {
         // раз, а не на тіло й не на прохід.
         let view_rotation = camera.view_rotation();
 
-        self.drawn.clear();
-        self.drawn.resize(scene.bodies.len(), Drawn::default());
         let mut origin_bytes: Vec<u8> = Vec::with_capacity(self.cache.capacity * 16);
         let mut draw_bytes: Vec<u8> = Vec::with_capacity(self.cache.capacity * 8);
 
@@ -1186,34 +1390,92 @@ impl Planet {
             let rotation = rotation(body.orientation);
             let selection = &self.selections[index];
 
-            // Горизонт (R3a): половина планети завжди за лімбом, і саме
-            // тому відбір починається з нього, а не з frustum. Набір
-            // будується цілим — маски зшивання рахуються з нього, — а
-            // сюди доходить лише те, що малюється.
-            let occluder = cull::Body::smooth(body.centre, body.radius_m, rotation);
-            let mut visibility = cull::horizon(selection, &occluder, camera);
-            // Frustum — другим, і саме тому, що дорожчий: питати про межі
-            // кадру в патча, якого вже немає за лімбом, нема сенсу (R3b).
-            cull::frustum(&mut visibility, selection, &occluder, camera, FOV_Y, aspect);
+            // **Відбір переїхав у compute (R6b).** Сюди подається весь
+            // вибраний набір; що з нього намалювати, вирішує GPU. CPU-шлях
+            // (`crate::cull`) лишається — але як другий незалежний шлях до
+            // того самого числа, тобто як оракул, а не як робота кадру.
             draw_bytes.clear();
-            for ((patch, &mask), &visible) in selection
-                .patches
-                .iter()
-                .zip(&selection.masks)
-                .zip(&visibility.visible)
-            {
-                if !visible {
-                    continue;
-                }
+            for (patch, &mask) in selection.patches.iter().zip(&selection.masks) {
                 let slot = self.cache.intern(gpu, *patch);
                 draw_bytes.extend_from_slice(&slot.to_le_bytes());
                 draw_bytes.extend_from_slice(&u32::from(mask).to_le_bytes());
             }
-            self.drawn[index].instances = (draw_bytes.len() / 8) as u32;
+            let candidates = (draw_bytes.len() / 8) as u32;
+            self.bodies[index].candidates = candidates;
             if !draw_bytes.is_empty() {
                 gpu.queue
-                    .write_buffer(&self.bodies[index].draw_buffer, 0, &draw_bytes);
+                    .write_buffer(&self.bodies[index].candidate_buffer, 0, &draw_bytes);
             }
+
+            // Параметри відбору: те саме, що рахує `cull::horizon` і
+            // `cull::frustum`, лише один раз на тіло замість разу на патч.
+            let in_body = lod::Body {
+                rotation,
+                ..lod::Body::still(body.centre, body.radius_m)
+            };
+            let to_eye = {
+                let d = in_body.eye_in_body(eye);
+                let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1.0);
+                [d[0] / n, d[1] / n, d[2] / n]
+            };
+            let distance = {
+                let d = [
+                    eye[0] - body.centre[0],
+                    eye[1] - body.centre[1],
+                    eye[2] - body.centre[2],
+                ];
+                (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+            };
+            let limb = cull::limb_cos(
+                &cull::Body::smooth(body.centre, body.radius_m, rotation),
+                distance,
+            );
+
+            let t = (FOV_Y / 2.0).tan();
+            let (tx, ty) = (aspect * t, t);
+            let mut vectors: Vec<[f32; 4]> = Vec::with_capacity(5);
+            vectors.push([
+                to_eye[0] as f32,
+                to_eye[1] as f32,
+                to_eye[2] as f32,
+                limb as f32,
+            ]);
+            // Рядки повороту вигляду: `view_rotation` лежить стовпцями, тож
+            // рядок — це однойменні компоненти трьох перших стовпців.
+            let [right, up, back, _] = view_rotation;
+            for row in [0, 1, 2] {
+                vectors.push([right[row], up[row], back[row], 0.0]);
+            }
+            vectors.push([
+                tx as f32,
+                ty as f32,
+                (1.0 / (1.0 + tx * tx).sqrt()) as f32,
+                (1.0 / (1.0 + ty * ty).sqrt()) as f32,
+            ]);
+
+            let mut cull_bytes: Vec<u8> = Vec::with_capacity(CULL_BYTES as usize);
+            for vector in &vectors {
+                for value in vector {
+                    cull_bytes.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+            for value in [candidates, 0, 0, 0] {
+                cull_bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            for value in [body.radius_m as f32, 0.0, 0.0, 0.0] {
+                cull_bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            gpu.queue
+                .write_buffer(&self.bodies[index].cull_uniform, 0, &cull_bytes);
+
+            // Аргументи indirect: скільки вершин у патчі, і нуль інстансів —
+            // лічильник, який compute нарощує атомарно.
+            let mut args = Vec::with_capacity(16);
+            for value in [PATCH_INDICES as u32, 0, 0, 0] {
+                args.extend_from_slice(&value.to_le_bytes());
+            }
+            gpu.queue
+                .write_buffer(&self.bodies[index].indirect_buffer, 0, &args);
 
             // Рельєф тіла, якщо він є: множник висоти й таблиця тайлів.
             let wanted = match body.tiles {
@@ -1274,14 +1536,30 @@ impl Planet {
         }
     }
 
+    /// Відбір у compute: по групі на 64 кандидати, на тіло.
+    fn cull(&self, encoder: &mut wgpu::CommandEncoder) {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("cull"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&self.cull_pipeline);
+        for body in &self.bodies {
+            if body.candidates == 0 {
+                continue;
+            }
+            pass.set_bind_group(0, &body.cull_bind_group, &[]);
+            pass.dispatch_workgroups(body.candidates.div_ceil(CULL_GROUP), 1, 1);
+        }
+    }
+
     fn draw(&self, pass: &mut wgpu::RenderPass<'_>, index: usize) {
         let offset = (index as u64 * PASS_STRIDE) as u32;
 
         // Виклик на **тіло**, а не на патч (R6a). Вершинних буферів немає
         // взагалі: геометрія, початки й список того, що малюється, приходять
         // storage-буферами, а номер вершини й номер інстансу дає конвеєр.
-        for (body, drawn) in self.bodies.iter().zip(&self.drawn) {
-            if drawn.instances == 0 {
+        for body in &self.bodies {
+            if body.candidates == 0 {
                 continue;
             }
             pass.set_pipeline(match (&self.terrain, body.terrain) {
@@ -1297,7 +1575,8 @@ impl Planet {
                     }
                 }
             }
-            pass.draw(0..PATCH_INDICES as u32, 0..drawn.instances);
+            // Скільки інстансів — знає лише GPU: лічильник наростив compute.
+            pass.draw_indirect(&body.indirect_buffer, 0);
         }
     }
 }
