@@ -69,16 +69,86 @@ StructuredBuffer<PatchData> patches;
 [[vk::binding(0, 1)]]
 Texture2D<int> tiles[];
 
+// Геометрія патча: зсув вершини й нормаль, обидва на ОДИНИЧНІЙ сфері.
+//
+// Storage-буфер, а не вершинні атрибути (R6a). Причина одна й вона вся тут:
+// зшивання рівнів — це підміна ІНДЕКСУ вузла, а вершинні атрибути приходять
+// уже вибраними, тож підміну доводилось робити індексним буфером, тобто мати
+// шістнадцять наборів і виклик малювання на патч. Читаючи вузол самотужки,
+// шейдер робить ту саму підміну арифметикою — і патчі зливаються в один
+// виклик з інстансами.
+struct PatchVertex
+{
+    float3 offset;
+    float3 normal;
+};
+
+StructuredBuffer<PatchVertex> vertices;
+
+// Що малює цей інстанс: слот геометрії в кеші й маска зшивання.
+struct PatchDraw
+{
+    uint slot;
+    uint mask;
+};
+
+StructuredBuffer<PatchDraw> draws;
+
+// Сітка патча. Мусить збігатися з `cubesphere::SIDE`; звіряє це тест
+// `engine::tests::gpu_driven`, бо константа тут і константа там — два місця.
+static const uint SIDE = 32;
+static const uint NODES = SIDE + 1;
+
 struct VertexInput
 {
-    float3 offset : POSITION;
-    float3 normal : NORMAL;
-    uint patch : PATCH;
-    // Вузол сітки, спакований як `a | (b << 16)`. Потрібен лише рельєфу:
-    // це адреса в тайлі, і взяти її з `SV_VertexID` не можна, бо
-    // `base_vertex` зсуває нумерацію на слот кеша.
-    uint node : NODE;
+    uint vertex : SV_VertexID;
+    uint instance : SV_InstanceID;
 };
+
+// Розкладений вузол: адреса в тайлі й індекс у буфері геометрії.
+struct Node
+{
+    uint2 grid;   // (a, b) після підміни зшивання
+    uint index;   // зміщення в буфері геометрії
+};
+
+// Вузол за номером вершини в списку трикутників патча.
+//
+// Порядок відтворює `cubesphere::indices` буквально: клітинка `(a, b)` з `a`
+// зовнішнім циклом, два трикутники `v00 v10 v01` і `v01 v10 v11`. Розійтися
+// їм не можна — тест звіряє кадр із тим, що малював індексний буфер, бітово.
+Node node_of(uint vertex, uint slot, uint mask)
+{
+    uint triangle = vertex / 3u;
+    uint corner = vertex % 3u;
+    uint cell = triangle / 2u;
+    uint half = triangle % 2u;
+
+    uint a = cell / SIDE;
+    uint b = cell % SIDE;
+
+    // (da, db) кутів обох трикутників клітинки.
+    uint2 first[3] = { uint2(0, 0), uint2(1, 0), uint2(0, 1) };
+    uint2 second[3] = { uint2(0, 1), uint2(1, 0), uint2(1, 1) };
+    uint2 step = half == 0u ? first[corner] : second[corner];
+    a += step.x;
+    b += step.y;
+
+    // Зшивання: на ребрі з грубішим сусідом непарний вузол не існує, і всюди,
+    // де він згаданий, стоїть попередній парний. Та сама підміна, що в
+    // `cubesphere::indices`, і саме тому вона мусить бути тут дослівно.
+    bool odd_on_b = (a % 2u == 1u)
+        && ((b == 0u && (mask & 4u) != 0u) || (b == SIDE && (mask & 8u) != 0u));
+    bool odd_on_a = (b % 2u == 1u)
+        && ((a == 0u && (mask & 1u) != 0u) || (a == SIDE && (mask & 2u) != 0u));
+    if (odd_on_b) { a -= 1u; }
+    if (odd_on_a) { b -= 1u; }
+
+    Node out;
+    out.grid = uint2(a, b);
+    out.index = slot * NODES * NODES + a * NODES + b;
+    return out;
+}
 
 struct VertexOutput
 {
@@ -90,43 +160,46 @@ struct VertexOutput
 };
 
 // Спільна частина: зсув вершини всередині патча, вже повернутий і масштабований.
-float3 place(VertexInput input, float3 offset)
+VertexOutput place(uint slot, PatchVertex vertex, float3 offset)
 {
-    float3 origin = patches[input.patch].origin;
-    return origin + mul(uniforms.model, float4(offset, 0.0)).xyz;
+    float3 origin = patches[slot].origin;
+    float3 world = origin + mul(uniforms.model, float4(offset, 0.0)).xyz;
+
+    VertexOutput output;
+    output.position = mul(uniforms.projection, float4(world, 1.0));
+    // Той самий поворот, що й для зсуву: нормаль, повернута інакше, ніж
+    // геометрія, дає освітлення чужого тіла. Радіус у матриці нормаль лише
+    // подовжує — `normalize` у фрагменті його прибирає.
+    output.normal = mul(uniforms.model, float4(vertex.normal, 0.0)).xyz;
+    output.world = world;
+    return output;
 }
 
 [shader("vertex")]
 VertexOutput vertex_smooth(VertexInput input)
 {
-    VertexOutput output;
-    float3 world = place(input, input.offset);
-    output.position = mul(uniforms.projection, float4(world, 1.0));
-    // Той самий поворот, що й для зсуву: нормаль, повернута інакше, ніж
-    // геометрія, дає освітлення чужого тіла. Радіус у матриці нормаль лише
-    // подовжує — `normalize` у фрагменті його прибирає.
-    output.normal = mul(uniforms.model, float4(input.normal, 0.0)).xyz;
-    output.world = world;
-    return output;
+    PatchDraw draw = draws[input.instance];
+    Node node = node_of(input.vertex, draw.slot, draw.mask);
+    PatchVertex vertex = vertices[node.index];
+    return place(draw.slot, vertex, vertex.offset);
 }
 
 [shader("vertex")]
 VertexOutput vertex_terrain(VertexInput input)
 {
-    int2 node = int2(int(input.node & 0xffffu), int(input.node >> 16));
-    int height = tiles[patches[input.patch].tile].Load(int3(node, 0)).x;
+    PatchDraw draw = draws[input.instance];
+    Node node = node_of(input.vertex, draw.slot, draw.mask);
+    PatchVertex vertex = vertices[node.index];
+
+    // Тайл лежить вузол у вузол із сіткою патча, і `a` в ньому — рядок.
+    int height = tiles[patches[draw.slot].tile]
+        .Load(int3(int(node.grid.y), int(node.grid.x), 0)).x;
 
     // Висота зсуває вершину вздовж нормалі патча — на ОДИНИЧНІЙ сфері, бо
     // радіус і поворот застосовує та сама матриця, що й до самого зсуву.
     // Множник `terrain.x` і є `scale_m / radius_m`.
-    float3 offset = input.offset + input.normal * (float(height) * uniforms.terrain.x);
-
-    VertexOutput output;
-    float3 world = place(input, offset);
-    output.position = mul(uniforms.projection, float4(world, 1.0));
-    output.normal = mul(uniforms.model, float4(input.normal, 0.0)).xyz;
-    output.world = world;
-    return output;
+    float3 offset = vertex.offset + vertex.normal * (float(height) * uniforms.terrain.x);
+    return place(draw.slot, vertex, offset);
 }
 
 float3 shade(float3 normal)

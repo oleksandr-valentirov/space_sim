@@ -674,28 +674,27 @@ struct Planet {
     terrains: Vec<TerrainSlot>,
 
     cache: PatchCache,
-    /// Усі шістнадцять наборів індексів підряд: набір `m` починається з
-    /// `m · PATCH_INDICES`.
-    index_buffer: wgpu::Buffer,
 
     /// По слоту на тіло сцени. Ростуть за потребою й не спадають — та сама
     /// причина, що в [`Lines`]: тіла в кадрі з'являються й зникають (Місяць
     /// за обрієм), а перестворювати буфери щокадру означало б платити за це
     /// щокадру.
     bodies: Vec<BodySlot>,
-    /// Що малювати цього кадру, у порядку тіл.
-    draws: Vec<Draw>,
+    /// Скільки інстансів у кожного тіла цього кадру.
+    drawn: Vec<Drawn>,
 
     /// Набори цього кадру — поле, а не змінна, щоб не виділяти вектор щокадру.
     selections: Vec<lod::Selection>,
 }
 
-/// Один виклик малювання: чиє тіло, який слот кеша, який набір індексів.
-#[derive(Clone, Copy)]
-struct Draw {
-    body: usize,
-    slot: u32,
-    mask: cubesphere::EdgeMask,
+/// Скільки інстансів малює кожне тіло цього кадру.
+///
+/// Із R6a виклик малювання один **на тіло**, а не на патч: усі його патчі
+/// їдуть інстансами одного `draw`. Один виклик на всі тіла разом зробила б
+/// лише індексація uniform-ів за інстансом, і це вже R6b з indirect.
+#[derive(Clone, Copy, Default)]
+struct Drawn {
+    instances: u32,
 }
 
 /// Завантажений рельєф: по текстурі на тайл плюс сам тайлсет.
@@ -721,6 +720,8 @@ struct TerrainSlot {
 struct BodySlot {
     uniform_buffer: wgpu::Buffer,
     origin_buffer: wgpu::Buffer,
+    /// Що малює кожен інстанс: слот кеша й маска зшивання.
+    draw_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     /// Який рельєф зараз прив'язаний до цього слота.
     ///
@@ -733,8 +734,12 @@ struct BodySlot {
 
 /// Скільки вершин у сітці одного патча.
 const PATCH_VERTICES: usize = (cubesphere::SIDE + 1) * (cubesphere::SIDE + 1);
-/// Скільки індексів в одному наборі.
+/// Скільки вершин у списку трикутників патча — по три на трикутник, по два
+/// трикутники на клітинку.
 const PATCH_INDICES: usize = cubesphere::SIDE * cubesphere::SIDE * 6;
+
+/// Скільки байтів займає `PatchVertex` у std430: два `vec3` з вирівнюванням 16.
+const VERTEX_BYTES: u64 = 32;
 /// З чого починається місткість кеша — далі вона тільки росте.
 const MIN_PATCHES: usize = 64;
 
@@ -774,31 +779,18 @@ struct PatchCache {
     cursor: usize,
     frame: u64,
 
-    offset_buffer: wgpu::Buffer,
-    normal_buffer: wgpu::Buffer,
-    /// Номер слота, повторений на кожну вершину: саме ним шейдер адресує
-    /// storage-буфер початків.
-    slot_buffer: wgpu::Buffer,
-    /// Вузол сітки, спакований як `a | (b << 16)` — адреса в тайлі рельєфу.
+    /// Зсуви й нормалі всіх патчів кеша одним **storage**-буфером (R6a).
     ///
-    /// Окремим буфером, а не бітами в номері слота: місткість кеша росте
-    /// подвоєннями й не має стелі, тож ділити з нею 32 біти означало б
-    /// поставити стелю там, де її немає. Чотири байти на вершину — ціна,
-    /// яку видно, на відміну від тієї стелі.
-    node_buffer: wgpu::Buffer,
+    /// Не вершинними атрибутами: зшивання рівнів — це підміна індексу вузла,
+    /// а атрибути приходять уже вибраними. Читаючи вузол сам, шейдер робить
+    /// підміну арифметикою, і шістнадцять індексних наборів разом із викликом
+    /// малювання на патч зникають обидва.
+    vertex_buffer: wgpu::Buffer,
 }
 
 impl PatchCache {
     fn new(gpu: &Gpu, capacity: usize) -> PatchCache {
         let vertices = (capacity * PATCH_VERTICES) as u64;
-        let buffer = |label: &str, stride: u64| {
-            gpu.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size: vertices * stride,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            })
-        };
 
         PatchCache {
             capacity,
@@ -808,10 +800,12 @@ impl PatchCache {
             origins: vec![[0.0; 3]; capacity],
             cursor: 0,
             frame: 0,
-            offset_buffer: buffer("patch offsets", 12),
-            normal_buffer: buffer("patch normals", 12),
-            slot_buffer: buffer("patch slots", 4),
-            node_buffer: buffer("patch nodes", 4),
+            vertex_buffer: gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("patch vertices"),
+                size: vertices * VERTEX_BYTES,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
         }
     }
 
@@ -837,38 +831,24 @@ impl PatchCache {
         }
 
         let mesh = patch.mesh(1.0);
-        let base = (slot * PATCH_VERTICES) as u64;
+        let base = (slot * PATCH_VERTICES) as u64 * VERTEX_BYTES;
 
-        let mut offsets = Vec::with_capacity(PATCH_VERTICES * 12);
-        let mut normals = Vec::with_capacity(PATCH_VERTICES * 12);
-        let mut slots = Vec::with_capacity(PATCH_VERTICES * 4);
+        // Розкладка `PatchVertex` у std430: два `vec3` з вирівнюванням 16,
+        // тобто 32 байти на вершину з чотирма нулями в кожному хвості.
+        // Виписано руками з тієї самої причини, що й `Uniforms::to_bytes`:
+        // наш `unsafe` живе лише в `core-rs`.
+        let mut bytes = Vec::with_capacity(PATCH_VERTICES * VERTEX_BYTES as usize);
         for (offset, normal) in mesh.offsets.iter().zip(mesh.normals.iter()) {
             for value in offset {
-                offsets.extend_from_slice(&value.to_le_bytes());
+                bytes.extend_from_slice(&value.to_le_bytes());
             }
+            bytes.extend_from_slice(&0.0f32.to_le_bytes());
             for value in normal {
-                normals.extend_from_slice(&value.to_le_bytes());
+                bytes.extend_from_slice(&value.to_le_bytes());
             }
-            slots.extend_from_slice(&(slot as u32).to_le_bytes());
+            bytes.extend_from_slice(&0.0f32.to_le_bytes());
         }
-        // Вузол сітки як адреса в текстурі тайла. Порядок вершин у
-        // `PatchMesh` — `a` зовнішнім циклом, `b` внутрішнім, і тайл лежить
-        // у тому самому порядку, тобто `a` це **рядок**, а `b` — стовпець.
-        // Текстура ж адресується `(x, y)`, тож пакується `b | (a << 16)`:
-        // переплутати їх місцями означало б транспонувати рельєф, а
-        // транспонований Місяць виглядає цілком як Місяць.
-        let mut nodes = Vec::with_capacity(PATCH_VERTICES * 4);
-        for a in 0..=cubesphere::SIDE as u32 {
-            for b in 0..=cubesphere::SIDE as u32 {
-                nodes.extend_from_slice(&(b | (a << 16)).to_le_bytes());
-            }
-        }
-        gpu.queue
-            .write_buffer(&self.offset_buffer, base * 12, &offsets);
-        gpu.queue
-            .write_buffer(&self.normal_buffer, base * 12, &normals);
-        gpu.queue.write_buffer(&self.slot_buffer, base * 4, &slots);
-        gpu.queue.write_buffer(&self.node_buffer, base * 4, &nodes);
+        gpu.queue.write_buffer(&self.vertex_buffer, base, &bytes);
 
         self.resident[slot] = Some(patch);
         self.origins[slot] = mesh.origin;
@@ -886,22 +866,6 @@ impl Planet {
                 label: Some("patch"),
                 source: wgpu::ShaderSource::Wgsl(PATCH_WGSL.into()),
             });
-
-        // Усі шістнадцять наборів індексів одразу: їх стільки, скільки
-        // комбінацій чотирьох ребер, і всі відомі до першого кадру.
-        let mut index_bytes = Vec::with_capacity(cubesphere::MASKS * PATCH_INDICES * 4);
-        for mask in 0..cubesphere::MASKS {
-            for i in cubesphere::indices(mask as cubesphere::EdgeMask) {
-                index_bytes.extend_from_slice(&i.to_le_bytes());
-            }
-        }
-        let index_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("patch elements"),
-            size: index_bytes.len() as u64,
-            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        gpu.queue.write_buffer(&index_buffer, 0, &index_bytes);
 
         let bind_layout = gpu
             .device
@@ -921,8 +885,31 @@ impl Planet {
                         },
                         count: None,
                     },
+                    // 1 — початки патчів і номери тайлів (за слотом кеша),
+                    // 2 — геометрія всіх патчів кеша,
+                    // 3 — список того, що малюється цього кадру (за інстансом).
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
                         visibility: wgpu::ShaderStages::VERTEX,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Storage { read_only: true },
@@ -963,28 +950,9 @@ impl Planet {
                 immediate_size: 0,
             });
 
-        let offset_attrs = [wgpu::VertexAttribute {
-            format: wgpu::VertexFormat::Float32x3,
-            offset: 0,
-            shader_location: 0,
-        }];
-        let normal_attrs = [wgpu::VertexAttribute {
-            format: wgpu::VertexFormat::Float32x3,
-            offset: 0,
-            shader_location: 1,
-        }];
-        let patch_attrs = [wgpu::VertexAttribute {
-            format: wgpu::VertexFormat::Uint32,
-            offset: 0,
-            shader_location: 2,
-        }];
-
-        let node_attrs = [wgpu::VertexAttribute {
-            format: wgpu::VertexFormat::Uint32,
-            offset: 0,
-            shader_location: 3,
-        }];
-
+        // Вершинних буферів більше немає взагалі (R6a): усе, що читає
+        // вершинна стадія, приходить storage-буферами, а номер вершини
+        // й номер інстансу дає сам конвеєр.
         let build = |vertex: &str, fragment: &str| {
             gpu.device
                 .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -994,28 +962,7 @@ impl Planet {
                         module: &module,
                         entry_point: Some(vertex),
                         compilation_options: Default::default(),
-                        buffers: &[
-                            Some(wgpu::VertexBufferLayout {
-                                array_stride: 12,
-                                step_mode: wgpu::VertexStepMode::Vertex,
-                                attributes: &offset_attrs,
-                            }),
-                            Some(wgpu::VertexBufferLayout {
-                                array_stride: 12,
-                                step_mode: wgpu::VertexStepMode::Vertex,
-                                attributes: &normal_attrs,
-                            }),
-                            Some(wgpu::VertexBufferLayout {
-                                array_stride: 4,
-                                step_mode: wgpu::VertexStepMode::Vertex,
-                                attributes: &patch_attrs,
-                            }),
-                            Some(wgpu::VertexBufferLayout {
-                                array_stride: 4,
-                                step_mode: wgpu::VertexStepMode::Vertex,
-                                attributes: &node_attrs,
-                            }),
-                        ],
+                        buffers: &[],
                     },
                     fragment: Some(wgpu::FragmentState {
                         module: &module,
@@ -1086,9 +1033,8 @@ impl Planet {
             tile_layout,
             no_tiles,
             cache: PatchCache::new(gpu, MIN_PATCHES),
-            index_buffer,
             bodies: Vec::new(),
-            draws: Vec::new(),
+            drawn: Vec::new(),
             selections: Vec::new(),
         }
     }
@@ -1112,6 +1058,15 @@ impl Planet {
             mapped_at_creation: false,
         });
 
+        // По вісім байтів на інстанс, і інстансів не більше за місткість
+        // кеша: патч, якого немає в кеші, намалювати нема з чого.
+        let draw_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("patch draws"),
+            size: (self.cache.capacity * 8) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("patch"),
             layout: &self.bind_layout,
@@ -1128,12 +1083,21 @@ impl Planet {
                     binding: 1,
                     resource: origin_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.cache.vertex_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: draw_buffer.as_entire_binding(),
+                },
             ],
         });
 
         BodySlot {
             uniform_buffer,
             origin_buffer,
+            draw_buffer,
             bind_group,
             terrain: None,
         }
@@ -1213,8 +1177,10 @@ impl Planet {
         // раз, а не на тіло й не на прохід.
         let view_rotation = camera.view_rotation();
 
-        self.draws.clear();
+        self.drawn.clear();
+        self.drawn.resize(scene.bodies.len(), Drawn::default());
         let mut origin_bytes: Vec<u8> = Vec::with_capacity(self.cache.capacity * 16);
+        let mut draw_bytes: Vec<u8> = Vec::with_capacity(self.cache.capacity * 8);
 
         for (index, body) in scene.bodies.iter().enumerate() {
             let rotation = rotation(body.orientation);
@@ -1229,6 +1195,7 @@ impl Planet {
             // Frustum — другим, і саме тому, що дорожчий: питати про межі
             // кадру в патча, якого вже немає за лімбом, нема сенсу (R3b).
             cull::frustum(&mut visibility, selection, &occluder, camera, FOV_Y, aspect);
+            draw_bytes.clear();
             for ((patch, &mask), &visible) in selection
                 .patches
                 .iter()
@@ -1239,11 +1206,13 @@ impl Planet {
                     continue;
                 }
                 let slot = self.cache.intern(gpu, *patch);
-                self.draws.push(Draw {
-                    body: index,
-                    slot,
-                    mask,
-                });
+                draw_bytes.extend_from_slice(&slot.to_le_bytes());
+                draw_bytes.extend_from_slice(&u32::from(mask).to_le_bytes());
+            }
+            self.drawn[index].instances = (draw_bytes.len() / 8) as u32;
+            if !draw_bytes.is_empty() {
+                gpu.queue
+                    .write_buffer(&self.bodies[index].draw_buffer, 0, &draw_bytes);
             }
 
             // Рельєф тіла, якщо він є: множник висоти й таблиця тайлів.
@@ -1306,45 +1275,29 @@ impl Planet {
     }
 
     fn draw(&self, pass: &mut wgpu::RenderPass<'_>, index: usize) {
-        if self.draws.is_empty() {
-            return;
-        }
         let offset = (index as u64 * PASS_STRIDE) as u32;
 
-        pass.set_vertex_buffer(0, self.cache.offset_buffer.slice(..));
-        pass.set_vertex_buffer(1, self.cache.normal_buffer.slice(..));
-        pass.set_vertex_buffer(2, self.cache.slot_buffer.slice(..));
-        pass.set_vertex_buffer(3, self.cache.node_buffer.slice(..));
-        pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-
-        // Виклик на патч: спільна геометрія в кеші, свій діапазон індексів на
-        // маску зшивання, `base_vertex` — на слот. Пайплайн міняється лише
-        // разом із тілом: у нього або є рельєф, або немає.
-        let mut bound = usize::MAX;
-        for draw in &self.draws {
-            if draw.body != bound {
-                let body = &self.bodies[draw.body];
-                pass.set_pipeline(match (&self.terrain, body.terrain) {
-                    (Some(terrain), Some(_)) => terrain,
-                    _ => &self.smooth,
-                });
-                pass.set_bind_group(0, &body.bind_group, &[offset]);
-                match body.terrain.and_then(|id| self.terrains.get(id)) {
-                    Some(slot) => pass.set_bind_group(1, &slot.bind_group, &[]),
-                    None => {
-                        if let Some(empty) = &self.no_tiles {
-                            pass.set_bind_group(1, empty, &[]);
-                        }
+        // Виклик на **тіло**, а не на патч (R6a). Вершинних буферів немає
+        // взагалі: геометрія, початки й список того, що малюється, приходять
+        // storage-буферами, а номер вершини й номер інстансу дає конвеєр.
+        for (body, drawn) in self.bodies.iter().zip(&self.drawn) {
+            if drawn.instances == 0 {
+                continue;
+            }
+            pass.set_pipeline(match (&self.terrain, body.terrain) {
+                (Some(terrain), Some(_)) => terrain,
+                _ => &self.smooth,
+            });
+            pass.set_bind_group(0, &body.bind_group, &[offset]);
+            match body.terrain.and_then(|id| self.terrains.get(id)) {
+                Some(slot) => pass.set_bind_group(1, &slot.bind_group, &[]),
+                None => {
+                    if let Some(empty) = &self.no_tiles {
+                        pass.set_bind_group(1, empty, &[]);
                     }
                 }
-                bound = draw.body;
             }
-            let first = u32::from(draw.mask) * PATCH_INDICES as u32;
-            pass.draw_indexed(
-                first..first + PATCH_INDICES as u32,
-                (draw.slot as usize * PATCH_VERTICES) as i32,
-                0..1,
-            );
+            pass.draw(0..PATCH_INDICES as u32, 0..drawn.instances);
         }
     }
 }
