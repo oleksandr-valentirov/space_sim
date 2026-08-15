@@ -288,7 +288,9 @@ mod tests {
         let mut grids = Vec::with_capacity(Terrain::count(levels));
         for level in 0..levels {
             let side = 1u32 << level;
-            for face in 0..FACES {
+            // Грань не входить у висоту: рампа однакова на всіх шести, і саме
+            // тому вона ловить помилку адресації, а не маскує її гранню.
+            for _face in 0..FACES {
                 for i in 0..side {
                     for j in 0..side {
                         // Вузол у частках грані — величина, однакова на всіх
