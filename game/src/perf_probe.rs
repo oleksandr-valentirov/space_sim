@@ -110,7 +110,7 @@ pub fn measure(
     snapshot: &WorldSnapshot,
     overlay: Overlay,
     earth_radius_m: f64,
-) -> Result<Stats, String> {
+) -> Result<(Stats, Stats), String> {
     let mut frame = engine::frame::Frame::new(gpu, shot::FORMAT);
     let mut interface = Ui::new(gpu, shot::FORMAT);
     palette::apply(interface.context());
@@ -133,7 +133,9 @@ pub fn measure(
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-    let mut draw_once = || -> Result<f64, String> {
+    // Друге число кадру, а не третє в дужках: розвилка N1 питає саме про
+    // нього — чи справді найдорожче в кадрі це прохід по вершинах ламаних.
+    let mut draw_once = || -> Result<(f64, f64), String> {
         let start = Instant::now();
 
         let mut encoder = gpu
@@ -208,7 +210,10 @@ pub fn measure(
             })
             .map_err(|e| format!("не дочекалися GPU: {e}"))?;
 
-        Ok(start.elapsed().as_secs_f64() * 1000.0)
+        Ok((
+            start.elapsed().as_secs_f64() * 1000.0,
+            frame.lines_upload_ms(),
+        ))
     };
 
     for _ in 0..WARMUP_FRAMES {
@@ -216,11 +221,17 @@ pub fn measure(
     }
 
     let mut samples = Vec::with_capacity(frames as usize);
+    let mut uploads = Vec::with_capacity(frames as usize);
     for _ in 0..frames {
-        samples.push(draw_once()?);
+        let (whole, upload) = draw_once()?;
+        samples.push(whole);
+        uploads.push(upload);
     }
 
-    Ok(Stats::from_samples(width, height, samples))
+    Ok((
+        Stats::from_samples(width, height, samples),
+        Stats::from_samples(width, height, uploads),
+    ))
 }
 
 /// Скільки коштує зібрати сцену зі снапшоту — тобто прохід по всіх вершинах
@@ -304,6 +315,25 @@ pub fn run(options: &app::Options, days: f64, frames: u32) -> Result<(), String>
     let snapshot = world.snapshot();
     let flown_days = (snapshot.t - start_t) / 86400.0;
 
+    // Густина семплів — та величина, на якій стоїть уся викладка D7 (171 на
+    // добу з `bench_prop`), тож вона друкується, а не лишається в голові.
+    let samples: usize = snapshot.vessels.iter().map(|v| v.sample_count()).sum();
+    let vessel_days = snapshot.vessels.len() as f64 * flown_days;
+    println!(
+        "флот: {} апаратів, {:.0} семплів на апарат за добу",
+        snapshot.vessels.len(),
+        samples as f64 / vessel_days.max(f64::MIN_POSITIVE)
+    );
+
+    // Апарат, що зійшов з орбіти, тихо зменшує вимір — тож про нього кажемо
+    // вголос. Станція на 600 км за сто діб цього робити не повинна, і саме
+    // тому мовчазна відмова тут була б найгіршим із результатів.
+    for vessel in &snapshot.vessels {
+        if let Some(error) = &vessel.failed {
+            println!("  ⚠ {} не долетів: {error}", vessel.name);
+        }
+    }
+
     // Замиканням, а не значенням: `Camera` не `Copy`, а створити її наново
     // дешевше за будь-яку гру з клонами (той самий прийом, що в
     // `game/tests/scene.rs`).
@@ -317,8 +347,11 @@ pub fn run(options: &app::Options, days: f64, frames: u32) -> Result<(), String>
         println!();
         println!("=== фрейм {frame:?}, доба {flown_days:.1} ({steps} кроків)");
         println!(
-            "  сцена: {} вершин у {} ламаних, {} семплів історії",
-            size.vertices, size.polylines, size.samples
+            "  сцена: {} вершин у {} ламаних, {} семплів історії, {} апаратів",
+            size.vertices,
+            size.polylines,
+            size.samples,
+            snapshot.vessels.len()
         );
         println!(
             "  пам'ять: історія {:.1} МіБ, буфер кадру {:.2} МіБ на кадр",
@@ -340,7 +373,7 @@ pub fn run(options: &app::Options, days: f64, frames: u32) -> Result<(), String>
         for (width, height) in [(1280u32, 720u32), (1920, 1080)] {
             for (overlay, name) in [(Overlay::None, "немає"), (Overlay::Panels, "панелі")]
             {
-                let stats = measure(
+                let (stats, upload) = measure(
                     &gpu,
                     width,
                     height,
@@ -356,6 +389,12 @@ pub fn run(options: &app::Options, days: f64, frames: u32) -> Result<(), String>
                     stats.mean_ms,
                     stats.p95_ms,
                     stats.headroom_ms(1000.0 / 60.0)
+                );
+                println!(
+                    "    з них Lines::upload: {:.3} мс ({:.0}% кадру, {:.1} нс на вершину)",
+                    upload.mean_ms,
+                    100.0 * upload.mean_ms / stats.mean_ms.max(f64::MIN_POSITIVE),
+                    upload.mean_ms * 1.0e6 / size.vertices.max(1) as f64
                 );
             }
         }

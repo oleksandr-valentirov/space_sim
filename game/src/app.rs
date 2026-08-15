@@ -56,6 +56,11 @@ pub struct Options {
     pub demo_plan: bool,
     /// Підняти гру з сейву замість нової місії.
     pub load: Option<std::path::PathBuf>,
+    /// Скільки станцій додати до місії (`mission::fleet`). Нуль — сама місія.
+    ///
+    /// Фікстура виміру N1: слід упирається в стелю від кількості апаратів, а
+    /// не від років, тож сцену, у якій борг D7 видно, задає саме це число.
+    pub stations: usize,
 }
 
 impl Default for Options {
@@ -68,6 +73,7 @@ impl Default for Options {
             asset: mission::default_asset(),
             demo_plan: false,
             load: None,
+            stations: 0,
         }
     }
 }
@@ -205,6 +211,14 @@ pub fn build_world(options: &Options) -> Result<World, String> {
         return Save::read(path)?
             .into_world(eph, mission::config())
             .map_err(|e| format!("сейв не піднімається ({}): {e}", path.display()));
+    }
+
+    // Флот старший за `--demo-plan`: показовий маневр належить halo-орбіті, а
+    // фікстура виміру питає про кількість апаратів. Разом вони не потрібні
+    // нікому, і мовчки складати їх означало б міряти третю сцену.
+    if options.stations > 0 {
+        return mission::fleet(&options.asset, options.stations)
+            .map_err(|e| format!("флот не будується ({}): {e}", options.asset.display()));
     }
 
     let build = if options.demo_plan {

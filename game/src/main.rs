@@ -42,6 +42,7 @@ fn main() {
             "--perf-probe" => {
                 perf_probe_days = Some(parse_f64(&value("--perf-probe"), "--perf-probe"))
             }
+            "--stations" => options.stations = parse(&value("--stations"), "--stations") as usize,
             "--load" => options.load = Some(PathBuf::from(value("--load"))),
             "--save" => save_path = Some(PathBuf::from(value("--save"))),
             "--width" => options.width = parse(&value("--width"), "--width"),
@@ -107,7 +108,10 @@ const HELP: &str = "\
   --perf-probe <діб>
                   заміряти справжній кадр гри після місії такої довжини:
                   час кадру з панелями й без, вершини, пам'ять історії
-                  (скіл perf-probe, ROADMAP-UI.md U8). Тільки --release";
+                  (скіл perf-probe, ROADMAP-UI.md U8). Тільки --release
+  --stations <n>  додати n станцій на низьких орбітах до місії. Слід упирається
+                  в стелю від кількості апаратів, а не від років, тож саме це
+                  число робить борг D7 видимим (ROADMAP.md, N1)";
 
 /// Знімок місії, доведеної до кінця.
 ///
