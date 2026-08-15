@@ -23,6 +23,7 @@
 
 use crate::camera::Camera;
 use crate::cubesphere::{self, Patch};
+use crate::cull;
 use crate::depth;
 use crate::gpu::Gpu;
 use crate::lod;
@@ -797,7 +798,24 @@ impl Planet {
             let rotation = rotation(body.orientation);
             let selection = &self.selections[index];
 
-            for (patch, &mask) in selection.patches.iter().zip(&selection.masks) {
+            // Горизонт (R3a): половина планети завжди за лімбом, і саме
+            // тому відбір починається з нього, а не з frustum. Набір
+            // будується цілим — маски зшивання рахуються з нього, — а
+            // сюди доходить лише те, що малюється.
+            let visibility = cull::horizon(
+                selection,
+                &cull::Body::smooth(body.centre, body.radius_m),
+                camera,
+            );
+            for ((patch, &mask), &visible) in selection
+                .patches
+                .iter()
+                .zip(&selection.masks)
+                .zip(&visibility.visible)
+            {
+                if !visible {
+                    continue;
+                }
                 let slot = self.cache.intern(gpu, *patch);
                 self.draws.push(Draw {
                     body: index,
