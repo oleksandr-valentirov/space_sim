@@ -108,6 +108,25 @@ pub fn render_quads(
     reversed: bool,
     quads: &[Params],
 ) -> Result<Measured, String> {
+    render_ranges(gpu, width, height, reversed, &[quads])
+}
+
+/// Те саме, але **проходами**: глибина очищається між ними, колір — ні
+/// (ROADMAP-PLANETS.md, R4b).
+///
+/// Один прохід — це рівно те, що робив [`render_quads`], тож зонд F3 нічого
+/// не втратив. Кілька проходів дають те, заради чого існують діапазони:
+/// поверхні в різних проходах не змагаються за біти глибини взагалі, і
+/// порядок між ними вирішує порядок проходів.
+pub fn render_ranges(
+    gpu: &Gpu,
+    width: u32,
+    height: u32,
+    reversed: bool,
+    ranges: &[&[Params]],
+) -> Result<Measured, String> {
+    let quads: Vec<Params> = ranges.iter().flat_map(|g| g.iter().copied()).collect();
+    let quads = &quads[..];
     let module = gpu
         .device
         .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -245,7 +264,8 @@ pub fn render_quads(
             label: Some("depth probe"),
         });
 
-    {
+    let mut first_quad = 0usize;
+    for (range, group_quads) in ranges.iter().enumerate() {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("depth probe"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -253,7 +273,11 @@ pub fn render_quads(
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    load: if range == 0 {
+                        wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+                    } else {
+                        wgpu::LoadOp::Load
+                    },
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -279,10 +303,11 @@ pub fn render_quads(
         // Дальній малюється ПЕРШИМ. Тоді «нуль зелених» означає рівно одне:
         // глибина не розрізнила поверхонь і виграв порядок малювання, а не
         // геометрія.
-        for (_, group) in &groups {
+        for (_, group) in &groups[first_quad..first_quad + group_quads.len()] {
             pass.set_bind_group(0, group, &[]);
             pass.draw(0..6, 0..1);
         }
+        first_quad += group_quads.len();
     }
 
     let shot = crate::shot::read_back(gpu, encoder, &colour, width, height)?;
