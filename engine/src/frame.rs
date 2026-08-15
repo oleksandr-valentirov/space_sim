@@ -339,7 +339,7 @@ impl Frame {
             ));
         }
 
-        let side = tiles::NODES as u32;
+        let side = tiles::STORED as u32;
         let mut views = Vec::with_capacity(count);
         for index in 0..count {
             let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {

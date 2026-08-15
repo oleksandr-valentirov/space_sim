@@ -27,7 +27,7 @@ use engine::gpu::Gpu;
 use engine::lod;
 use engine::scene::{Body, Scene, TerrainId, TileSet};
 use engine::shot::{self, Shot};
-use engine::tiles::{Terrain, NODES};
+use engine::tiles::{Terrain, HALO, NODES, STORED};
 use std::path::Path;
 
 const SIZE: u32 = 256;
@@ -308,6 +308,16 @@ const UNIT_M: f32 = 1.0;
 /// вузол **цілим**, тож глибокий тайл зберігає його без округлення й
 /// порівняння кадрів лишається бітовим.
 const STEP_UNITS: i32 = 16;
+/// Чим заповнений ореол у фікстурах цього файлу.
+///
+/// **Отрута, а не нуль і не сусідня висота.** Ореол існує для градієнта (R7c),
+/// а висоту поверхні дає сітка патча — тобто сьогодні його не читає ніхто, і
+/// перевірки нижче на ньому не стоять. Заповнити його правильними значеннями
+/// означало б написати другий кукер заради даних, яких ніхто не питає;
+/// заповнити нулем — дати помилці шанс виглядати правдоподібно. Мінімум `i16`
+/// на 32 км нижче опорного радіуса не виглядає правдоподібно ніяк: коли ореол
+/// колись почнуть читати, ці фікстури зламаються голосно, а не тихо.
+const POISON: i16 = i16::MIN;
 /// Сторона кадру цієї перевірки — більша за спільну [`SIZE`], і навмисно.
 ///
 /// Рівень вибирається за екранною похибкою, тож глибину набору купує або
@@ -349,12 +359,12 @@ fn shallow_relief() -> Terrain {
         for face in 0..FACES {
             for i in 0..side {
                 for j in 0..side {
-                    let mut grid = Vec::with_capacity(NODES * NODES);
+                    let mut grid = vec![POISON; STORED * STORED];
                     for a in 0..NODES {
                         for b in 0..NODES {
                             let u = (i * SIDE as u32 + a as u32) * stride;
                             let v = (j * SIDE as u32 + b as u32) * stride;
-                            grid.push(seed_units(face, u, v));
+                            grid[(a + HALO) * STORED + b + HALO] = seed_units(face, u, v);
                         }
                     }
                     grids.push(grid);
@@ -380,7 +390,7 @@ fn deep_relief(shallow: &Terrain) -> Terrain {
             for i in 0..side {
                 for j in 0..side {
                     let patch = Patch { face, level, i, j };
-                    let mut grid = Vec::with_capacity(NODES * NODES);
+                    let mut grid = vec![POISON; STORED * STORED];
                     for a in 0..NODES {
                         for b in 0..NODES {
                             let value = shallow.height_m(&patch, a, b) / f64::from(UNIT_M);
@@ -394,7 +404,7 @@ fn deep_relief(shallow: &Terrain) -> Terrain {
                                 "{patch:?} вузол ({a}, {b}): {value} не ціле — \
                                  STEP_UNITS не покриває ваг вибірки"
                             );
-                            grid.push(value as i16);
+                            grid[(a + HALO) * STORED + b + HALO] = value as i16;
                         }
                     }
                     grids.push(grid);

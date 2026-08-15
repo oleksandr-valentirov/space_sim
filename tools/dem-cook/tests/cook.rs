@@ -166,3 +166,87 @@ fn a_patch_deeper_than_the_pyramid_reads_its_ancestor() {
     println!("  спільне ребро двох тайлів: розбіжність {worst:.6} м");
     assert_eq!(worst, 0.0, "рельєф розійшовся на межі тайлів");
 }
+
+/// **Ореол тайла — це справді сусідній вузол, і саме там, де його чекають**
+/// (R7b).
+///
+/// Що саме ця перевірка пінить, і чого не пінить. Геометрію — «вузол ореолу
+/// лежить на один крок за ребром» — доводить окремо й **незалежно від
+/// формули** `engine::tests::cubesphere::a_halo_node_sits_one_step_past_the_edge`
+/// (усередині грані бітово, через ребро куба відношенням кроків). Тут
+/// доводиться друге: що кукер поклав це число **в ту комірку тайла**, з якої
+/// його читатиме шейдер, і що воно бітово дорівнює тому, що сусід зберігає у
+/// себе як звичайний вузол сітки.
+///
+/// Дві половини, і без другої перша нічого не варта:
+///
+/// 1. **Рівність із сусідом.** Копія й оригінал — те саме число. Розійтися
+///    вони не мали б за побудовою (напрямок один), тож розбіжність означала б
+///    зсув у розкладці, а не похибку.
+/// 2. **Ореол не дорівнює краю.** Це та реалізація, проти якої крок і
+///    робився: затиснений індекс дав би на межі тайла копію крайнього ряду,
+///    пройшов би першу половину перевірки на ура — і дав би двом бокам межі
+///    різні градієнти.
+#[test]
+fn the_halo_holds_the_neighbours_own_node() {
+    use engine::cubesphere::{Edge, EDGES};
+
+    let grid = grid();
+    let terrain = build(&grid, LEVELS);
+
+    let mut compared = 0;
+    let mut same_as_edge = 0;
+    for level in 0..LEVELS {
+        let side = 1u32 << level;
+        for face in 0..FACES {
+            for i in 0..side {
+                for j in 0..side {
+                    let patch = Patch { face, level, i, j };
+                    let here = terrain.index(&patch).expect("рівень у піраміді");
+                    for edge in EDGES {
+                        for along in 0..=SIDE {
+                            let (there, na, nb) = patch.halo_node(edge, along);
+                            let theirs = terrain.node(
+                                terrain.index(&there).expect("сусід у тій самій піраміді"),
+                                na as i32,
+                                nb as i32,
+                            );
+
+                            // Наша комірка ореолу й наш крайній вузол поруч.
+                            let (side, k) = (SIDE as i32, along as i32);
+                            let (ha, hb, ea, eb) = match edge {
+                                Edge::AMin => (-1, k, 0, k),
+                                Edge::AMax => (side + 1, k, side, k),
+                                Edge::BMin => (k, -1, k, 0),
+                                Edge::BMax => (k, side + 1, k, side),
+                            };
+                            let mine = terrain.node(here, ha, hb);
+                            assert_eq!(
+                                mine, theirs,
+                                "{patch:?} / {edge:?}: ореол ({ha}, {hb}) дає {mine}, \
+                                 а сусід {there:?} у вузлі ({na}, {nb}) — {theirs}"
+                            );
+                            if mine == terrain.node(here, ea, eb) {
+                                same_as_edge += 1;
+                            }
+                            compared += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let flat = same_as_edge as f64 / compared as f64;
+    println!(
+        "  звірено {compared} вузлів ореолу; збігається з краєм {same_as_edge} \
+         ({:.1}%)",
+        flat * 100.0
+    );
+    assert!(
+        flat < 0.5,
+        "половина ореолу дорівнює крайньому ряду ({:.1}%) — це затиснений \
+         індекс, а не сусід",
+        flat * 100.0
+    );
+}

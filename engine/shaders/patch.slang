@@ -112,6 +112,11 @@ StructuredBuffer<PatchDraw> draws;
 static const uint SIDE = 32;
 static const uint NODES = SIDE + 1;
 
+// Ореол тайла у вузлах — `engine::tiles::HALO` (R7b). Текстура тайла ширша
+// за сітку патча на дві смуги, тож вузол `(a, b)` патча лежить у текселі
+// `(a + HALO, b + HALO)`. Зсув робиться в одному місці — при `Load`.
+static const int HALO = 1;
+
 struct VertexInput
 {
     uint vertex : SV_VertexID;
@@ -221,16 +226,21 @@ float sample_height(PatchData patch, uint2 grid)
     // сусіда всередині нього. Крок ділить `SIDE` націло, тож затиснута
     // вибірка трапляється рівно на межі, де `tx` або `ty` вже нульові, і на
     // результат не впливає.
+    //
+    // Ореол сюди НЕ входить свідомо: висота поверхні — це сітка патча, а
+    // ореол існує лише для градієнта (R7c). Затиснути по `SIDE`, маючи поруч
+    // `SIDE + 1`, — не втрата: вага там нульова.
     int xi = int(x0);
     int yi = int(y0);
     int xi1 = min(xi + 1, int(SIDE));
     int yi1 = min(yi + 1, int(SIDE));
 
     // `Load` бере (x, y, mip) текстури = (b, a, 0): `b` — стовпець, `a` — рядок.
-    float h00 = float(tiles[patch.tile].Load(int3(yi, xi, 0)).x);
-    float h01 = float(tiles[patch.tile].Load(int3(yi1, xi, 0)).x);
-    float h10 = float(tiles[patch.tile].Load(int3(yi, xi1, 0)).x);
-    float h11 = float(tiles[patch.tile].Load(int3(yi1, xi1, 0)).x);
+    // Обидві координати зсунуті на ореол — це єдине місце, де він видимий.
+    float h00 = float(tiles[patch.tile].Load(int3(yi + HALO, xi + HALO, 0)).x);
+    float h01 = float(tiles[patch.tile].Load(int3(yi1 + HALO, xi + HALO, 0)).x);
+    float h10 = float(tiles[patch.tile].Load(int3(yi + HALO, xi1 + HALO, 0)).x);
+    float h11 = float(tiles[patch.tile].Load(int3(yi1 + HALO, xi1 + HALO, 0)).x);
 
     float top = h00 * (1.0 - ty) + h01 * ty;
     float bottom = h10 * (1.0 - ty) + h11 * ty;

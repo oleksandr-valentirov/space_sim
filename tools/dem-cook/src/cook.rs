@@ -22,8 +22,8 @@
 //! і CPU поза інтегратором.
 
 use crate::Grid;
-use engine::cubesphere::{Patch, FACES, SIDE};
-use engine::tiles::{Terrain, NODES};
+use engine::cubesphere::{Edge, Patch, FACES, SIDE};
+use engine::tiles::{Terrain, HALO, STORED};
 use std::path::Path;
 
 /// Скукувати тайлсет із сітки LOLA.
@@ -60,13 +60,19 @@ pub fn build(grid: &Grid, levels: u32) -> Terrain {
             for i in 0..side {
                 for j in 0..side {
                     let patch = Patch { face, level, i, j };
-                    let mut tile = Vec::with_capacity(NODES * NODES);
-                    for a in 0..=SIDE {
-                        for b in 0..=SIDE {
+                    let mut tile = Vec::with_capacity(STORED * STORED);
+                    for a in 0..STORED as isize {
+                        for b in 0..STORED as isize {
+                            let (a, b) = (a - HALO as isize, b - HALO as isize);
                             // Одинична сфера: висота залежить від напрямку, а
                             // не від радіуса, і напрямок тут бітово той самий,
                             // що в сусіднього патча на спільному ребрі.
-                            let metres = grid.sample_direction_m(patch.vertex(a, b, 1.0));
+                            let metres = match direction(&patch, a, b) {
+                                Some(unit) => grid.sample_direction_m(unit),
+                                // Кут ореолу: сусіда через ребро там немає, і
+                                // ніхто його не читає (`engine::tiles`).
+                                None => 0.0,
+                            };
                             tile.push(quantise(metres, grid.scale_m));
                         }
                     }
@@ -77,6 +83,38 @@ pub fn build(grid: &Grid, levels: u32) -> Terrain {
     }
 
     Terrain::build(levels, grid.reference_m, scale, &grids)
+}
+
+/// Напрямок вузла тайла, включно з ореолом (R7b).
+///
+/// Усередині сітки (`0..=SIDE`) це просто вершина патча. Поза нею — вершина
+/// **сусіда**, знайдена через [`Patch::halo_node`], а не продовження власної
+/// параметризації: за ребром куба міняється грань, а з нею й варп.
+///
+/// `None` — кут ореолу, де сусіда через ребро немає взагалі.
+fn direction(patch: &Patch, a: isize, b: isize) -> Option<[f64; 3]> {
+    let inside = |v: isize| (0..=SIDE as isize).contains(&v);
+    let edge_of = |v: isize| {
+        if v < 0 {
+            Some(true)
+        } else if v > SIDE as isize {
+            Some(false)
+        } else {
+            None
+        }
+    };
+
+    let (edge, along) = match (edge_of(a), edge_of(b)) {
+        (None, None) => return Some(patch.vertex(a as usize, b as usize, 1.0)),
+        (Some(low), None) => (if low { Edge::AMin } else { Edge::AMax }, b as usize),
+        (None, Some(low)) => (if low { Edge::BMin } else { Edge::BMax }, a as usize),
+        // Обидві координати за краєм — це кут, а не ребро.
+        (Some(_), Some(_)) => return None,
+    };
+    debug_assert!(inside(if edge_of(a).is_some() { b } else { a }));
+
+    let (there, na, nb) = patch.halo_node(edge, along);
+    Some(there.vertex(na, nb, 1.0))
 }
 
 /// Метри → одиниці зберігання, з насиченням замість загортання.

@@ -192,16 +192,16 @@ fn sample_height_0( patch_0 : ptr<function, PatchData_std430_0>,  grid_1 : vec2<
     var y0_0 : f32 = floor(y_0);
     var tx_0 : f32 = x_0 - x0_0;
     var ty_0 : f32 = y_0 - y0_0;
-    var xi_0 : i32 = i32(x0_0);
-    var yi_0 : i32 = i32(y0_0);
-    var _S5 : i32 = min(xi_0 + i32(1), i32(32));
-    var _S6 : i32 = min(yi_0 + i32(1), i32(32));
-    var _S7 : vec3<i32> = vec3<i32>(yi_0, xi_0, i32(0));
-    var _S8 : vec3<i32> = vec3<i32>(_S6, xi_0, i32(0));
-    var _S9 : vec3<i32> = vec3<i32>(yi_0, _S5, i32(0));
-    var _S10 : vec3<i32> = vec3<i32>(_S6, _S5, i32(0));
-    var _S11 : f32 = 1.0f - ty_0;
-    return (f32((textureLoad((tiles_0[(*patch_0).tile_0]), ((_S7)).xy, ((_S7)).z).x)) * _S11 + f32((textureLoad((tiles_0[(*patch_0).tile_0]), ((_S8)).xy, ((_S8)).z).x)) * ty_0) * (1.0f - tx_0) + (f32((textureLoad((tiles_0[(*patch_0).tile_0]), ((_S9)).xy, ((_S9)).z).x)) * _S11 + f32((textureLoad((tiles_0[(*patch_0).tile_0]), ((_S10)).xy, ((_S10)).z).x)) * ty_0) * tx_0;
+    var _S5 : i32 = i32(x0_0) + i32(1);
+    var _S6 : i32 = i32(y0_0) + i32(1);
+    var _S7 : vec3<i32> = vec3<i32>(_S6, _S5, i32(0));
+    var _S8 : i32 = min(_S6, i32(32)) + i32(1);
+    var _S9 : vec3<i32> = vec3<i32>(_S8, _S5, i32(0));
+    var _S10 : i32 = min(_S5, i32(32)) + i32(1);
+    var _S11 : vec3<i32> = vec3<i32>(_S6, _S10, i32(0));
+    var _S12 : vec3<i32> = vec3<i32>(_S8, _S10, i32(0));
+    var _S13 : f32 = 1.0f - ty_0;
+    return (f32((textureLoad((tiles_0[(*patch_0).tile_0]), ((_S7)).xy, ((_S7)).z).x)) * _S13 + f32((textureLoad((tiles_0[(*patch_0).tile_0]), ((_S9)).xy, ((_S9)).z).x)) * ty_0) * (1.0f - tx_0) + (f32((textureLoad((tiles_0[(*patch_0).tile_0]), ((_S11)).xy, ((_S11)).z).x)) * _S13 + f32((textureLoad((tiles_0[(*patch_0).tile_0]), ((_S12)).xy, ((_S12)).z).x)) * ty_0) * tx_0;
 }
 
 @vertex
@@ -209,11 +209,11 @@ fn vertex_terrain(@builtin(vertex_index) vertex_3 : u32, @builtin(instance_index
 {
     var draw_1 : PatchDraw_std430_0 = draws_0[instance_1];
     var node_0 : Node_0 = node_of_0(vertex_3, draw_1.slot_0, draw_1.mask_0);
-    var _S12 : PatchVertex_std430_0 = vertices_0[node_0.index_0];
-    var _S13 : PatchData_std430_0 = patches_0[draw_1.slot_0];
-    var _S14 : f32 = sample_height_0(&(_S13), node_0.grid_0);
-    var _S15 : VertexOutput_0 = place_0(draw_1.slot_0, &(_S12), _S12.offset_0 + _S12.normal_0 * vec3<f32>((_S14 * uniforms_0.terrain_0.x)));
-    return _S15;
+    var _S14 : PatchVertex_std430_0 = vertices_0[node_0.index_0];
+    var _S15 : PatchData_std430_0 = patches_0[draw_1.slot_0];
+    var _S16 : f32 = sample_height_0(&(_S15), node_0.grid_0);
+    var _S17 : VertexOutput_0 = place_0(draw_1.slot_0, &(_S14), _S14.offset_0 + _S14.normal_0 * vec3<f32>((_S16 * uniforms_0.terrain_0.x)));
+    return _S17;
 }
 
 fn shade_0( normal_2 : vec3<f32>) -> vec3<f32>
@@ -233,10 +233,10 @@ struct pixelInput_0
 };
 
 @fragment
-fn fragment_smooth( _S16 : pixelInput_0, @builtin(position) position_1 : vec4<f32>) -> pixelOutput_0
+fn fragment_smooth( _S18 : pixelInput_0, @builtin(position) position_1 : vec4<f32>) -> pixelOutput_0
 {
-    var _S17 : pixelOutput_0 = pixelOutput_0( vec4<f32>(shade_0(_S16.normal_3), 1.0f) );
-    return _S17;
+    var _S19 : pixelOutput_0 = pixelOutput_0( vec4<f32>(shade_0(_S18.normal_3), 1.0f) );
+    return _S19;
 }
 
 struct pixelOutput_1
@@ -251,11 +251,11 @@ struct pixelInput_1
 };
 
 @fragment
-fn fragment_terrain( _S18 : pixelInput_1, @builtin(position) position_2 : vec4<f32>) -> pixelOutput_1
+fn fragment_terrain( _S20 : pixelInput_1, @builtin(position) position_2 : vec4<f32>) -> pixelOutput_1
 {
-    var facet_0 : vec3<f32> = normalize(cross(dpdx(_S18.world_3), dpdy(_S18.world_3)));
+    var facet_0 : vec3<f32> = normalize(cross(dpdx(_S20.world_3), dpdy(_S20.world_3)));
     var facet_1 : vec3<f32>;
-    if((dot(facet_0, _S18.normal_4)) < 0.0f)
+    if((dot(facet_0, _S20.normal_4)) < 0.0f)
     {
         facet_1 = (vec3<f32>(0) - facet_0);
     }
@@ -263,6 +263,6 @@ fn fragment_terrain( _S18 : pixelInput_1, @builtin(position) position_2 : vec4<f
     {
         facet_1 = facet_0;
     }
-    var _S19 : pixelOutput_1 = pixelOutput_1( vec4<f32>(shade_0(facet_1), 1.0f) );
-    return _S19;
+    var _S21 : pixelOutput_1 = pixelOutput_1( vec4<f32>(shade_0(facet_1), 1.0f) );
+    return _S21;
 }

@@ -15,8 +15,7 @@
 //! ## Тайл — це патч, вузол у вузол
 //!
 //! Тайл зберігає висоту **в тих самих вузлах**, які має сітка патча:
-//! `(SIDE + 1)²` значень. Не текстуру з довільним розміром, не сітку з
-//! запасом по краю — рівно вузли.
+//! `(SIDE + 1)²` значень. Не текстуру з довільним розміром — рівно вузли.
 //!
 //! Наслідок, заради якого так і зроблено: **тріщин рельєф не додає.** Вершина
 //! на спільному ребрі двох патчів бітово одна (R2b), тож напрямок, за яким
@@ -24,6 +23,25 @@
 //! тайлах лежить те саме число. Зшивання рівнів (`cubesphere::indices`)
 //! працює далі без єдиної правки: воно викидає непарний вузол, а парний
 //! однаково лежить в обох тайлах.
+//!
+//! ## Ореол в один вузол, і чому він не суперечить сказаному вище (R7b)
+//!
+//! Понад сітку патча тайл несе смугу шириною [`HALO`] вузол — копію першого
+//! ряду вузлів сусіда, тобто `−1` і `SIDE + 1` по кожній осі. Це не «сітка з
+//! запасом», від якої розділ вище відмовлявся: вузли `0..=SIDE` лишились рівно
+//! тими самими, а ореол лежить **поза** ними й у вибірку висоти не входить.
+//!
+//! Потрібен він одному споживачеві — **градієнту DEM** (R7c, амплітуда шуму).
+//! Градієнт у вузлі на межі тайла інакше довелося б рахувати затиснутим
+//! індексом, а це дало б на двох боках межі різні амплітуди, тобто тріщину
+//! рівно там, де R2b її прибрав. Копія, а не посилання на сусідній тайл: у
+//! шейдера один тайл на патч, і другий довелося б і знайти, і адресувати
+//! **його** вікном.
+//!
+//! Ціна названа числом: `35² / 33² = 1.125`, тобто **+12.5%** до розміру
+//! тайлсета. Кути ореолу (`(−1, −1)` і решта трьох) не заповнюються нічим
+//! осмисленим і ніким не читаються: на куті куба сходяться три патчі, а
+//! центральна різниця про діагональ не питає.
 //!
 //! ## Піраміда, і де вона закінчується
 //!
@@ -36,7 +54,7 @@
 //! ## Висоти — `int16`, без стиснення
 //!
 //! Розвилка була названа наперед: BC4 для висот дає видимі сходинки на
-//! пологих схилах. Тайл малий (33×33 = 2178 байтів), тож стискати його —
+//! пологих схилах. Тайл малий (35×35 = 2450 байтів разом з ореолом), тож стискати його —
 //! міняти видиму якість на кілобайти. Стиснення кольору (BC7/BC6H) — інша
 //! задача й інший крок.
 
@@ -47,13 +65,23 @@ pub const MAGIC: [u8; 8] = *b"SSDEM\0\0\0";
 
 /// Версія формату. Росте при будь-якій зміні розкладки — читач старої версії
 /// мусить сказати про це, а не прочитати сміття.
-pub const VERSION: u32 = 1;
+///
+/// Версія 2 додала ореол (R7b): розкладка інша, тож тайлсет версії 1 читати
+/// не можна навіть «майже правильно».
+pub const VERSION: u32 = 2;
 
 /// Скільки вузлів на бік тайла — стільки ж, скільки в сітки патча.
 pub const NODES: usize = SIDE + 1;
 
-/// Скільки байтів займає один тайл: дві межі плюс сітка.
-const TILE_BYTES: usize = 4 + NODES * NODES * 2;
+/// Ширина ореолу у вузлах (R7b). Один: центральна різниця питає рівно про
+/// сусіда, і платити за другий нема за що.
+pub const HALO: usize = 1;
+
+/// Скільки вузлів на бік лежить у тайлі насправді — сітка разом з ореолом.
+pub const STORED: usize = NODES + 2 * HALO;
+
+/// Скільки байтів займає один тайл: дві межі плюс сітка з ореолом.
+const TILE_BYTES: usize = 4 + STORED * STORED * 2;
 
 /// Заголовок: підпис, версія, три числа й радіус.
 const HEADER_BYTES: usize = 8 + 4 + 4 + 4 + 8 + 4;
@@ -113,6 +141,10 @@ impl Terrain {
     ///
     /// Це те, чого R3a чекав від тайлів: радіус затуляння міряється від
     /// **найнижчої** точки, а не від середнього радіуса тіла.
+    ///
+    /// Ореол сюди не входить: межі описують **цей** тайл, а не смугу довкола
+    /// нього. Сусідова западина знизила б радіус затуляння тіла в місці, де її
+    /// немає.
     pub fn bounds(&self, index: usize) -> (i16, i16) {
         let at = index * TILE_BYTES;
         (
@@ -122,8 +154,22 @@ impl Terrain {
     }
 
     /// Висота вузла тайла в одиницях зберігання.
-    pub fn node(&self, index: usize, a: usize, b: usize) -> i16 {
-        let at = index * TILE_BYTES + 4 + (a * NODES + b) * 2;
+    ///
+    /// Індекси зі знаком, від `−HALO` до `SIDE + HALO`: сітка патча — це
+    /// `0..=SIDE`, а `−1` і `SIDE + 1` — ореол, тобто вузли сусіднього тайла
+    /// (R7b). Зсув на `HALO` робиться тут і більше ніде, щоб решта коду
+    /// говорила координатами патча, а не координатами файлу.
+    pub fn node(&self, index: usize, a: i32, b: i32) -> i16 {
+        let shift = |v: i32| {
+            let v = v + HALO as i32;
+            assert!(
+                (0..STORED as i32).contains(&v),
+                "вузол {} поза тайлом з ореолом",
+                v - HALO as i32
+            );
+            v as usize
+        };
+        let at = index * TILE_BYTES + 4 + (shift(a) * STORED + shift(b)) * 2;
         i16::from_le_bytes([self.tiles[at], self.tiles[at + 1]])
     }
 
@@ -161,7 +207,7 @@ impl Terrain {
     pub fn height_m(&self, patch: &Patch, a: usize, b: usize) -> f64 {
         let (index, origin, step) = self.window(patch);
         if step == 1.0 {
-            return f64::from(self.node(index, a, b)) * f64::from(self.scale_m);
+            return f64::from(self.node(index, a as i32, b as i32)) * f64::from(self.scale_m);
         }
 
         let x = origin[0] + a as f64 * step;
@@ -171,7 +217,11 @@ impl Terrain {
         let (tx, ty) = (x - x0, y - y0);
         let (x0, y0) = (x0 as usize, y0 as usize);
         let get = |dx: usize, dy: usize| {
-            f64::from(self.node(index, (x0 + dx).min(SIDE), (y0 + dy).min(SIDE)))
+            f64::from(self.node(
+                index,
+                (x0 + dx).min(SIDE) as i32,
+                (y0 + dy).min(SIDE) as i32,
+            ))
         };
         let top = get(0, 0) * (1.0 - ty) + get(0, 1) * ty;
         let bottom = get(1, 0) * (1.0 - ty) + get(1, 1) * ty;
@@ -193,6 +243,8 @@ impl Terrain {
     ///
     /// Тайли подаються в канонічному порядку; функція лише перевіряє, що їх
     /// стільки, скільки має бути, і рахує межі кожного.
+    /// Тайли подаються **разом з ореолом** — [`STORED`]×[`STORED`] значень,
+    /// рядок за рядком, від вузла `−HALO`.
     pub fn build(levels: u32, reference_m: f64, scale_m: f32, grids: &[Vec<i16>]) -> Terrain {
         assert_eq!(
             grids.len(),
@@ -201,9 +253,17 @@ impl Terrain {
         );
         let mut tiles = Vec::with_capacity(grids.len() * TILE_BYTES);
         for grid in grids {
-            assert_eq!(grid.len(), NODES * NODES, "тайл не тієї форми");
-            let low = grid.iter().copied().min().unwrap_or(0);
-            let high = grid.iter().copied().max().unwrap_or(0);
+            assert_eq!(grid.len(), STORED * STORED, "тайл не тієї форми");
+            // Межі — по сітці патча, без ореолу (див. `bounds`).
+            let mut low = i16::MAX;
+            let mut high = i16::MIN;
+            for a in 0..NODES {
+                for b in 0..NODES {
+                    let value = grid[(a + HALO) * STORED + b + HALO];
+                    low = low.min(value);
+                    high = high.max(value);
+                }
+            }
             tiles.extend_from_slice(&low.to_le_bytes());
             tiles.extend_from_slice(&high.to_le_bytes());
             for value in grid {
@@ -223,7 +283,7 @@ impl Terrain {
         let mut out = Vec::with_capacity(HEADER_BYTES + self.tiles.len());
         out.extend_from_slice(&MAGIC);
         out.extend_from_slice(&VERSION.to_le_bytes());
-        out.extend_from_slice(&(NODES as u32).to_le_bytes());
+        out.extend_from_slice(&(STORED as u32).to_le_bytes());
         out.extend_from_slice(&self.levels.to_le_bytes());
         out.extend_from_slice(&self.reference_m.to_le_bytes());
         out.extend_from_slice(&self.scale_m.to_le_bytes());
@@ -247,9 +307,10 @@ impl Terrain {
             ));
         }
         let nodes = word(12) as usize;
-        if nodes != NODES {
+        if nodes != STORED {
             return Err(format!(
-                "тайл на {nodes} вузлів, а патч має {NODES} — сітки не збігаються"
+                "тайл на {nodes} вузлів, а патч з ореолом має {STORED} — сітки \
+                 не збігаються"
             ));
         }
         let levels = word(16);
@@ -301,12 +362,19 @@ mod tests {
                         // Множники підібрані так, щоб значення лишалися
                         // цілими на вузлах кожного рівня: інакше округлення до
                         // `i16` саме створило б розбіжність, яку тест шукає.
+                        //
+                        // Ореол тут просто продовжує ту саму пряму. Для
+                        // фікстури це чесно: `height_m` вузлів `−1` і
+                        // `SIDE + 1` не читає взагалі, а рівність із сусідом
+                        // перевіряє кукер на справжніх даних, не цей рамп.
                         let span = (SIDE << level) as f64;
-                        let mut grid = Vec::with_capacity(NODES * NODES);
-                        for a in 0..NODES {
-                            for b in 0..NODES {
-                                let x = (i as usize * SIDE + a) as f64 / span;
-                                let y = (j as usize * SIDE + b) as f64 / span;
+                        let mut grid = Vec::with_capacity(STORED * STORED);
+                        for a in 0..STORED {
+                            for b in 0..STORED {
+                                let a = a as isize - HALO as isize;
+                                let b = b as isize - HALO as isize;
+                                let x = (i as isize * SIDE as isize + a) as f64 / span;
+                                let y = (j as isize * SIDE as isize + b) as f64 / span;
                                 grid.push((2048.0 * x + 4096.0 * y) as i16);
                             }
                         }
@@ -343,7 +411,7 @@ mod tests {
         let (index, origin, step) = terrain.window(&deep);
         assert_eq!(step, 0.5, "крок для одного рівня глибше — половина вузла");
 
-        let (x, y) = (origin[0] as usize, origin[1] as usize);
+        let (x, y) = (origin[0] as i32, origin[1] as i32);
         let direct = f64::from(terrain.node(index, x, y)) * f64::from(terrain.scale_m);
         assert_eq!(
             from_deep, direct,
