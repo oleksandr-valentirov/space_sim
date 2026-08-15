@@ -3,6 +3,7 @@
 //!     cargo run -p engine                        вікно
 //!     cargo run -p engine -- --frames 60         вікно, 60 кадрів і вихід
 //!     cargo run -p engine -- --shot build/f1.png знімок без вікна
+//!     cargo run -p engine -- --demo build/demo   серія знімків з підписами
 //!
 //! Розбір аргументів свій і навмисно дурний: три прапорці не варті
 //! залежності, а `clap` приїде тоді, коли їх стане двадцять.
@@ -16,6 +17,7 @@ use engine::shot;
 fn main() {
     let mut options = app::Options::default();
     let mut shot_path: Option<PathBuf> = None;
+    let mut demo_dir: Option<PathBuf> = None;
     let mut vsync_asked = false;
     let mut depth_probe = false;
     let mut perf_probe = false;
@@ -33,6 +35,7 @@ fn main() {
 
         match arg.as_str() {
             "--shot" => shot_path = Some(PathBuf::from(value("--shot"))),
+            "--demo" => demo_dir = Some(PathBuf::from(value("--demo"))),
             "--frames" => options.frames = Some(parse(&value("--frames"), "--frames")),
             "--vsync" => {
                 options.vsync = true;
@@ -64,7 +67,9 @@ fn main() {
         options.vsync = false;
     }
 
-    let result = if depth_probe {
+    let result = if let Some(dir) = demo_dir {
+        run_demo(&dir)
+    } else if depth_probe {
         run_depth_probe()
     } else if perf_probe {
         run_perf_probe()
@@ -90,6 +95,7 @@ fn main() {
 }
 
 const HELP: &str = "\
+  --demo <каталог>  серія знімків поточного стану рендера, з підписами
   --shot <файл>     намалювати один кадр у PNG, без вікна
   --frames <N>      намалювати N кадрів і вийти (вимикає vsync)
   --vsync           чекати на вертикальну синхронізацію
@@ -102,6 +108,28 @@ const HELP: &str = "\
   --rotating-probe  де рахувати обертовий фрейм: f32 на GPU чи f64 на CPU (U6a1)
   --width <px>      ширина, типово 1280
   --height <px>     висота, типово 720";
+
+/// Серія знімків поточного стану рендера (демка).
+///
+/// Друкує поруч підписи, бо картинка без підпису не каже, що саме на ній
+/// доводиться. Каталог перезаписується; манiфест пишеться туди ж, щоб
+/// підписи не жили окремо від файлів.
+fn run_demo(dir: &std::path::Path) -> Result<(), String> {
+    let gpu = Gpu::new(wgpu::Instance::default(), None)?;
+    println!("адаптер: {}", gpu.describe());
+
+    let frames = engine::demo::render(&gpu, dir)?;
+
+    let mut manifest = String::new();
+    println!();
+    for frame in &frames {
+        println!("{}\n    {}\n", frame.name, frame.caption);
+        manifest.push_str(&format!("{}.png\n    {}\n\n", frame.name, frame.caption));
+    }
+    std::fs::write(dir.join("manifest.txt"), manifest).map_err(|e| e.to_string())?;
+    println!("{} кадрів у {}", frames.len(), dir.display());
+    Ok(())
+}
 
 fn take_shot(path: &std::path::Path, width: u32, height: u32) -> Result<(), String> {
     let gpu = Gpu::new(wgpu::Instance::default(), None)?;
