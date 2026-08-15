@@ -636,6 +636,128 @@ fn a_shared_edge_matches_node_by_node_not_just_as_a_set() {
     );
 }
 
+/// **Вузол ореолу лежить рівно на один крок за ребром** (R7b).
+///
+/// Ореол ловить те, чого рельєф без нього не вміє: градієнт у вузлі на межі
+/// тайла потребує сусіда з іншого тайла, а затиснений індекс дав би на двох
+/// боках межі різні амплітуди — тобто тріщину рівно там, де R2b її прибрав.
+///
+/// Перевірка мусить бути **незалежною від самої формули**, інакше вона лише
+/// повторить її. Тому два різні оракули:
+///
+/// 1. **Усередині грані — точна арифметика.** Вузол `−1` патча `(i, j)` — це
+///    вузол `SIDE − 1` патча `(i − 1, j)`, і це видно прямо з нумерації, без
+///    жодного `neighbour`. Бітова рівність вершин.
+/// 2. **Через ребро куба — геометрія.** Там немає спільної нумерації, зате є
+///    твердження, якого формула не може підробити: три точки — ореол, вузол
+///    ребра й наш перший внутрішній вузол — ідуть **підряд**, тобто крок від
+///    ореолу до ребра близький до кроку від ребра всередину. Варп робить їх
+///    не рівними, але й не різними вдвічі.
+#[test]
+fn a_halo_node_sits_one_step_past_the_edge() {
+    use engine::cubesphere::{Patch, EDGES, SIDE};
+
+    const LEVEL: u32 = 2;
+    let side = 1u32 << LEVEL;
+    let radius = EARTH_RADIUS_M;
+
+    let mut same_face = 0;
+    let mut across = 0;
+    let mut worst_ratio: f64 = 1.0;
+
+    for face in 0..FACES {
+        for i in 0..side {
+            for j in 0..side {
+                let patch = Patch {
+                    face,
+                    level: LEVEL,
+                    i,
+                    j,
+                };
+                for edge in EDGES {
+                    let (there, ha, hb) = patch.halo_node(edge, SIDE / 3);
+                    let halo = there.vertex(ha, hb, radius);
+
+                    // Наші три точки поперек ребра: ореол, сам край, перший
+                    // внутрішній вузол.
+                    let k = SIDE / 3;
+                    let (edge_node, inner) = match edge {
+                        Edge::AMin => (patch.vertex(0, k, radius), patch.vertex(1, k, radius)),
+                        Edge::AMax => (
+                            patch.vertex(SIDE, k, radius),
+                            patch.vertex(SIDE - 1, k, radius),
+                        ),
+                        Edge::BMin => (patch.vertex(k, 0, radius), patch.vertex(k, 1, radius)),
+                        Edge::BMax => (
+                            patch.vertex(k, SIDE, radius),
+                            patch.vertex(k, SIDE - 1, radius),
+                        ),
+                    };
+
+                    if there.face == face {
+                        // Той самий бік грані: сусід зсунутий на один патч, і
+                        // потрібний вузол виводиться з нумерації напряму.
+                        let (di, dj) = match edge {
+                            Edge::AMin => (-1i64, 0i64),
+                            Edge::AMax => (1, 0),
+                            Edge::BMin => (0, -1),
+                            Edge::BMax => (0, 1),
+                        };
+                        let plain = Patch {
+                            face,
+                            level: LEVEL,
+                            i: (i64::from(i) + di) as u32,
+                            j: (i64::from(j) + dj) as u32,
+                        };
+                        let (pa, pb) = match edge {
+                            Edge::AMin => (SIDE - 1, k),
+                            Edge::AMax => (1, k),
+                            Edge::BMin => (k, SIDE - 1),
+                            Edge::BMax => (k, 1),
+                        };
+                        let expected = plain.vertex(pa, pb, radius);
+                        for c in 0..3 {
+                            assert_eq!(
+                                halo[c].to_bits(),
+                                expected[c].to_bits(),
+                                "{patch:?} / {edge:?}: ореол не збігся з вузлом \
+                                 {plain:?} ({pa}, {pb}) у компоненті {c}"
+                            );
+                        }
+                        same_face += 1;
+                    } else {
+                        across += 1;
+                    }
+
+                    let length = |p: [f64; 3], q: [f64; 3]| {
+                        let d = [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+                        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+                    };
+                    let out = length(halo, edge_node);
+                    let inward = length(inner, edge_node);
+                    let ratio = (out / inward).max(inward / out);
+                    worst_ratio = worst_ratio.max(ratio);
+                    assert!(
+                        ratio < 1.5,
+                        "{patch:?} / {edge:?}: крок назовні {out:.1} м проти \
+                         {inward:.1} м усередину — ореол не на сусідньому вузлі"
+                    );
+                }
+            }
+        }
+    }
+
+    println!(
+        "  ореолів усередині грані {same_face}, через ребро куба {across}, \
+         найгірше відношення кроків {worst_ratio:.4}"
+    );
+    assert_eq!(
+        across,
+        FACES * 4 * side as usize,
+        "через ребра куба пройшло не стільки ореолів, скільки їх є"
+    );
+}
+
 /// Зшите ребро віддає рівно парні вузли — і рівно на тих ребрах, що в масці.
 ///
 /// Дві половини, і без другої перша нічого не варта: набір, який викидає
