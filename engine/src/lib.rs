@@ -35,6 +35,7 @@ pub use egui_wgpu;
 pub mod app;
 pub mod camera;
 pub mod camera_probe;
+pub mod cubesphere;
 pub mod depth;
 pub mod depth_probe;
 pub mod flight_probe;
