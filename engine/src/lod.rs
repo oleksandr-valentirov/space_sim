@@ -34,7 +34,8 @@
 //! не ховає у вибраному наборі.
 
 use crate::camera::Camera;
-use crate::cubesphere::{Patch, FACES, SIDE};
+use crate::cubesphere::{EdgeMask, Patch, EDGES, FACES, SIDE};
+use std::collections::HashSet;
 
 /// Скільки пікселів геометричної похибки терпимо.
 ///
@@ -58,6 +59,13 @@ pub struct Selection {
     /// косметика: набір патчів іде у буфер GPU, а буфер, який щокадру
     /// переставляє те саме, не порівняти з попереднім кадром.
     pub patches: Vec<Patch>,
+    /// Ребра кожного патча, за якими сусід **грубіший** — паралельний масив
+    /// до [`Self::patches`].
+    ///
+    /// Паралельний, а не поле в `Patch`: патч — це топологія (де він на
+    /// кубосфері), а маска — властивість набору, у якому він опинився. Той
+    /// самий патч у двох наборах має різні маски й лишається тим самим патчем.
+    pub masks: Vec<EdgeMask>,
     /// Скільки патчів уперлося в [`MAX_LEVEL`] замість того, щоб виконати
     /// критерій.
     ///
@@ -65,6 +73,13 @@ pub struct Selection {
     /// що й відсутність стелі: видно її буде на екрані, а шукати причину
     /// доведеться в коді.
     pub clamped: usize,
+    /// Скільки патчів додало вирівнювання рівнів — понад те, що просив
+    /// критерій похибки.
+    ///
+    /// Це ціна правила «сусіди різняться не більш ніж на рівень», і платити
+    /// її наосліп не варто: якщо число колись стане більшим за сам вибір,
+    /// значить критерій розриває сусідів надто різко.
+    pub balanced: usize,
 }
 
 /// Скільки пікселів на радіан у центрі кадру.
@@ -158,11 +173,18 @@ pub struct Body {
     pub radius_m: f64,
 }
 
-/// Набір патчів для цієї камери й цього тіла.
+/// Набір патчів для цієї камери й цього тіла — вибраний, вирівняний, зшитий.
+///
+/// Три дії, а не одна, і роздільної точки між ними назовні немає навмисно:
+/// невирівняний набір не годиться ні на що, крім тріщин, а маски без
+/// вирівнювання довелося б рахувати на різницю в два рівні, якої зшивання
+/// не вміє. Хто просить набір — просить набір, що малюється.
 pub fn select(body: &Body, camera: &Camera, focal_px: f64) -> Selection {
     let mut out = Selection {
         patches: Vec::new(),
+        masks: Vec::new(),
         clamped: 0,
+        balanced: 0,
     };
     for face in 0..FACES {
         subdivide(
@@ -178,7 +200,125 @@ pub fn select(body: &Body, camera: &Camera, focal_px: f64) -> Selection {
             &mut out,
         );
     }
+    balance(&mut out);
+    out.masks = stitching(&out.patches);
     out
+}
+
+/// Довести набір до правила «сусіди різняться не більш ніж на рівень».
+///
+/// ## Чому саме один рівень, і чому цього досить
+///
+/// Зшивання (`cubesphere::indices`) вміє викидати кожен другий вузол ребра —
+/// тобто рівно одну різницю рівнів. Різниця у два означала б, що з нашого
+/// ребра треба лишити кожен четвертий вузол, і наборів стало б не
+/// шістнадцять, а незліченно. Тому правило не про красу сітки, а про те,
+/// скільки різних індексних наборів існує наперед.
+///
+/// Вирівнювання **тільки подрібнює**: грубіший сусід ділиться, доки різниця
+/// не впаде до одиниці. Огрублювати дрібний бік не можна — критерій похибки
+/// попросив цей рівень, і мовчки віддати його назад означало б збрехати
+/// про якість.
+fn balance(selection: &mut Selection) {
+    let before = selection.patches.len();
+    let mut leaves: HashSet<Patch> = selection.patches.iter().copied().collect();
+    // Черга — патчі, чиї сусіди ще не перевірені. Діти щойно поділеного
+    // потрапляють сюди ж: поділ міг зробити їх надто дрібними вже для
+    // СВОЇХ сусідів, і хвиля має право йти далі.
+    let mut queue: Vec<Patch> = selection.patches.clone();
+
+    while let Some(patch) = queue.pop() {
+        // Патч могли поділити, поки він чекав у черзі.
+        if patch.level < 2 || !leaves.contains(&patch) {
+            continue;
+        }
+        for edge in EDGES {
+            let cell = patch.neighbour(edge).patch;
+            let Some(coarse) = covering(&leaves, cell) else {
+                // Сусідній бік дрібніший за нас — це його турбота, не наша.
+                continue;
+            };
+            if patch.level - coarse.level < 2 {
+                continue;
+            }
+            leaves.remove(&coarse);
+            for child in coarse.children() {
+                leaves.insert(child);
+                queue.push(child);
+            }
+        }
+    }
+
+    // Порядок відновлюється обходом, а не сортуванням: він мусить бути тим
+    // самим, що дає `subdivide`, інакше буфер GPU щокадру переставляє те саме
+    // й перестає бути порівнюваним із попереднім кадром.
+    selection.patches.clear();
+    for face in 0..FACES {
+        collect(
+            Patch {
+                face,
+                level: 0,
+                i: 0,
+                j: 0,
+            },
+            &leaves,
+            &mut selection.patches,
+        );
+    }
+    selection.balanced = selection.patches.len() - before;
+}
+
+/// Лист набору, який накриває цю клітинку: вона сама або хтось із її предків.
+///
+/// `None` означає, що накривати нема кому — тобто на тому боці набір
+/// **дрібніший** за клітинку, і питати треба з іншого боку.
+fn covering(leaves: &HashSet<Patch>, cell: Patch) -> Option<Patch> {
+    let mut cell = cell;
+    loop {
+        if leaves.contains(&cell) {
+            return Some(cell);
+        }
+        cell = cell.parent()?;
+    }
+}
+
+fn collect(patch: Patch, leaves: &HashSet<Patch>, out: &mut Vec<Patch>) {
+    if leaves.contains(&patch) {
+        out.push(patch);
+        return;
+    }
+    assert!(
+        patch.level < MAX_LEVEL,
+        "набір не покриває грань: у {patch:?} немає жодного листа"
+    );
+    for child in patch.children() {
+        collect(child, leaves, out);
+    }
+}
+
+/// Маска зшивання кожного патча: ребра, за якими сусід грубіший.
+fn stitching(patches: &[Patch]) -> Vec<EdgeMask> {
+    let leaves: HashSet<Patch> = patches.iter().copied().collect();
+    patches
+        .iter()
+        .map(|patch| {
+            let mut mask = 0;
+            for edge in EDGES {
+                let cell = patch.neighbour(edge).patch;
+                if let Some(other) = covering(&leaves, cell) {
+                    if other.level < patch.level {
+                        debug_assert_eq!(
+                            other.level + 1,
+                            patch.level,
+                            "вирівнювання пропустило різницю рівнів"
+                        );
+                        mask |= edge.bit();
+                    }
+                }
+            }
+            mask
+        })
+        .collect()
 }
 
 fn subdivide(patch: Patch, body: &Body, camera: &Camera, focal: f64, out: &mut Selection) {

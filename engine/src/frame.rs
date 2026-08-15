@@ -449,6 +449,10 @@ impl Planet {
         let mut origins = Vec::new();
         let mut base: u32 = 0;
 
+        // Індекси однакові для всіх патчів: вони адресують сітку, а не місце
+        // на сфері. Зшиті набори приносить R2.
+        let elements = cubesphere::indices(0);
+
         for (index, patch) in patches.iter().enumerate() {
             // Одинична сфера: розмір тіла — множник у матриці моделі, а не
             // друга копія тих самих вершин (R1e).
@@ -465,7 +469,7 @@ impl Planet {
                 patch_bytes.extend_from_slice(&(index as u32).to_le_bytes());
             }
 
-            for i in &mesh.indices {
+            for i in &elements {
                 index_bytes.extend_from_slice(&(base + i).to_le_bytes());
             }
             base += mesh.offsets.len() as u32;

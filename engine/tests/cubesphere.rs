@@ -5,7 +5,7 @@
 //! одна темна лінія в піксель, яку око пропустить; рівність вершин її не
 //! пропустить ніколи (правило 5 етапу R).
 
-use engine::cubesphere::{grid, ratio, vertex, FACES};
+use engine::cubesphere::{self, grid, ratio, vertex, FACES};
 use engine::sphere::EARTH_RADIUS_M;
 
 const N: usize = 32;
@@ -408,14 +408,15 @@ fn the_patch_mesh_is_closed() {
     }
     .mesh(EARTH_RADIUS_M);
     let vertices = (SIDE + 1) * (SIDE + 1);
+    let indices = cubesphere::indices(0);
 
     assert_eq!(mesh.offsets.len(), vertices);
     assert_eq!(mesh.normals.len(), vertices);
-    assert_eq!(mesh.indices.len(), SIDE * SIDE * 6);
-    assert!(mesh.indices.iter().all(|&i| (i as usize) < vertices));
+    assert_eq!(indices.len(), SIDE * SIDE * 6);
+    assert!(indices.iter().all(|&i| (i as usize) < vertices));
 
     let mut used = vec![false; vertices];
-    for &i in &mesh.indices {
+    for &i in &indices {
         used[i as usize] = true;
     }
     assert!(
@@ -526,4 +527,169 @@ fn the_cubesphere_draws_the_same_silhouette_as_the_uv_sphere() {
         "силует поїхав на {differ} пікселів при краю в {edge:.0} — це не \\
          допуск, це вісь або порядок обходу"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Сусідство й зшивання (R2b)
+
+use engine::cubesphere::{Edge, EDGES};
+
+/// Сусідство симетричне: хто мій сусід, тому сусід я, тим самим ребром.
+///
+/// Перевіряються **всі** патчі рівня 2 на всіх шести гранях, а не зразок:
+/// помилка в перекладі індексів через ребро куба сидить рівно в одному з
+/// двадцяти чотирьох випадків, і зразок її не побачить.
+#[test]
+fn being_a_neighbour_is_mutual() {
+    const LEVEL: u32 = 2;
+    let side = 1u32 << LEVEL;
+
+    for face in 0..FACES {
+        for i in 0..side {
+            for j in 0..side {
+                let patch = Patch {
+                    face,
+                    level: LEVEL,
+                    i,
+                    j,
+                };
+                for edge in EDGES {
+                    let there = patch.neighbour(edge);
+                    let back = there.patch.neighbour(there.edge);
+                    assert_eq!(
+                        back.patch, patch,
+                        "{patch:?} через {edge:?} потрапив у {:?}, а звідти не назад",
+                        there.patch
+                    );
+                    assert_eq!(
+                        back.edge, edge,
+                        "{patch:?} через {edge:?}: назад прийшло інше ребро"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Вершини спільного ребра збігаються **бітово**, і вузол `k` — це вузол `k`.
+///
+/// Головна перевірка кроку (правило 5 етапу R). Слабша форма — «збігається
+/// множина вершин» — тут не годиться: транспонована грань дала б ту саму
+/// множину й розійшлася б у відповідності індексів, а зшивання стоїть саме
+/// на ній. Кути куба, де сходяться **три** грані, потрапляють у перевірку
+/// разом з усіма: це ті патчі, у яких два ребра з чотирьох ведуть на різні
+/// грані.
+#[test]
+fn a_shared_edge_matches_node_by_node_not_just_as_a_set() {
+    const LEVEL: u32 = 2;
+    let side = 1u32 << LEVEL;
+    let radius = EARTH_RADIUS_M;
+
+    // Вершини ребра патча в порядку зростання спільного індексу.
+    let along = |patch: &Patch, edge: Edge, k: usize| match edge {
+        Edge::AMin => patch.vertex(0, k, radius),
+        Edge::AMax => patch.vertex(SIDE, k, radius),
+        Edge::BMin => patch.vertex(k, 0, radius),
+        Edge::BMax => patch.vertex(k, SIDE, radius),
+    };
+
+    let mut across_faces = 0;
+    for face in 0..FACES {
+        for i in 0..side {
+            for j in 0..side {
+                let patch = Patch {
+                    face,
+                    level: LEVEL,
+                    i,
+                    j,
+                };
+                for edge in EDGES {
+                    let there = patch.neighbour(edge);
+                    if there.patch.face != face {
+                        across_faces += 1;
+                    }
+                    for k in 0..=SIDE {
+                        let mine = along(&patch, edge, k);
+                        let theirs = along(&there.patch, there.edge, k);
+                        for c in 0..3 {
+                            assert_eq!(
+                                mine[c].to_bits(),
+                                theirs[c].to_bits(),
+                                "{patch:?} / {edge:?}: вузол {k} розійшовся з \
+                                 {:?} / {:?} у компоненті {c}",
+                                there.patch,
+                                there.edge
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Двадцять чотири ребра куба (по чотири на грань), на кожному `side`
+    // патчів, і кожне ребро рахується з обох боків.
+    assert_eq!(
+        across_faces,
+        FACES * 4 * side as usize,
+        "через ребра куба пройшло не стільки сусідств, скільки їх є"
+    );
+}
+
+/// Зшите ребро віддає рівно парні вузли — і рівно на тих ребрах, що в масці.
+///
+/// Дві половини, і без другої перша нічого не варта: набір, який викидає
+/// непарні вузли **скрізь**, пройшов би перевірку «на зшитому ребрі їх
+/// немає» і зіпсував би всі внутрішні шви.
+#[test]
+fn a_stitched_edge_keeps_only_its_even_nodes() {
+    let stride = (SIDE + 1) as u32;
+    let node = |a: usize, b: usize| (a * (SIDE + 1) + b) as u32;
+
+    for mask in 0..16u8 {
+        let indices = engine::cubesphere::indices(mask);
+        assert_eq!(indices.len(), SIDE * SIDE * 6);
+
+        let used: std::collections::HashSet<u32> = indices.iter().copied().collect();
+        for (edge, along) in [
+            (Edge::AMin, 0),
+            (Edge::AMax, 1),
+            (Edge::BMin, 2),
+            (Edge::BMax, 3),
+        ] {
+            let stitched = mask & edge.bit() != 0;
+            for k in 1..SIDE {
+                let index = match along {
+                    0 => node(0, k),
+                    1 => node(SIDE, k),
+                    2 => node(k, 0),
+                    _ => node(k, SIDE),
+                };
+                let odd = k % 2 == 1;
+                let expected = !(stitched && odd);
+                assert_eq!(
+                    used.contains(&index),
+                    expected,
+                    "маска {mask:04b}, {edge:?}, вузол {k}: очікували \
+                     {expected}, а вузол {}",
+                    if used.contains(&index) {
+                        "малюється"
+                    } else {
+                        "зник"
+                    }
+                );
+            }
+        }
+
+        // Внутрішні вузли лишаються на місці за будь-якої маски.
+        for a in 1..SIDE {
+            for b in 1..SIDE {
+                assert!(
+                    used.contains(&node(a, b)),
+                    "маска {mask:04b} загубила внутрішній вузол ({a}, {b})"
+                );
+            }
+        }
+        assert!(indices.iter().all(|&i| i < stride * stride));
+    }
 }

@@ -193,3 +193,169 @@ fn from_far_away_the_planet_is_six_faces() {
         selection.patches.len()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Зшивання рівнів (R2b)
+
+use engine::cubesphere::{self, Patch, EDGES};
+use std::collections::HashMap;
+
+/// Сусіди в наборі різняться не більш ніж на рівень — і вирівнювання таки
+/// довелося робити.
+///
+/// Друга половина обов'язкова: набір, у якому всі патчі одного рівня,
+/// проходить першу перевірку й нічого не доводить. Тому поруч стоїть число
+/// `balanced` — скільки патчів довелося додати понад те, що просив критерій
+/// похибки. Нуль на всіх висотах означав би, що правило перевіряється на
+/// матеріалі, який його не порушує.
+#[test]
+fn no_neighbour_in_the_set_is_two_levels_away() {
+    let focal = lod::focal_px(FOV_Y, HEIGHT_PX);
+    let mut added = 0;
+
+    for altitude in [1.0e5, 3.0e5, 1.0e6, 1.0e7, 4.0e8] {
+        let selection = lod::select(&earth(), &above(altitude), focal);
+        let leaves: std::collections::HashSet<Patch> = selection.patches.iter().copied().collect();
+
+        for patch in &selection.patches {
+            for edge in EDGES {
+                let mut cell = patch.neighbour(edge).patch;
+                // Лист, що накриває сусідню клітинку, — вона сама або предок.
+                let level = loop {
+                    if leaves.contains(&cell) {
+                        break Some(cell.level);
+                    }
+                    match cell.parent() {
+                        Some(up) => cell = up,
+                        None => break None,
+                    }
+                };
+                // `None` — на тому боці набір дрібніший; тоді різницю міряє
+                // той бік, і міряє її так само.
+                if let Some(level) = level {
+                    assert!(
+                        patch.level - level <= 1,
+                        "на висоті {altitude:.1e} м {patch:?} сусідить через \
+                         {edge:?} з рівнем {level}"
+                    );
+                }
+            }
+        }
+
+        println!(
+            "  {altitude:.1e} м: {} патчів, з них {} додало вирівнювання",
+            selection.patches.len(),
+            selection.balanced
+        );
+        added += selection.balanced;
+    }
+
+    assert!(
+        added > 0,
+        "вирівнювання не додало жодного патча на жодній висоті — правило \
+         перевірене на матеріалі, який його не порушує"
+    );
+}
+
+/// **Головна перевірка кроку: поверхня замкнена.**
+///
+/// Тріщина — це діра, а діра — це ребро трикутника, у якого немає пари. На
+/// замкненій поверхні кожне неорієнтоване ребро належить рівно двом
+/// трикутникам, і це твердження не знає ні про рівні, ні про грані, ні про
+/// маски: воно ловить і незшитий стик рівнів, і переплутану грань, і кут
+/// куба, де сходяться **три** патчі замість чотирьох.
+///
+/// Вершини порівнюються **бітами**, не з допуском. Допуск тут означав би, що
+/// тріщина в мікрометр — не тріщина, а вона саме тріщина: розрив у пікселі
+/// з'являється не від розміру щілини, а від того, що фон видно наскрізь.
+///
+/// Вироджені трикутники (двоє з трьох вузлів збіглися) відкидаються: саме
+/// ними зшивання й прибирає непарний вузол, растеризатор їх не малює, і в
+/// підрахунку ребер вони були б шумом.
+#[test]
+fn the_stitched_surface_has_no_edge_without_a_pair() {
+    let focal = lod::focal_px(FOV_Y, HEIGHT_PX);
+
+    for altitude in [1.0e5, 3.0e5, 2.0e6] {
+        let selection = lod::select(&earth(), &above(altitude), focal);
+
+        // Позиція → номер. Бітова рівність стає рівністю номерів, і далі
+        // ребра рахуються цілими числами.
+        let mut ids: HashMap<[u64; 3], u32> = HashMap::new();
+        let mut edges: HashMap<(u32, u32), u32> = HashMap::new();
+        let mut used: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut degenerate = 0;
+        let mut triangles = 0;
+
+        for (patch, &mask) in selection.patches.iter().zip(&selection.masks) {
+            // Одинична сфера: множник радіуса нічого не додає до топології.
+            let nodes: Vec<u32> = {
+                let mut v = Vec::with_capacity((SIDE + 1) * (SIDE + 1));
+                for a in 0..=SIDE {
+                    for b in 0..=SIDE {
+                        let p = patch.vertex(a, b, 1.0);
+                        let key = [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()];
+                        let next = ids.len() as u32;
+                        v.push(*ids.entry(key).or_insert(next));
+                    }
+                }
+                v
+            };
+
+            for tri in cubesphere::indices(mask).chunks(3) {
+                let t = [
+                    nodes[tri[0] as usize],
+                    nodes[tri[1] as usize],
+                    nodes[tri[2] as usize],
+                ];
+                if t[0] == t[1] || t[1] == t[2] || t[2] == t[0] {
+                    degenerate += 1;
+                    continue;
+                }
+                triangles += 1;
+                used.extend(t);
+                for (x, y) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                    *edges.entry((x.min(y), x.max(y))).or_default() += 1;
+                }
+            }
+        }
+
+        let lonely: Vec<_> = edges.iter().filter(|(_, &n)| n != 2).collect();
+        println!(
+            "  {altitude:.1e} м: {} патчів, {triangles} трикутників, \
+             {degenerate} вироджених, {} ребер, {} без пари",
+            selection.patches.len(),
+            edges.len(),
+            lonely.len()
+        );
+        assert!(
+            lonely.is_empty(),
+            "на висоті {altitude:.1e} м {} ребер належать не двом трикутникам \
+             — це тріщина",
+            lonely.len()
+        );
+
+        // Ейлерова характеристика сфери: V − E + F = 2. Замкненість без неї
+        // була б і в поверхні, склеєної сама з собою навиворіт.
+        //
+        // Вершини рахуються **вжиті**, а не всі: непарний вузол зшитого ребра
+        // лишається в сітці (індекси адресують її цілком), але не належить
+        // жодному трикутнику — і в топології його немає. Різниця тут не
+        // косметична: саме вона дорівнює кількості вироджених трикутників, і
+        // саме з неї видно, що зшивання прибрало рівно те, що збиралось.
+        assert_eq!(
+            ids.len() - used.len(),
+            degenerate,
+            "викинутих вузлів і вироджених трикутників має бути порівну"
+        );
+        let v = used.len() as i64;
+        let e = edges.len() as i64;
+        let f = triangles as i64;
+        assert_eq!(
+            v - e + f,
+            2,
+            "на висоті {altitude:.1e} м V − E + F = {}, а сфера дає 2",
+            v - e + f
+        );
+    }
+}
