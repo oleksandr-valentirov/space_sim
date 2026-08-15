@@ -220,6 +220,21 @@ impl Ephemeris {
     /// [`CoreError::InvalidArg`] — невідоме тіло або час поза проміжком
     /// ассета. На відміну від радіуса й `mu`, тут є час, а отже й спосіб не
     /// вдатися.
+    /// Синодичний фрейм пари `primary`-`secondary` на момент `t`
+    /// (ROADMAP-UI.md, U6b1).
+    ///
+    /// Метод ефемериди, а не вільна функція: фрейм будується **з неї** — з
+    /// позицій і швидкостей обох тіл у цю мить.
+    pub fn synodic_frame(&self, primary: i32, secondary: i32, t: f64) -> Result<SynodicFrame> {
+        let mut raw = core_sys::SynodicFrame::default();
+        // SAFETY: `self.ctx` дійсний, доки живий `self`; вихідний вказівник
+        // веде на локальну змінну, і саме C заповнює її цілком — тому
+        // розкладка структури звірена бітово (`core-sys/tests/ffi.rs`).
+        let code = unsafe { core_sys::frame_synodic(self.ctx, primary, secondary, t, &mut raw) };
+        check(code)?;
+        Ok(SynodicFrame { raw })
+    }
+
     pub fn body_orientation(&self, body: i32, t: f64) -> Result<Quat> {
         let mut out = core_sys::Quat::default();
         // SAFETY: контекст живий (позичений через &self, звільняє лише Drop),
@@ -958,4 +973,45 @@ pub fn cr3bp_zvc_radius(mu: f64, c: f64, from: Vec3d, dir_unit: Vec3d, r_max: f6
     let code = unsafe { core_sys::cr3bp_zvc_radius(mu, c, from, dir_unit, r_max, &mut r) };
     check(code)?;
     Ok(r)
+}
+
+/// Синодичний фрейм справжньої пари тіл на конкретну мить
+/// (`core/frame.h`, ROADMAP C4; на межі — U6b1).
+///
+/// Тримає структуру C цілою й не дає читати з неї те, чого ніхто не питав:
+/// назовні йдуть три величини, які визначають масштаб, і сам перехід.
+#[derive(Clone, Copy, Debug)]
+pub struct SynodicFrame {
+    raw: core_sys::SynodicFrame,
+}
+
+impl SynodicFrame {
+    /// `L` — відстань між тілами в цю мить, метри.
+    pub fn length(&self) -> f64 {
+        self.raw.length
+    }
+
+    /// `|ω|`, рад/с: одна безрозмірна одиниця часу.
+    pub fn rate(&self) -> f64 {
+        self.raw.rate
+    }
+
+    /// `μ` пари.
+    pub fn mass_ratio(&self) -> f64 {
+        self.raw.mu
+    }
+
+    /// Інерціальний стан у метрах → безрозмірний стан CR3BP.
+    ///
+    /// **Це не просто поворот осей.** Разом із координатами перетворюється й
+    /// швидкість: у обертовому фреймі до неї додається `−ω × r`, і саме тому
+    /// перетворення живе в C, а не поруч із камерою.
+    pub fn from_inertial(&self, state: &State) -> State {
+        let mut out = State::default();
+        // SAFETY: обидва вказівники ведуть на локальні змінні, живі до кінця
+        // виклику; функція нічого не виділяє й коду не повертає — заміна
+        // координат не вдатися не може.
+        unsafe { core_sys::frame_from_inertial(&self.raw, state, &mut out) };
+        out
+    }
 }

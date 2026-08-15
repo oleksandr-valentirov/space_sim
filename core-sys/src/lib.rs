@@ -30,6 +30,36 @@ pub const CORE_ERR_BUFFER_TOO_SMALL: CoreResult = 1;
 pub const CORE_ERR_TOLERANCE_NOT_MET: CoreResult = 2;
 pub const CORE_ERR_INVALID_ARG: CoreResult = 3;
 
+/// Синодичний фрейм із `core/frame.h`.
+///
+/// Поля оголошені всі й у тому самому порядку, хоч Rust читає з них небагато:
+/// C пише в цю структуру, і структура меншого розміру означала б запис за її
+/// межі. Тобто тут помилка в розкладці — це не дивне число, а зіпсована
+/// пам'ять.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SynodicFrame {
+    /// Барицентр пари, інерціально, метри.
+    pub origin: Vec3d,
+    pub origin_rate: Vec3d,
+    /// Ортонормований базис в інерціальних компонентах.
+    pub x: Vec3d,
+    pub y: Vec3d,
+    pub z: Vec3d,
+    /// Кутова швидкість базису, рад/с.
+    pub omega: Vec3d,
+    /// `L` — відстань між тілами, метри.
+    pub length: f64,
+    /// `dL/dt`, м/с: у CR3BP нуль, тут ні.
+    pub length_rate: f64,
+    /// `|omega|`, рад/с — одна безрозмірна одиниця часу.
+    pub rate: f64,
+    /// `mu_S / (mu_P + mu_S)`.
+    pub mu: f64,
+    /// Момент, на який фрейм побудовано.
+    pub t: f64,
+}
+
 /// `Vec3d` з `core/vec3.h`. Метри або метри за секунду.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -378,6 +408,27 @@ extern "C" {
         out_cap: usize,
         out_count: *mut usize,
     ) -> CoreResult;
+
+    /// Синодичний фрейм справжньої пари тіл на момент `t`
+    /// (`core/frame.h`, ROADMAP C4).
+    ///
+    /// Потрібен там, де потрібна синодична **швидкість**: позицію гра рахує
+    /// сама з того, що лежить у семплі, а швидкість у обертовому фреймі — це
+    /// вже `−ω × r` поверх повороту, тобто фізика, а не перекладання осей
+    /// (ROADMAP-UI.md, U6b1).
+    pub fn frame_synodic(
+        eph: *const EphemerisCtx,
+        primary: c_int,
+        secondary: c_int,
+        t: f64,
+        out: *mut SynodicFrame,
+    ) -> CoreResult;
+
+    /// Інерціальний стан у метрах → безрозмірний стан CR3BP цього фрейму.
+    ///
+    /// Не повертає коду: фрейм або побудований, або його немає, а сама заміна
+    /// координат не вдатися не може.
+    pub fn frame_from_inertial(f: *const SynodicFrame, input: *const State, out: *mut State);
 
     /// `mu` системи двох тіл: `m2 / (m1 + m2)`, безрозмірне
     /// (`core/cr3bp.h`, ROADMAP C1).

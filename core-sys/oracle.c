@@ -29,6 +29,8 @@
  *   lag  <point> <x> <y> <z>                     точка Лагранжа
  *   zvc  <c> <result> <r>                        промінь до кривої нульової
  *                                                швидкості
+ *   syn  <t> <L> <dL/dt> <rate> <mu>             синодичний фрейм пари
+ *   fri  <t> <x> <y> <z> <vx> <vy> <vz>          Місяць у власному фреймі
  *
  * Прогонів два: без подій до заданого часу і з озброєним перицентром.
  * Другий важливий окремо — він проходить через `CoreEvent`, а структура з
@@ -42,6 +44,7 @@
 
 #include "cr3bp.h"
 #include "ephemeris.h"
+#include "frame.h"
 #include "prop.h"
 
 #include <stdio.h>
@@ -311,6 +314,35 @@ int main(void)
                                                  &r_out);
             printf("zvc %.17g %d %.17g\n", c1 + DELTA[k], (int)result, r_out);
         }
+    }
+
+    /* Синодичний фрейм і перехід у нього (ROADMAP-UI.md, U6b1).
+     *
+     * Друкується не сам базис, а величини, які його визначають, і стан
+     * Місяця, переведений у власний фрейм: там він за побудовою стоїть у
+     * (1 - mu, 0, 0) майже нерухомо, і будь-яка помилка в розкладці
+     * SynodicFrame зіпсувала б саме це. Структуру C заповнює сам, тож
+     * розбіжність у розмірі означала б запис за межі, а не дивне число. */
+    for (size_t k = 0; k < N_TIMES; k++) {
+        SynodicFrame f;
+        if (frame_synodic(eph, 3, 4, TIMES[k], &f) != CORE_OK) {
+            fprintf(stderr, "oracle: synodic frame at t = %g failed\n", TIMES[k]);
+            eph_free(eph);
+            return 1;
+        }
+        printf("syn %.17g %.17g %.17g %.17g %.17g\n", TIMES[k], f.length,
+               f.length_rate, f.rate, f.mu);
+
+        State moon, moon_syn;
+        if (eph_body_state(eph, 4, TIMES[k], &moon) != CORE_OK) {
+            fprintf(stderr, "oracle: moon at t = %g failed\n", TIMES[k]);
+            eph_free(eph);
+            return 1;
+        }
+        frame_from_inertial(&f, &moon, &moon_syn);
+        printf("fri %.17g %.17g %.17g %.17g %.17g %.17g %.17g\n", TIMES[k],
+               moon_syn.r.x, moon_syn.r.y, moon_syn.r.z,
+               moon_syn.v.x, moon_syn.v.y, moon_syn.v.z);
     }
 
     if (!propagate(eph)) {

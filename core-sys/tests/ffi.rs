@@ -1058,3 +1058,91 @@ fn cr3bp_crosses_the_boundary_unchanged() {
         }
     }
 }
+
+/// Синодичний фрейм перетинає межу цілим (ROADMAP-UI.md, U6b1).
+///
+/// `SynodicFrame` — найбільша структура межі: шість `Vec3d` і п'ять `double`,
+/// які **C заповнює сам**. Тобто помилка в розкладці тут не дає дивного
+/// числа — вона дає запис за межі структури. Тому звірка не лише бітова: поруч
+/// стоїть твердження, яке ловить саме зсув полів — Місяць у власному фреймі
+/// зобов'язаний стояти в `(1 − μ, 0, 0)`.
+#[test]
+fn the_synodic_frame_crosses_the_boundary_whole() {
+    const EARTH: i32 = 3;
+    const MOON: i32 = 4;
+
+    let records = oracle_records();
+    let syn = tagged(&records, "syn");
+    let fri = tagged(&records, "fri");
+    assert_eq!(syn.len(), fri.len(), "оракул мав дати пару на кожен момент");
+    assert!(!syn.is_empty());
+
+    unsafe {
+        let ctx = load_fixture();
+
+        for (frame_row, moon_row) in syn.iter().zip(fri.iter()) {
+            let t = frame_row.values[0];
+
+            let mut frame = core_sys::SynodicFrame::default();
+            let code = core_sys::frame_synodic(ctx, EARTH, MOON, t, &mut frame);
+            assert_eq!(code, CORE_OK, "фрейм на t = {t} не побудувався");
+
+            for (name, from_c, from_rust) in [
+                ("length", frame_row.values[1], frame.length),
+                ("length_rate", frame_row.values[2], frame.length_rate),
+                ("rate", frame_row.values[3], frame.rate),
+                ("mu", frame_row.values[4], frame.mu),
+            ] {
+                assert_eq!(
+                    from_c.to_bits(),
+                    from_rust.to_bits(),
+                    "{name} на t = {t}: C дав {from_c:e}, межа {from_rust:e}"
+                );
+            }
+
+            let mut moon = State::default();
+            assert_eq!(eph_body_state(ctx, MOON, t, &mut moon), CORE_OK);
+            let mut moon_syn = State::default();
+            core_sys::frame_from_inertial(&frame, &moon, &mut moon_syn);
+
+            // Порівнюються шість чисел, а не `State` цілком: перше поле
+            // рядка оракула — момент запиту, а не `t` результату
+            // (`frame_from_inertial` кладе туди безрозмірний час фрейму).
+            for (k, (name, from_rust)) in [
+                ("x", moon_syn.r.x),
+                ("y", moon_syn.r.y),
+                ("z", moon_syn.r.z),
+                ("vx", moon_syn.v.x),
+                ("vy", moon_syn.v.y),
+                ("vz", moon_syn.v.z),
+            ]
+            .iter()
+            .enumerate()
+            {
+                let from_c = moon_row.values[k + 1];
+                assert_eq!(
+                    from_c.to_bits(),
+                    from_rust.to_bits(),
+                    "Місяць у власному фреймі, {name} на t = {t}: \
+                     C дав {from_c:e}, межа {from_rust:e}"
+                );
+            }
+
+            // І зміст, а не лише біти: за побудовою фрейму Місяць стоїть саме
+            // тут. Зсунуте поле структури зіпсувало б базис, і це побачить
+            // рівно ця нерівність, а не бітова звірка вище.
+            assert!(
+                (moon_syn.r.x - (1.0 - frame.mu)).abs() < 1e-12,
+                "Місяць у власному фреймі опинився в x = {}",
+                moon_syn.r.x
+            );
+            assert!(
+                moon_syn.r.y.abs() < 1e-12 && moon_syn.r.z.abs() < 1e-12,
+                "Місяць зійшов з осі свого ж фрейму: {:?}",
+                (moon_syn.r.y, moon_syn.r.z)
+            );
+        }
+
+        eph_free(ctx);
+    }
+}
