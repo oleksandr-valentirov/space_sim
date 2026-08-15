@@ -517,10 +517,55 @@ impl State {
                     self.notice = Some(tr(self.language, TextKey::NoGridYet).to_string());
                 }
             }
-            // Вибір вікна поки що лишається на екрані: перетворити його на
-            // маневр — окремий крок із власним оракулом (U5d).
-            hud::PorkchopAction::Choose(..) => {}
+            hud::PorkchopAction::Choose(i, j) => self.choose_window(i, j, snapshot),
         }
+    }
+
+    /// Обране вікно стає маневром у чернетці плану (ROADMAP-UI.md, U5d).
+    ///
+    /// Нічого не рахується заново, і в цьому суть: клітинка вже несе `dv` —
+    /// той самий імпульс, яким її й знайшли (`porkchop::Cell`). Другий
+    /// розв'язок Ламберта тут означав би два числа, які **мусять** збігатися,
+    /// а отже колись розійдуться; крім того, він потребував би ефемериди в
+    /// кадрі, чого правило 5 не дозволяє.
+    ///
+    /// Маневр іде в інерціальному фреймі, бо саме в ньому клітинку й
+    /// порахували. Перекладати його у VNB означало б переписати те, що вже
+    /// точне, через базис, який ще треба звірити.
+    fn choose_window(&mut self, i: usize, j: usize, snapshot: &crate::snapshot::WorldSnapshot) {
+        let Some(grid) = self.grid.as_ref() else {
+            return;
+        };
+        let (Some(&t1), Some(cell)) = (grid.t1.get(i), grid.at(i, j)) else {
+            // Дірка — не вибір. Панель уже сказала про це словами, і мовчазна
+            // відсутність маневру тут узгоджена з тим, що вона показала.
+            self.notice = Some(tr(self.language, TextKey::NoSolution).to_string());
+            return;
+        };
+
+        // Маневр у минулому світ відхилить (`PlanRejected::InThePast`), і
+        // краще сказати це до відмови, ніж після.
+        if t1 <= snapshot.t {
+            self.notice = Some(tr(self.language, TextKey::RejectedInThePast).to_string());
+            return;
+        }
+
+        // Заміна, а не додавання: плот — це вибір **одного** вікна, і другий
+        // клік означає «не те, а оце». Накопичувати маневри — робота
+        // редактора плану, де їх видно списком (U4a).
+        self.draft.manoeuvres.retain(|m| m.t != t1);
+        self.draft.manoeuvres.push(Manoeuvre {
+            t: t1,
+            dv: cell.dv,
+            frame: crate::plan::Frame::Inertial,
+        });
+        self.notice = None;
+
+        // І одразу показати, що з цього вийде **насправді**: клітинка —
+        // кеплерівська двотілова оцінка, а прев'ю рахується повною моделлю
+        // сил. Різниця між ними видима на екрані, і це чесно: сітка обирає
+        // вікно, а не обіцяє траєкторію.
+        self.apply_plan_action(hud::PlanAction::Preview(self.draft.plan()), snapshot);
     }
 
     /// Осі сітки: моменти відходу з траєкторії, перельоти — від пів доби.

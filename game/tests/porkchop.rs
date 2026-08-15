@@ -383,6 +383,163 @@ fn a_window_past_the_end_of_the_asset_is_a_hole_not_a_bargain() {
     );
 }
 
+/// Обране вікно справді доводить апарат до Місяця (ROADMAP-UI.md, U5d).
+///
+/// Наскрізна перевірка, і єдина, яка не вірить сітці на слово: стани відходу
+/// беруться з живої траєкторії, маневр — із клітинки, а летить апарат
+/// **повною моделлю сил** у нитці планувальника. Кеплер тут ніде не бере
+/// участі; питання рівно одне — чи прилетів.
+///
+/// Число, заради якого тест і написаний, — у друку: наскільки двотіловий
+/// патч-конік розминається з реальністю. Це не похибка й не борг, а ціна
+/// самого інструмента: сітка **обирає вікно**, а траєкторію потім уточнює
+/// диференціальна корекція (PROJECT.md §8). Тому й допуск нижче грубий —
+/// він стверджує «в той бік і близько», а не «влучив».
+#[test]
+fn a_chosen_window_flies_the_vessel_to_the_moon() {
+    let sim = game::sim::Sim::spawn(mission::world(&mission::default_asset()).expect("світ"))
+        .expect("нитка симуляції");
+    sim.send(game::sim::Command::TogglePause);
+
+    // Дати прогнозу відійти якнайдалі: вісь відходу не має права вилізти за
+    // пораховане (`app::grid_request`), інакше стани відходу — вигадка.
+    wait_until("горизонт", || {
+        let s = sim.snapshot();
+        s.vessels[0].computed_to > s.t + 30.0 * DAY
+    });
+
+    let snapshot = sim.snapshot();
+    let vessel = &snapshot.vessels[0];
+    let eph = sim.ephemeris();
+    let planner = Planner::spawn(eph.clone(), mission::config()).expect("планувальник");
+
+    // Точнісінько те, що робить `app::grid_request`, тільки з чистого коду
+    // тесту: стани відходу — з траєкторії, крок — щоб уміститися в пораховане.
+    let span = vessel.computed_to - snapshot.t;
+    let step = (span / 40.0).min(DAY);
+    let depart: Vec<core_rs::State> = (0..40)
+        .map(|i| game::leg::state_at(&vessel.legs, vessel.start, snapshot.t + i as f64 * step))
+        .collect();
+
+    let grid = ask_for(
+        &planner,
+        &GridRequest {
+            id: 11,
+            depart,
+            arrive_body: MOON,
+            centre_body: EARTH,
+            mu: eph.body_mu(EARTH),
+            prograde: true,
+            tof: (1..=28).map(|j| f64::from(j) * 0.5 * DAY).collect(),
+        },
+    );
+
+    let (i, j, cell) = grid.best().expect("хоч одне вікно");
+    let (t1, tof) = (grid.t1[i], grid.tof[j]);
+    println!(
+        "  обране вікно: відхід на добі {:.2}, переліт {:.2} доби, \
+         маневр {:.1} м/с, прихід {:.1} м/с",
+        (t1 - mission::start().t) / DAY,
+        tof / DAY,
+        cell.dv_m_s,
+        cell.v_inf_arrive
+    );
+
+    // Маневр рівно такий, який покладе в чернетку `app::choose_window`.
+    let mut plan = game::plan::Plan::new();
+    plan.insert(game::plan::Manoeuvre {
+        t: t1,
+        dv: cell.dv,
+        frame: game::plan::Frame::Inertial,
+    });
+
+    let restart = game::leg::restart_at(&vessel.legs, vessel.start, t1);
+    planner.request(Request::Preview(PreviewRequest {
+        id: 12,
+        vessel: vessel.id,
+        from: restart.state,
+        step: restart.step,
+        plan,
+        params: vessel.params,
+        horizon_end: vessel.horizon_end.max(t1 + tof + DAY),
+    }));
+
+    let mut preview = None;
+    wait_until("прев'ю обраного вікна", || {
+        if let Some(got) = planner.latest() {
+            preview = Some(got);
+        }
+        preview.as_ref().is_some_and(|p| p.id == 12)
+    });
+    let preview = preview.expect("щойно перевірили");
+
+    // Найближчий підхід до Місяця — по семплах прев'ю. Позицію Місяця несе
+    // сам семпл (`leg::Sample::moon`), тож ефемерида тут не потрібна.
+    let closest = |legs: &[std::sync::Arc<game::leg::Leg>]| -> (f64, f64) {
+        let mut best = (f64::INFINITY, 0.0);
+        for leg in legs {
+            for sample in &leg.samples {
+                if sample.state.t < t1 {
+                    continue;
+                }
+                let d = ((sample.state.r.x - sample.moon[0]).powi(2)
+                    + (sample.state.r.y - sample.moon[1]).powi(2)
+                    + (sample.state.r.z - sample.moon[2]).powi(2))
+                .sqrt();
+                if d < best.0 {
+                    best = (d, sample.state.t);
+                }
+            }
+        }
+        best
+    };
+
+    let (with_burn, when) = closest(&preview.legs);
+    let (without_burn, _) = closest(&vessel.legs);
+
+    // І окремо — відстань саме в ту мить, яку обіцяла клітинка. Найближчий
+    // підхід може трапитися й раніше: повна модель веде апарат інакше, ніж
+    // двотілова дуга, і різниця між цими двома числами — це і є те, що
+    // потім прибирає корекція.
+    let at_arrival = preview
+        .legs
+        .iter()
+        .flat_map(|leg| leg.samples.iter())
+        .min_by(|a, b| {
+            let (x, y) = (
+                (a.state.t - (t1 + tof)).abs(),
+                (b.state.t - (t1 + tof)).abs(),
+            );
+            x.partial_cmp(&y).expect("час — не NaN")
+        })
+        .map(|s| {
+            ((s.state.r.x - s.moon[0]).powi(2)
+                + (s.state.r.y - s.moon[1]).powi(2)
+                + (s.state.r.z - s.moon[2]).powi(2))
+            .sqrt()
+        })
+        .expect("прев'ю не порожнє");
+    println!("  у мить обіцяного приходу: {:.0} км", at_arrival / 1000.0);
+
+    println!(
+        "  найближчий підхід: {:.0} км на добі {:.2} (без маневру — {:.0} км)",
+        with_burn / 1000.0,
+        (when - mission::start().t) / DAY,
+        without_burn / 1000.0
+    );
+
+    assert!(
+        with_burn < without_burn,
+        "з маневром апарат підійшов не ближче, ніж без нього: {with_burn:.3e} \
+         проти {without_burn:.3e} м — це не переліт до Місяця"
+    );
+    assert!(
+        with_burn < 1.0e8,
+        "найближчий підхід {with_burn:.3e} м — це чверть відстані до Місяця й \
+         далі, тобто вікно нікуди не веде"
+    );
+}
+
 /// Сітка не виламує правила скасування, спільного на два види роботи.
 ///
 /// Порожні осі — це запит ні про що, і відповіді на нього немає (нитка не
