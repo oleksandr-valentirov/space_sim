@@ -21,11 +21,13 @@
 use dem_cook::cook::build;
 use dem_cook::Grid;
 use engine::camera::Camera;
+use engine::cubesphere::{Patch, FACES, SIDE};
 use engine::frame::{self, Frame};
 use engine::gpu::Gpu;
+use engine::lod;
 use engine::scene::{Body, Scene, TerrainId, TileSet};
 use engine::shot::{self, Shot};
-use engine::tiles::Terrain;
+use engine::tiles::{Terrain, NODES};
 use std::path::Path;
 
 const SIZE: u32 = 256;
@@ -285,6 +287,281 @@ fn on_the_terminator_the_relief_shows_as_shade() {
         rough > smooth * 3,
         "рельєф дав варіацію {rough} проти {smooth} у гладкої — тіней від \
          нахилу не видно"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Підпрямокутник чужого тайла (R7a, GPU-половина)
+
+/// Скільки рівнів має піраміда, якої патчам **не вистачає**.
+const SHALLOW: u32 = 2;
+/// Скільки рівнів має піраміда, у якій кожен патч має **власний** тайл.
+const DEEP: u32 = 4;
+/// Метрів в одиниці зберігання. Один метр: тоді одиниці зберігання й метри —
+/// те саме число, і звірка на цілість нижче читається без переведення.
+const UNIT_M: f32 = 1.0;
+/// Крок висоти у вузлі мілкої піраміди, одиниці зберігання.
+///
+/// **Шістнадцять, і це не округле число «про запас».** Патч рівня 3 читає
+/// тайл рівня 1, тобто ваги білінійної вибірки кратні `1/4` по кожній осі, а
+/// разом — `1/16`. Значення, кратні шістнадцяти, роблять кожен інтерпольований
+/// вузол **цілим**, тож глибокий тайл зберігає його без округлення й
+/// порівняння кадрів лишається бітовим.
+const STEP_UNITS: i32 = 16;
+/// Сторона кадру цієї перевірки — більша за спільну [`SIZE`], і навмисно.
+///
+/// Рівень вибирається за екранною похибкою, тож глибину набору купує або
+/// низька висота, або високий кадр. Низька коштувала б камерою всередині
+/// рельєфу (перепад ±1 км), високий кадр не коштує нічого, крім зчитування.
+/// Тисяча двадцять чотири піксели дають рівень 3 із двадцяти кілометрів —
+/// тобто **дві** сходинки нижче за піраміду, а не одну: модуль у зсуві вікна
+/// перевіряється там, де він уже не зводиться до `i % 2`.
+const SUBRECT_SIZE: u32 = 1024;
+
+/// Псевдовипадкова висота вузла грані — детермінована функція його координат.
+///
+/// Не константа й не пандус: обидва дали б поверхню, яку освітлення не
+/// відрізнить від гладкої сфери (перевірено — пандус на 512 м не змінив
+/// **жодного** пікселя, бо його нахил 2·10⁻⁴). Тут перепад ±1024 м лягає на
+/// клітинку рівня 1 завширшки 42 км, тобто нахил ~0.05 — освітлення це вже
+/// бачить.
+fn seed_units(face: usize, u: u32, v: u32) -> i16 {
+    let mut h = (face as u32).wrapping_mul(0x9E37_79B1)
+        ^ u.wrapping_mul(0x85EB_CA6B)
+        ^ v.wrapping_mul(0xC2B2_AE35);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2545_F491);
+    h ^= h >> 13;
+    (((h % 129) as i32 - 64) * STEP_UNITS) as i16
+}
+
+/// Мілка піраміда: власні дані на обох рівнях, глибше — нічого.
+///
+/// Поле задане на сітці **найглибшого** рівня (`SHALLOW − 1`), а грубіший
+/// рівень бере з неї кожен другий вузол. Так тіло лишається одним тілом, а не
+/// двома незалежними шумами на двох рівнях.
+fn shallow_relief() -> Terrain {
+    let mut grids = Vec::with_capacity(Terrain::count(SHALLOW));
+    for level in 0..SHALLOW {
+        let side = 1u32 << level;
+        // У скільки разів вузли цього рівня рідші за сітку, на якій задано поле.
+        let stride = 1u32 << (SHALLOW - 1 - level);
+        for face in 0..FACES {
+            for i in 0..side {
+                for j in 0..side {
+                    let mut grid = Vec::with_capacity(NODES * NODES);
+                    for a in 0..NODES {
+                        for b in 0..NODES {
+                            let u = (i * SIDE as u32 + a as u32) * stride;
+                            let v = (j * SIDE as u32 + b as u32) * stride;
+                            grid.push(seed_units(face, u, v));
+                        }
+                    }
+                    grids.push(grid);
+                }
+            }
+        }
+    }
+    Terrain::build(SHALLOW, MOON_RADIUS_M, UNIT_M, &grids)
+}
+
+/// Глибока піраміда **того самого поля**: кожен її тайл — це те, що
+/// [`Terrain::height_m`] читає з мілкої для того самого патча.
+///
+/// Тобто питання, яке ставить тест, звучить так: чи прочитає GPU з мілкої
+/// піраміди те саме, що CPU вже поклав у глибоку. Рівні 0 і 1 виходять
+/// дослівною копією (там `height_m` бере вузол точно), рівні 2 і 3 —
+/// білінійним підпрямокутником предка.
+fn deep_relief(shallow: &Terrain) -> Terrain {
+    let mut grids = Vec::with_capacity(Terrain::count(DEEP));
+    for level in 0..DEEP {
+        let side = 1u32 << level;
+        for face in 0..FACES {
+            for i in 0..side {
+                for j in 0..side {
+                    let patch = Patch { face, level, i, j };
+                    let mut grid = Vec::with_capacity(NODES * NODES);
+                    for a in 0..NODES {
+                        for b in 0..NODES {
+                            let value = shallow.height_m(&patch, a, b) / f64::from(UNIT_M);
+                            // Сторож на самій конструкцію фікстури: якщо крок
+                            // висоти колись перестане ділитися на ваги, тайл
+                            // почне округлятись і бітова рівність нижче
+                            // зламається з зовсім іншої причини.
+                            assert_eq!(
+                                value,
+                                value.round(),
+                                "{patch:?} вузол ({a}, {b}): {value} не ціле — \
+                                 STEP_UNITS не покриває ваг вибірки"
+                            );
+                            grid.push(value as i16);
+                        }
+                    }
+                    grids.push(grid);
+                }
+            }
+        }
+    }
+    Terrain::build(DEEP, MOON_RADIUS_M, UNIT_M, &grids)
+}
+
+/// **Патч, глибший за піраміду, малює ту саму поверхню, що й патч із власним
+/// тайлом** (R7a).
+///
+/// Це та половина оракула R7a, якої на момент кроку написати не вдалось: LOD
+/// не спускався глибше за нульовий рівень, тож патчів, глибших за піраміду, у
+/// кадрі не виникало взагалі. Борг D13 це закрив, і перевірка стала можлива.
+///
+/// **Твердження — бітова рівність двох кадрів,** знятих із однієї камери на
+/// двох пірамідах **одного поля висот**: мілкій, де патч читає підпрямокутник
+/// предка, і глибокій, де той самий патч має власний тайл, заповнений тим, що
+/// `Terrain::height_m` прочитала з мілкої. Тобто GPU звіряється не з другою
+/// копією формули, а з тією самою CPU-функцією, двійником якої оголошено
+/// шейдер. Округлення на цьому шляху немає взагалі
+/// ([`STEP_UNITS`]), тож і допуску не треба.
+///
+/// Помилка, яку це ловить, — рівно та, заради якої крок робився: патч, що
+/// читає тайл предка **своїми** локальними координатами, розтягнув би весь
+/// тайл предка на себе, тобто повторив би рельєф у кожному патчі й розірвав
+/// його на кожній межі. Жодного допуску тут не треба — така помилка міняє
+/// кадр цілком.
+///
+/// Третій знімок, гладкий, стоїть проти протилежної підміни: два кадри, у яких
+/// висота не доїхала до вершини взагалі, теж бітово рівні.
+///
+/// **Камер чотири, і це не запас.** З двадцяти кілометрів видно шапку в кілька
+/// градусів, тобто малюється п'ять патчів із сорока — і те, чи потрапить серед
+/// них патч із **несиметричним** вікном (`origin.x != origin.y`), вирішує
+/// випадок. Виміряно на одній камері: перестановка `origin.x` і `origin.y` у
+/// шейдері не змінила **жодного** пікселя, хоча три з п'яти намальованих
+/// патчів мали різні координати вікна. Одна камера тут просто не бачить
+/// половини помилок адресації.
+#[test]
+fn a_patch_deeper_than_the_pyramid_draws_the_same_surface() {
+    let Some(gpu) = gpu() else { return };
+
+    // Двадцять кілометрів: на цій висоті набір іде до рівня 3 при кадрі
+    // 1024 px — тобто глибше за мілку піраміду й дрібніше за глибоку. Висота
+    // підібрана не на око: обидві межі перевіряються нижче, і тест червоніє,
+    // якщо критерій похибки колись поїде.
+    let altitude = 2.0e4;
+
+    let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("subrect shot"),
+        size: wgpu::Extent3d {
+            width: SUBRECT_SIZE,
+            height: SUBRECT_SIZE,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: shot::FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+    // Один кадр на всі три знімки: обидві піраміди живуть у ньому одночасно,
+    // тож між знімками не міняється взагалі нічого, крім хендла.
+    let mut frame = Frame::new(&gpu, shot::FORMAT);
+    let field = shallow_relief();
+    let shallow = frame
+        .load_terrain(&gpu, &field)
+        .expect("мілка піраміда мала завантажитись");
+    let deep = frame
+        .load_terrain(&gpu, &deep_relief(&field))
+        .expect("глибока піраміда мала завантажитись");
+
+    let mut take = |direction: [f64; 3], tiles: TileSet| {
+        let scene = moon(direction, altitude, tiles);
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("subrect"),
+            });
+        frame.draw(
+            &gpu,
+            &mut encoder,
+            &view,
+            SUBRECT_SIZE,
+            SUBRECT_SIZE,
+            &scene,
+        );
+        shot::read_back(&gpu, encoder, &texture, SUBRECT_SIZE, SUBRECT_SIZE)
+            .expect("кадр мав намалюватися")
+    };
+
+    let all = (SUBRECT_SIZE * SUBRECT_SIZE) as usize;
+    let mut asymmetric = 0;
+
+    for turn in [0.0, 90.0, 180.0, 270.0] {
+        let direction = around_light(35.0, turn);
+        let scene = moon(direction, altitude, TileSet::Smooth);
+
+        // Перевірка, що перевірка не порожня. Без неї тест лишався б зеленим
+        // на наборі з самих граней — тобто саме в тому стані, у якому був до
+        // D13. Заразом рахуються патчі з несиметричним вікном: без жодного
+        // такого рівність кадрів не сказала б нічого про самі координати.
+        let selection = lod::select(
+            &lod::Body::still([0.0, 0.0, 0.0], MOON_RADIUS_M),
+            &scene.camera,
+            lod::focal_px(frame::FOV_Y, f64::from(SUBRECT_SIZE)),
+        );
+        let deepest = selection
+            .patches
+            .iter()
+            .map(|p| p.level)
+            .max()
+            .expect("набір не буває порожнім");
+        asymmetric += selection
+            .patches
+            .iter()
+            .filter(|p| {
+                let (_, origin, _) = field.window(p);
+                origin[0] != origin[1]
+            })
+            .count();
+        assert!(
+            deepest >= SHALLOW,
+            "поворот {turn}°: найглибший рівень {deepest} — жоден патч не \
+             виходить за мілку піраміду, тобто підпрямокутник ніде не читається"
+        );
+        assert!(
+            deepest < DEEP,
+            "поворот {turn}°: найглибший рівень {deepest} — глибока піраміда \
+             теж його не накриває, і порівнювати нема з чим"
+        );
+
+        let from_parent = take(direction, TileSet::Loaded(shallow));
+        let from_own = take(direction, TileSet::Loaded(deep));
+        let smooth = take(direction, TileSet::Smooth);
+
+        let moved = different(&from_parent, &smooth);
+        let apart = different(&from_parent, &from_own);
+        println!(
+            "  поворот {turn}°: {} патчів до рівня {deepest}, проти гладкої \
+             {moved} різних з {all}, проти власного тайла {apart}",
+            selection.patches.len()
+        );
+        assert!(
+            moved > all / 20,
+            "поворот {turn}°: рельєф змінив лише {moved} пікселів з {all} — \
+             висота не доїхала до вершини, і рівність нижче нічого не значила б"
+        );
+        assert_eq!(
+            apart, 0,
+            "поворот {turn}°: патч глибший за піраміду намалював не ту \
+             поверхню, що патч із власним тайлом — вікно в тайлі предка стоїть \
+             не там"
+        );
+    }
+
+    println!("  патчів із несиметричним вікном на чотирьох камерах: {asymmetric}");
+    assert!(
+        asymmetric > 0,
+        "жодна з камер не дала патча, у якого зсув вікна різний по осях — \
+         перестановка координат пройшла б непоміченою"
     );
 }
 
