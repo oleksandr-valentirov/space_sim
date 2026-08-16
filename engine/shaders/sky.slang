@@ -73,9 +73,38 @@ static const uint MULTISCATTER_DIRECTIONS = 64u;
 // Скільки кроків робить промінь усередині одного напрямку.
 static const uint MULTISCATTER_STEPS = 20u;
 
+// Таблиця неба: 192×108 (S4).
+static const uint SKYVIEW_WIDTH = 192u;
+static const uint SKYVIEW_HEIGHT = 108u;
+// Скільки кроків робить промінь таблиці неба.
+static const uint SKYVIEW_STEPS = 32u;
+
+static const float PI = 3.14159265358979;
+
 // Таблиця пропускання на читання — для всіх проходів, крім того, що її пише.
 [[vk::binding(2, 0)]]
 Texture2D<float4> transmittance_lut;
+
+// Таблиця багаторазового розсіювання на читання.
+[[vk::binding(3, 0)]]
+Texture2D<float4> multiscatter_lut;
+
+// Те, що міняється **щокадру**: де камера й де Сонце.
+//
+// Окремим буфером від `air`, і це не дрібниця: параметри повітря живуть, доки
+// живе тіло, а ці — один кадр. Одна структура на двох означала б, що зміна
+// камери виглядає як зміна атмосфери, тобто перерахунок таблиць, яких ніхто не
+// просив (правило 5 етапу S).
+struct ViewParams
+{
+    // x — відстань камери від центра тіла, y — косинус зенітного кута Сонця
+    // в точці камери. z, w — вирівнювання: менше за `float4` constant buffer
+    // однаково не буває.
+    float4 view;
+};
+
+[[vk::binding(4, 0)]]
+ConstantBuffer<ViewParams> frame;
 
 // `WTexture2D` (лише запис), а не `RWTexture2D`: останній компілюється у
 // `texture_storage_2d<..., read_write>`, а WebGPU дозволяє читання-запис лише
@@ -88,6 +117,10 @@ WTexture2D<float4> transmittance_out;
 [[vk::binding(1, 1)]]
 [format("rgba16f")]
 WTexture2D<float4> multiscatter_out;
+
+[[vk::binding(2, 1)]]
+[format("rgba16f")]
+WTexture2D<float4> skyview_out;
 
 // Густина трьох компонент на висоті `h` над поверхнею — двійник
 // `atmosphere::density`.
@@ -388,4 +421,141 @@ void multiscatter_main(uint3 id : SV_DispatchThreadID)
 
     float3 psi = second / max(float3(1.0, 1.0, 1.0) - fraction, float3(1.0e-6));
     multiscatter_out.Store(id.xy, float4(psi, max(fraction.r, max(fraction.g, fraction.b))));
+}
+
+// ---------------------------------------------------------------------------
+// Небо (S4)
+// ---------------------------------------------------------------------------
+
+// Багаторазове розсіювання в точці `(r, mu_s)` — з таблиці, білінійно.
+float3 sample_multiscatter(float r, float mu_s)
+{
+    float bottom = air.shape.z;
+    float top = air.shape.w;
+    float u = clamp(mu_s * 0.5 + 0.5, 0.0, 1.0);
+    float v = clamp((r - bottom) / (top - bottom), 0.0, 1.0);
+    float2 coord = float2(unit_to_texture(u, MULTISCATTER_SIZE),
+                          unit_to_texture(v, MULTISCATTER_SIZE));
+    return multiscatter_lut.SampleLevel(lut_sampler, coord, 0.0).rgb;
+}
+
+// Напрямок погляду за одиничними координатами таблиці неба — двійник
+// `atmosphere::skyview_uv`. Повертає `(mu_v, cos_azimuth)`.
+float2 skyview_uv(float r, float2 uv)
+{
+    float bottom = air.shape.z;
+    float rho2 = max(0.0, r * r - bottom * bottom);
+    float beta = acos(clamp(sqrt(rho2) / r, -1.0, 1.0));
+    float zenith_horizon = PI - beta;
+
+    float zenith;
+    if (uv.y < 0.5)
+    {
+        float c = 1.0 - 2.0 * uv.y;
+        zenith = zenith_horizon * (1.0 - c * c);
+    }
+    else
+    {
+        float c = 2.0 * uv.y - 1.0;
+        zenith = zenith_horizon + beta * c * c;
+    }
+    return float2(cos(zenith), 1.0 - 2.0 * uv.x * uv.x);
+}
+
+// Фазова функція Релея — двійник `atmosphere::rayleigh_phase`.
+float rayleigh_phase(float cos_theta)
+{
+    return 3.0 / (16.0 * PI) * (1.0 + cos_theta * cos_theta);
+}
+
+// Фазова функція Мі (Хеньї-Ґрінстайн) — двійник `atmosphere::mie_phase`.
+float mie_phase(float cos_theta, float g)
+{
+    float denominator = 1.0 + g * g - 2.0 * g * cos_theta;
+    return (1.0 - g * g) / (4.0 * PI * pow(max(denominator, 1.0e-6), 1.5));
+}
+
+// Розсіяне світло вздовж променя — двійник `atmosphere::sky_view`.
+//
+// Система координат локальна: `up = (0, 0, 1)`, Сонце в площині `xz`. Промінь
+// зупиняється на поверхні й нічого до неї не додає — поверхню малює кадр, а не
+// таблиця неба.
+float3 raymarch_sky(float r, float mu_s, float mu_v, float cos_azimuth, uint steps)
+{
+    float bottom = air.shape.z;
+    float top = air.shape.w;
+
+    float3 sun = float3(sqrt(max(0.0, 1.0 - mu_s * mu_s)), 0.0, mu_s);
+    float sin_v = sqrt(max(0.0, 1.0 - mu_v * mu_v));
+    float sin_azimuth = sqrt(max(0.0, 1.0 - cos_azimuth * cos_azimuth));
+    float3 w = float3(sin_v * cos_azimuth, sin_v * sin_azimuth, mu_v);
+
+    // Кут розсіювання сталий уздовж променя: обидва напрямки нерухомі.
+    float cos_theta = dot(w, sun);
+    float phase_r = rayleigh_phase(cos_theta);
+    float phase_m = mie_phase(cos_theta, air.mie.w);
+
+    float rho2 = max(0.0, r * r - bottom * bottom);
+    float shell2 = (top - bottom) * (top + bottom);
+    float span = distance_to_top(r, mu_v, rho2, shell2);
+    float ground = distance_to_ground(r, mu_v, rho2);
+    if (ground >= 0.0) { span = min(span, ground); }
+    float step = span / float(steps);
+
+    float3 throughput = float3(1.0, 1.0, 1.0);
+    float3 light = float3(0.0, 0.0, 0.0);
+    for (uint s = 0u; s < steps; ++s)
+    {
+        float t = (float(s) + 0.5) * step;
+        float3 point = float3(t * w.x, t * w.y, r + t * w.z);
+        float rho2_here = max(0.0, rho2 + 2.0 * t * r * mu_v + t * t);
+        float radius = sqrt(max(0.0, rho2_here + bottom * bottom));
+        float h = rho2_here / (radius + bottom);
+        float mu_s_here = dot(point, sun) / max(radius, 1.0);
+
+        bool lit = distance_to_ground(radius, mu_s_here, rho2_here) < 0.0;
+        float3 to_sun = lit ? sample_transmittance(radius, mu_s_here)
+                            : float3(0.0, 0.0, 0.0);
+        float3 psi = sample_multiscatter(radius, mu_s_here);
+
+        float3 d = density(h);
+        float3 sigma_e = extinction(h);
+        float3 sigma_r = air.rayleigh.rgb * d.x;
+        float sigma_m = air.mie.x * d.y;
+
+        for (uint c = 0u; c < 3u; ++c)
+        {
+            if (sigma_e[c] <= 0.0) { continue; }
+            // Пряме світло — з власною фазовою функцією кожної компоненти;
+            // багаторазове вже усереднене по сфері, тож фази не має.
+            float source = (sigma_r[c] * phase_r + sigma_m * phase_m) * to_sun[c]
+                         + (sigma_r[c] + sigma_m) * psi[c];
+            float step_transmittance = exp(-sigma_e[c] * step);
+            light[c] += throughput[c] * source * (1.0 - step_transmittance) / sigma_e[c];
+            throughput[c] *= step_transmittance;
+        }
+    }
+    return light;
+}
+
+// Таблиця неба: 192×108, напрямок погляду → розсіяне світло.
+//
+// Рахується **раз на кадр**, бо залежить від позиції камери й напрямку на
+// Сонце (правило 5 етапу S). Ціна не залежить ні від кількості апаратів, ні
+// від того, що ще є в сцені: камера одна.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void skyview_main(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= SKYVIEW_WIDTH || id.y >= SKYVIEW_HEIGHT) { return; }
+
+    float r = frame.view.x;
+    float mu_s = frame.view.y;
+
+    float2 uv = float2(float(id.x) / float(SKYVIEW_WIDTH - 1u),
+                       float(id.y) / float(SKYVIEW_HEIGHT - 1u));
+    float2 angles = skyview_uv(r, uv);
+
+    float3 light = raymarch_sky(r, mu_s, angles.x, angles.y, SKYVIEW_STEPS);
+    skyview_out.Store(id.xy, float4(light, 1.0));
 }

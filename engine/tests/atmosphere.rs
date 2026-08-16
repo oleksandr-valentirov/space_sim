@@ -214,6 +214,9 @@ fn the_table_size_is_the_same_on_both_sides() {
             atmosphere::MULTISCATTER_DIRECTIONS,
         ),
         ("MULTISCATTER_STEPS", atmosphere::MULTISCATTER_STEPS),
+        ("SKYVIEW_WIDTH", atmosphere::SKYVIEW_WIDTH),
+        ("SKYVIEW_HEIGHT", atmosphere::SKYVIEW_HEIGHT),
+        ("SKYVIEW_STEPS", atmosphere::SKYVIEW_STEPS),
     ] {
         let wanted = format!("static const uint {name} = {value}u;");
         assert!(
@@ -413,4 +416,137 @@ fn the_multiscatter_table_is_monotone_in_both_of_its_axes() {
         noon[(size - 1) as usize],
         noon[peak]
     );
+}
+
+// ---------------------------------------------------------------------------
+// S4 — небо
+// ---------------------------------------------------------------------------
+
+/// Таблиця неба збігається з двійником, і на трьох різних камерах.
+///
+/// Три, а не одна: параметризація по зеніту залежить від висоти (горизонт з
+/// десяти кілометрів нижчий, ніж із рівня моря), а розподіл світла — від того,
+/// де Сонце. Одна камера перевірила б одну діагональ таблиці.
+#[test]
+fn the_sky_table_matches_the_oracle_from_three_cameras() {
+    let Some(gpu) = gpu() else { return };
+
+    let air = Atmosphere::EARTH.with_surface(BOTTOM);
+    let mut sky = Sky::new(&gpu);
+    sky.ensure(&gpu, &air, BOTTOM);
+
+    // 500 кроків у таблиці пропускання — рівно стільки, скільки в шейдері:
+    // тут перевіряється небо, а точність пропускання вже перевірена окремо.
+    let model = atmosphere::Model::build(&air, BOTTOM, 500);
+
+    let width = atmosphere::SKYVIEW_WIDTH;
+    let height = atmosphere::SKYVIEW_HEIGHT;
+
+    // Полудень з рівня моря, захід з рівня моря, полудень із двадцяти
+    // кілометрів. `mu_s = 0` — Сонце рівно на геометричному горизонті.
+    for (label, altitude, mu_s) in [
+        ("полудень з землі", 2.0, 1.0),
+        ("захід з землі", 2.0, 0.0),
+        ("полудень із 20 км", 20_000.0, 1.0),
+    ] {
+        let r = BOTTOM + altitude;
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        sky.prepare_view(&gpu, &mut encoder, r, mu_s);
+        gpu.queue.submit([encoder.finish()]);
+
+        let table = sky.read_skyview(&gpu).expect("таблиця мала прочитатися");
+        assert_eq!(table.len(), (width * height) as usize);
+
+        let mut worst = 0.0f64;
+        let mut worst_at = (0u32, 0u32);
+        let mut largest = 0.0f64;
+        // Кожен четвертий тексель: двійник рахує 32 кроки на промінь і читає
+        // дві таблиці, тобто повна сітка коштувала б хвилин. Крок 4 лишає
+        // 1296 напрямків — на два порядки більше, ніж треба, щоб побачити
+        // помилку в параметризації.
+        for y in (0..height).step_by(4) {
+            for x in (0..width).step_by(4) {
+                let u = f64::from(x) / f64::from(width - 1);
+                let v = f64::from(y) / f64::from(height - 1);
+                let (mu_v, cos_azimuth) = atmosphere::skyview_uv(BOTTOM, r, u, v);
+                let expected = model.sky_view(r, mu_s, mu_v, cos_azimuth);
+                let got = table[(y * width + x) as usize];
+                for channel in 0..3 {
+                    largest = largest.max(expected[channel]);
+                    // Той самий склад допуску, що в S3: абсолютний доданок від
+                    // half-float, відносний від різниці двох ланцюжків вибірок.
+                    // Обидва більші, ніж там, і обидва з тієї самої причини —
+                    // уздовж променя читаються **дві** таблиці, обидві на GPU в
+                    // half-float, і їхні похибки складаються. Абсолютний
+                    // доданок — три кроки субнормального half-float (6·10⁻⁸
+                    // кожен); за ним живуть напрямки під горизонтом у бік
+                    // Сонця, де світла майже немає.
+                    let allowed = 2.0e-7 + 0.05 * expected[channel].max(f64::from(got[channel]));
+                    let difference = (f64::from(got[channel]) - expected[channel]).abs();
+                    if difference - allowed > worst {
+                        worst = difference - allowed;
+                        worst_at = (x, y);
+                    }
+                }
+            }
+        }
+        assert!(
+            largest > 1.0e-4,
+            "{label}: таблиця темна, найбільше {largest}"
+        );
+        assert!(
+            worst <= 0.0,
+            "{label}: тексель {worst_at:?} виходить за допуск на {worst}"
+        );
+    }
+}
+
+/// Пряме й зворотне перетворення осей неба дають ту саму точку.
+///
+/// Не тавтологія: пряме читає таблицю, зворотне її пише, і саме розбіжність між
+/// ними дала б небо, зсунуте відносно Сонця, — помилку, яку в кадрі видно як
+/// «захід не там».
+#[test]
+fn the_sky_parametrisation_survives_a_round_trip() {
+    for altitude in [2.0, 10_000.0, 90_000.0] {
+        let r = BOTTOM + altitude;
+        let mut worst: f64 = 0.0;
+        for i in 0..24 {
+            for j in 0..24 {
+                let u = f64::from(i) / 23.0;
+                let v = f64::from(j) / 23.0;
+                let (mu_v, cos_azimuth) = atmosphere::skyview_uv(BOTTOM, r, u, v);
+                let (u2, v2) = atmosphere::skyview_coords(BOTTOM, r, mu_v, cos_azimuth);
+                worst = worst.max((u - u2).abs()).max((v - v2).abs());
+            }
+        }
+        assert!(worst < 1.0e-6, "висота {altitude}: розходження {worst}");
+    }
+}
+
+/// Горизонт лежить рівно посередині таблиці, і він падає з висотою.
+///
+/// Це і є та властивість, заради якої вісь зеніту нелінійна: половина рядків
+/// віддана небу, половина — тому, що під горизонтом, а межа між ними —
+/// **горизонт цієї висоти**, а не геометрична горизонталь.
+#[test]
+fn the_horizon_sits_in_the_middle_of_the_table_and_drops_with_height() {
+    let mut previous = f64::INFINITY;
+    for altitude in [2.0, 10_000.0, 100_000.0] {
+        let r = BOTTOM + altitude;
+        let (mu_v, _) = atmosphere::skyview_uv(BOTTOM, r, 0.0, 0.5);
+        // Горизонт з висоти `h` має `cos(зеніт) = −√(r²−bottom²)/r`.
+        let expected = -(r * r - BOTTOM * BOTTOM).sqrt() / r;
+        assert!(
+            (mu_v - expected).abs() < 1.0e-9,
+            "висота {altitude}: {mu_v} проти {expected}"
+        );
+        assert!(
+            mu_v < previous,
+            "горизонт не опустився на висоті {altitude}"
+        );
+        previous = mu_v;
+    }
 }

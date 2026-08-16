@@ -378,15 +378,54 @@ impl Table {
         }
     }
 
-    /// Пропускання від `(r, mu)` до верхньої межі — білінійно, як `Sample` у
+    /// Побудувати таблицю багаторазового розсіювання — двійник
+    /// `multiscatter_main` (S3).
+    ///
+    /// Тільки `ψ`; `f` тут не зберігається, бо його читає лише перевірка
+    /// збіжності, а вона дивиться в таблицю на GPU.
+    pub fn multiscatter(air: &Atmosphere, bottom: f64, transmittance: &Table) -> Table {
+        let size = MULTISCATTER_SIZE;
+        let mut values = Vec::with_capacity((size * size) as usize);
+        for y in 0..size {
+            for x in 0..size {
+                let u = f64::from(x) / f64::from(size - 1);
+                let v = f64::from(y) / f64::from(size - 1);
+                let (r, mu_s) = multiscatter_uv(air, bottom, u, v);
+                let (psi, _) = multiple_scattering(air, bottom, transmittance, r, mu_s);
+                values.push(psi);
+            }
+        }
+        Table {
+            width: size,
+            height: size,
+            values,
+        }
+    }
+
+    /// Значення за **одиничними** координатами — білінійно, як `SampleLevel` у
     /// шейдері.
-    pub fn sample(&self, air: &Atmosphere, bottom: f64, r: f64, mu: f64) -> [f64; 3] {
-        let (u, v) = r_mu_to_uv(air, bottom, r, mu);
+    ///
+    /// Одиничними, а не текстурними: параметризація — справа викликача, і саме
+    /// тому одна таблиця обслуговує три різні (S2, S3, S4).
+    pub fn sample_unit(&self, u: f64, v: f64) -> [f64; 3] {
         // З одиничного діапазону в координату текстури, звідти в індекс
         // текселя. `− 0.5`, бо тексель `k` живе в координаті `(k + 0.5)/розмір`.
         let x = unit_to_texture(u, self.width) * f64::from(self.width) - 0.5;
         let y = unit_to_texture(v, self.height) * f64::from(self.height) - 0.5;
         self.bilinear(x, y)
+    }
+
+    /// Пропускання від `(r, mu)` до верхньої межі.
+    pub fn transmittance_at(&self, air: &Atmosphere, bottom: f64, r: f64, mu: f64) -> [f64; 3] {
+        let (u, v) = r_mu_to_uv(air, bottom, r, mu);
+        self.sample_unit(u, v)
+    }
+
+    /// Багаторазове розсіювання в точці `(r, mu_s)`.
+    pub fn multiscatter_at(&self, air: &Atmosphere, bottom: f64, r: f64, mu_s: f64) -> [f64; 3] {
+        let u = (mu_s * 0.5 + 0.5).clamp(0.0, 1.0);
+        let v = ((r - bottom) / (air.top_m - bottom)).clamp(0.0, 1.0);
+        self.sample_unit(u, v)
     }
 
     fn bilinear(&self, x: f64, y: f64) -> [f64; 3] {
@@ -517,7 +556,7 @@ pub fn multiple_scattering(
             // взагалі, і саме звідси береться нічний бік.
             let lit = distance_to_ground(radius, mu_s_here, rho2_here).is_none();
             let to_sun = if lit {
-                table.sample(air, bottom, radius, mu_s_here)
+                table.transmittance_at(air, bottom, radius, mu_s_here)
             } else {
                 [0.0; 3]
             };
@@ -563,6 +602,198 @@ pub fn multiple_scattering(
         psi[channel] = second[channel] / (1.0 - fraction[channel]).max(1.0e-6);
     }
     (psi, fraction)
+}
+
+/// Ширина таблиці неба — азимут відносно Сонця (S4).
+pub const SKYVIEW_WIDTH: u32 = 192;
+/// Висота таблиці неба — зенітний кут погляду.
+pub const SKYVIEW_HEIGHT: u32 = 108;
+/// Скільки кроків робить промінь таблиці неба.
+pub const SKYVIEW_STEPS: u32 = 32;
+
+/// Напрямок погляду за одиничними координатами таблиці неба.
+///
+/// Повертає `(mu_v, cos_azimuth)`: косинус зенітного кута погляду й косинус
+/// азимутального кута між поглядом і Сонцем.
+///
+/// ## Чому обидві осі нелінійні
+///
+/// **По зеніту** — бо горизонт різкий, а решта неба ні. Половина висоти
+/// таблиці витрачається на півсферу над горизонтом, половина на ту, що під
+/// ним, і всередині кожної половини крок згущується саме до горизонту
+/// (квадратний корінь). Лінійна шкала розмазала б смугу заходу по одному
+/// текселю з ста восьми.
+///
+/// **По азимуту** — бо Сонце мале, а фазова функція Мі гостра: більшість
+/// зміни кольору відбувається в кількох градусах від світила. Квадрат
+/// стискає далекий від Сонця бік і розтягує ближній.
+///
+/// Границя півсфер — не екватор, а **горизонт цієї висоти**: з десяти
+/// кілометрів він нижчий за геометричну горизонталь, і таблиця, побудована на
+/// екваторі, мала б розрив у видимому місці.
+pub fn skyview_uv(bottom: f64, r: f64, u: f64, v: f64) -> (f64, f64) {
+    let rho2 = rho_squared(r, bottom);
+    // Кут від надира до горизонту; зенітний кут горизонту — `π − beta`.
+    let beta = (rho2.sqrt() / r).clamp(-1.0, 1.0).acos();
+    let zenith_horizon = std::f64::consts::PI - beta;
+
+    let zenith = if v < 0.5 {
+        let c = 1.0 - 2.0 * v;
+        zenith_horizon * (1.0 - c * c)
+    } else {
+        let c = 2.0 * v - 1.0;
+        zenith_horizon + beta * c * c
+    };
+    // `1 − 2u²` — обернене до `u = √((1 − cos)/2)`. При `u = 0` погляд у бік
+    // Сонця, при `u = 1` — від нього.
+    (zenith.cos(), 1.0 - 2.0 * u * u)
+}
+
+/// Обернене до [`skyview_uv`]: координати таблиці за напрямком погляду.
+pub fn skyview_coords(bottom: f64, r: f64, mu_v: f64, cos_azimuth: f64) -> (f64, f64) {
+    let rho2 = rho_squared(r, bottom);
+    let beta = (rho2.sqrt() / r).clamp(-1.0, 1.0).acos();
+    let zenith_horizon = std::f64::consts::PI - beta;
+    let zenith = mu_v.clamp(-1.0, 1.0).acos();
+
+    let v = if zenith <= zenith_horizon {
+        let c = if zenith_horizon > 0.0 {
+            1.0 - (1.0 - zenith / zenith_horizon).max(0.0).sqrt()
+        } else {
+            0.0
+        };
+        c * 0.5
+    } else {
+        let c = if beta > 0.0 {
+            ((zenith - zenith_horizon) / beta).clamp(0.0, 1.0).sqrt()
+        } else {
+            0.0
+        };
+        0.5 + c * 0.5
+    };
+    let u = ((1.0 - cos_azimuth) * 0.5).max(0.0).sqrt();
+    (u.clamp(0.0, 1.0), v.clamp(0.0, 1.0))
+}
+
+/// Фазова функція Релея: `3/(16π)·(1 + cos²θ)`.
+///
+/// Симетрична вперед-назад, і саме тому небо світле й позаду спостерігача, а
+/// не лише навколо Сонця.
+pub fn rayleigh_phase(cos_theta: f64) -> f64 {
+    3.0 / (16.0 * std::f64::consts::PI) * (1.0 + cos_theta * cos_theta)
+}
+
+/// Фазова функція Мі — Хеньї-Ґрінстайна з параметром `g`.
+///
+/// Гостро вперед: `g = 0.8` означає, що аерозоль розсіює переважно в бік
+/// продовження променя. Звідси й ореол навколо Сонця, і те, що серпанок видно
+/// проти світла, а не за ним.
+pub fn mie_phase(cos_theta: f64, g: f64) -> f64 {
+    let denominator = 1.0 + g * g - 2.0 * g * cos_theta;
+    (1.0 - g * g) / (4.0 * std::f64::consts::PI * denominator.max(1.0e-6).powf(1.5))
+}
+
+/// Повітря разом з обома сталими таблицями — усе, чим рахується небо.
+///
+/// Структура, а не чотири окремі аргументи: без неї [`Model::sky_view`] брав би
+/// вісім, і жоден із них не можна було б переплутати лише на око. Полів рівно
+/// стільки, скільки читається (CLAUDE.md), і власних, без лайфтаймів — таблиця
+/// коштує пів мегабайта, а будується раз на тест.
+pub struct Model {
+    pub air: Atmosphere,
+    pub bottom: f64,
+    pub transmittance: Table,
+    pub multiscatter: Table,
+}
+
+impl Model {
+    /// Побудувати обидві сталі таблиці. `steps` — скільки кроків на промінь у
+    /// таблиці пропускання; 500 дає те саме, що шейдер.
+    pub fn build(air: &Atmosphere, bottom: f64, steps: usize) -> Model {
+        let transmittance = Table::transmittance(air, bottom, steps);
+        let multiscatter = Table::multiscatter(air, bottom, &transmittance);
+        Model {
+            air: *air,
+            bottom,
+            transmittance,
+            multiscatter,
+        }
+    }
+
+    /// Розсіяне світло вздовж променя — двійник `skyview_main` (S4).
+    ///
+    /// Система координат локальна: `up = (0, 0, 1)`, Сонце в площині `xz`.
+    /// Погляд задається парою `(mu_v, cos_azimuth)`, тобто рівно тим, що лежить
+    /// в осях таблиці, — і це не втрата: фізика залежить лише від
+    /// `dot(погляд, Сонце)` і зенітних кутів обох, а знак азимута в них не
+    /// входить.
+    ///
+    /// Промінь зупиняється на поверхні й **нічого до неї не додає**: поверхню
+    /// малює кадр, а не таблиця неба. Те, що видно крізь повітря, — це вже
+    /// аеральна перспектива, і вона окремий крок (S5).
+    pub fn sky_view(&self, r: f64, mu_s: f64, mu_v: f64, cos_azimuth: f64) -> [f64; 3] {
+        let air = &self.air;
+        let bottom = self.bottom;
+        let transmittance = &self.transmittance;
+        let multiscatter = &self.multiscatter;
+        let sun = [(1.0 - mu_s * mu_s).max(0.0).sqrt(), 0.0, mu_s];
+        let sin_v = (1.0 - mu_v * mu_v).max(0.0).sqrt();
+        let sin_azimuth = (1.0 - cos_azimuth * cos_azimuth).max(0.0).sqrt();
+        let w = [sin_v * cos_azimuth, sin_v * sin_azimuth, mu_v];
+
+        // Кут розсіювання сталий уздовж променя: обидва напрямки нерухомі.
+        let cos_theta = w[0] * sun[0] + w[1] * sun[1] + w[2] * sun[2];
+        let phase_r = rayleigh_phase(cos_theta);
+        let phase_m = mie_phase(cos_theta, f64::from(air.mie_g));
+
+        let rho2 = rho_squared(r, bottom);
+        let mut span = distance_to_top(r, mu_v, rho2, shell_squared(air, bottom));
+        if let Some(ground) = distance_to_ground(r, mu_v, rho2) {
+            span = span.min(ground);
+        }
+        let step = span / f64::from(SKYVIEW_STEPS);
+
+        let mut throughput = [1.0; 3];
+        let mut light = [0.0; 3];
+        for s in 0..SKYVIEW_STEPS {
+            let t = (f64::from(s) + 0.5) * step;
+            let point = [t * w[0], t * w[1], r + t * w[2]];
+            let rho2_here = (rho2 + 2.0 * t * r * mu_v + t * t).max(0.0);
+            let radius = (rho2_here + bottom * bottom).max(0.0).sqrt();
+            let h = rho2_here / (radius + bottom);
+            let mu_s_here =
+                (point[0] * sun[0] + point[1] * sun[1] + point[2] * sun[2]) / radius.max(1.0);
+
+            let lit = distance_to_ground(radius, mu_s_here, rho2_here).is_none();
+            let to_sun = if lit {
+                transmittance.transmittance_at(air, bottom, radius, mu_s_here)
+            } else {
+                [0.0; 3]
+            };
+            let psi = multiscatter.multiscatter_at(air, bottom, radius, mu_s_here);
+
+            let [d_rayleigh, d_mie, _] = density(air, h);
+            let sigma_e = extinction(air, h);
+
+            for channel in 0..3 {
+                if sigma_e[channel] <= 0.0 {
+                    continue;
+                }
+                let sigma_r = f64::from(air.rayleigh_scattering[channel]) * d_rayleigh;
+                let sigma_m = f64::from(air.mie_scattering) * d_mie;
+                // Пряме світло — з власною фазовою функцією кожної компоненти;
+                // багаторазове — вже усереднене по сфері, тож фази не має.
+                let source = (sigma_r * phase_r + sigma_m * phase_m) * to_sun[channel]
+                    + (sigma_r + sigma_m) * psi[channel];
+
+                let step_transmittance = (-sigma_e[channel] * step).exp();
+                light[channel] +=
+                    throughput[channel] * source * (1.0 - step_transmittance) / sigma_e[channel];
+                throughput[channel] *= step_transmittance;
+            }
+        }
+        light
+    }
 }
 
 #[cfg(test)]

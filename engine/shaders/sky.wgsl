@@ -15,6 +15,16 @@ struct AirParams_std140_0
 
 @binding(1) @group(1) var multiscatter_out_0 : texture_storage_2d<rgba16float, write>;
 
+struct ViewParams_std140_0
+{
+    @align(16) view_0 : vec4<f32>,
+};
+
+@binding(4) @group(0) var<uniform> frame_0 : ViewParams_std140_0;
+@binding(3) @group(0) var multiscatter_lut_0 : texture_2d<f32>;
+
+@binding(2) @group(1) var skyview_out_0 : texture_storage_2d<rgba16float, write>;
+
 fn uv_to_r_mu_0( uv_0 : vec2<f32>,  r_0 : ptr<function, f32>,  mu_0 : ptr<function, f32>,  d_0 : ptr<function, f32>)
 {
     var bottom_0 : f32 = air_0.shape_0.z;
@@ -292,6 +302,151 @@ fn multiscatter_main(@builtin(global_invocation_id) id_1 : vec3<u32>)
     var _S32 : vec3<f32> = fraction_0 / _S30;
     fraction_0 = _S32;
     textureStore((multiscatter_out_0), (id_1.xy), (vec4<f32>(_S31 / max(vec3<f32>(1.0f, 1.0f, 1.0f) - _S32, vec3<f32>(9.99999997475242708e-07f)), max(_S32.x, max(_S32.y, _S32.z)))));
+    return;
+}
+
+fn skyview_uv_0( r_7 : f32,  uv_2 : vec2<f32>) -> vec2<f32>
+{
+    var bottom_3 : f32 = air_0.shape_0.z;
+    var beta_0 : f32 = acos(clamp(sqrt(max(0.0f, r_7 * r_7 - bottom_3 * bottom_3)) / r_7, -1.0f, 1.0f));
+    var zenith_horizon_0 : f32 = 3.14159274101257324f - beta_0;
+    var _S33 : f32 = uv_2.y;
+    var zenith_0 : f32;
+    if(_S33 < 0.5f)
+    {
+        var c_1 : f32 = 1.0f - 2.0f * _S33;
+        zenith_0 = zenith_horizon_0 * (1.0f - c_1 * c_1);
+    }
+    else
+    {
+        var c_2 : f32 = 2.0f * _S33 - 1.0f;
+        zenith_0 = zenith_horizon_0 + beta_0 * c_2 * c_2;
+    }
+    var _S34 : f32 = uv_2.x;
+    return vec2<f32>(cos(zenith_0), 1.0f - 2.0f * _S34 * _S34);
+}
+
+fn rayleigh_phase_0( cos_theta_0 : f32) -> f32
+{
+    return 0.05968310311436653f * (1.0f + cos_theta_0 * cos_theta_0);
+}
+
+fn mie_phase_0( cos_theta_1 : f32,  g_0 : f32) -> f32
+{
+    var _S35 : f32 = g_0 * g_0;
+    return (1.0f - _S35) / (12.56637096405029297f * pow(max(1.0f + _S35 - 2.0f * g_0 * cos_theta_1, 9.99999997475242708e-07f), 1.5f));
+}
+
+fn sample_multiscatter_0( r_8 : f32,  mu_s_1 : f32) -> vec3<f32>
+{
+    var bottom_4 : f32 = air_0.shape_0.z;
+    return (textureSampleLevel((multiscatter_lut_0), (lut_sampler_0), (vec2<f32>(unit_to_texture_0(clamp(mu_s_1 * 0.5f + 0.5f, 0.0f, 1.0f), u32(32)), unit_to_texture_0(clamp((r_8 - bottom_4) / (air_0.shape_0.w - bottom_4), 0.0f, 1.0f), u32(32)))), (0.0f))).xyz;
+}
+
+fn raymarch_sky_0( r_9 : f32,  mu_s_2 : f32,  mu_v_0 : f32,  cos_azimuth_0 : f32,  steps_1 : u32) -> vec3<f32>
+{
+    var bottom_5 : f32 = air_0.shape_0.z;
+    var top_3 : f32 = air_0.shape_0.w;
+    var sun_0 : vec3<f32> = vec3<f32>(sqrt(max(0.0f, 1.0f - mu_s_2 * mu_s_2)), 0.0f, mu_s_2);
+    var sin_v_0 : f32 = sqrt(max(0.0f, 1.0f - mu_v_0 * mu_v_0));
+    var _S36 : f32 = sin_v_0 * cos_azimuth_0;
+    var _S37 : f32 = sin_v_0 * sqrt(max(0.0f, 1.0f - cos_azimuth_0 * cos_azimuth_0));
+    var cos_theta_2 : f32 = dot(vec3<f32>(_S36, _S37, mu_v_0), sun_0);
+    var _S38 : f32 = rayleigh_phase_0(cos_theta_2);
+    var _S39 : f32 = mie_phase_0(cos_theta_2, air_0.mie_0.w);
+    var _S40 : f32 = bottom_5 * bottom_5;
+    var _S41 : f32 = max(0.0f, r_9 * r_9 - _S40);
+    var span_4 : f32 = distance_to_top_0(r_9, mu_v_0, _S41, (top_3 - bottom_5) * (top_3 + bottom_5));
+    var ground_1 : f32 = distance_to_ground_0(r_9, mu_v_0, _S41);
+    var span_5 : f32;
+    if(ground_1 >= 0.0f)
+    {
+        span_5 = min(span_4, ground_1);
+    }
+    else
+    {
+        span_5 = span_4;
+    }
+    var _S42 : f32 = span_5 / f32(steps_1);
+    var throughput_1 : vec3<f32> = vec3<f32>(1.0f, 1.0f, 1.0f);
+    const _S43 : vec3<f32> = vec3<f32>(0.0f, 0.0f, 0.0f);
+    var light_0 : vec3<f32> = _S43;
+    var s_1 : u32 = u32(0);
+    for(;;)
+    {
+        if(s_1 < steps_1)
+        {
+        }
+        else
+        {
+            break;
+        }
+        var t_1 : f32 = (f32(s_1) + 0.5f) * _S42;
+        var _S44 : f32 = max(0.0f, _S41 + 2.0f * t_1 * r_9 * mu_v_0 + t_1 * t_1);
+        var radius_1 : f32 = sqrt(max(0.0f, _S44 + _S40));
+        var h_6 : f32 = _S44 / (radius_1 + bottom_5);
+        var mu_s_here_1 : f32 = dot(vec3<f32>(t_1 * _S36, t_1 * _S37, r_9 + t_1 * mu_v_0), sun_0) / max(radius_1, 1.0f);
+        var _S45 : vec3<f32>;
+        if((distance_to_ground_0(radius_1, mu_s_here_1, _S44)) < 0.0f)
+        {
+            _S45 = sample_transmittance_0(radius_1, mu_s_here_1);
+        }
+        else
+        {
+            _S45 = _S43;
+        }
+        var _S46 : vec3<f32> = sample_multiscatter_0(radius_1, mu_s_here_1);
+        var d_5 : vec3<f32> = density_0(h_6);
+        var _S47 : vec3<f32> = extinction_0(h_6);
+        var _S48 : vec3<f32> = air_0.rayleigh_0.xyz * vec3<f32>(d_5.x);
+        var _S49 : f32 = air_0.mie_0.x * d_5.y;
+        var c_3 : u32 = u32(0);
+        for(;;)
+        {
+            if(c_3 < u32(3))
+            {
+            }
+            else
+            {
+                break;
+            }
+            var _S50 : u32 = c_3;
+            if((_S47[c_3]) <= 0.0f)
+            {
+                c_3 = c_3 + u32(1);
+                continue;
+            }
+            var step_transmittance_1 : f32 = exp(- _S47[_S50] * _S42);
+            light_0[c_3] = light_0[c_3] + throughput_1[c_3] * ((_S48[c_3] * _S38 + _S49 * _S39) * _S45[c_3] + (_S48[c_3] + _S49) * _S46[c_3]) * (1.0f - step_transmittance_1) / _S47[_S50];
+            throughput_1[c_3] = throughput_1[c_3] * step_transmittance_1;
+            c_3 = c_3 + u32(1);
+        }
+        s_1 = s_1 + u32(1);
+    }
+    return light_0;
+}
+
+@compute
+@workgroup_size(8, 8, 1)
+fn skyview_main(@builtin(global_invocation_id) id_2 : vec3<u32>)
+{
+    var _S51 : u32 = id_2.x;
+    var _S52 : bool;
+    if(_S51 >= u32(192))
+    {
+        _S52 = true;
+    }
+    else
+    {
+        _S52 = (id_2.y) >= u32(108);
+    }
+    if(_S52)
+    {
+        return;
+    }
+    var r_10 : f32 = frame_0.view_0.x;
+    var angles_0 : vec2<f32> = skyview_uv_0(r_10, vec2<f32>(f32(_S51) / 191.0f, f32(id_2.y) / 107.0f));
+    textureStore((skyview_out_0), (id_2.xy), (vec4<f32>(raymarch_sky_0(r_10, frame_0.view_0.y, angles_0.x, angles_0.y, u32(32)), 1.0f)));
     return;
 }
 

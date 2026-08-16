@@ -8,6 +8,7 @@
 //! |---|---|---|
 //! | пропускання | лише параметри повітря | раз на набір параметрів |
 //! | багаторазове розсіювання | лише параметри повітря | раз на набір параметрів |
+//! | небо (sky-view) | позиція камери + напрямок на Сонце | раз на кадр |
 //!
 //! Решта рядків з'явиться разом зі своїми кроками; заводити їх наперед
 //! CLAUDE.md прямо забороняє.
@@ -42,8 +43,11 @@ const SKY_WGSL: &str = include_str!("../shaders/sky.wgsl");
 /// таблицю з оракулом у `f64`.
 const LUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
-/// Скільки байтів займає [`AirParams`] у шейдері: чотири `float4`.
+/// Скільки байтів займає `AirParams` у шейдері: чотири `float4`.
 const AIR_BYTES: u64 = 64;
+
+/// Скільки байтів займає `ViewParams` у шейдері: один `float4`.
+const VIEW_BYTES: u64 = 16;
 
 /// Розмір групи в `transmittance_main` — те саме, що в `[numthreads(8, 8, 1)]`.
 const GROUP: u32 = 8;
@@ -51,19 +55,26 @@ const GROUP: u32 = 8;
 pub struct Sky {
     transmittance_pipeline: wgpu::ComputePipeline,
     multiscatter_pipeline: wgpu::ComputePipeline,
+    skyview_pipeline: wgpu::ComputePipeline,
 
     /// Група 0 без самої таблиці пропускання — для проходу, який її пише.
     read_min: wgpu::BindGroup,
     /// Група 0 з таблицею пропускання — для всіх, хто її читає.
     read_full: wgpu::BindGroup,
+    /// Група 0 з обома сталими таблицями — для того, хто рахує небо щокадру.
+    read_frame: wgpu::BindGroup,
     /// Група 1 кожного проходу: рівно те, що він пише.
     write_transmittance: wgpu::BindGroup,
     write_multiscatter: wgpu::BindGroup,
+    write_skyview: wgpu::BindGroup,
 
     air_buffer: wgpu::Buffer,
+    view_buffer: wgpu::Buffer,
 
     transmittance: wgpu::Texture,
     multiscatter: wgpu::Texture,
+    skyview: wgpu::Texture,
+    skyview_view: wgpu::TextureView,
 
     /// Параметри, під які таблиці вже пораховані: саме повітря і радіус
     /// поверхні тіла, якому воно належить.
@@ -166,6 +177,28 @@ impl Sky {
                     label: Some("sky read"),
                     entries: &[air_entry, sampler_entry, sampled_2d(2)],
                 });
+        let view_entry = wgpu::BindGroupLayoutEntry {
+            binding: 4,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: std::num::NonZeroU64::new(VIEW_BYTES),
+            },
+            count: None,
+        };
+        let read_frame_layout =
+            gpu.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("sky read (frame)"),
+                    entries: &[
+                        air_entry,
+                        sampler_entry,
+                        sampled_2d(2),
+                        sampled_2d(3),
+                        view_entry,
+                    ],
+                });
         let write_transmittance_layout =
             gpu.device
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -177,6 +210,12 @@ impl Sky {
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     label: Some("sky write multiscatter"),
                     entries: &[storage_2d(1)],
+                });
+        let write_skyview_layout =
+            gpu.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("sky write skyview"),
+                    entries: &[storage_2d(2)],
                 });
 
         let compute = |label: &str,
@@ -212,10 +251,22 @@ impl Sky {
             &write_multiscatter_layout,
             "multiscatter_main",
         );
+        let skyview_pipeline = compute(
+            "skyview",
+            &read_frame_layout,
+            &write_skyview_layout,
+            "skyview_main",
+        );
 
         let air_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("air params"),
             size: AIR_BYTES,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let view_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("view params"),
+            size: VIEW_BYTES,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -246,8 +297,15 @@ impl Sky {
             atmosphere::MULTISCATTER_SIZE,
             atmosphere::MULTISCATTER_SIZE,
         );
+        let skyview = lut_texture(
+            gpu,
+            "skyview lut",
+            atmosphere::SKYVIEW_WIDTH,
+            atmosphere::SKYVIEW_HEIGHT,
+        );
         let transmittance_view = transmittance.create_view(&wgpu::TextureViewDescriptor::default());
         let multiscatter_view = multiscatter.create_view(&wgpu::TextureViewDescriptor::default());
+        let skyview_view = skyview.create_view(&wgpu::TextureViewDescriptor::default());
 
         let read_min = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("sky read (no luts)"),
@@ -281,6 +339,32 @@ impl Sky {
                 },
             ],
         });
+        let read_frame = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("sky read (frame)"),
+            layout: &read_frame_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: air_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&transmittance_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&multiscatter_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: view_buffer.as_entire_binding(),
+                },
+            ],
+        });
         let write_transmittance = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("sky write transmittance"),
             layout: &write_transmittance_layout,
@@ -298,16 +382,31 @@ impl Sky {
             }],
         });
 
+        let write_skyview = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("sky write skyview"),
+            layout: &write_skyview_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(&skyview_view),
+            }],
+        });
+
         Sky {
             transmittance_pipeline,
             multiscatter_pipeline,
+            skyview_pipeline,
             read_min,
             read_full,
+            read_frame,
             write_transmittance,
             write_multiscatter,
+            write_skyview,
             air_buffer,
+            view_buffer,
             transmittance,
             multiscatter,
+            skyview,
+            skyview_view,
             current: None,
         }
     }
@@ -364,6 +463,50 @@ impl Sky {
 
         self.current = Some((*air, bottom_m));
         true
+    }
+
+    /// Небо під цю камеру — **у чужий encoder**, бо це робота кадру.
+    ///
+    /// Різниця з [`Sky::ensure`] тут головна й видима з підпису: сталі таблиці
+    /// подають роботу самі й майже ніколи, а ця йде туди ж, куди й проходи
+    /// кадру, тобто щокадру. Хто прийде оптимізувати, побачить це з коду.
+    ///
+    /// `r` — відстань камери від центра тіла, `mu_s` — косинус зенітного кута
+    /// Сонця в точці камери. Обидва рахує викликач: він єдиний знає, де тіло.
+    pub fn prepare_view(&self, gpu: &Gpu, encoder: &mut wgpu::CommandEncoder, r: f64, mu_s: f64) {
+        let mut bytes = Vec::with_capacity(VIEW_BYTES as usize);
+        for value in [r as f32, mu_s as f32, 0.0, 0.0] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        gpu.queue.write_buffer(&self.view_buffer, 0, &bytes);
+
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("skyview"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&self.skyview_pipeline);
+        pass.set_bind_group(0, &self.read_frame, &[]);
+        pass.set_bind_group(1, &self.write_skyview, &[]);
+        pass.dispatch_workgroups(
+            atmosphere::SKYVIEW_WIDTH.div_ceil(GROUP),
+            atmosphere::SKYVIEW_HEIGHT.div_ceil(GROUP),
+            1,
+        );
+    }
+
+    /// Вигляд таблиці неба — для того, хто малюватиме нею кадр (S4b).
+    pub fn skyview_view(&self) -> &wgpu::TextureView {
+        &self.skyview_view
+    }
+
+    /// Таблиця неба назад у пам'ять — оракул S4.
+    pub fn read_skyview(&self, gpu: &Gpu) -> Result<Vec<[f32; 4]>, String> {
+        read_lut(
+            gpu,
+            &self.skyview,
+            atmosphere::SKYVIEW_WIDTH,
+            atmosphere::SKYVIEW_HEIGHT,
+        )
     }
 
     /// Таблиця пропускання назад у пам'ять — оракул S2.
