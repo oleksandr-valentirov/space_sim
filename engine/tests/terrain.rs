@@ -577,6 +577,33 @@ fn a_patch_deeper_than_the_pyramid_draws_the_same_surface() {
 
 /// Порожній рельєф — це помилка, а не гладка планета.
 ///
+/// Порожня піраміда заданої глибини — фікстура для перевірок **стелі**.
+///
+/// Нулі, а не рельєф із LOLA, і це не лінощі: питання тут про кількість
+/// текстур, а не про їхній вміст, а сім рівнів із джерела означали б сорок
+/// мільйонів вибірок у тесті, який жодної з них не читає.
+fn flat(levels: u32) -> Terrain {
+    let grids = vec![vec![0i16; STORED * STORED]; Terrain::count(levels)];
+    Terrain::build(levels, MOON_RADIUS_M, 0.5, &grids)
+}
+
+/// Найглибша піраміда, яка справді існує, у масив влазить.
+///
+/// Шість рівнів — це 8190 тайлів, тобто **колірний** тайлсет Місяця (T2a), і
+/// стеля масиву піднята рівно під нього. Без цього твердження стеля лишалася б
+/// числом, яке хтось колись підняв: перевірка на відмову нижче пройшла б і при
+/// стелі 4096, і при 64.
+#[test]
+fn the_deepest_pyramid_we_actually_cook_fits() {
+    let Some(gpu) = gpu() else { return };
+    let mut frame = Frame::new(&gpu, shot::FORMAT);
+
+    let deep = flat(6);
+    assert_eq!(Terrain::count(6), 8190);
+    let loaded = frame.load_terrain(&gpu, &deep);
+    assert!(loaded.is_ok(), "8190 тайлів не влізли: {loaded:?}");
+}
+
 /// Хендл, якого немає, не має тихо перетворюватись на `Smooth`: планета без
 /// гір і планета, чий асет не завантажився, виглядають однаково.
 #[test]
@@ -585,10 +612,7 @@ fn a_terrain_that_does_not_fit_is_refused_out_loud() {
     let mut frame = Frame::new(&gpu, shot::FORMAT);
 
     // Піраміда, більша за стелю масиву: 7 рівнів це 32766 тайлів.
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../data/lola/ldem_4.img");
-    let grid = Grid::read(&path).expect("сітка LOLA мала прочитатися");
-    let huge = build(&grid, 7);
-    let refused = frame.load_terrain(&gpu, &huge);
+    let refused = frame.load_terrain(&gpu, &flat(7));
     println!("  завелика піраміда: {refused:?}");
     assert!(refused.is_err(), "завеликий рельєф прийняли мовчки");
 

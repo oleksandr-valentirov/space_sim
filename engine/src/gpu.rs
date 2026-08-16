@@ -72,11 +72,13 @@ impl Gpu {
             .max(6)
             .min(adapter.limits().max_storage_buffers_per_shader_stage);
         if bindless {
-            // Впираємось саме сюди, і число не з голови: тайлсет Місяця з
-            // п'ятьма рівнями піраміди — 2046 тайлів (R5b).
+            // Впираємось саме сюди, і число не з голови: **колірний** тайлсет
+            // Місяця з шістьма рівнями піраміди — 8190 тайлів (T2a). Висоти
+            // на п'яти рівнях — 2046, тобто вчетверо менше, і саме тому це
+            // число колись було 4096.
             limits.max_binding_array_elements_per_shader_stage = wgpu::Limits::default()
                 .max_binding_array_elements_per_shader_stage
-                .max(4096);
+                .max(8192);
         }
 
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
