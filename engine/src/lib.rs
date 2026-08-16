@@ -33,6 +33,7 @@ pub use egui;
 pub use egui_wgpu;
 
 pub mod app;
+pub mod atmosphere;
 pub mod camera;
 pub mod camera_probe;
 pub mod cubesphere;
@@ -51,6 +52,7 @@ pub mod perf_probe;
 pub mod rotating_probe;
 pub mod scene;
 pub mod shot;
+pub mod sky;
 pub mod sphere;
 pub mod sphere_render;
 pub mod tiles;
