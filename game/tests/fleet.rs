@@ -1,27 +1,27 @@
-//! Фікстура флоту, якою міряється борг D7 (ROADMAP.md, N1).
+//! The fleet fixture debt D7 is measured with (ROADMAP.md, N1).
 //!
-//! Вимір нею вартий рівно стільки, скільки варта сама фікстура, тож
-//! перевіряється не «щось збудувалось», а три твердження, від яких залежать
-//! числа N1:
+//! A measurement made with it is worth exactly what the fixture is worth, so
+//! what is checked is not "something built" but three claims the N1 numbers
+//! depend on:
 //!
-//! 1. **Апарати різні.** Тридцять копій однієї орбіти — це один апарат,
-//!    поміряний тридцять разів; помилка такого роду не видно ні в часі кадру,
-//!    ні в кількості вершин.
-//! 2. **Орбіти справді колові й на заявленій висоті.** Густина семплів,
-//!    заради якої флот існує, — властивість висоти; станція на витягнутому
-//!    еліпсі дала б іншу й тихо.
-//! 3. **Станції долітають.** Опір на низькій орбіті — не декорація: апарат,
-//!    що зійшов з орбіти посеред виміру, зменшує його мовчки.
+//! 1. **The vessels differ.** Thirty copies of one orbit is one vessel
+//!    measured thirty times; an error of that kind is visible neither in frame
+//!    time nor in vertex count.
+//! 2. **The orbits really are circular and at the stated altitude.** The
+//!    sample density the fleet exists for is a property of altitude; a station
+//!    on a stretched ellipse would give a different one, quietly.
+//! 3. **The stations survive.** Drag in low orbit is not decoration: a vessel
+//!    that deorbits mid-measurement shrinks it silently.
 
 use game::mission;
 use game::world::EARTH;
 
-/// Скільки станцій перевіряти. Більше за сім (період таблиці площин) і
-/// більше за чотири — щоб повторення, якщо воно є, встигло проявитись.
+/// How many stations to check. More than seven (the plane table's period) and
+/// more than four, so a repetition, if there is one, has time to show.
 const STATIONS: usize = 12;
 
 fn build() -> game::world::World {
-    mission::fleet(&mission::default_asset(), STATIONS).expect("флот будується на фікстурі")
+    mission::fleet(&mission::default_asset(), STATIONS).expect("the fleet builds on the fixture")
 }
 
 #[test]
@@ -29,9 +29,9 @@ fn every_station_flies_its_own_orbit() {
     let world = build();
     let eph = world.ephemeris();
     let start = mission::start();
-    let earth = eph.body_state(EARTH, start.t).expect("Земля в ассеті є");
+    let earth = eph.body_state(EARTH, start.t).expect("Earth is in the asset");
 
-    // Halo лишається першим — на ньому стоїть решта гри.
+    // The halo stays first -- the rest of the game rests on it.
     assert_eq!(world.vessels().len(), STATIONS + 1);
     assert_eq!(world.vessels()[0].name, "halo 1151");
 
@@ -48,18 +48,18 @@ fn every_station_flies_its_own_orbit() {
         radii.push(radius);
     }
 
-    // Оболонки різні — це те, що дає різну густину семплів.
+    // The shells differ -- that is what gives different sample densities.
     for (i, a) in radii.iter().enumerate() {
         for b in &radii[i + 1..] {
-            assert!((a - b).abs() > 1.0e3, "дві станції на одній оболонці");
+            assert!((a - b).abs() > 1.0e3, "two stations on one shell");
         }
     }
 
-    // **І напрямки різні теж — окремим твердженням.** Різниці радіусів
-    // достатньо, щоб «дві станції на одній орбіті» ніколи не спрацювало, тож
-    // перевірка, що зупиняється на ній, не побачила б флоту, у якому таблиця
-    // площин прочитана з одним і тим самим індексом. Саме такої фікстури тут
-    // не має бути (D13, D14: симетрична фікстура ховає помилку тричі).
+    // **And the directions differ too, as its own claim.** The radius
+    // differences alone are enough for "two stations on one orbit" never to
+    // fire, so a check stopping there would not see a fleet whose plane table
+    // was read with one and the same index. That is exactly the fixture this
+    // must not be (D13, D14: a symmetric fixture hides a bug three times).
     let mut distinct = 0;
     for (i, a) in directions.iter().enumerate() {
         if !directions[..i]
@@ -71,7 +71,7 @@ fn every_station_flies_its_own_orbit() {
     }
     assert!(
         distinct >= 7,
-        "лише {distinct} різних площин на {STATIONS} станцій — таблиця площин не читається"
+        "only {distinct} distinct planes for {STATIONS} stations -- the plane table is not being read"
     );
 }
 
@@ -80,7 +80,7 @@ fn every_station_starts_circular_at_its_shell() {
     let world = build();
     let eph = world.ephemeris();
     let start = mission::start();
-    let earth = eph.body_state(EARTH, start.t).expect("Земля в ассеті є");
+    let earth = eph.body_state(EARTH, start.t).expect("Earth is in the asset");
     let mu = eph.body_mu(EARTH);
     let surface = eph.body_radius(EARTH);
 
@@ -99,27 +99,28 @@ fn every_station_starts_circular_at_its_shell() {
         let speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
         let altitude = radius - surface;
 
-        // Смуга з `mission`: 600 км плюс 25 км на апарат, 29 оболонок.
+        // The band from `mission`: 600 km plus 25 km per vessel, 29 shells.
         assert!(
             (600.0e3..=1300.0e3).contains(&altitude),
-            "{} стартує на висоті {altitude:.0} м",
+            "{} starts at an altitude of {altitude:.0} m",
             vessel.name
         );
 
-        // Колова — це дві умови, і друга (перпендикулярність) ловить те, чого
-        // перша не бачить: швидкість правильної величини вздовж радіуса дала б
-        // падіння на Землю з тим самим модулем.
+        // Circular is two conditions, and the second (perpendicularity)
+        // catches what the first does not see: a velocity of the right
+        // magnitude along the radius would give a fall to Earth with the same
+        // modulus.
         let circular = (mu / radius).sqrt();
         assert!(
             (speed - circular).abs() < 1.0e-6,
-            "{}: {speed} проти колової {circular}",
+            "{}: {speed} against circular {circular}",
             vessel.name
         );
 
         let along_radius = (r[0] * v[0] + r[1] * v[1] + r[2] * v[2]) / (radius * speed);
         assert!(
             along_radius.abs() < 1.0e-12,
-            "{}: швидкість не перпендикулярна до радіуса ({along_radius})",
+            "{}: the velocity is not perpendicular to the radius ({along_radius})",
             vessel.name
         );
     }
@@ -130,29 +131,30 @@ fn the_fleet_survives_the_span_it_is_measured_over() {
     let mut world = build();
     let start = mission::start();
 
-    // Десять діб, а не сто: у debug сто коштували б хвилини, а те, що ловить
-    // цей тест, — вхід в атмосферу — на 600 км за десять діб уже проявилось би
-    // помилкою кроку, якби висоту вибрали неправильно. Повний спан міряє зонд
-    // (`--perf-probe 101 --stations 30`), і там відмова теж друкується.
+    // Ten days rather than a hundred: in debug a hundred would cost minutes,
+    // and what this test catches -- atmospheric entry -- would already show as
+    // a step error at 600 km over ten days if the altitude were chosen wrongly.
+    // The probe measures the full span (`--perf-probe 101 --stations 30`), and
+    // a failure is printed there too.
     world.run_to_day(start.t + 10.0 * 86400.0, 1.0, 8);
 
     for vessel in world.vessels() {
         assert!(
             vessel.failed.is_none(),
-            "{} не долетів: {:?}",
+            "{} did not make it: {:?}",
             vessel.name,
             vessel.failed
         );
     }
 
-    // Флот, який не полетів, теж «не впав». Густина семплів — те, заради чого
-    // фікстура існує, тож вона й перевіряється: нижче за сотню на добу
-    // означало б, що станції не там, де їх задумали.
+    // A fleet that never flew also "did not fail". Sample density is what the
+    // fixture exists for, so that is what is checked: below a hundred per day
+    // would mean the stations are not where they were meant to be.
     let snapshot = world.snapshot();
     let samples: usize = snapshot.vessels.iter().map(|v| v.sample_count()).sum();
     let per_vessel_day = samples as f64 / (snapshot.vessels.len() as f64 * 10.0);
     assert!(
         per_vessel_day > 100.0,
-        "густина семплів {per_vessel_day:.0} на апарат за добу — флот не там, де задумано"
+        "sample density {per_vessel_day:.0} per vessel per day -- the fleet is not where it was meant to be"
     );
 }

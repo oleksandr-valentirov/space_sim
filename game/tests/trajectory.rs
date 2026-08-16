@@ -1,23 +1,23 @@
-//! Ігрові типи не змінюють жодного біта (ROADMAP J1).
+//! The game types change no bit (ROADMAP J1).
 //!
-//! Це вся перевірка кроку. Між `prop_run` і тим, що бачить гравець, тепер
-//! стоїть шар: ланки, стор, снапшот, сцена. Кожен із них міг би тихо щось
-//! зіпсувати — переплутати порядок семплів, загубити останній, продовжити не
-//! з того стану, — і жодна з цих помилок не падає: усі дають правдоподібну
-//! криву.
+//! This is the whole check for the step. Between `prop_run` and what the
+//! player sees there is now a layer: legs, storage, snapshot, scene. Each of
+//! them could quietly spoil something -- shuffle the sample order, lose the
+//! last one, continue from the wrong state -- and none of those errors fails:
+//! all of them give a plausible curve.
 //!
-//! Тому оракул — прогін H5 (`engine::live`), і звірка бітова. Ланка там 64
-//! семпли, тут 256, і це навмисно: якби числа збігалися, перевірка була б
-//! тавтологією. Те, що вони різні, а результат бітово той самий, і є
-//! твердженням «робота міряється ланками, а ланка на числа не впливає»
-//! (CLAUDE.md, інваріант 9; виміряно в H1).
+//! So the oracle is the H5 run (`engine::live`), and the comparison is
+//! bitwise. A leg there is 64 samples, here 256, deliberately: if the numbers
+//! matched, the check would be a tautology. That they differ while the result
+//! is bit-identical is the claim "work is measured in legs, and a leg does not
+//! affect the numbers" (CLAUDE.md, invariant 9; measured in H1).
 
 use engine::live;
 use game::mission;
 use game::snapshot::WorldSnapshot;
 use game::world::World;
 
-/// Усі семпли всіх апаратів підряд.
+/// Every sample of every vessel, in order.
 fn samples(snapshot: &WorldSnapshot) -> Vec<game::leg::Sample> {
     snapshot
         .vessels
@@ -26,19 +26,20 @@ fn samples(snapshot: &WorldSnapshot) -> Vec<game::leg::Sample> {
         .collect()
 }
 
-/// Світ без пенсії ланок (N3a).
+/// A world without leg retirement (N3a).
 ///
-/// Це головна звірка J1 — семпл у семпл із прямим прогоном H5, — а пенсія
-/// семпли викидає. Вона не міняє жодного біта того, що порахували, але міняє
-/// те, що лишилось; звіряти з нею означало б звіряти сховище, а не фізику.
+/// This is J1's main comparison -- sample for sample against the direct H5 run
+/// -- and retirement discards samples. It changes no bit of what was computed
+/// but changes what remains; comparing with it would mean comparing storage
+/// rather than physics.
 fn finished_world() -> World {
-    let mut world = mission::world(&mission::default_asset()).expect("світ будується");
+    let mut world = mission::world(&mission::default_asset()).expect("the world builds");
     world.set_history_trimming(None);
     world.run_to_end(1.0, 8);
     world
 }
 
-/// Головна перевірка J1: те саме, що H5, до останнього біта.
+/// J1's main check: the same as H5, to the last bit.
 #[test]
 fn the_game_computes_what_the_direct_run_computes() {
     let world = finished_world();
@@ -46,19 +47,19 @@ fn the_game_computes_what_the_direct_run_computes() {
     let mine = samples(&snapshot);
 
     let reference =
-        live::propagate(&mission::start(), mission::DAYS, &live::repo_asset()).expect("прогін H5");
+        live::propagate(&mission::start(), mission::DAYS, &live::repo_asset()).expect("the H5 run");
 
     assert_eq!(
         mine.len(),
         reference.samples.len(),
-        "{} семплів проти {} у прямого прогону",
+        "{} samples against {} from the direct run",
         mine.len(),
         reference.samples.len()
     );
     assert!(
         snapshot.vessels[0].legs.len() != reference.legs,
-        "ланки мають бути різного розміру, інакше звірка нічого не доводить: \
-         {} проти {}",
+        "the legs must differ in size, or the comparison proves nothing: \
+         {} against {}",
         snapshot.vessels[0].legs.len(),
         reference.legs
     );
@@ -79,21 +80,21 @@ fn the_game_computes_what_the_direct_run_computes() {
             assert_eq!(
                 a.to_bits(),
                 b.to_bits(),
-                "семпл {i}, {name}: {a:e} проти {b:e}"
+                "sample {i}, {name}: {a:e} against {b:e}"
             );
         }
     }
 }
 
-/// Скільки роботи за тік — не впливає на числа взагалі.
+/// How much work per tick does not affect the numbers at all.
 ///
-/// Бюджет ланок — це те, чим кадр обмежує затримку; він вирішує, **коли**
-/// шматок прогнозу з'явиться, і ніколи — які в нього числа. Пара до цього —
-/// `tests/time.rs`, де те саме перевіряється з боку годинника.
+/// The leg budget is how a frame bounds latency; it decides **when** a piece
+/// of prediction appears and never what its numbers are. Its counterpart is
+/// `tests/time.rs`, where the same is checked from the clock's side.
 #[test]
 fn the_size_of_a_tick_does_not_change_the_numbers() {
     let run = |budget: usize| {
-        let mut world = mission::world(&mission::default_asset()).expect("світ будується");
+        let mut world = mission::world(&mission::default_asset()).expect("the world builds");
         world.run_to_end(1.0, budget);
         samples(&world.snapshot())
     };
@@ -101,32 +102,33 @@ fn the_size_of_a_tick_does_not_change_the_numbers() {
     let slow = run(1);
     let fast = run(1000);
 
-    assert!(!slow.is_empty(), "нічого не пораховано");
-    assert_eq!(slow.len(), fast.len(), "різна кількість семплів");
+    assert!(!slow.is_empty(), "nothing was computed");
+    assert_eq!(slow.len(), fast.len(), "different sample counts");
 
     for (i, (a, b)) in slow.iter().zip(fast.iter()).enumerate() {
-        assert_eq!(a.state.t.to_bits(), b.state.t.to_bits(), "семпл {i}: час");
-        assert_eq!(a.state.r.x.to_bits(), b.state.r.x.to_bits(), "семпл {i}: x");
+        assert_eq!(a.state.t.to_bits(), b.state.t.to_bits(), "sample {i}: time");
+        assert_eq!(a.state.r.x.to_bits(), b.state.r.x.to_bits(), "sample {i}: x");
         assert_eq!(
             a.state.v.z.to_bits(),
             b.state.v.z.to_bits(),
-            "семпл {i}: vz"
+            "sample {i}: vz"
         );
     }
 }
 
-/// Ланки зшиваються без повторених і без загублених вершин.
+/// The legs stitch without repeated or lost vertices.
 ///
-/// `prop_run` не семплює початкову точку, тож кінець однієї ланки й початок
-/// наступної — сусідні кроки, а не той самий. Помилка тут дала б ламану з
-/// подвоєними вершинами або з дірками, і жодна з них не видна оком.
+/// `prop_run` does not sample the initial point, so one leg's end and the
+/// next's start are adjacent steps rather than the same one. An error here
+/// would give a polyline with doubled vertices or with holes, and neither is
+/// visible by eye.
 #[test]
 fn legs_stitch_without_seams() {
     let world = finished_world();
     let vessel = &world.vessels()[0];
     let legs = vessel.trajectory.legs();
 
-    assert!(legs.len() > 1, "потрібно щонайменше дві ланки");
+    assert!(legs.len() > 1, "at least two legs are needed");
 
     for pair in legs.windows(2) {
         let (before, after) = (&pair[0], &pair[1]);
@@ -134,37 +136,38 @@ fn legs_stitch_without_seams() {
         assert_eq!(
             before.t1.to_bits(),
             after.entry.t.to_bits(),
-            "між ланками розрив: {} проти {}",
+            "a gap between legs: {} against {}",
             before.t1,
             after.entry.t
         );
 
-        let last = before.samples.last().expect("ланка не порожня");
-        let first = after.samples.first().expect("ланка не порожня");
+        let last = before.samples.last().expect("the leg is not empty");
+        let first = after.samples.first().expect("the leg is not empty");
         assert!(
             first.state.t > last.state.t,
-            "перший семпл наступної ланки не пізніший за останній попередньої: \
-             {} проти {}",
+            "the next leg's first sample is not later than the previous leg's \
+             last: {} against {}",
             first.state.t,
             last.state.t
         );
     }
 
-    // Останній семпл — це кінець місії, а не «десь близько».
+    // The last sample is the mission's end rather than "somewhere near".
     let last = legs.last().unwrap().samples.last().unwrap();
     assert_eq!(
         last.state.t.to_bits(),
         vessel.horizon_end.to_bits(),
-        "місія скінчилася на {} замість {}",
+        "the mission ended at {} instead of {}",
         last.state.t,
         vessel.horizon_end
     );
 }
 
-/// Крок, з яким ланка закінчилася, — не нуль і переноситься далі.
+/// The step a leg ended with is non-zero and is carried onwards.
 ///
-/// Без нього перезапуск із межі ланки дав би іншу траєкторію (H1: ×70 роботи
-/// й 1.9 мм розбіжності), а на ньому стоїть увесь каскадний перерахунок J3.
+/// Without it, restarting from a leg boundary would give a different
+/// trajectory (H1: 70x the work and 1.9 mm of divergence), and the whole J3
+/// cascade recomputation rests on it.
 #[test]
 fn every_leg_carries_the_step_it_ended_with() {
     let world = finished_world();
@@ -173,12 +176,12 @@ fn every_leg_carries_the_step_it_ended_with() {
     for (i, leg) in legs.iter().enumerate() {
         assert!(
             leg.step_out > 0.0 && leg.step_out.is_finite(),
-            "ланка {i} лишила крок {}",
+            "leg {i} left step {}",
             leg.step_out
         );
         assert!(
             leg.step_out <= mission::H_MAX_S,
-            "ланка {i} лишила крок {} понад стелю {}",
+            "leg {i} left step {}, above the ceiling {}",
             leg.step_out,
             mission::H_MAX_S
         );
