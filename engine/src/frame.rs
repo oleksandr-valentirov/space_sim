@@ -444,12 +444,14 @@ struct Ships {
     normal_buffer: wgpu::Buffer,
     colour_buffer: wgpu::Buffer,
     material_buffer: wgpu::Buffer,
+    shine_buffer: wgpu::Buffer,
     capacity: usize,
 
     position_bytes: Vec<u8>,
     normal_bytes: Vec<u8>,
     colour_bytes: Vec<u8>,
     material_bytes: Vec<u8>,
+    shine_bytes: Vec<u8>,
 }
 
 pub struct Frame {
@@ -2317,6 +2319,20 @@ impl Ships {
             offset: 0,
             shader_location: 3,
         }];
+        // Сяйво планети (T6) — теж на вершину, і з тієї ж причини: два
+        // кораблі можуть висіти над різними місцями.
+        let shine_attrs = [
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x3,
+                offset: 0,
+                shader_location: 4,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x3,
+                offset: 12,
+                shader_location: 5,
+            },
+        ];
 
         let pipeline = gpu
             .device
@@ -2347,6 +2363,11 @@ impl Ships {
                             array_stride: 8,
                             step_mode: wgpu::VertexStepMode::Vertex,
                             attributes: &material_attrs,
+                        }),
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: 24,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &shine_attrs,
                         }),
                     ],
                 },
@@ -2414,7 +2435,7 @@ impl Ships {
 
         let index_count = mesh.indices.len() as u32;
         let vertices_per_ship = mesh.positions.len();
-        let (position_buffer, normal_buffer, colour_buffer, material_buffer) =
+        let (position_buffer, normal_buffer, colour_buffer, material_buffer, shine_buffer) =
             Ships::buffers(gpu, vertices_per_ship);
 
         Ships {
@@ -2429,18 +2450,26 @@ impl Ships {
             normal_buffer,
             colour_buffer,
             material_buffer,
+            shine_buffer,
             capacity: vertices_per_ship,
             position_bytes: Vec::new(),
             normal_bytes: Vec::new(),
             colour_bytes: Vec::new(),
             material_bytes: Vec::new(),
+            shine_bytes: Vec::new(),
         }
     }
 
     fn buffers(
         gpu: &Gpu,
         vertices: usize,
-    ) -> (wgpu::Buffer, wgpu::Buffer, wgpu::Buffer, wgpu::Buffer) {
+    ) -> (
+        wgpu::Buffer,
+        wgpu::Buffer,
+        wgpu::Buffer,
+        wgpu::Buffer,
+        wgpu::Buffer,
+    ) {
         let make = |label: &str, stride: usize| {
             gpu.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
@@ -2454,6 +2483,7 @@ impl Ships {
             make("ship normals", 12),
             make("ship colours", 16),
             make("ship materials", 8),
+            make("ship shine", 24),
         )
     }
 
@@ -2482,19 +2512,28 @@ impl Ships {
         let needed = scene.ships.len() * self.vertices_per_ship;
         if needed > self.capacity {
             self.capacity = needed.next_power_of_two();
-            let (position, normal, colour, material) = Ships::buffers(gpu, self.capacity);
+            let (position, normal, colour, material, shine) = Ships::buffers(gpu, self.capacity);
             self.position_buffer = position;
             self.normal_buffer = normal;
             self.colour_buffer = colour;
             self.material_buffer = material;
+            self.shine_buffer = shine;
         }
 
         self.position_bytes.clear();
         self.normal_bytes.clear();
         self.colour_bytes.clear();
         self.material_bytes.clear();
+        self.shine_bytes.clear();
 
         for ship in &scene.ships {
+            // Сяйво планети рахується **раз на корабель** (T6): воно залежить
+            // від того, де корабель висить, а не від того, де його вершина.
+            // Напрямок — у камерні осі, як усе інше в цьому пайплайні.
+            let shine = crate::planetshine::nearest(scene, ship.centre);
+            let shine_dir = scene.camera.rotate(shine.direction);
+            let shine_rgb = shine.irradiance.map(|v| v as f32);
+
             let r = rotation(ship.orientation);
             let turn = |v: [f64; 3]| {
                 [
@@ -2536,6 +2575,9 @@ impl Ships {
                 for value in [ship.roughness, ship.metallic] {
                     self.material_bytes.extend_from_slice(&value.to_le_bytes());
                 }
+                for value in shine_dir.iter().chain(shine_rgb.iter()) {
+                    self.shine_bytes.extend_from_slice(&value.to_le_bytes());
+                }
             }
         }
 
@@ -2562,6 +2604,8 @@ impl Ships {
             .write_buffer(&self.colour_buffer, 0, &self.colour_bytes);
         gpu.queue
             .write_buffer(&self.material_buffer, 0, &self.material_bytes);
+        gpu.queue
+            .write_buffer(&self.shine_buffer, 0, &self.shine_bytes);
     }
 
     fn draw(&self, pass: &mut wgpu::RenderPass<'_>, scene: &Scene, index: usize) {
@@ -2575,6 +2619,7 @@ impl Ships {
         pass.set_vertex_buffer(1, self.normal_buffer.slice(..));
         pass.set_vertex_buffer(2, self.colour_buffer.slice(..));
         pass.set_vertex_buffer(3, self.material_buffer.slice(..));
+        pass.set_vertex_buffer(4, self.shine_buffer.slice(..));
         pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
         // Виклик на корабель: індекси спільні, зсуває їх `base_vertex`.

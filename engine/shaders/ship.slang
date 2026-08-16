@@ -40,6 +40,11 @@ struct VertexInput
     // x — шорсткість, y — метал. Атрибут вершини, як і колір, і з тієї самої
     // причини: кораблів у кадрі кілька, а з uniform виграв би останній.
     float2 material : MATERIAL;
+    // Сяйво планети (T6): напрямок **до неї** в камерних осях і опромінення
+    // по каналах. На вершину, бо два кораблі можуть висіти над різними
+    // місцями; `engine::planetshine` рахує це раз на корабель.
+    float3 shine_dir : SHINEDIR;
+    float3 shine_rgb : SHINERGB;
 };
 
 struct VertexOutput
@@ -48,6 +53,8 @@ struct VertexOutput
     float3 normal : NORMAL;
     float4 colour : COLOR;
     nointerpolation float2 material : MATERIAL;
+    nointerpolation float3 shine_dir : SHINEDIR;
+    nointerpolation float3 shine_rgb : SHINERGB;
     // Позиція вершини **відносно камери** — з неї фрагмент бере напрямок на
     // око. Camera-relative тут не оптимізація, а сама угода буфера: позиція
     // вже прийшла такою, тож око стоїть у нулі, і напрямок до нього — це
@@ -63,6 +70,8 @@ VertexOutput vertex_main(VertexInput input)
     output.normal = input.normal;
     output.colour = input.colour;
     output.material = input.material;
+    output.shine_dir = input.shine_dir;
+    output.shine_rgb = input.shine_rgb;
     output.view = -input.position;
     return output;
 }
@@ -105,12 +114,35 @@ float3 fresnel(float3 f0, float v_dot_h)
     return f0 + (float3(1.0) - f0) * t5;
 }
 
+// Скільки світла йде в око з одиниці опромінення — двійник `brdf::radiance`.
+float3 radiance(float3 n, float3 v, float3 l, float3 base, float roughness, float metallic)
+{
+    float n_dot_l = dot(n, l);
+    float n_dot_v = dot(n, v);
+    if (n_dot_l <= 0.0 || n_dot_v <= 0.0)
+    {
+        return float3(0.0);
+    }
+
+    float3 h = normalize(v + l);
+    float n_dot_h = saturate(dot(n, h));
+    float v_dot_h = saturate(dot(v, h));
+
+    // Метал не має дифузного відбиття, а його `F0` — це базовий колір.
+    float3 f0 = lerp(float3(DIELECTRIC_F0), base, metallic);
+    float3 f = fresnel(f0, v_dot_h);
+    float3 specular = distribution(n_dot_h, roughness)
+        * visibility(n_dot_v, n_dot_l, roughness) * f;
+    float3 diffuse = (float3(1.0) - f) * (1.0 - metallic) * base / PI;
+
+    return (diffuse + specular) * n_dot_l;
+}
+
 [shader("fragment")]
 float4 fragment_main(VertexOutput input) : SV_Target
 {
     float3 n = normalize(input.normal);
     float3 v = normalize(input.view);
-    float3 l = uniforms.light_dir.xyz;
 
     // ⚠ Нормаль розвертається до ока, і це не косметика: пайплайн корабля
     // малює **без відсікання граней**, тож у кадр законно потрапляє
@@ -122,27 +154,19 @@ float4 fragment_main(VertexOutput input) : SV_Target
         n = -n;
     }
 
-    float n_dot_l = dot(n, l);
-    float n_dot_v = dot(n, v);
-    if (n_dot_l <= 0.0)
-    {
-        return float4(0.0, 0.0, 0.0, 1.0);
-    }
-
-    float3 h = normalize(v + l);
-    float n_dot_h = saturate(dot(n, h));
-    float v_dot_h = saturate(dot(v, h));
-
     float roughness = input.material.x;
     float metallic = input.material.y;
     float3 base = input.colour.rgb;
 
-    // Метал не має дифузного відбиття, а його `F0` — це базовий колір.
-    float3 f0 = lerp(float3(DIELECTRIC_F0), base, metallic);
-    float3 f = fresnel(f0, v_dot_h);
-    float3 specular = distribution(n_dot_h, roughness)
-        * visibility(n_dot_v, n_dot_l, roughness) * f;
-    float3 diffuse = (float3(1.0) - f) * (1.0 - metallic) * base / PI;
+    // Світило: опромінення одиничне.
+    float3 out = radiance(n, v, uniforms.light_dir.xyz, base, roughness, metallic);
 
-    return float4((diffuse + specular) * n_dot_l, 1.0);
+    // Планета знизу (T6). Ambient немає й не буде: тіньовий бік корпусу
+    // світиться рівно тим, що відбила поверхня під ним, і нічим більше
+    // (PROJECT.md §7). На нічному боці `shine_rgb` нульовий, тож доданок
+    // зникає сам, без жодної гілки.
+    out += radiance(n, v, normalize(input.shine_dir), base, roughness, metallic)
+        * input.shine_rgb;
+
+    return float4(out, 1.0);
 }

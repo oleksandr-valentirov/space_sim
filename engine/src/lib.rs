@@ -53,6 +53,7 @@ pub mod material;
 pub mod moon_demo;
 pub mod orbit;
 pub mod perf_probe;
+pub mod planetshine;
 pub mod rotating_probe;
 pub mod scene;
 pub mod ship;
