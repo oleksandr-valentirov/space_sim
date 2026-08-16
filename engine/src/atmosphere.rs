@@ -54,6 +54,15 @@ pub const TRANSMITTANCE_HEIGHT: u32 = 64;
 /// коштувати дорого — він біжить у тесті, а не в кадрі.
 pub const ORACLE_STEPS: usize = 2048;
 
+/// Найменше ослаблення, на яке ще можна ділити.
+///
+/// Порожнє повітря дає нуль і в чисельнику, і в знаменнику; `max` робить вираз
+/// визначеним, не міняючи результату — при нульовому ослабленні `1 − exp(0)`
+/// теж нуль. Форма з `max` замість гілки прийшла з шейдера, і там вона
+/// вимушена: HLSL не індексує вектор змінною, тож циклу по каналах у ньому бути
+/// не може взагалі (`sky.slang`, застереження про `X3511`).
+const TINY: f64 = 1.0e-30;
+
 /// Густина трьох компонент повітря на висоті `h` метрів над поверхнею:
 /// `[Релей, Мі, озон]`, безрозмірна частка приземного значення.
 ///
@@ -565,17 +574,18 @@ pub fn multiple_scattering(
             let sigma_e = extinction(air, h);
 
             for channel in 0..3 {
-                // Порожнє повітря: і джерело, і ослаблення нулі, тобто внесок
-                // нульовий. Ділити тут не можна — 0/0.
-                if sigma_e[channel] <= 0.0 {
-                    continue;
-                }
                 let step_transmittance = (-sigma_e[channel] * step).exp();
                 // Точний інтеграл джерела на кроці, а не «значення в середині
                 // × довжину»: на верхніх кроках промінь гасне в межах одного
                 // кроку, і різниця там не косметична.
+                //
+                // Порожнє повітря ділення не ламає: при нульовому ослабленні
+                // `1 − exp(0)` теж нуль, тобто внесок нульовий, а `TINY` у
+                // знаменнику робить сам вираз визначеним. Це та сама форма, що
+                // в шейдері, і там вона вимушена — HLSL не індексує вектор
+                // змінною, тож циклу по каналах у нього бути не може.
                 let integrate =
-                    |source: f64| source * (1.0 - step_transmittance) / sigma_e[channel];
+                    |source: f64| source * (1.0 - step_transmittance) / sigma_e[channel].max(TINY);
 
                 // Друге розсіювання: у точку з напрямку `w` приходить те, що
                 // розсіялося з прямого сонячного світла. Фазова функція
@@ -802,9 +812,6 @@ impl Model {
             let sigma_e = extinction(air, h);
 
             for channel in 0..3 {
-                if sigma_e[channel] <= 0.0 {
-                    continue;
-                }
                 let sigma_r = f64::from(air.rayleigh_scattering[channel]) * d_rayleigh;
                 let sigma_m = f64::from(air.mie_scattering) * d_mie;
                 // Пряме світло — з власною фазовою функцією кожної компоненти;
@@ -813,8 +820,8 @@ impl Model {
                     + (sigma_r + sigma_m) * psi[channel];
 
                 let step_transmittance = (-sigma_e[channel] * step).exp();
-                light[channel] +=
-                    throughput[channel] * source * (1.0 - step_transmittance) / sigma_e[channel];
+                light[channel] += throughput[channel] * source * (1.0 - step_transmittance)
+                    / sigma_e[channel].max(TINY);
                 throughput[channel] *= step_transmittance;
             }
         }

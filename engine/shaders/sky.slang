@@ -81,6 +81,19 @@ static const uint SKYVIEW_STEPS = 32u;
 
 static const float PI = 3.14159265358979;
 
+// ⚠ **Ніякої індексації вектора змінною й ніяких циклів по каналах.**
+//
+// HLSL не вміє індексувати `float3` неконстантним індексом узагалі — компілятор
+// зобов'язаний розгорнути такий цикл, а всередині маршу, тіло якого й так
+// велике, FXC відмовляється: `error X3511: forced to unroll loop, but unrolling
+// failed`. Спіймано на CI, на WARP (D3D12), там де Vulkan і Metal мовчали.
+//
+// Отже вся арифметика по каналах — векторна. Замість `if (sigma_e[c] <= 0)
+// continue;` стоїть ділення на `max(sigma_e, TINY)`: там, де ослаблення нульове,
+// `1 − exp(0)` теж нуль, тобто внесок нульовий, а ділення визначене. Результат
+// той самий, а розгортати нема чого.
+static const float TINY = 1.0e-30;
+
 // Таблиця пропускання на читання — для всіх проходів, крім того, що її пише.
 [[vk::binding(2, 0)]]
 Texture2D<float4> transmittance_lut;
@@ -460,21 +473,17 @@ void multiscatter_main(uint3 id : SV_DispatchThreadID)
             float3 sigma_s = scattering(h);
             float3 sigma_e = extinction(h);
 
-            for (uint c = 0u; c < 3u; ++c)
-            {
-                if (sigma_e[c] <= 0.0) { continue; }
-                float step_transmittance = exp(-sigma_e[c] * step);
-                float gain = (1.0 - step_transmittance) / sigma_e[c];
+            float3 step_transmittance = exp(-sigma_e * step);
+            float3 gain = (float3(1.0) - step_transmittance) / max(sigma_e, TINY);
 
-                // Фазова функція рівномірна — це і є наближення статті.
-                float uniform_phase = 1.0 / (4.0 * 3.14159265358979);
-                second[c] += throughput[c] * sigma_s[c] * to_sun[c] * uniform_phase * gain;
-                // Частка: середовище світиться одиницею з усіх боків, тож
-                // джерело — просто `σ_s`.
-                fraction[c] += throughput[c] * sigma_s[c] * gain;
+            // Фазова функція рівномірна — це і є наближення статті.
+            float uniform_phase = 1.0 / (4.0 * PI);
+            second += throughput * sigma_s * to_sun * uniform_phase * gain;
+            // Частка: середовище світиться одиницею з усіх боків, тож джерело —
+            // просто `σ_s`.
+            fraction += throughput * sigma_s * gain;
 
-                throughput[c] *= step_transmittance;
-            }
+            throughput *= step_transmittance;
         }
     }
 
@@ -611,17 +620,13 @@ float3 raymarch(float3 pos, float3 dir, float3 sun, float rho2, float span, uint
         float3 sigma_r = air.rayleigh.rgb * d.x;
         float sigma_m = air.mie.x * d.y;
 
-        for (uint c = 0u; c < 3u; ++c)
-        {
-            if (sigma_e[c] <= 0.0) { continue; }
-            // Пряме світло — з власною фазовою функцією кожної компоненти;
-            // багаторазове вже усереднене по сфері, тож фази не має.
-            float source = (sigma_r[c] * phase_r + sigma_m * phase_m) * to_sun[c]
-                         + (sigma_r[c] + sigma_m) * psi[c];
-            float step_transmittance = exp(-sigma_e[c] * step);
-            light[c] += throughput[c] * source * (1.0 - step_transmittance) / sigma_e[c];
-            throughput[c] *= step_transmittance;
-        }
+        // Пряме світло — з власною фазовою функцією кожної компоненти;
+        // багаторазове вже усереднене по сфері, тож фази не має.
+        float3 source = (sigma_r * phase_r + float3(sigma_m * phase_m)) * to_sun
+                      + (sigma_r + float3(sigma_m)) * psi;
+        float3 step_transmittance = exp(-sigma_e * step);
+        light += throughput * source * (float3(1.0) - step_transmittance) / max(sigma_e, TINY);
+        throughput *= step_transmittance;
     }
     return light;
 }
@@ -876,15 +881,12 @@ void aerial_main(uint3 id : SV_DispatchThreadID)
             float3 sigma_r = air.rayleigh.rgb * d.x;
             float sigma_m = air.mie.x * d.y;
 
-            for (uint c = 0u; c < 3u; ++c)
-            {
-                if (sigma_e[c] <= 0.0 || step <= 0.0) { continue; }
-                float source = (sigma_r[c] * phase_r + sigma_m * phase_m) * to_sun[c]
-                             + (sigma_r[c] + sigma_m) * psi[c];
-                float step_transmittance = exp(-sigma_e[c] * step);
-                light[c] += throughput[c] * source * (1.0 - step_transmittance) / sigma_e[c];
-                throughput[c] *= step_transmittance;
-            }
+            float3 source = (sigma_r * phase_r + float3(sigma_m * phase_m)) * to_sun
+                          + (sigma_r + float3(sigma_m)) * psi;
+            float3 step_transmittance = exp(-sigma_e * step);
+            light += throughput * source * (float3(1.0) - step_transmittance)
+                   / max(sigma_e, TINY);
+            throughput *= step_transmittance;
         }
         previous = target;
 
