@@ -1,25 +1,25 @@
-//! Кукер мешів проти чисел, які порахував Blender (ROADMAP, T5d2).
+//! The mesh cooker against the numbers Blender computed (ROADMAP, T5d2).
 //!
-//! Головна відмінність від оракула заглушки (V1): аналітичної таблиці для
-//! імпортованої моделі не існує. Отже оракул береться **з іншого
-//! інструмента** — те саме правило, що з етикеткою PDS3 у `dem-cook`.
-//! Наш перерахунок тієї самої моделі перевіряв би сам себе.
+//! The main difference from the placeholder's oracle (V1): no analytic table
+//! exists for an imported model. So the oracle comes from **another tool** --
+//! the same rule as the PDS3 label in `dem-cook`. Recomputing the same model
+//! ourselves would check itself.
 //!
-//! Оракулів три, і кожен ловить свій клас:
+//! There are three oracles, each catching its own class:
 //!
-//! 1. **знаковий об'єм** з `bmesh.calc_volume(signed=True)` — перевернутий
-//!    обхід (знак), загублена оболонка, забутий масштаб;
-//! 2. **габарити з JSON акесора** проти нашого читача `.bin` — порядок
-//!    байтів, тип компонента, зсув `byteOffset`;
-//! 3. **габарити в осях Blender** проти наших у осях glTF — конвенція осей,
-//!    тобто те, що на симетричній моделі не видно взагалі.
+//! 1. **signed volume** from `bmesh.calc_volume(signed=True)` -- reversed
+//!    winding (the sign), a lost shell, a forgotten scale;
+//! 2. **bounds from the accessor JSON** against our `.bin` reader -- byte
+//!    order, component type, `byteOffset`;
+//! 3. **bounds in Blender axes** against ours in glTF axes -- the axis
+//!    convention, i.e. what a symmetric model would not show at all.
 
 use engine::mesh::Model;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 fn repository() -> PathBuf {
-    // `CARGO_MANIFEST_DIR` — це tools/mesh-cook.
+    // `CARGO_MANIFEST_DIR` is tools/mesh-cook.
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
@@ -28,17 +28,17 @@ fn repository() -> PathBuf {
 fn oracle() -> Value {
     let path = repository().join("assets-src/ship.oracle.json");
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    serde_json::from_str(&text).expect("оракул — це JSON")
+    serde_json::from_str(&text).expect("the oracle is JSON")
 }
 
 fn number(value: &Value, key: &str) -> f64 {
-    value[key].as_f64().unwrap_or_else(|| panic!("немає {key}"))
+    value[key].as_f64().unwrap_or_else(|| panic!("no {key}"))
 }
 
 fn triple(value: &Value, key: &str) -> [f64; 3] {
     let list = value[key]
         .as_array()
-        .unwrap_or_else(|| panic!("немає {key}"));
+        .unwrap_or_else(|| panic!("no {key}"));
     [
         list[0].as_f64().unwrap(),
         list[1].as_f64().unwrap(),
@@ -47,37 +47,38 @@ fn triple(value: &Value, key: &str) -> [f64; 3] {
 }
 
 fn ship() -> mesh_cook::Cooked {
-    mesh_cook::cook(&repository().join("assets-src/ship.gltf")).expect("модель мала прочитатись")
+    mesh_cook::cook(&repository().join("assets-src/ship.gltf")).expect("the model should have read")
 }
 
-/// Об'єм нашого меша дорівнює об'єму з Blender.
+/// Our mesh's volume equals Blender's.
 ///
-/// Допуск відносний і виміряний, а не «на око»: координати в glTF — це `f32`,
-/// тобто 10⁻⁷ відносних, і на конусі-зонді розбіжність вийшла 3.1·10⁻⁸
-/// (скіл `blender-assets`). Допуск 10⁻⁶ лишає запас на порядок і все ще
-/// ловить будь-яку помилку геометрії: перевернутий обхід міняє **знак**,
-/// а загублена оболонка — відсотки.
+/// The tolerance is relative and measured rather than eyeballed: glTF
+/// coordinates are `f32`, i.e. 1e-7 relative, and on the probe cone the
+/// discrepancy came out at 3.1e-8 (skill `blender-assets`). A 1e-6 tolerance
+/// leaves an order of margin and still catches any geometry error: reversed
+/// winding flips the **sign**, and a lost shell costs percent.
 #[test]
 fn the_volume_is_the_one_blender_measured() {
     let cooked = ship();
     let expected = number(&oracle(), "volume_m3");
     let off = (cooked.volume_m3 - expected).abs() / expected.abs();
-    println!("  об'єм: {} проти {expected} ({off:.2e})", cooked.volume_m3);
+    println!("  volume: {} against {expected} ({off:.2e})", cooked.volume_m3);
     assert!(
         off < 1e-6,
-        "об'єм розійшовся: {} проти {expected}",
+        "volume diverged: {} against {expected}",
         cooked.volume_m3
     );
-    // Знак окремо: він каже про обхід, і саме його ловить дзеркальна помилка.
-    assert!(cooked.volume_m3 > 0.0, "обхід трикутників перевернутий");
+    // The sign separately: it reports the winding, and a mirroring bug is
+    // exactly what it catches.
+    assert!(cooked.volume_m3 > 0.0, "triangle winding is reversed");
 }
 
-/// Габарити в осях glTF — це габарити Blender з перестановкою `−Y → +Z`.
+/// Bounds in glTF axes are Blender's bounds with the `-Y -> +Z` permutation.
 ///
-/// ⚠ Оракул тут навмисно записаний **в осях Blender**: щоб його відтворити,
-/// читач мусить пройти через ту саму перестановку, яку робить експортер. На
-/// симетричній моделі ця перевірка не означала б нічого — тому в моделі ніс,
-/// стабілізатори, ілюмінатор і антена різні за всіма трьома осями.
+/// The oracle is deliberately written **in Blender axes**: to reproduce it the
+/// reader must go through the same permutation the exporter does. On a
+/// symmetric model this check would mean nothing -- which is why the model's
+/// nose, fins, porthole and antenna all differ along all three axes.
 #[test]
 fn the_axes_arrive_the_way_the_convention_says() {
     let cooked = ship();
@@ -86,47 +87,47 @@ fn the_axes_arrive_the_way_the_convention_says() {
     let high = triple(&oracle, "blender_max");
     let height_m = cooked.model.height_m;
 
-    // Меш уже нормалізований, тож наші габарити треба повернути в метри.
+    // The mesh is already normalised, so our bounds must go back to metres.
     let (mut ours_low, mut ours_high) = mesh_cook::bounds(&cooked.model.mesh);
     for k in 0..3 {
         ours_low[k] *= height_m;
         ours_high[k] *= height_m;
     }
 
-    // glTF: x = x, y = z, z = −y. Отже межі по `z` беруться з `y` навпаки.
+    // glTF: x = x, y = z, z = -y. So the `z` bounds come from `y` reversed.
     let expected_low = [low[0], low[2], -high[1]];
     let expected_high = [high[0], high[2], -low[1]];
-    println!("  наші {ours_low:?} … {ours_high:?}");
-    println!("  чекали {expected_low:?} … {expected_high:?}");
+    println!("  ours     {ours_low:?} .. {ours_high:?}");
+    println!("  expected {expected_low:?} .. {expected_high:?}");
     for k in 0..3 {
         assert!(
             (ours_low[k] - expected_low[k]).abs() < 1e-5,
-            "нижня межа по осі {k}: {} проти {}",
+            "lower bound on axis {k}: {} against {}",
             ours_low[k],
             expected_low[k]
         );
         assert!(
             (ours_high[k] - expected_high[k]).abs() < 1e-5,
-            "верхня межа по осі {k}: {} проти {}",
+            "upper bound on axis {k}: {} against {}",
             ours_high[k],
             expected_high[k]
         );
     }
 
-    // Ніс дивиться в `+Z`, і це не наслідок габаритів: половина корпусу
-    // попереду початку координат довша за половину позаду.
+    // The nose points at `+Z`, and that does not follow from the bounds: the
+    // half of the hull ahead of the origin is longer than the half behind.
     assert!(
         ours_high[2] > 0.9 * height_m * 0.5,
-        "ніс не в +Z: {ours_high:?}"
+        "the nose is not at +Z: {ours_high:?}"
     );
 }
 
-/// Довжина й `extent` — ті самі числа, що порахував Blender.
+/// Length and `extent` are the numbers Blender computed.
 ///
-/// `extent` не виводиться з довжини: у цієї моделі він 0.552 висоти, тобто
-/// більший за половину — п'ята стабілізатора стоїть і нижче за сопло, і
-/// збоку від нього. На ньому стоять `near` і камера третьої особи (V2), тож
-/// помилка тут — це відсічений корпус, а не косметика.
+/// `extent` does not follow from the length: on this model it is 0.552 of the
+/// height, i.e. more than half -- a fin's heel sits both below the nozzle and
+/// to the side of it. `near` and the third-person camera (V2) rest on it, so
+/// an error here is a clipped hull, not cosmetics.
 #[test]
 fn the_length_and_the_extent_are_blenders_numbers() {
     let cooked = ship();
@@ -135,7 +136,7 @@ fn the_length_and_the_extent_are_blenders_numbers() {
     let extent = number(&oracle, "extent_m");
 
     println!(
-        "  довжина {} проти {length}, extent {} проти {extent}",
+        "  length {} against {length}, extent {} against {extent}",
         cooked.model.height_m,
         cooked.model.extent * cooked.model.height_m
     );
@@ -143,17 +144,17 @@ fn the_length_and_the_extent_are_blenders_numbers() {
     assert!((cooked.model.extent * cooked.model.height_m - extent).abs() < 1e-5);
     assert!(
         cooked.model.extent > 0.52,
-        "extent виявився половиною висоти: {}",
+        "extent turned out to be half the height: {}",
         cooked.model.extent
     );
 }
 
-/// Вершин у файлі більше, ніж у Blender, — і це нормально.
+/// The file has more vertices than Blender, and that is normal.
 ///
-/// Кожен розрив нормалі розщеплює вершину, тож «скільки вершин у моделі» в
-/// Blender не є числом, яке платить гра (скіл `blender-assets`). Перевірка
-/// стереже саме це очікування: якби числа зрівнялися, це означало б, що
-/// нормалі десь злилися й гладке затінення поїхало.
+/// Every normal split splits a vertex, so "how many vertices the model has" in
+/// Blender is not the number the game pays (skill `blender-assets`). This
+/// check guards exactly that expectation: if the numbers matched, it would
+/// mean normals merged somewhere and smooth shading drifted.
 #[test]
 fn the_file_carries_more_vertices_than_blender_shows() {
     let cooked = ship();
@@ -162,24 +163,25 @@ fn the_file_carries_more_vertices_than_blender_shows() {
     let triangles = number(&oracle, "triangles") as usize;
 
     println!(
-        "  вершин: {} у файлі проти {in_blender} у Blender",
+        "  vertices: {} in the file against {in_blender} in Blender",
         cooked.model.mesh.positions.len()
     );
     assert!(cooked.model.mesh.positions.len() > in_blender);
     assert_eq!(cooked.model.mesh.indices.len(), 3 * triangles);
 }
 
-/// Скукований файл читається назад і не залежить від прогону.
+/// The cooked file reads back and does not depend on the run.
 #[test]
 fn cooking_twice_gives_the_same_file() {
     let first = ship().model.to_bytes();
     let second = ship().model.to_bytes();
-    assert_eq!(first, second, "кукання не детерміноване");
+    assert_eq!(first, second, "cooking is not deterministic");
 
-    let read = Model::from_bytes(&first).expect("свій же файл");
-    // Числа беруться з оракула, а не вписуються сюди: модель — джерело, яке
-    // міняється (T9 перемалював її з референсу), і вписаний літерал зробив
-    // би цей тест перевіркою пам'яті автора, а не круговороту байтів.
+    let read = Model::from_bytes(&first).expect("our own file");
+    // The numbers come from the oracle rather than being written in: the model
+    // is a source that changes (T9 redrew it from a reference), and a baked
+    // literal would make this a test of the author's memory rather than of the
+    // byte round-trip.
     let oracle = oracle();
     assert_eq!(
         read.mesh.indices.len(),
@@ -188,43 +190,44 @@ fn cooking_twice_gives_the_same_file() {
     assert!((read.height_m - number(&oracle, "length_m")).abs() < 1e-5);
 }
 
-/// Фарба лягла **на ту саму геометрію**, а не поруч із нею (T9b).
+/// The paint landed **on the same geometry**, not beside it (T9b).
 ///
-/// Оракула-числа тут бути не може: `COLOR_0` — це той самий `.bin`, який ми
-/// й читаємо, тож звірити його з собою означало б перевірити нічого. Тому
-/// перевіряється **реєстрація**: кожен колір мусить знайтися рівно там, де
-/// його поклала модель. Помилка кроку в акесорі або зсув на вершину лишає
-/// кольори правильними за складом і перемішаними за місцем — оком це видно
-/// як плями, а таким тестом як точне число.
+/// There can be no oracle number here: `COLOR_0` is the very `.bin` we read,
+/// so comparing it against itself would check nothing. What is checked is
+/// **registration**: every colour must be found exactly where the model put
+/// it. A stride error in the accessor, or an off-by-one vertex, leaves the
+/// colours correct in composition and shuffled in place -- the eye sees that
+/// as blotches, this test as an exact number.
 ///
-/// Координати — в одиницях висоти від центра моделі: `along` у скрипті йде
-/// від 0 до 1, а `+Z` у грі — це `along − 0.5`.
+/// Coordinates are in units of height from the model centre: `along` in the
+/// script runs 0 to 1, and `+Z` in the game is `along - 0.5`.
 #[test]
 fn the_paint_lands_where_the_model_put_it() {
     let cooked = ship();
     let paint = &cooked.model.paint;
     let points = &cooked.model.mesh.positions;
-    assert_eq!(paint.len(), points.len(), "фарба не на кожну вершину");
+    assert_eq!(paint.len(), points.len(), "paint is not on every vertex");
 
     let mut palette: Vec<[u32; 3]> = paint.iter().map(|c| c.map(f32::to_bits)).collect();
     palette.sort_unstable();
     palette.dedup();
-    println!("  палітра: {} кольорів", palette.len());
-    // Шість — це рівно ті шість, що названі в `tools/blender/ship.py`: емаль,
-    // червоне, жовте, сталь, шов і скло. Число, а не перелік значень: сюди
-    // важливо, що фарба не розмазалась інтерполяцією й не злилась у одну.
-    assert_eq!(palette.len(), 6, "палітра змінилася");
+    println!("  palette: {} colours", palette.len());
+    // Six is exactly the six named in `tools/blender/ship.py`: enamel, red,
+    // yellow, steel, seam and glass. A count rather than a list of values:
+    // what matters here is that the paint did not smear through interpolation
+    // or merge into one.
+    assert_eq!(palette.len(), 6, "the palette changed");
 
     let hot = |c: &[f32; 3], k: usize| c[k] > 0.5 && c[k] > 2.0 * c[(k + 2) % 3];
     let mut red = (0, 0);
     let mut yellow = 0;
     for (colour, point) in paint.iter().zip(points) {
         if hot(colour, 0) && colour[1] < 0.2 {
-            // Червоне буває тільки двох сортів: носовий конус угорі й
-            // стабілізатори внизу. Між ними його немає взагалі.
+            // Red comes in only two kinds: the nose cone at the top and the
+            // fins at the bottom. Between them there is none at all.
             assert!(
                 point[2] > 0.36 || point[2] < -0.13,
-                "червоне на середині корпусу: {point:?}"
+                "red in the middle of the hull: {point:?}"
             );
             if point[2] > 0.0 {
                 red.0 += 1;
@@ -233,34 +236,34 @@ fn the_paint_lands_where_the_model_put_it() {
             }
         }
         if hot(colour, 0) && colour[1] > 0.4 {
-            // Жовте — тільки обідок ілюмінатора: правий борт, коло навколо
-            // своєї точки. Радіус з моделі: 0.655 радіуса корпусу.
+            // Yellow is only the porthole rim: starboard, a circle about its
+            // own point. Radius from the model: 0.655 of the hull radius.
             yellow += 1;
-            assert!(point[0] > 0.0, "жовте не на правому борті: {point:?}");
+            assert!(point[0] > 0.0, "yellow is not to starboard: {point:?}");
             let off = (point[2] - 0.136).hypot(point[1]);
-            assert!(off < 0.09, "жовте поза ілюмінатором: {point:?}, {off}");
+            assert!(off < 0.09, "yellow outside the porthole: {point:?}, {off}");
         }
     }
-    println!("  червоних вершин: {} на носі, {} на хвості", red.0, red.1);
-    println!("  жовтих вершин: {yellow}");
+    println!("  red vertices: {} on the nose, {} on the tail", red.0, red.1);
+    println!("  yellow vertices: {yellow}");
     assert!(
         red.0 > 0 && red.1 > 0,
-        "червоне знайшлося лише з одного боку"
+        "red was found on one side only"
     );
-    assert!(yellow > 0, "жовтого немає взагалі");
+    assert!(yellow > 0, "there is no yellow at all");
 }
 
 // ---------------------------------------------------------------------------
-// Обидва типи індексів (T5d2)
+// Both index types (T5d2)
 
-/// Мінімальний glTF з одного трикутника — з індексами заданого типу.
+/// A minimal one-triangle glTF with indices of a given type.
 ///
-/// Синтетичний, а не другий експорт з Blender: щоб отримати `UNSIGNED_INT`
-/// природним шляхом, моделі треба понад 65 535 вершин, тобто мегабайти в git
-/// заради двох рядків коду в читачі.
+/// Synthetic rather than a second Blender export: obtaining `UNSIGNED_INT`
+/// naturally would need a model of over 65,535 vertices, i.e. megabytes in git
+/// for two lines of reader code.
 fn write_triangle(folder: &Path, component: u64) -> PathBuf {
-    // Трикутник навскіс: усі три осі різні за розмахом, і `z` не нульова —
-    // інакше нормалізувати до одиничної довжини нема на що.
+    // A skewed triangle: all three axes differ in extent and `z` is non-zero
+    // -- otherwise there is nothing to normalise to unit length.
     let positions: [[f32; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 2.0, 4.0]];
     let normals: [[f32; 3]; 3] = [[0.0, 0.0, 1.0]; 3];
 
@@ -283,7 +286,7 @@ fn write_triangle(folder: &Path, component: u64) -> PathBuf {
         }
     }
     let index_bytes = bin.len() - indices_at;
-    std::fs::write(folder.join("triangle.bin"), &bin).expect("запис .bin");
+    std::fs::write(folder.join("triangle.bin"), &bin).expect("writing .bin");
 
     let json = serde_json::json!({
         "asset": {"version": "2.0"},
@@ -306,49 +309,53 @@ fn write_triangle(folder: &Path, component: u64) -> PathBuf {
         "buffers": [{"uri": "triangle.bin", "byteLength": bin.len()}]
     });
     let path = folder.join("triangle.gltf");
-    std::fs::write(&path, serde_json::to_vec_pretty(&json).unwrap()).expect("запис .gltf");
+    std::fs::write(&path, serde_json::to_vec_pretty(&json).unwrap()).expect("writing .gltf");
     path
 }
 
-/// Читач розрізняє `UNSIGNED_SHORT` і `UNSIGNED_INT`, а не припускає один.
+/// The reader tells `UNSIGNED_SHORT` and `UNSIGNED_INT` apart rather than
+/// assuming one.
 ///
-/// Тип індексів вибирає експортер: до 65 535 вершин він дає `UNSIGNED_SHORT`
-/// (саме це й лежить у нашій моделі), понад — `UNSIGNED_INT`. Читач, що знає
-/// один тип, ламається тоді, коли міняли **форму**, а не код.
+/// The exporter chooses the index type: up to 65,535 vertices it emits
+/// `UNSIGNED_SHORT` (which is what our model holds), beyond that
+/// `UNSIGNED_INT`. A reader knowing one type breaks when the **shape**
+/// changed, not the code.
 #[test]
 fn both_index_types_read_the_same() {
     let mut meshes = Vec::new();
     for component in [5123u64, 5125] {
         let folder = std::env::temp_dir().join(format!("mesh-cook-{component}"));
-        std::fs::create_dir_all(&folder).expect("тимчасовий каталог");
+        std::fs::create_dir_all(&folder).expect("temporary directory");
         let path = write_triangle(&folder, component);
-        let cooked = mesh_cook::cook(&path).expect("трикутник мав прочитатись");
+        let cooked = mesh_cook::cook(&path).expect("the triangle should have read");
         assert_eq!(cooked.index_component, component);
         meshes.push(cooked.model.mesh.indices.clone());
         std::fs::remove_dir_all(&folder).ok();
     }
-    assert_eq!(meshes[0], meshes[1], "типи індексів дали різні трикутники");
+    assert_eq!(meshes[0], meshes[1], "the index types gave different triangles");
     assert_eq!(meshes[0], vec![0, 1, 2]);
 }
 
-/// Файл, у якого `.bin` розійшовся з JSON, — це помилка, а не тихий ассет.
+/// A file whose `.bin` diverged from its JSON is an error, not a quiet
+/// asset.
 #[test]
 fn a_bin_that_disagrees_with_the_json_is_an_error() {
     let folder = std::env::temp_dir().join("mesh-cook-broken");
-    std::fs::create_dir_all(&folder).expect("тимчасовий каталог");
+    std::fs::create_dir_all(&folder).expect("temporary directory");
     let path = write_triangle(&folder, 5123);
 
-    // Псується саме `min` в акесорі — тобто те, що експортер опублікував.
+    // What is corrupted is the accessor's `min` -- what the exporter
+    // published.
     let text = std::fs::read_to_string(&path).unwrap();
     let mut json: Value = serde_json::from_str(&text).unwrap();
     json["accessors"][0]["max"][1] = serde_json::json!(7.0);
     std::fs::write(&path, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
 
-    let message = mesh_cook::cook(&path).expect_err("розбіжність мала бути помилкою");
+    let message = mesh_cook::cook(&path).expect_err("the divergence should have been an error");
     println!("  {message}");
     assert!(
-        message.contains("розійшлися"),
-        "не те повідомлення: {message}"
+        message.contains("diverged"),
+        "wrong message: {message}"
     );
     std::fs::remove_dir_all(&folder).ok();
 }

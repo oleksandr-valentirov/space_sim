@@ -5,20 +5,20 @@ edition = "2021"
 rust-version.workspace = true
 publish = false
 
-# Кукер мешів (ROADMAP, T5d2). Офлайновий, як і `dem-cook`: у гру не
-# лінкується й у кадрі не виконується. PROJECT.md §7 забороняє сирі формати
-# в рантаймі, тож glTF читається тут і ніде більше.
+# Mesh cooker (ROADMAP, T5d2). Offline like `dem-cook`: not linked into the
+# game and not executed in a frame. PROJECT.md §7 forbids raw formats at
+# runtime, so glTF is read here and nowhere else.
 
 [dependencies]
-# Формат скукованого меша живе в рушії (`engine::mesh`) — записувач і читач
-# одного формату мусять бути одним кодом.
+# The cooked mesh format lives in the engine (`engine::mesh`) -- a format's
+# writer and reader must be one piece of code.
 engine = { path = "../../engine" }
 
-# JSON у glTF читається бібліотекою, а не руками, і це та сама межа, що в
-# CLAUDE.md «чого НЕ робимо»: декодери чужих форматів не пишемо. Етикетка
-# PDS3 у `dem-cook` — інший випадок: там формат саморобний рівно настільки,
-# що бібліотеки для нього не існує. `.bin` при цьому читається сам —
-# це масив чисел, а не формат.
+# The JSON in glTF is read by a library rather than by hand, the same line
+# CLAUDE.md draws under "what we do NOT write": no decoders for other people's
+# formats. The PDS3 label in `dem-cook` is a different case: that format is
+# home-made exactly to the degree that no library exists for it. The `.bin` is
+# read directly -- it is an array of numbers, not a format.
 serde_json = "1"
 
 [lints]

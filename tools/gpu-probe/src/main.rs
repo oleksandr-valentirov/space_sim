@@ -1,20 +1,22 @@
-//! Розвідка P0: чи є bindless у wgpu на наших цілях (ROADMAP, етап E).
+//! P0 reconnaissance: does wgpu have bindless on our targets (stage E).
 //!
-//! Питання не академічне. PROJECT.md §7 забороняє «спочатку класично, потім
-//! перепишу»: спосіб прив'язки ресурсів вирішує устрій усього рендера, і
-//! міняти його потім — це переписати frame graph, кукер ассетів і шейдери
-//! разом. Тому відповідь потрібна **до** того, як щось намальовано.
+//! The question is not academic. PROJECT.md §7 forbids "classic first, rewrite
+//! later": how resources are bound decides the structure of the whole
+//! renderer, and changing it afterwards means rewriting the frame graph, the
+//! asset cooker and the shaders together. So the answer is needed **before**
+//! anything is drawn.
 //!
-//! Зонд нічого не малює й нічого не створює. Він перелічує адаптери й читає
-//! те, що вони самі про себе кажуть: фічі й ліміти. Пристрій не запитується
-//! свідомо — `adapter.features()` показує, що **можна** попросити, а це і є
-//! питання. Створення пристрою додало б причин впасти, не додавши відповіді.
+//! The probe draws nothing and creates nothing. It enumerates adapters and
+//! reads what they say about themselves: features and limits. No device is
+//! requested, deliberately -- `adapter.features()` shows what **can** be
+//! asked for, and that is the question. Creating a device would add reasons to
+//! fail without adding an answer.
 //!
 //!     cargo run -p gpu-probe
 //!
-//! Пише таблицю в stdout і `build/csv/gpu_features.csv` — той самий шлях, що
-//! й у експортерів ядра, щоб результат розвідки лежав поруч із рештою
-//! виміряного.
+//! Writes a table to stdout and to `build/csv/gpu_features.csv` -- the same
+//! path the core's exporters use, so the reconnaissance result sits beside the
+//! rest of what has been measured.
 
 use std::fs;
 use std::io::Write;
@@ -24,36 +26,36 @@ use wgpu::{Features, FeaturesWGPU};
 
 const CSV_PATH: &str = "build/csv/gpu_features.csv";
 
-/// Фічі, від яких залежить рішення. Не «усі, що є» — усі є в логах нижче, а
-/// тут ті, без яких bindless не буде.
+/// The features the decision depends on. Not "all of them" -- all of them are
+/// in the logs below; these are the ones without which there is no bindless.
 ///
-/// Що кожна означає для нас:
+/// What each means for us:
 ///
-/// - масиви прив'язок — узагалі можливість дати шейдеру масив ресурсів
-///   замість одного;
-/// - неоднорідна індексація — індекс, порахований у шейдері, а не однаковий
-///   для всієї хвилі. Без неї масив є, але користі з нього мало: індекс
-///   мусить бути константою рівня draw call;
-/// - часткова зв'язаність — дозвіл лишати дірки в масиві. Без неї весь масив
-///   треба заповнювати щокадру, а це і є та ціна, заради уникнення якої
-///   bindless беруть.
+/// - binding arrays -- the possibility of handing the shader an array of
+///   resources instead of one;
+/// - non-uniform indexing -- an index computed in the shader rather than the
+///   same across the whole wave. Without it the array exists but is of little
+///   use: the index must be a draw-call-level constant;
+/// - partial binding -- permission to leave holes in the array. Without it the
+///   whole array must be filled every frame, which is the very cost bindless
+///   is taken to avoid.
 const NEEDED: &[(&str, FeaturesWGPU)] = &[
-    ("масив текстур", FeaturesWGPU::TEXTURE_BINDING_ARRAY),
-    ("масив буферів", FeaturesWGPU::BUFFER_BINDING_ARRAY),
+    ("texture array", FeaturesWGPU::TEXTURE_BINDING_ARRAY),
+    ("buffer array", FeaturesWGPU::BUFFER_BINDING_ARRAY),
     (
-        "масив storage-ресурсів",
+        "storage resource array",
         FeaturesWGPU::STORAGE_RESOURCE_BINDING_ARRAY,
     ),
     (
-        "неоднорідна індексація (текстури й storage-буфери)",
+        "non-uniform indexing (textures and storage buffers)",
         FeaturesWGPU::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING,
     ),
     (
-        "неоднорідна індексація (storage-текстури)",
+        "non-uniform indexing (storage textures)",
         FeaturesWGPU::STORAGE_TEXTURE_ARRAY_NON_UNIFORM_INDEXING,
     ),
     (
-        "часткова зв'язаність",
+        "partial binding",
         FeaturesWGPU::PARTIALLY_BOUND_BINDING_ARRAY,
     ),
 ];
@@ -73,7 +75,7 @@ fn main() {
     let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
 
     if adapters.is_empty() {
-        eprintln!("жодного адаптера. Немає драйвера або немає доступу до GPU.");
+        eprintln!("no adapters. No driver, or no access to a GPU.");
         std::process::exit(1);
     }
 
@@ -106,55 +108,57 @@ fn main() {
     print_verdict(&rows);
 
     if let Err(e) = write_csv(&rows) {
-        eprintln!("CSV не записався: {e}");
+        eprintln!("CSV was not written: {e}");
         std::process::exit(1);
     }
 }
 
 fn print_table(rows: &[Row]) {
-    println!("Адаптери на цій машині\n");
+    println!("Adapters on this machine\n");
 
     for row in rows {
         println!("{} — {} ({})", row.backend, row.name, row.device_type);
-        println!("  драйвер: {}", row.driver);
+        println!("  driver: {}", row.driver);
 
         for ((label, _), &ok) in NEEDED.iter().zip(row.supported.iter()) {
             println!("  [{}] {}", if ok { "+" } else { " " }, label);
         }
 
-        // Ліміт нуль означає, що масивів прив'язок немає взагалі, а не що
-        // вони безрозмірні. Пишемо словом, бо «0» тут читається навпаки.
-        println!("  елементів у масиві: {}", describe_limit(row.max_elements));
-        println!("  семплерів у масиві: {}", describe_limit(row.max_samplers));
+        // A limit of zero means there are no binding arrays at all, not that
+        // they are unbounded. Spelled out in words, because "0" reads the
+        // other way round here.
+        println!("  elements in array: {}", describe_limit(row.max_elements));
+        println!("  samplers in array: {}", describe_limit(row.max_samplers));
         println!();
     }
 }
 
 fn describe_limit(value: u32) -> String {
     if value == 0 {
-        "0 (масивів прив'язок немає)".to_string()
+        "0 (no binding arrays)".to_string()
     } else {
         value.to_string()
     }
 }
 
-/// Висновок, а не лише дані. Розвідка існує, щоб прийняти рішення, і
-/// рішення має бути видно з виводу, а не виводитися щоразу заново.
+/// A conclusion, not only data. Reconnaissance exists to make a decision, and
+/// the decision must be visible in the output rather than re-derived each
+/// time.
 fn print_verdict(rows: &[Row]) {
     let full: Vec<&Row> = rows
         .iter()
         .filter(|row| row.supported.iter().all(|&ok| ok))
         .collect();
 
-    println!("Висновок\n");
+    println!("Conclusion\n");
 
     if full.is_empty() {
-        println!("  Жоден адаптер не дає повного набору. Розвилка ROADMAP P0:");
-        println!("  (а) звузити цілі, (б) тонка абстракція із запасним шляхом.");
+        println!("  No adapter offers the full set. The ROADMAP P0 fork:");
+        println!("  (a) narrow the targets, (b) a thin abstraction with a fallback.");
         return;
     }
 
-    println!("  Повний набір мають {} з {}:", full.len(), rows.len());
+    println!("  {} of {} have the full set:", full.len(), rows.len());
     for row in &full {
         println!("    {} — {}", row.backend, row.name);
     }
@@ -167,8 +171,8 @@ fn print_verdict(rows: &[Row]) {
 
     if !backends.is_empty() {
         println!();
-        println!("  Не мають — на бекендах: {}", dedup(&backends).join(", "));
-        println!("  Це і є та межа, всередині якої доведеться лишитися.");
+        println!("  Missing on backends: {}", dedup(&backends).join(", "));
+        println!("  That is the boundary we will have to stay inside.");
     }
 }
 
@@ -200,7 +204,8 @@ fn write_csv(rows: &[Row]) -> std::io::Result<()> {
     )?;
 
     for row in rows {
-        // Кома в назві адаптера чи драйвера зсунула б усі наступні колонки.
+        // A comma in an adapter or driver name would shift every later
+        // column.
         write!(
             file,
             "{},{},{},{}",

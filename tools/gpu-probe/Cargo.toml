@@ -5,8 +5,8 @@ edition = "2021"
 rust-version.workspace = true
 publish = false
 
-# Розвідка ROADMAP P0, а не частина гри. Живе в tools/ разом з рештою
-# офлайнового приладдя: воно нічого не рендерить і в білд не потрапляє.
+# ROADMAP P0 reconnaissance, not part of the game. Lives in tools/ with the
+# rest of the offline kit: it renders nothing and does not enter the build.
 [dependencies]
 pollster = "1.0.1"
 wgpu = "30"

@@ -1,14 +1,15 @@
-// Той самий трикутник, але вершини приходять буфером, а не рахуються з
-// SV_VertexID. Існує заради одного питання розвідки P1.
+// The same triangle, but the vertices arrive in a buffer rather than being
+// computed from SV_VertexID. Exists for one question of P1 reconnaissance.
 //
-// triangle.slang не завантажується як SPIR-V: naga відхиляє capability
-// DrawParameters, яку Slang оголошує заради SV_VertexID. Питання, на яке
-// відповідає цей файл, — чи ламається SPIR-V узагалі, чи лише ця конструкція.
-// Відповідь змінює висновок: «шлях непридатний» і «шлях придатний, крім
-// одного дуже поширеного прийому» — різні речі.
+// triangle.slang does not load as SPIR-V: naga rejects the DrawParameters
+// capability that Slang declares for SV_VertexID. The question this file
+// answers is whether SPIR-V breaks in general or only for that construct. The
+// answer changes the conclusion: "the route is unusable" and "the route is
+// usable except for one very common idiom" are different things.
 //
-// Малювати ним зонд не намагається: для цього потрібні вершинні буфери й
-// розкладка, а питання тут не про малювання, а про те, що приймає naga.
+// The probe does not try to draw with it: that would need vertex buffers and a
+// layout, and the question here is not about drawing but about what naga
+// accepts.
 
 struct VertexOutput
 {

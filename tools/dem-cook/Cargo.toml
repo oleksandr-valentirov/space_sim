@@ -5,32 +5,34 @@ edition = "2021"
 rust-version.workspace = true
 publish = false
 
-# Кукер рельєфу (ROADMAP-PLANETS.md, R5). Офлайновий: у гру не лінкується
-# й у кадрі не виконується. PROJECT.md §7 забороняє завантажувати сирі
-# формати в рантаймі, тож усе, що вміє цей крейт, робиться до запуску.
+# Terrain cooker (ROADMAP-PLANETS.md, R5). Offline: not linked into the game
+# and not executed in a frame. PROJECT.md §7 forbids loading raw formats at
+# runtime, so everything this crate can do happens before launch.
 #
-# Місячні джерела читаються без бібліотек, і це лишається так: формат LOLA
-# GDR — прямокутник із `i16` у прямому порядку байтів і текстова етикетка
-# PDS3 поруч, WAC той самий прямокутник із вбудованою етикеткою. Читати їх
-# бібліотекою означало б принести десяток кілорядків заради двадцяти.
+# The lunar sources are read without libraries, and that stays: the LOLA GDR
+# format is a rectangle of big-endian `i16` with a PDS3 text label beside it,
+# and WAC is the same rectangle with an embedded label. Reading them with a
+# library would mean importing ten kilolines for the sake of twenty.
 #
-# Земля (T7) міняє не смак, а сам вміст файлу: ETOPO приходить GeoTIFF зі
-# стисненням Deflate і floating-point предиктором, BMNG — JPEG. І стиснення,
-# і декодери зображень стоять у списку «Чого НЕ робимо» (CLAUDE.md), тож
-# розпакування тут чуже, а своє — лише інтерпретація тегів прив'язки.
+# Earth (T7) changes not taste but the file contents themselves: ETOPO arrives
+# as GeoTIFF with Deflate compression and a floating-point predictor, BMNG as
+# JPEG. Both compression and image decoders are on the "what we do NOT write"
+# list (CLAUDE.md), so the decompression here is someone else's and ours is
+# only the interpretation of the georeferencing tags.
 [dependencies]
-# Формат тайла живе в рушії (`engine::tiles`), бо записувач і читач одного
-# формату мусять бути одним кодом. Напрямок залежності визначений однозначно:
-# кукеру потрібна геометрія кубосфери, рушію кукер не потрібен зовсім.
+# The tile format lives in the engine (`engine::tiles`), because a format's
+# writer and reader must be one piece of code. The dependency direction is
+# unambiguous: the cooker needs cubesphere geometry, the engine needs no cooker
+# at all.
 engine = { path = "../../engine" }
 
-# Контейнер ETOPO. Фічі за замовчуванням несуть і LZW, і JPEG-у-TIFF, яких
-# продукту не треба; лишається сам Deflate.
+# The ETOPO container. Default features carry LZW and JPEG-in-TIFF, which the
+# product does not need; only Deflate remains.
 tiff = { version = "0.11", default-features = false, features = ["deflate"] }
 
-# Мозаїка BMNG. Тягне за собою `rayon` — інваріант 4 його дозволяє саме тут
-# («тільки для LOD, тайлів, кукера»), а детермінізму виходу це не чіпає:
-# розпаковується картинка, а не рахується сума.
+# The BMNG mosaic. Pulls in `rayon` -- invariant 4 permits it exactly here
+# ("only for LOD, tiles, the cooker"), and it does not touch output
+# determinism: a picture is decompressed, not a sum computed.
 jpeg-decoder = "0.3"
 
 [lints]

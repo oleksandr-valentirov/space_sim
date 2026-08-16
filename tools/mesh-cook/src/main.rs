@@ -1,4 +1,4 @@
-//! Кукер мешів: командний рядок (ROADMAP, T5d2).
+//! Mesh cooker: command line (ROADMAP, T5d2).
 //!
 //!     cargo run -p mesh-cook              assets-src/ship.gltf → assets/ship.mesh
 //!     cargo run -p mesh-cook -- --source X --out Y
@@ -12,10 +12,10 @@ fn main() {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--source" => source = Some(args.next().expect("--source хоче шлях").into()),
-            "--out" => out = Some(args.next().expect("--out хоче шлях").into()),
+            "--source" => source = Some(args.next().expect("--source wants a path").into()),
+            "--out" => out = Some(args.next().expect("--out wants a path").into()),
             other => {
-                eprintln!("невідомий аргумент {other}");
+                eprintln!("unknown argument {other}");
                 std::process::exit(2);
             }
         }
@@ -33,14 +33,14 @@ fn main() {
     };
 
     if let Some(folder) = out.parent() {
-        std::fs::create_dir_all(folder).expect("каталог виходу");
+        std::fs::create_dir_all(folder).expect("output directory");
     }
-    std::fs::write(&out, cooked.model.to_bytes()).expect("запис ассета");
+    std::fs::write(&out, cooked.model.to_bytes()).expect("writing the asset");
 
     println!("{} → {}", source.display(), out.display());
-    println!("  вершин: {}", cooked.model.mesh.positions.len());
-    println!("  трикутників: {}", cooked.model.mesh.indices.len() / 3);
-    println!("  індекси: componentType {}", cooked.index_component);
+    println!("  vertices: {}", cooked.model.mesh.positions.len());
+    println!("  triangles: {}", cooked.model.mesh.indices.len() / 3);
+    println!("  indices: componentType {}", cooked.index_component);
     let mut palette: Vec<[u32; 3]> = cooked
         .model
         .paint
@@ -49,8 +49,8 @@ fn main() {
         .collect();
     palette.sort_unstable();
     palette.dedup();
-    println!("  фарба: {} кольорів у палітрі", palette.len());
-    println!("  довжина: {:.6} м", cooked.model.height_m);
-    println!("  extent: {:.6} висоти", cooked.model.extent);
-    println!("  об'єм: {:.6} м³", cooked.volume_m3);
+    println!("  paint: {} colours in the palette", palette.len());
+    println!("  length: {:.6} m", cooked.model.height_m);
+    println!("  extent: {:.6} of height", cooked.model.extent);
+    println!("  volume: {:.6} m^3", cooked.volume_m3);
 }

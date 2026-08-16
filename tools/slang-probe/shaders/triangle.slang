@@ -1,8 +1,8 @@
-// Тривіальний шейдер для розвідки P1 (ROADMAP, етап E).
+// A trivial shader for P1 reconnaissance (ROADMAP, stage E).
 //
-// Навмисно мінімальний, але не порожній: тут є те, заради чого Slang і
-// беруть — структура з семантиками, яка їде з вершинного у фрагментний,
-// і два входи в одному файлі. Якщо це доїде до wgpu, доїде й решта.
+// Deliberately minimal but not empty: it holds what Slang is taken for -- a
+// struct with semantics travelling from vertex to fragment, and two entry
+// points in one file. If this reaches wgpu, the rest will too.
 
 struct VertexOutput
 {

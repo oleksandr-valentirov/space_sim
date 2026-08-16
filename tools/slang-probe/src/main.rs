@@ -1,29 +1,31 @@
-//! Розвідка P1: чи доїжджає вихід Slang до wgpu (ROADMAP, етап E).
+//! P1 reconnaissance: does Slang's output reach wgpu (ROADMAP, stage E).
 //!
-//! Питання не «чи компілюється». Компілюється майже завжди; ламається на
-//! стику. Тому зонд проходить увесь ланцюжок і зупиняється лише на останньому
-//! кроці:
+//! The question is not "does it compile". It almost always compiles; it breaks
+//! at the seam. So the probe walks the whole chain and stops only at the last
+//! step:
 //!
-//!   1. `slangc` перетворює один `.slang` на WGSL і на SPIR-V;
-//!   2. wgpu приймає кожен як модуль шейдера;
-//!   3. з нього збирається пайплайн;
-//!   4. він **малює** трикутник у текстуру 64×64;
-//!   5. пікселі читаються назад і звіряються з тим, що мало вийти.
+//!   1. `slangc` turns one `.slang` into WGSL and into SPIR-V;
+//!   2. wgpu accepts each as a shader module;
+//!   3. a pipeline is built from it;
+//!   4. it **draws** a triangle into a 64x64 texture;
+//!   5. the pixels are read back and compared against what should have come
+//!      out.
 //!
-//! Крок 5 і є суттю. Модуль, який створився й не намалював нічого, — це
-//! пройдена перевірка й зламаний рендер; саме так виглядає неспівпадіння
-//! семантик або порядку локацій. Тому перевіряється колір у трьох точках, а
-//! не факт відсутності помилки.
+//! Step 5 is the point. A module that was created and drew nothing is a passed
+//! check and a broken renderer; that is exactly what mismatched semantics or
+//! location order looks like. So the colour is checked at three points rather
+//! than the absence of an error.
 //!
-//! Два шляхи навмисно, бо ROADMAP P1 каже, що через SPIR-V «працює лише в
-//! частині конфігурацій», і треба знати, у яких саме:
+//! Two routes deliberately, because ROADMAP P1 says SPIR-V "works only in some
+//! configurations" and we need to know which:
 //!
-//!   WGSL     `slangc -target wgsl`  — naga розбирає як звичайний текст;
-//!   SPIR-V   `slangc -target spirv` — naga розбирає бінарник (фіча `spirv`).
+//!   WGSL     `slangc -target wgsl`  -- naga parses it as ordinary text;
+//!   SPIR-V   `slangc -target spirv` -- naga parses a binary (feature
+//!                                     `spirv`).
 //!
-//! Запускається з кореня репозиторію:
+//! Run from the repository root:
 //!
-//!     sh scripts/fetch_slang.sh     один раз
+//!     sh scripts/fetch_slang.sh     once
 //!     cargo run -p slang-probe
 
 use std::path::{Path, PathBuf};
@@ -31,9 +33,9 @@ use std::process::Command;
 
 const SHADERS: &str = "tools/slang-probe/shaders";
 
-/// Що саме перевіряється. `draws` розрізняє два різні питання: «доїжджає до
-/// картинки» і «приймається взагалі». Третій випадок малювати не може —
-/// йому потрібні вершинні буфери, — але він і не про це.
+/// What exactly is checked. `draws` separates two different questions:
+/// "reaches the picture" and "is accepted at all". The third case cannot draw
+/// -- it needs vertex buffers -- but that is not what it is about.
 struct Case {
     label: &'static str,
     shader: &'static str,
@@ -58,7 +60,7 @@ const CASES: &[Case] = &[
         draws: true,
     },
     Case {
-        label: "SPIR-V без SV_VertexID",
+        label: "SPIR-V without SV_VertexID",
         shader: "vertex_buffer.slang",
         target: "spirv",
         extension: "novid.spv",
@@ -71,31 +73,34 @@ const OUT_DIR: &str = "build/slang";
 const SIZE: u32 = 64;
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
-/// Точки, у яких перевіряється результат, і який канал там має переважати.
+/// The points where the result is checked, and which channel should dominate
+/// at each.
 ///
-/// Перша версія цих точок стояла рівно на вершинах трикутника — і перевірка
-/// падала на цілком правильному рендері: пікселя точно на вершині
-/// растеризатор законно не зафарбовує. Тому точки зсунуті всередину.
+/// The first version of these points sat exactly on the triangle's vertices --
+/// and the check failed on a perfectly correct render: the rasteriser
+/// legitimately does not fill a pixel exactly on a vertex. So the points are
+/// moved inwards.
 ///
-/// Кутики не менш важливі за нутро: якби трикутник вийшов на весь екран або
-/// перевернувся, перевірка «щось намалювалось» усе одно пройшла б.
+/// The corners matter as much as the interior: had the triangle covered the
+/// whole screen or flipped, a "something was drawn" check would still
+/// pass.
 const INSIDE: &[(&str, u32, u32, usize)] = &[
-    ("верхівка — червона", SIZE / 2, SIZE / 3, 0),
-    ("лівий низ — зелений", SIZE / 3, (SIZE * 5) / 7, 1),
-    ("правий низ — синій", (SIZE * 2) / 3, (SIZE * 5) / 7, 2),
+    ("apex is red", SIZE / 2, SIZE / 3, 0),
+    ("bottom left is green", SIZE / 3, (SIZE * 5) / 7, 1),
+    ("bottom right is blue", (SIZE * 2) / 3, (SIZE * 5) / 7, 2),
 ];
 
 const BACKGROUND: &[(&str, u32, u32)] = &[
-    ("лівий верхній кут", 1, 1),
-    ("правий верхній кут", SIZE - 2, 1),
-    ("лівий нижній кут", 1, SIZE - 2),
+    ("top left corner", 1, 1),
+    ("top right corner", SIZE - 2, 1),
+    ("bottom left corner", 1, SIZE - 2),
 ];
 
-/// Наскільки очікуваний канал має переважати решту.
+/// By how much the expected channel must dominate the others.
 ///
-/// Перевіряється переважання, а не близькість до чистого кольору: трикутник
-/// інтерполює вершинні кольори, тож усередині вони змішані, і будь-який поріг
-/// «схоже на червоний» був би підгонкою під конкретні координати.
+/// Dominance is checked rather than closeness to a pure colour: the triangle
+/// interpolates vertex colours, so inside they are mixed, and any "looks red"
+/// threshold would be tuned to specific coordinates.
 const DOMINANCE: u8 = 60;
 
 struct Outcome {
@@ -107,29 +112,29 @@ struct Outcome {
 
 fn main() {
     let version = std::fs::read_to_string(Path::new(SLANGC).parent().unwrap().join("../VERSION"))
-        .unwrap_or_else(|_| "невідома".into());
+        .unwrap_or_else(|_| "unknown".into());
 
     if !Path::new(SLANGC).exists() {
-        eprintln!("немає {SLANGC}");
-        eprintln!("  спершу: sh scripts/fetch_slang.sh");
-        eprintln!("  запускати з кореня репозиторію");
+        eprintln!("missing {SLANGC}");
+        eprintln!("  first: sh scripts/fetch_slang.sh");
+        eprintln!("  run from the repository root");
         std::process::exit(1);
     }
 
     println!("Slang {}", version.trim());
-    println!("шейдери: {SHADERS}/\n");
+    println!("shaders: {SHADERS}/\n");
 
     let (device, queue, adapter) = match open_device() {
         Some(triple) => triple,
         None => {
-            eprintln!("немає адаптера, з яким можна створити пристрій");
+            eprintln!("no adapter to create a device with");
             std::process::exit(1);
         }
     };
 
     let info = adapter.get_info();
     println!(
-        "адаптер: {:?} — {} ({:?})\n",
+        "adapter: {:?} -- {} ({:?})\n",
         info.backend, info.name, info.device_type
     );
 
@@ -143,7 +148,7 @@ fn main() {
                 Ok(_) => Ok(()),
                 Err(e) => Err(e),
             },
-            Err(e) => Err(format!("не дійшло до завантаження: {e}")),
+            Err(e) => Err(format!("did not reach loading: {e}")),
         };
 
         outcomes.push(Outcome {
@@ -156,9 +161,9 @@ fn main() {
 
     report(&outcomes);
 
-    // Провалом вважається лише те, що ЖОДЕН шлях не працює: саме на цей
-    // випадок ROADMAP P1 має розвилку «писати WGSL руками до M4». Один
-    // робочий шлях — це успіх розвідки, а не половина.
+    // Only NO route working counts as failure: that is the case ROADMAP P1
+    // has the "write WGSL by hand until M4" fork for. One working route is a
+    // successful reconnaissance, not half of one.
     if outcomes
         .iter()
         .filter(|o| o.draws)
@@ -203,11 +208,11 @@ fn compile(case: &Case) -> Result<PathBuf, String> {
         .arg("-o")
         .arg(&out)
         .output()
-        .map_err(|e| format!("не запускається slangc: {e}"))?;
+        .map_err(|e| format!("cannot run slangc: {e}"))?;
 
     if !result.status.success() {
         return Err(format!(
-            "slangc -target {} повернув {}:\n{}",
+            "slangc -target {} returned {}:\n{}",
             case.target,
             result.status,
             String::from_utf8_lossy(&result.stderr).trim()
@@ -218,9 +223,9 @@ fn compile(case: &Case) -> Result<PathBuf, String> {
 }
 
 fn load(device: &wgpu::Device, target: &str, file: &Path) -> Result<wgpu::ShaderModule, String> {
-    // Помилка розбору шейдера в wgpu приходить через обробник помилок
-    // пристрою, а не як Result. Без цього хомута зламаний модуль впав би
-    // панікою десь пізніше, і зонд повідомив би не те місце.
+    // A shader parse error in wgpu arrives through the device error handler,
+    // not as a Result. Without this harness a broken module would panic
+    // somewhere later and the probe would report the wrong place.
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
 
     let module = if target == "wgsl" {
@@ -242,7 +247,7 @@ fn load(device: &wgpu::Device, target: &str, file: &Path) -> Result<wgpu::Shader
     };
 
     match pollster::block_on(scope.pop()) {
-        Some(error) => Err(format!("wgpu не прийняв модуль: {error}")),
+        Some(error) => Err(format!("wgpu did not accept the module: {error}")),
         None => Ok(module),
     }
 }
@@ -257,7 +262,8 @@ fn draw_and_check(
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: None,
         bind_group_layouts: &[],
-        // Push-константи в wgpu 30 називаються immediates; нам їх не треба.
+        // Push constants are called immediates in wgpu 30; we do not need
+        // them.
         immediate_size: 0,
     });
 
@@ -288,7 +294,7 @@ fn draw_and_check(
     });
 
     if let Some(error) = pollster::block_on(scope.pop()) {
-        return Err(format!("пайплайн не зібрався: {error}"));
+        return Err(format!("the pipeline did not build: {error}"));
     }
 
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -307,8 +313,8 @@ fn draw_and_check(
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-    // 64 пікселі по 4 байти — рівно 256, тобто вимога вирівнювання рядка
-    // виконується без доповнення. Саме тому розмір такий, а не 100×100.
+    // 64 pixels of 4 bytes is exactly 256, so the row alignment requirement
+    // is met without padding. That is why the size is this and not 100x100.
     let bytes = (SIZE * SIZE * 4) as u64;
     let readback = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("readback"),
@@ -326,7 +332,7 @@ fn draw_and_check(
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    // Чорний фон: перевірки кутиків спираються на нього.
+                    // Black background: the corner checks rest on it.
                     load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                     store: wgpu::StoreOp::Store,
                 },
@@ -371,11 +377,11 @@ fn draw_and_check(
             submission_index: None,
             timeout: None,
         })
-        .map_err(|e| format!("не дочекалися GPU: {e}"))?;
+        .map_err(|e| format!("gave up waiting for the GPU: {e}"))?;
 
     let data = slice
         .get_mapped_range()
-        .map_err(|e| format!("буфер не відобразився: {e}"))?;
+        .map_err(|e| format!("the buffer did not map: {e}"))?;
     let pixels = data.to_vec();
     drop(data);
     readback.unmap();
@@ -403,7 +409,7 @@ fn verify(pixels: &[u8]) -> Result<(), String> {
 
         if !beaten {
             problems.push(format!(
-                "{label}: канал {channel} не переважає, маємо {got:?}"
+                "{label}: channel {channel} does not dominate, got {got:?}"
             ));
         }
     }
@@ -411,7 +417,7 @@ fn verify(pixels: &[u8]) -> Result<(), String> {
     for (label, x, y) in BACKGROUND {
         let got = pixel(*x, *y);
         if got != [0, 0, 0] {
-            problems.push(format!("{label}: мав лишитися фоном, маємо {got:?}"));
+            problems.push(format!("{label}: should have stayed background, got {got:?}"));
         }
     }
 
@@ -423,26 +429,26 @@ fn verify(pixels: &[u8]) -> Result<(), String> {
 }
 
 fn report(outcomes: &[Outcome]) {
-    println!("Результат\n");
+    println!("Result\n");
 
     for outcome in outcomes {
         let compiled = match &outcome.compiled {
-            Ok(file) => format!("так ({})", file.display()),
-            Err(e) => format!("НІ — {e}"),
+            Ok(file) => format!("yes ({})", file.display()),
+            Err(e) => format!("NO -- {e}"),
         };
 
         let verb = if outcome.draws {
-            "намалював:    "
+            "drew:         "
         } else {
-            "wgpu прийняв: "
+            "wgpu accepted:"
         };
         let accepted = match &outcome.accepted {
-            Ok(()) => "так".to_string(),
-            Err(e) => format!("НІ — {e}"),
+            Ok(()) => "yes".to_string(),
+            Err(e) => format!("NO -- {e}"),
         };
 
         println!("  {}", outcome.label);
-        println!("    зкомпілювався: {compiled}");
+        println!("    compiled: {compiled}");
         println!("    {verb} {accepted}");
     }
 
@@ -455,24 +461,24 @@ fn report(outcomes: &[Outcome]) {
         .collect();
 
     if drawing.is_empty() {
-        println!("  Жоден шлях не малює. Розвилка ROADMAP P1: писати WGSL руками до M4.");
+        println!("  No route draws. ROADMAP P1 fork: write WGSL by hand until M4.");
     } else {
-        println!("  Малює: {}.", drawing.join(", "));
+        println!("  Draws: {}.", drawing.join(", "));
     }
 
-    // Третій випадок існує саме заради цього речення: він відрізняє «SPIR-V
-    // непридатний» від «SPIR-V придатний, крім однієї конструкції», а це
-    // різні висновки.
+    // The third case exists for exactly this sentence: it separates "SPIR-V
+    // is unusable" from "SPIR-V is usable except for one construct", and those
+    // are different conclusions.
     if let Some(control) = outcomes.iter().find(|o| !o.draws) {
         println!();
         match &control.accepted {
             Ok(()) => println!(
-                "  Той самий шейдер без SV_VertexID wgpu приймає. Отже ламається \n  \
-                 не SPIR-V як шлях, а конкретна capability."
+                "  wgpu accepts the same shader without SV_VertexID. So what \n  \
+                 breaks is not SPIR-V as a route but one specific capability."
             ),
             Err(_) => println!(
-                "  Без SV_VertexID SPIR-V теж не приймається — річ не в цій \n  \
-                 конструкції, а в шляху загалом."
+                "  SPIR-V is rejected without SV_VertexID too -- the problem \n  \
+                 is the route in general, not this construct."
             ),
         }
     }

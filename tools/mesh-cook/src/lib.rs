@@ -1,22 +1,22 @@
-//! Кукер мешів: glTF з Blender → `SSMSH` (ROADMAP, T5d2).
+//! Mesh cooker: glTF from Blender to `SSMSH` (ROADMAP, T5d2).
 //!
-//! Робота розділена так само, як у `dem-cook`: сама куховарня — бібліотека,
-//! бінарник лише розбирає аргументи. Причина не в шарах: тест не може
-//! покликати функцію з бінарника.
+//! Split the same way as `dem-cook`: the cooking itself is a library and the
+//! binary only parses arguments. The reason is not layering -- a test cannot
+//! call a function out of a binary.
 
 pub mod gltf;
 
 use engine::mesh::{self, Model};
 use std::path::Path;
 
-/// Скукувати модель: прочитати glTF, нормалізувати до одиничної висоти,
-/// віддати те, що піде у файл, і числа, які має перевірити викликач.
+/// Cook a model: read the glTF, normalise to unit height, and return both what
+/// goes into the file and the numbers the caller should check.
 #[derive(Debug)]
 pub struct Cooked {
     pub model: Model,
-    /// Габарити, опубліковані експортером у JSON акесора.
+    /// Bounds the exporter published in the accessor JSON.
     pub published: gltf::Published,
-    /// Знаковий об'єм **у метрах**, тобто до нормалізації.
+    /// Signed volume **in metres**, i.e. before normalisation.
     pub volume_m3: f64,
     pub index_component: u64,
 }
@@ -24,28 +24,30 @@ pub struct Cooked {
 pub fn cook(path: &Path) -> Result<Cooked, String> {
     let loaded = gltf::load(path)?;
 
-    // Об'єм рахується **до** нормалізації: саме в метрах його дає Blender, і
-    // саме там його можна звірити. Після поділу на висоту він падає в куб
-    // висоти, і порівняння вимагало б ще одного множення — тобто ще одного
-    // місця, де можна помилитись.
+    // Volume is computed **before** normalisation: metres is what Blender
+    // reports it in, and metres is where it can be compared. After dividing by
+    // height it falls by the cube of the height, and the comparison would need
+    // one more multiplication -- one more place to get it wrong.
     let volume_m3 = mesh::signed_volume(&loaded.mesh);
 
-    // Габарити з JSON перевіряються тут, а не в тесті, і це різні речі:
-    // тест ловить регресію в нашому читачі, а ця перевірка — **зіпсований
-    // ассет**, тобто випадок, коли `.bin` і `.gltf` розійшлися.
+    // The JSON bounds are checked here rather than in a test, and these are
+    // different things: a test catches a regression in our reader, while this
+    // check catches a **corrupt asset**, i.e. `.bin` and `.gltf` having
+    // diverged.
     let (low, high) = bounds(&loaded.mesh);
     for k in 0..3 {
         for (ours, theirs, what) in [
             (low[k], loaded.published.min[k], "min"),
             (high[k], loaded.published.max[k], "max"),
         ] {
-            // Допуск від розміру моделі: числа в JSON надруковані десятковим
-            // рядком, тобто вже пройшли туди-назад через текст.
+            // Tolerance scaled by model size: the JSON numbers are printed as
+            // decimal strings, so they have already round-tripped through
+            // text.
             let scale = (high[k] - low[k]).abs().max(1.0);
             if (ours - theirs).abs() > 1e-6 * scale {
                 return Err(format!(
-                    "{what}[{k}]: у .bin {ours}, а в JSON акесора {theirs} — \
-                     файли розійшлися"
+                    "{what}[{k}]: {ours} in .bin, {theirs} in the accessor \
+                     JSON -- the files have diverged"
                 ));
             }
         }
@@ -60,7 +62,7 @@ pub fn cook(path: &Path) -> Result<Cooked, String> {
     })
 }
 
-/// Габарити меша по кожній осі.
+/// Mesh bounds along each axis.
 pub fn bounds(mesh: &engine::sphere::Mesh) -> ([f64; 3], [f64; 3]) {
     let mut low = [f64::INFINITY; 3];
     let mut high = [f64::NEG_INFINITY; 3];

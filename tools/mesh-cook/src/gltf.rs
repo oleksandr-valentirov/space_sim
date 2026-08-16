@@ -1,41 +1,41 @@
-//! Читач glTF — рівно ті ключі, від яких залежить арифметика (T5d2).
+//! A glTF reader -- exactly the keys the arithmetic depends on (T5d2).
 //!
-//! Правило те саме, що з етикеткою PDS3 у `dem-cook`: чужий формат не
-//! розбирається цілком. З glTF беруться геометрія першого примітива й те, що
-//! потрібно, щоб її знайти, — акесори, вікна буфера й сам буфер. Матеріали,
-//! сцени, вузли, анімації, розширення ігноруються: у гри для них ще немає
-//! викликача (CLAUDE.md).
+//! Same rule as the PDS3 label in `dem-cook`: someone else's format is not
+//! parsed in full. From glTF we take the first primitive's geometry and what
+//! is needed to find it -- accessors, buffer views and the buffer itself.
+//! Materials, scenes, nodes, animations and extensions are ignored: the game
+//! has no caller for them yet (CLAUDE.md).
 //!
-//! ## Що вважається помилкою
+//! ## What counts as an error
 //!
-//! Усе, чого читач не розуміє, — помилка з поясненням, а не мовчазне
-//! спрощення. Файл, у якого два примітиви або чужий тип індексів, читається
-//! **неправильно тихо**, і це найгірший вид помилки в ассеті: геометрія
-//! приїде правдоподібною.
+//! Anything the reader does not understand is an error with an explanation,
+//! not a silent simplification. A file with two primitives or an unfamiliar
+//! index type reads **wrongly and quietly**, the worst kind of asset bug: the
+//! geometry arrives looking plausible.
 //!
-//! ## Осі
+//! ## Axes
 //!
-//! Ніяких. Модель робиться носом уздовж `−Y` у Blender, експорт дефолтами
-//! кладе ніс у `+Z` glTF — тобто вже в конвенції `Scene::Ship` (виміряно,
-//! скіл `blender-assets`). Перестановка осей тут була б другою правдою про
-//! ту саму модель.
+//! None. The model is built nose along `-Y` in Blender, and the export
+//! defaults put the nose at glTF `+Z` -- already the `Scene::Ship` convention
+//! (measured, skill `blender-assets`). Permuting axes here would be a second
+//! truth about the same model.
 
 use engine::sphere::Mesh;
 use serde_json::Value;
 use std::path::Path;
 
-/// Типи компонентів glTF, які тут щось означають.
+/// The glTF component types that mean something here.
 const FLOAT: u64 = 5126;
 const UNSIGNED_BYTE: u64 = 5121;
 const UNSIGNED_SHORT: u64 = 5123;
 const UNSIGNED_INT: u64 = 5125;
 
-/// Габарити, які експортер **сам** записав у JSON акесора.
+/// Bounds the exporter wrote into the accessor JSON **itself**.
 ///
-/// Подарунок того самого роду, що `MINIMUM`/`MAXIMUM` в етикетці LOLA: у
-/// файлі вже лежить опубліковане число, отримане не нашим парсером. Читач
-/// `.bin` мусить його відтворити, і це ловить порядок байтів, тип компонента
-/// й забутий `byteOffset`.
+/// A gift of the same kind as `MINIMUM`/`MAXIMUM` in the LOLA label: the file
+/// already holds a published number produced by someone else's parser. The
+/// `.bin` reader must reproduce it, and that catches byte order, component
+/// type and a forgotten `byteOffset`.
 #[derive(Debug)]
 pub struct Published {
     pub min: [f64; 3],
@@ -46,13 +46,13 @@ pub struct Published {
 pub struct Loaded {
     pub mesh: Mesh,
     pub published: Published,
-    /// Тип індексів у файлі — щоб кукер міг сказати, що саме прочитав.
+    /// Index type in the file, so the cooker can say what it read.
     pub index_component: u64,
-    /// `COLOR_0`, якщо він у файлі є; порожньо — модель нефарбована.
+    /// `COLOR_0` if the file has one; empty means the model is unpainted.
     pub paint: Vec<[f32; 3]>,
 }
 
-/// Прочитати `.gltf` разом із його `.bin`.
+/// Read a `.gltf` together with its `.bin`.
 pub fn load(path: &Path) -> Result<Loaded, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let root: Value =
@@ -61,18 +61,18 @@ pub fn load(path: &Path) -> Result<Loaded, String> {
     let primitive = root
         .pointer("/meshes/0/primitives")
         .and_then(Value::as_array)
-        .ok_or("у файлі немає meshes[0].primitives")?;
+        .ok_or("the file has no meshes[0].primitives")?;
     if primitive.len() != 1 {
         return Err(format!(
-            "{} примітивів у меші: розбиття за матеріалами — окреме рішення формату, \
-             і ухвалювати його треба разом з першим таким матеріалом",
+            "{} primitives in the mesh: splitting by material is its own format \
+             decision, to be taken alongside the first such material",
             primitive.len()
         ));
     }
     let primitive = &primitive[0];
     if let Some(mode) = primitive.get("mode").and_then(Value::as_u64) {
         if mode != 4 {
-            return Err(format!("mode {mode}, а читач розуміє лише трикутники (4)"));
+            return Err(format!("mode {mode}, but the reader understands only triangles (4)"));
         }
     }
 
@@ -87,7 +87,7 @@ pub fn load(path: &Path) -> Result<Loaded, String> {
     let normals = read_vec3(&root, &buffers, normal)?;
     if positions.len() != normals.len() {
         return Err(format!(
-            "{} позицій проти {} нормалей",
+            "{} positions against {} normals",
             positions.len(),
             normals.len()
         ));
@@ -95,21 +95,21 @@ pub fn load(path: &Path) -> Result<Loaded, String> {
     let (list, index_component) = read_indices(&root, &buffers, indices)?;
     for index in &list {
         if *index as usize >= positions.len() {
-            return Err(format!("індекс {index} при {} вершинах", positions.len()));
+            return Err(format!("index {index} with {} vertices", positions.len()));
         }
     }
     if list.len() % 3 != 0 {
-        return Err(format!("{} індексів — це не трикутники", list.len()));
+        return Err(format!("{} indices are not triangles", list.len()));
     }
 
-    // Фарба необов'язкова: модель без неї — це модель до T9b, і читач мусить
-    // прочитати її так само, як читав тоді.
+    // Paint is optional: a model without it is a pre-T9b model, and the reader
+    // must read it exactly as it did then.
     let paint = match accessor_index(primitive, "/attributes/COLOR_0") {
         Ok(colour) => {
             let read = read_colour(&root, &buffers, colour)?;
             if read.len() != positions.len() {
                 return Err(format!(
-                    "{} кольорів проти {} позицій",
+                    "{} colours against {} positions",
                     read.len(),
                     positions.len()
                 ));
@@ -140,32 +140,32 @@ fn accessor_index(primitive: &Value, at: &str) -> Result<usize, String> {
         .pointer(at)
         .and_then(Value::as_u64)
         .map(|v| v as usize)
-        .ok_or_else(|| format!("у примітива немає {at}"))
+        .ok_or_else(|| format!("the primitive has no {at}"))
 }
 
-/// Буфери файлу. Тільки зовнішні: `data:`-URI тут не буває, бо експорт іде
-/// в `GLTF_SEPARATE` — саме заради того, щоб геометрія лежала окремим
-/// файлом і читалася без base64.
+/// The file's buffers. External only: no `data:` URI appears here, because the
+/// export uses `GLTF_SEPARATE` precisely so the geometry sits in its own file
+/// and is read without base64.
 fn read_buffers(root: &Value, folder: &Path) -> Result<Vec<Vec<u8>>, String> {
     let list = root
         .get("buffers")
         .and_then(Value::as_array)
-        .ok_or("у файлі немає buffers")?;
+        .ok_or("the file has no buffers")?;
     let mut out = Vec::with_capacity(list.len());
     for (k, buffer) in list.iter().enumerate() {
         let uri = buffer
             .get("uri")
             .and_then(Value::as_str)
-            .ok_or_else(|| format!("буфер {k} без uri: вбудовані дані не читаються"))?;
+            .ok_or_else(|| format!("buffer {k} has no uri: embedded data is not read"))?;
         if uri.starts_with("data:") {
-            return Err(format!("буфер {k} вбудований у JSON, а очікується .bin"));
+            return Err(format!("buffer {k} is embedded in JSON, but a .bin is expected"));
         }
         let path = folder.join(uri);
         let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         if let Some(length) = buffer.get("byteLength").and_then(Value::as_u64) {
             if bytes.len() as u64 != length {
                 return Err(format!(
-                    "{}: {} байтів проти {length} в JSON",
+                    "{}: {} bytes against {length} in JSON",
                     path.display(),
                     bytes.len()
                 ));
@@ -176,7 +176,7 @@ fn read_buffers(root: &Value, folder: &Path) -> Result<Vec<Vec<u8>>, String> {
     Ok(out)
 }
 
-/// Вікно акесора в буфері: зсув, крок і скільки елементів.
+/// An accessor's window into the buffer: offset, stride and element count.
 struct View<'a> {
     bytes: &'a [u8],
     stride: usize,
@@ -192,24 +192,24 @@ fn view<'a>(
 ) -> Result<View<'a>, String> {
     let a = root
         .pointer(&format!("/accessors/{accessor}"))
-        .ok_or_else(|| format!("немає акесора {accessor}"))?;
+        .ok_or_else(|| format!("no accessor {accessor}"))?;
     let count = a
         .get("count")
         .and_then(Value::as_u64)
-        .ok_or("акесор без count")? as usize;
+        .ok_or("accessor without count")? as usize;
     let component = a
         .get("componentType")
         .and_then(Value::as_u64)
-        .ok_or("акесор без componentType")?;
+        .ok_or("accessor without componentType")?;
     let index = a
         .get("bufferView")
         .and_then(Value::as_u64)
-        .ok_or("акесор без bufferView: розріджені акесори не читаються")? as usize;
+        .ok_or("accessor without bufferView: sparse accessors are not read")? as usize;
     let offset = a.get("byteOffset").and_then(Value::as_u64).unwrap_or(0) as usize;
 
     let v = root
         .pointer(&format!("/bufferViews/{index}"))
-        .ok_or_else(|| format!("немає bufferView {index}"))?;
+        .ok_or_else(|| format!("no bufferView {index}"))?;
     let buffer = v.get("buffer").and_then(Value::as_u64).unwrap_or(0) as usize;
     let view_offset = v.get("byteOffset").and_then(Value::as_u64).unwrap_or(0) as usize;
     let stride = v
@@ -219,13 +219,13 @@ fn view<'a>(
         .unwrap_or(element_bytes);
     let bytes = buffers
         .get(buffer)
-        .ok_or_else(|| format!("bufferView {index} дивиться в буфер {buffer}, якого немає"))?;
+        .ok_or_else(|| format!("bufferView {index} points at buffer {buffer}, which does not exist"))?;
 
     let start = view_offset + offset;
     let need = start + (count - 1) * stride + element_bytes;
     if count > 0 && bytes.len() < need {
         return Err(format!(
-            "акесор {accessor} вимагає {need} байтів, а в буфері {}",
+            "accessor {accessor} needs {need} bytes, but the buffer has {}",
             bytes.len()
         ));
     }
@@ -237,16 +237,16 @@ fn view<'a>(
     })
 }
 
-/// `COLOR_0` — базовий колір на вершину, **лінійне світло** за специфікацією
-/// glTF, тобто рівно те, чим фарбує кадр; перетворювати його нікуди не треба.
+/// `COLOR_0` is base colour per vertex, **linear light** per the glTF spec --
+/// exactly what the frame paints with, so it needs no conversion.
 ///
-/// Три подання замість одного тут не примха читача: Blender сам вибирає, чим
-/// писати колір, і на цій моделі вибрав нормалізований `UNSIGNED_SHORT`.
-/// Прийняти лише `float` означало б читач, який ламається від того, що хтось
-/// перемкнув тип атрибута в `.blend`.
+/// Three representations instead of one is not the reader's whim: Blender
+/// chooses what to write the colour as, and for this model chose normalised
+/// `UNSIGNED_SHORT`. Accepting only `float` would mean a reader that breaks
+/// because someone flipped an attribute type in the `.blend`.
 ///
-/// Альфа відкидається: у моделі вона одиниця скрізь, а прозорість корпусу —
-/// це окремий прохід рендера, а не канал у кольорі.
+/// Alpha is discarded: it is one everywhere in the model, and hull
+/// transparency would be its own render pass, not a channel in the colour.
 fn read_colour(
     root: &Value,
     buffers: &[Vec<u8>],
@@ -254,11 +254,11 @@ fn read_colour(
 ) -> Result<Vec<[f32; 3]>, String> {
     let a = root
         .pointer(&format!("/accessors/{accessor}"))
-        .ok_or_else(|| format!("немає акесора {accessor}"))?;
+        .ok_or_else(|| format!("no accessor {accessor}"))?;
     let channels = match a.get("type").and_then(Value::as_str) {
         Some("VEC3") => 3,
         Some("VEC4") => 4,
-        other => return Err(format!("COLOR_0 типу {other:?}, а буває VEC3 або VEC4")),
+        other => return Err(format!("COLOR_0 of type {other:?}, but it is VEC3 or VEC4")),
     };
     let normalized = a
         .get("normalized")
@@ -267,7 +267,7 @@ fn read_colour(
     let component = a
         .get("componentType")
         .and_then(Value::as_u64)
-        .ok_or("акесор без componentType")?;
+        .ok_or("accessor without componentType")?;
     let (size, scale) = match component {
         FLOAT => (4, 1.0),
         UNSIGNED_SHORT if normalized => (2, 1.0 / 65535.0),
@@ -275,7 +275,7 @@ fn read_colour(
         other => {
             return Err(format!(
                 "COLOR_0: componentType {other}, normalized {normalized} — \
-                 читач розуміє float і нормалізовані ushort/ubyte"
+                 the reader understands float and normalised ushort/ubyte"
             ))
         }
     };
@@ -309,7 +309,7 @@ fn read_vec3(root: &Value, buffers: &[Vec<u8>], accessor: usize) -> Result<Vec<[
     let v = view(root, buffers, accessor, 12)?;
     if v.component != FLOAT {
         return Err(format!(
-            "акесор {accessor}: componentType {}, а VEC3 очікується у float",
+            "accessor {accessor}: componentType {}, but VEC3 is expected as float",
             v.component
         ));
     }
@@ -333,12 +333,12 @@ fn read_vec3(root: &Value, buffers: &[Vec<u8>], accessor: usize) -> Result<Vec<[
     Ok(out)
 }
 
-/// Індекси **обох** типів.
+/// Indices of **both** types.
 ///
-/// `UNSIGNED_SHORT` з'являється сам, доки вершин менше 65 536, а `UNSIGNED_INT`
-/// — щойно їх більше. Читач, який знає лише один із них, працює рівно доти,
-/// доки модель не підросла, і ламається на найгіршому кроці: коли міняли
-/// форму, а не код.
+/// `UNSIGNED_SHORT` appears on its own while there are fewer than 65,536
+/// vertices, and `UNSIGNED_INT` as soon as there are more. A reader knowing
+/// only one works exactly until the model grows, and breaks at the worst step:
+/// when the shape changed, not the code.
 fn read_indices(
     root: &Value,
     buffers: &[Vec<u8>],
@@ -347,13 +347,13 @@ fn read_indices(
     let head = root
         .pointer(&format!("/accessors/{accessor}/componentType"))
         .and_then(Value::as_u64)
-        .ok_or("акесор індексів без componentType")?;
+        .ok_or("index accessor without componentType")?;
     let width = match head {
         UNSIGNED_SHORT => 2,
         UNSIGNED_INT => 4,
         other => {
             return Err(format!(
-                "індекси з componentType {other}: читач розуміє 5123 і 5125"
+                "indices with componentType {other}: the reader understands 5123 and 5125"
             ))
         }
     };
@@ -379,15 +379,15 @@ fn published_bounds(root: &Value, accessor: usize) -> Result<Published, String> 
         let list = root
             .pointer(&format!("/accessors/{accessor}/{key}"))
             .and_then(Value::as_array)
-            .ok_or_else(|| format!("акесор позицій без {key}"))?;
+            .ok_or_else(|| format!("position accessor without {key}"))?;
         if list.len() != 3 {
-            return Err(format!("{key} з {} чисел, а не з трьох", list.len()));
+            return Err(format!("{key} has {} numbers, not three", list.len()));
         }
         let mut out = [0.0; 3];
         for (k, value) in list.iter().enumerate() {
             out[k] = value
                 .as_f64()
-                .ok_or_else(|| format!("{key}[{k}] не число"))?;
+                .ok_or_else(|| format!("{key}[{k}] is not a number"))?;
         }
         Ok(out)
     };
