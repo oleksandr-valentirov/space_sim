@@ -1,55 +1,57 @@
-//! Вузол маневру на екрані: піккінг і ручки (ROADMAP-UI.md, U4b).
+//! A manoeuvre node on screen: picking and handles (ROADMAP-UI.md, U4b).
 //!
-//! ## Піккінг — проєкцією, не рейкастом
+//! ## Picking by projection, not by raycast
 //!
-//! Камера вже вміє `to_screen`, тож «який вузол під курсором» — це порівняння
-//! в пікселях. Рейкаст у сцену без буфера ідентифікаторів був би окремою
-//! підсистемою заради одного маркера.
+//! The camera already knows `to_screen`, so "which node is under the cursor"
+//! is a comparison in pixels. A raycast into the scene without an identifier
+//! buffer would be a whole subsystem for the sake of one marker.
 //!
-//! ## Ручки по осях, а не вільне тягнення
+//! ## Axis handles rather than free dragging
 //!
-//! Це та розвилка кроку, яку вимір вирішив на користь запасного варіанту, і
-//! причина геометрична, а не смакова. Тягнення довільної точки в 3D мишею
-//! неоднозначне — глибину задати нема чим. Але головне інше: **осі VNB,
-//! спроєктовані на екран, не ортогональні**. Якби тягнення розкладалося
-//! проєкцією на всі три одразу, рух уздовж екранного `normal` міняв би й
-//! `prograde` — рівно те, що перевірка кроку забороняє. З ручками ця вимога
-//! виконується **за побудовою**: схопив одну вісь — рухається одна компонента.
+//! This is the step's fork that measurement settled in favour of the fallback,
+//! and the reason is geometric rather than a matter of taste. Dragging an
+//! arbitrary point in 3D with a mouse is ambiguous -- there is nothing to set
+//! the depth with. But the main point is different: **the VNB axes projected
+//! to the screen are not orthogonal**. If a drag were decomposed by projection
+//! onto all three at once, motion along the screen `normal` would change
+//! `prograde` too -- exactly what the step's check forbids. With handles the
+//! requirement holds **by construction**: grab one axis and one component
+//! moves.
 
 use engine::camera::Camera;
 
 use crate::plan::Manoeuvre;
 use crate::snapshot::VesselSnapshot;
 
-/// Довжина ручки від вузла, пікселі. Далеко — щоб не злипалися; близько —
-/// щоб не тікали за край кадру на дрібних вікнах.
+/// Handle length from the node, pixels. Far enough not to stick together,
+/// close enough not to run off the frame in small windows.
 pub const HANDLE_PX: f32 = 60.0;
 
-/// Наскільки близько до ручки треба клікнути, пікселі.
+/// How close to a handle a click must land, pixels.
 pub const GRAB_PX: f32 = 14.0;
 
-/// Скільки метрів на секунду додає один піксель тягнення.
+/// How many metres per second one pixel of drag adds.
 ///
-/// Число тут — це чутливість інструмента, а не фізика: на типовій орбіті
-/// маневри — одиниці й десятки м/с, і 0.1 м/с на піксель дає повний діапазон
-/// на кілька сотень пікселів руху.
+/// The number here is tool sensitivity, not physics: on a typical orbit
+/// manoeuvres are units and tens of m/s, and 0.1 m/s per pixel gives the full
+/// range over a few hundred pixels of movement.
 pub const M_S_PER_PX: f64 = 0.1;
 
-/// Вузол маневру, як його видно на екрані.
+/// A manoeuvre node as it appears on screen.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NodeOnScreen {
-    /// Номер маневру в чернетці.
+    /// The manoeuvre's index in the draft.
     pub index: usize,
-    /// Де вузол, пікселі.
+    /// Where the node is, pixels.
     pub at: [f32; 2],
-    /// Куди дивляться осі VNB від вузла — **одиничні** напрямки в пікселях.
-    /// Вісь, що дивиться точно в камеру, вироджується в нуль, і тоді її
-    /// ручки просто немає.
+    /// Where the VNB axes point from the node -- **unit** directions in
+    /// pixels. An axis pointing straight at the camera degenerates to zero,
+    /// and then it simply has no handle.
     pub axes: [[f32; 2]; 3],
 }
 
 impl NodeOnScreen {
-    /// Де намальована ручка осі `axis`.
+    /// Where the handle for axis `axis` is drawn.
     pub fn handle(&self, axis: usize) -> [f32; 2] {
         [
             self.at[0] + self.axes[axis][0] * HANDLE_PX,
@@ -58,19 +60,19 @@ impl NodeOnScreen {
     }
 }
 
-/// Схоплена ручка: який вузол і яка його вісь.
+/// A grabbed handle: which node and which of its axes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Grab {
     pub node: usize,
     pub axis: usize,
 }
 
-/// Проєктує вузли чернетки на екран.
+/// Projects the draft's nodes to the screen.
 ///
-/// Стан апарата в момент маневру береться з **уже порахованих семплів**
-/// (правило 5: панель не пропагує). Маневр, до якого прогноз ще не дійшов,
-/// вузла не має — показувати його на випадковому місці було б гірше, ніж не
-/// показувати.
+/// The vessel's state at the manoeuvre's instant comes from **already computed
+/// samples** (rule 5: the panel does not propagate). A manoeuvre the
+/// prediction has not reached has no node -- showing it in an arbitrary place
+/// would be worse than not showing it.
 pub fn nodes_on_screen(
     camera: &Camera,
     fov_y: f64,
@@ -89,8 +91,9 @@ pub fn nodes_on_screen(
             continue;
         };
 
-        // Осі VNB у світі — та сама трійка, якою `Manoeuvre::dv_inertial`
-        // розгортає Δv. Один базис, а не два схожі.
+        // The VNB axes in world space -- the same triple
+        // `Manoeuvre::dv_inertial` expands dv with. One basis, not two similar
+        // ones.
         let r = [
             there.vessel_r[0] - there.body_r[0],
             there.vessel_r[1] - there.body_r[1],
@@ -105,9 +108,9 @@ pub fn nodes_on_screen(
         let normal = normalize(cross(r, v));
         let outward = cross(prograde, normal);
 
-        // Довжина у світі, на якій вісь малюється, — така, щоб на екрані вона
-        // була помітною й на низькій орбіті, і біля Місяця. Один відсоток
-        // відстані до тіла: масштаб сцени сам себе й задає.
+        // The world-space length an axis is drawn at, chosen so it is visible
+        // on screen both in low orbit and near the Moon. One percent of the
+        // distance to the body: the scene's scale sets itself.
         let length = 0.01 * norm(r).max(1.0);
         let mut axes = [[0.0f32; 2]; 3];
 
@@ -133,11 +136,11 @@ pub fn nodes_on_screen(
     nodes
 }
 
-/// Яку ручку схопили, якщо схопили.
+/// Which handle was grabbed, if any.
 ///
-/// Найближча в межах [`GRAB_PX`]; ручка, що виродилась у нуль (вісь дивиться
-/// в камеру), не хапається — інакше три ручки злиплися б в одній точці й
-/// вибір між ними став би випадковим.
+/// The nearest within [`GRAB_PX`]; a handle degenerated to zero (its axis
+/// pointing at the camera) cannot be grabbed -- otherwise three handles would
+/// coincide at one point and the choice between them would be arbitrary.
 pub fn pick_handle(nodes: &[NodeOnScreen], cursor: [f32; 2]) -> Option<Grab> {
     let mut best: Option<(f32, Grab)> = None;
 
@@ -165,28 +168,31 @@ pub fn pick_handle(nodes: &[NodeOnScreen], cursor: [f32; 2]) -> Option<Grab> {
     best.map(|(_, grab)| grab)
 }
 
-/// Скільки м/с додає тягнення на `drag_px` пікселів за схоплену ручку.
+/// How many m/s a drag of `drag_px` pixels on a grabbed handle adds.
 ///
-/// Рахується **проєкція на її вісь**, тобто рух упоперек ручки не робить
-/// нічого. Знак прямий: тягнеш у бік, куди дивиться вісь, — компонента росте.
+/// The **projection onto its axis** is what counts, so movement across the
+/// handle does nothing. The sign is direct: drag the way the axis points and
+/// the component grows.
 pub fn drag_to_delta(node: &NodeOnScreen, axis: usize, drag_px: [f32; 2]) -> f64 {
     let a = node.axes[axis];
     let along = f64::from(a[0] * drag_px[0] + a[1] * drag_px[1]);
     along * M_S_PER_PX
 }
 
-/// Апарат і тіло відліку в один момент — усе, з чого будується базис VNB.
+/// Vessel and reference body at one instant -- everything the VNB basis is
+/// built from.
 #[derive(Clone, Copy, Debug)]
 struct At {
     vessel_r: [f64; 3],
     vessel_v: [f64; 3],
     body_r: [f64; 3],
-    /// Швидкість тіла — скінченна різниця по сусідніх семплах: семпл несе
-    /// лише позицію (`crate::leg`).
+    /// The body's velocity is a finite difference over adjacent samples: a
+    /// sample carries only position (`crate::leg`).
     body_v: [f64; 3],
 }
 
-/// Стан апарата в момент `t` — найближчий семпл, разом із тілом.
+/// The vessel's state at time `t` -- the nearest sample, together with the
+/// body.
 fn sample_at(vessel: &VesselSnapshot, t: f64) -> Option<At> {
     let mut best: Option<(f64, At)> = None;
 

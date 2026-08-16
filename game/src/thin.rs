@@ -1,50 +1,55 @@
-//! Проріджування ламаної за екранним критерієм (ROADMAP.md, N2a).
+//! Polyline thinning by a screen criterion (ROADMAP.md, N2a).
 //!
-//! Слід росте з ігровим часом, а екран — ні. N1 виміряв, у що це обходиться:
-//! 831 тис. вершин, 23.7 мс на кадр, 42 Hz замість 60. Але більшість тих
-//! вершин лежить одна на одній: станція на низькій орбіті дає 263 семпли на
-//! добу, а з мільярда метрів уся її орбіта — кілька пікселів.
+//! The trail grows with game time; the screen does not. N1 measured the cost:
+//! 831 thousand vertices, 23.7 ms per frame, 42 Hz instead of 60. But most of
+//! those vertices lie on top of each other: a station in low orbit gives 263
+//! samples per day, and from a billion metres its whole orbit is a few pixels.
 //!
-//! ## Критерій виводиться, а не обирається
+//! ## The criterion is derived, not chosen
 //!
-//! Вузол потрібен там, де без нього хорда відхилилася б від дуги більше ніж на
-//! **пів пікселя**. Це не смак: пів пікселя — межа, за якою растеризатор
-//! намалює ту саму лінію, тож усе тонше вже не видно нікому.
+//! A node is needed where without it the chord would deviate from the arc by
+//! more than **half a pixel**. Not a taste: half a pixel is the limit beyond
+//! which the rasteriser draws the same line, so anything finer is visible to
+//! nobody.
 //!
-//! ## Хто задає допуск
+//! ## Who sets the tolerance
 //!
-//! Не цей модуль: тут лише алгоритм, а допуск приходить ззовні. Пів пікселя
-//! перераховує в метри `crate::trail`, і саме там записано, чому в метрах, а
-//! не в пікселях екрана: у метрах допуск не залежить від напрямку погляду, і
-//! кеш переживає обертання камери.
+//! Not this module: there is only the algorithm here, and the tolerance
+//! arrives from outside. `crate::trail` converts half a pixel into metres, and
+//! that is where it is recorded why metres rather than screen pixels: in
+//! metres the tolerance does not depend on view direction, and the cache
+//! survives rotating the camera.
 //!
-//! ## Чому Дуглас-Пекер, а не жадібний прохід
+//! ## Why Douglas-Peucker rather than a greedy pass
 //!
-//! Жадібний прохід («веди хорду, доки лізе») дає інший результат від того, з
-//! якого боку йти, і на замкненій орбіті зривається: хорда через повний виток
-//! вироджується в точку. Дуглас-Пекер розв'язує рівно те твердження, яким
-//! записаний критерій, — **жоден викинутий вузол не відхиляється від хорди
-//! більш ніж на допуск**, — і на виродженій хорді працює теж, бо міряє
-//! відстань до **відрізка**, а не до прямої.
+//! A greedy pass ("extend the chord while it fits") gives different results
+//! depending on which end you start from, and breaks down on a closed orbit:
+//! the chord across a full revolution degenerates to a point. Douglas-Peucker
+//! solves exactly the statement the criterion is written as -- **no discarded
+//! node deviates from the chord by more than the tolerance** -- and works on a
+//! degenerate chord too, because it measures distance to a **segment** rather
+//! than to a line.
 
-/// Пів пікселя — межа, за якою растеризатор малює ту саму лінію.
+/// Half a pixel: the limit beyond which the rasteriser draws the same line.
 pub const TOLERANCE_PX: f64 = 0.5;
 
-/// Те саме на площині екрана.
+/// The same in the screen plane.
 ///
-/// Обгортка над [`simplify3`], а не друга копія алгоритму: `z = 0` робить
-/// тривимірну відстань до відрізка рівно двовимірною, а дві копії
-/// Дугласа-Пекера тихо розійшлися б.
+/// A wrapper over [`simplify3`] rather than a second copy of the algorithm:
+/// `z = 0` makes the three-dimensional distance to a segment exactly
+/// two-dimensional, and two copies of Douglas-Peucker would quietly
+/// diverge.
 pub fn simplify(points: &[[f64; 2]], tol: f64) -> Vec<usize> {
     let lifted: Vec<[f64; 3]> = points.iter().map(|p| [p[0], p[1], 0.0]).collect();
     simplify3(&lifted, tol)
 }
 
-/// Дуглас-Пекер: індекси точок, без яких ламана не зміниться більш ніж на
+/// Douglas-Peucker: the indices of points without which the polyline changes
+/// by no more than
 /// `tol`.
 ///
-/// Стеком, а не рекурсією: глибина тут — довжина ланки, і ланка з тисячею
-/// семплів не має права впертися в стек потоку.
+/// By a stack rather than recursion: the depth here is the leg's length, and a
+/// leg of a thousand samples has no business hitting the thread's stack.
 pub fn simplify3(points: &[[f64; 3]], tol: f64) -> Vec<usize> {
     let n = points.len();
     if n <= 2 {
@@ -81,10 +86,11 @@ pub fn simplify3(points: &[[f64; 3]], tol: f64) -> Vec<usize> {
     (0..n).filter(|&i| keep[i]).collect()
 }
 
-/// Відстань від точки до **відрізка** `a`–`b`.
+/// Distance from a point to the **segment** `a`-`b`.
 ///
-/// До відрізка, а не до прямої: на замкненому витку `a` і `b` — та сама точка,
-/// прямої там немає, а відстань до точки є й вона правильна.
+/// To the segment rather than the line: on a closed revolution `a` and `b` are
+/// the same point, there is no line there, and the distance to a point exists
+/// and is correct.
 fn distance_to_segment(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> f64 {
     let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
     let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
@@ -122,8 +128,8 @@ mod tests {
         assert_eq!(simplify(&points, TOLERANCE_PX), vec![0, 2]);
     }
 
-    /// Замкнений виток — той випадок, на якому жадібний прохід зривається:
-    /// хорда від першої точки до останньої вироджена.
+    /// A closed revolution -- the case a greedy pass breaks down on: the
+    /// chord from the first point to the last is degenerate.
     #[test]
     fn a_closed_loop_keeps_its_shape() {
         let mut points: Vec<[f64; 2]> = Vec::new();
@@ -135,14 +141,14 @@ mod tests {
         let kept = simplify(&points, TOLERANCE_PX);
         assert!(
             kept.len() > 8 && kept.len() < points.len(),
-            "виток із {} точок став {}",
+            "a revolution of {} points became {}",
             points.len(),
             kept.len()
         );
 
-        // Форма: жодна викинута точка не далі за допуск від хорди сусідів,
-        // які лишились. Це те саме твердження, що й критерій, перевірене
-        // прямо, а не через кількість.
+        // Shape: no discarded point is further than the tolerance from the
+        // chord of the neighbours that remain. The same statement as the
+        // criterion, checked directly rather than through a count.
         let lift = |p: [f64; 2]| [p[0], p[1], 0.0];
         for window in kept.windows(2) {
             for point in &points[window[0] + 1..window[1]] {
@@ -152,7 +158,7 @@ mod tests {
                         lift(points[window[0]]),
                         lift(points[window[1]])
                     ) <= TOLERANCE_PX,
-                    "викинута точка далі за допуск"
+                    "a discarded point is further than the tolerance"
                 );
             }
         }

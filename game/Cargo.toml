@@ -6,16 +6,15 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-# Гра володіє світом і часом; рушій малює те, що їй показати
-# (PROJECT.md §6). Залежність однобічна й лишиться такою: `engine` про
-# `game` не знає нічого.
+# The game owns the world and time; the engine draws what it is shown
+# (PROJECT.md §6). The dependency is one-way and will stay so: `engine` knows
+# nothing about `game`.
 core-rs = { path = "../core-rs" }
 engine = { path = "../engine" }
 
-# Два примітиви моделі потоків, і більше жодного (PROJECT.md §6): команди
-# каналом, снапшоти публікацією. Спільного мутабельного стану немає, тож
-# `Mutex` тут не з'являється — не з обережності, а тому, що нема чого
-# замикати.
+# Two threading primitives and no more (PROJECT.md §6): commands by channel,
+# snapshots by publication. There is no shared mutable state, so no `Mutex`
+# appears here -- not out of caution but because there is nothing to lock.
 arc-swap = "1.9.2"
 crossbeam-channel = "0.5.16"
 

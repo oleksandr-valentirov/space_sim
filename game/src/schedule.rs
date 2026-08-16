@@ -1,53 +1,56 @@
-//! Маркери подій для ока (ROADMAP-UI.md, U3a).
+//! Event markers for the eye (ROADMAP-UI.md, U3a).
 //!
-//! ## Чому скануванням, а не озброєною подією
+//! ## Why by scanning rather than by an armed event
 //!
-//! Це вже ухвалене рішення, і воно про фізику, а не про зручність: **озброєна
-//! подія спиняє прогін і змінює послідовність кроків після себе** (ROADMAP
-//! «Фізика й пропагація»). Отже маркер, доданий заради екрана, змінив би
-//! траєкторію — і два гравці, з яких один відкрив розклад, полетіли б різними
-//! шляхами. Сьогодні гра не озброює жодної події, і етап U цього не змінює.
+//! This decision is already taken, and it is about physics rather than
+//! convenience: **an armed event stops the run and changes the step sequence
+//! after it** (ROADMAP, "Фізика й пропагація"). So a marker added for the sake
+//! of the screen would change the trajectory -- and two players, one of whom
+//! opened the schedule, would fly different paths. Today the game arms no
+//! events, and stage U does not change that.
 //!
-//! ## Чому мінімум відстані, а не знак `r·v`
+//! ## Why minimum distance rather than the sign of `r.v`
 //!
-//! Обидва означення одне й те саме, але дискретна форма різна. `r·v` вимагає
-//! швидкості **відносно тіла**, а семпл несе лише позицію тіла: швидкість
-//! довелося б брати скінченною різницею й порівнювати знак майже нульової
-//! величини. Порівняння трьох сусідніх відстаней такої проблеми не має, і
-//! мутація «дивитись у другий бік» дає рівно апоцентри замість перицентрів —
-//! те, що названо в перевірці кроку.
+//! The two definitions are the same thing, but their discrete forms differ.
+//! `r.v` needs velocity **relative to the body**, while a sample carries only
+//! the body's position: the velocity would have to be taken by finite
+//! difference and the sign of a near-zero quantity compared. Comparing three
+//! adjacent distances has no such problem, and the "look the other way"
+//! mutation gives exactly apoapses instead of periapses -- which is what the
+//! step's check names.
 //!
-//! ## Кеш на ланку
+//! ## Cached per leg
 //!
-//! Ланка незмінна від моменту, коли її порахували (PROJECT.md §6), тож і
-//! список її подій незмінний. Тому [`scan_leg`] бере ланку, а не траєкторію:
-//! хто кешує, той кешує на ланку.
+//! A leg is immutable from the moment it was computed (PROJECT.md §6), so the
+//! list of its events is immutable too. Hence [`scan_leg`] takes a leg rather
+//! than a trajectory: whoever caches, caches per leg.
 
 use crate::leg::Leg;
 
-/// Що саме знайдено.
+/// What exactly was found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// Найближча до тіла точка.
+    /// The point closest to the body.
     Periapsis,
-    /// Найдальша.
+    /// The furthest.
     Apoapsis,
 }
 
-/// Знайдена подія: коли й на якій відстані від тіла.
+/// A found event: when, and at what distance from the body.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Marker {
     pub kind: Kind,
     pub t: f64,
-    /// Відстань від центра тіла в цей момент, метри.
+    /// Distance from the body centre at that moment, metres.
     pub distance_m: f64,
 }
 
-/// Шукає перицентри й апоцентри відносно Землі серед уже порахованих семплів.
+/// Finds periapses and apoapses relative to Earth among already computed
+/// samples.
 ///
-/// Час уточнюється параболою по трьох сусідніх відстанях — не заради
-/// красивішого числа, а тому, що семпли це прийняті кроки інтегратора, а не
-/// сітка: біля перицентра вони густішають, але не лягають на нього.
+/// The time is refined by a parabola through three adjacent distances -- not
+/// for a prettier number but because the samples are accepted integrator steps
+/// rather than a grid: they crowd near periapsis but do not land on it.
 pub fn scan_leg(leg: &Leg) -> Vec<Marker> {
     let mut markers = Vec::new();
     if leg.samples.len() < 3 {
@@ -89,10 +92,10 @@ pub fn scan_leg(leg: &Leg) -> Vec<Marker> {
     markers
 }
 
-/// Вершина параболи через три точки. Повертає `(t, значення)`.
+/// The vertex of a parabola through three points. Returns `(t, value)`.
 ///
-/// Якщо точки лежать на прямій (знаменник нульовий), повертається середня —
-/// екстремуму там немає, і вигадувати його нема з чого.
+/// If the points lie on a line (the denominator is zero), the middle one is
+/// returned -- there is no extremum there, and nothing to invent one from.
 fn refine(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> (f64, f64) {
     let (t0, d0) = a;
     let (t1, d1) = b;
@@ -104,7 +107,7 @@ fn refine(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> (f64, f64) {
         return b;
     }
 
-    // Похідні кінцевими різницями на нерівномірній сітці.
+    // Derivatives by finite differences on a non-uniform grid.
     let left = (d1 - d0) / h0;
     let right = (d2 - d1) / h1;
     let curvature = (right - left) / (0.5 * (h0 + h1));
@@ -112,12 +115,13 @@ fn refine(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> (f64, f64) {
         return b;
     }
 
-    // Вершина: t1 − f'(t1)/f''(t1), де f'(t1) — центральна різниця.
+    // Vertex: t1 - f'(t1)/f''(t1), where f'(t1) is the central difference.
     let slope = (right * h0 + left * h1) / (h0 + h1);
     let dt = -slope / curvature;
 
-    // За межі сусідів вершина виходити не має; якщо вийшла — трьох точок
-    // замало, і чесніше лишити середню, ніж екстраполювати.
+    // The vertex must not leave the neighbours' interval; if it did, three
+    // points are not enough, and keeping the middle is more honest than
+    // extrapolating.
     if dt < -h0 || dt > h1 {
         return b;
     }
@@ -125,12 +129,13 @@ fn refine(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> (f64, f64) {
     (t1 + dt, d1 + 0.5 * slope * dt)
 }
 
-/// Усі маркери траєкторії, від найранішого.
+/// All the trajectory's markers, earliest first.
 ///
-/// Ланки вже впорядковані в часі, тож сортувати нема чого — але межа між
-/// ланками свій екстремум пропускає: у неї немає трьох сусідів по один бік.
-/// Це не втрата: наступна ланка починається з того ж місця, і якщо там був
-/// перицентр, його видно як перший чи останній семпл.
+/// The legs are already ordered in time, so there is nothing to sort -- but
+/// the boundary between legs misses its own extremum: it has no three
+/// neighbours on one side. That is no loss: the next leg starts at the same
+/// place, and if there was a periapsis there it shows as the first or last
+/// sample.
 pub fn scan(legs: &[std::sync::Arc<Leg>]) -> Vec<Marker> {
     legs.iter().flat_map(|leg| scan_leg(leg)).collect()
 }

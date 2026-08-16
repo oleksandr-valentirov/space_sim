@@ -1,41 +1,42 @@
-//! Час: хто ним володіє і чому він не входить в арифметику (ROADMAP J2).
+//! Time: who owns it and why it does not enter the arithmetic (ROADMAP J2).
 //!
-//! Курсор належить світу — тобто з J4 нитці симуляції — і не пишеться більше
-//! ніде (PROJECT.md §6). Головне про нього не те, ким він володіється, а те,
-//! чого він **не** робить:
+//! The cursor belongs to the world -- since J4, to the simulation thread --
+//! and is written nowhere else (PROJECT.md §6). What matters about it is not
+//! who owns it but what it does **not** do:
 //!
-//! > Годинник не входить в інтегратор.
+//! > The clock does not enter the integrator.
 //!
-//! Майбутнє пораховане до того, як курсор до нього доповз; курсор лише
-//! обирає точку на вже готовій ламаній. Тому:
+//! The future is computed before the cursor crawls to it; the cursor only
+//! picks a point on an already finished polyline. So:
 //!
-//! - фіксований крок симуляції не потрібен — нема чого фіксувати;
-//! - частота кадрів не може змінити жодного біта траєкторії;
-//! - пауза, warp і просадка кадру — це швидкість курсора, а не інша фізика.
+//! - no fixed simulation step is needed -- there is nothing to fix;
+//! - the frame rate cannot change one bit of a trajectory;
+//! - pause, warp and a frame drop are cursor speed, not different physics.
 //!
-//! ## Дрейф накопичення тут нешкідливий, і це можна порахувати
+//! ## Accumulated drift is harmless here, and that can be computed
 //!
-//! Курсор — `f64` секунд від епохи ассета, і його рухають додаванням `dt`.
-//! На `t ≈ 6·10⁹` с (200 років) крок `f64` — 1.4 мкс, тож тисячі додавань
-//! дають випадкове блукання мікросекундного масштабу. Порівняння, яке
-//! пояснює, чому це байдуже: H2 виміряв, що зупинка на перицентрі стійка до
-//! 8.3 мкс. Але справжня причина інша — курсор не годує арифметику взагалі,
-//! тож його похибка нікуди не поширюється.
+//! The cursor is `f64` seconds from the asset epoch, moved by adding `dt`. At
+//! `t ~ 6e9` s (200 years) an `f64` step is 1.4 us, so thousands of additions
+//! give a random walk of microsecond scale. A comparison that explains why
+//! that does not matter: H2 measured that stopping at periapsis is stable to
+//! 8.3 us. But the real reason is different -- the cursor does not feed the
+//! arithmetic at all, so its error propagates nowhere.
 //!
-//! ## Курсор не має права обігнати горизонт
+//! ## The cursor may not outrun the horizon
 //!
-//! Якщо інтегратор не встигає, зупиняється **час**, а не фізика. Це
-//! виведене обмеження warp, а не забите в код число, і воно видиме
-//! ([`Stall`]) — інакше гра просто «підгальмовувала б» без пояснення.
+//! If the integrator cannot keep up, **time** stops, not the physics. That is
+//! a derived warp limit rather than a number baked into the code, and it is
+//! visible ([`Stall`]) -- otherwise the game would simply "ease off" with no
+//! explanation.
 
-/// Чому курсор стоїть.
+/// Why the cursor is standing still.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stall {
-    /// Гравець натиснув паузу.
+    /// The player pressed pause.
     Paused,
-    /// Прогноз ще не порахований так далеко. Це і є стеля warp.
+    /// The prediction is not computed that far yet. This is the warp ceiling.
     Horizon,
-    /// Місія скінчилася: далі рахувати нема чого.
+    /// The mission is over: there is nothing further to compute.
     MissionEnd,
 }
 
@@ -46,11 +47,12 @@ pub struct Clock {
     stall: Option<Stall>,
 }
 
-/// Найповільніший і найшвидший warp.
+/// Slowest and fastest warp.
 ///
-/// Стеля не фізична, а проти помилки: один клац із заїканням миші не має
-/// перекидати місію на роки вперед. Справжню стелю ставить горизонт
-/// ([`Stall::Horizon`]) — і саме тому вона тут не мусить бути точною.
+/// The ceiling is not physical but a guard against mistakes: one click with a
+/// stuttering mouse should not throw the mission years forward. The real
+/// ceiling is set by the horizon ([`Stall::Horizon`]) -- which is exactly why
+/// this one need not be precise.
 pub const MIN_WARP: f64 = 1.0;
 pub const MAX_WARP: f64 = 1.0e7;
 
@@ -84,11 +86,11 @@ impl Clock {
         self.warp = warp.clamp(MIN_WARP, MAX_WARP);
     }
 
-    /// Помножити warp на `factor` — саме помножити.
+    /// Multiply warp by `factor` -- multiply, specifically.
     ///
-    /// Діапазон від 1 до 10⁷ це сім порядків; сталий крок у секундах був би
-    /// або нерухомим на одному кінці, або непридатним на іншому. Та сама
-    /// причина, що в колеса камери (`engine::orbit`).
+    /// A range from 1 to 1e7 is seven decades; a constant step in seconds
+    /// would be either immobile at one end or unusable at the other. The same
+    /// reason as the camera wheel (`engine::orbit`).
     pub fn scale_warp(&mut self, factor: f64) {
         self.set_warp(self.warp * factor);
     }
@@ -97,12 +99,13 @@ impl Clock {
         self.paused = !self.paused;
     }
 
-    /// Поставити курсор на конкретну мить (ROADMAP-UI.md, U3b).
+    /// Place the cursor at a specific instant (ROADMAP-UI.md, U3b).
     ///
-    /// Перевіряти, що ця мить порахована й не в минулому, — справа світу
-    /// (`World::seek_to`): годинник не знає, докуди дійшов прогноз. Тут лише
-    /// сам стрибок, і разом із ним знімається `stall`: причина, з якої час
-    /// стояв, стосувалася попереднього моменту.
+    /// Checking that the instant is computed and not in the past is the
+    /// world's job (`World::seek_to`): the clock does not know how far the
+    /// prediction reached. Here there is only the jump itself, and with it
+    /// `stall` clears: the reason time was standing concerned the previous
+    /// moment.
     pub fn seek_to(&mut self, t: f64) {
         self.t = t;
         self.stall = if self.paused {
@@ -112,16 +115,17 @@ impl Clock {
         };
     }
 
-    /// Посунути курсор на `dt_wall` секунд реального часу.
+    /// Advance the cursor by `dt_wall` seconds of real time.
     ///
-    /// `limit` — докуди пораховано; далі курсор не йде. `mission_end` —
-    /// докуди взагалі є що рахувати, і потрібен лише щоб відрізнити «не
-    /// встигли» від «місія скінчилася»: перше — привід показати, що warp
-    /// упирається, друге — ні.
+    /// `limit` is how far has been computed; the cursor goes no further.
+    /// `mission_end` is how far there is anything to compute at all, and is
+    /// needed only to tell "did not keep up" from "the mission is over": the
+    /// first is grounds to show that warp is hitting a wall, the second is
+    /// not.
     ///
-    /// `dt_wall` приходить аргументом, а не з `Instant::now()`: годинник
-    /// операційної системи в цій структурі не з'являється ніколи, і саме
-    /// тому її поведінку можна перевірити відтворюваними числами.
+    /// `dt_wall` arrives as an argument rather than from `Instant::now()`: the
+    /// operating system's clock never appears in this struct, which is exactly
+    /// why its behaviour can be checked with reproducible numbers.
     pub fn advance(&mut self, dt_wall: f64, limit: f64, mission_end: f64) {
         if self.paused {
             self.stall = Some(Stall::Paused);
@@ -136,10 +140,10 @@ impl Clock {
             return;
         }
 
-        // Назад курсор не ходить ніколи. Це не косметика: після завантаження
-        // сейву горизонт іще не порахований, і без цього правила годинник
-        // відкотився б до точки перезапуску, тобто гра при завантаженні
-        // стрибала б у минуле (`crate::save`).
+        // The cursor never goes backwards. Not cosmetic: after loading a save
+        // the horizon is not computed yet, and without this rule the clock
+        // would roll back to the restart point, i.e. loading would make the
+        // game jump into the past (`crate::save`).
         self.t = self.t.max(limit);
         self.stall = Some(if limit >= mission_end {
             Stall::MissionEnd

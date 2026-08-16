@@ -1,38 +1,41 @@
-//! Ланка — одиниця всього (ROADMAP J1, PROJECT.md §6).
+//! The leg is the unit of everything (ROADMAP J1, PROJECT.md §6).
 //!
-//! Один виклик `prop_run` = одна [`Leg`]. Вона ж одиниця поділу зі снапшотом,
-//! одиниця інвалідації при правці плану й одиниця відвантаження вершин на
-//! GPU. Це не збіг, а те, заради чого поняття й заведене: якби вони були
-//! різні, кожна межа між ними потребувала б переліку й перерахунку.
+//! One `prop_run` call = one [`Leg`]. It is also the unit of sharing with a
+//! snapshot, the unit of invalidation on a plan edit and the unit of uploading
+//! vertices to the GPU. Not a coincidence but what the concept exists for: if
+//! they differed, every boundary between them would need enumeration and
+//! recomputation.
 //!
-//! ## Чому ланка, а не «стільки-то секунд»
+//! ## Why a leg rather than "so many seconds"
 //!
-//! Обсяг роботи міряється ланками, бо `t_end` не має права походити від
-//! годинника (CLAUDE.md, інваріант 9). `prop_run` приземляє останній крок
-//! рівно на `t_end`, тож `t_end`, порахований з `dt` кадру, вписав би частоту
-//! кадрів у послідовність кроків. Зупинка на заповненому буфері такої
-//! властивості не має: ROADMAP H1 виміряв, що зшивання по ній бітово дорівнює
-//! одному прогону, разом із перенесеним кроком.
+//! Work is measured in legs, because `t_end` may not come from a clock
+//! (CLAUDE.md, invariant 9). `prop_run` lands its last step exactly on
+//! `t_end`, so a `t_end` computed from a frame's `dt` would write the frame
+//! rate into the step sequence. Stopping on a filled buffer has no such
+//! property: ROADMAP H1 measured that stitching along it equals one run
+//! bitwise, carried step included.
 //!
-//! ## Крок на виході — не діагностика
+//! ## The outgoing step is not diagnostics
 //!
-//! [`Leg::step_out`] існує, щоб продовжити з межі ланки й отримати ту саму
-//! траєкторію. Без нього перезапуск із середини неможливий, а саме він робить
-//! каскадний перерахунок дешевим: правка маневру відкидає ланки після нього й
-//! рахує далі з останньої вцілілої, а не від епохи. Викинути крок коштує
-//! сімдесятикратної роботи й іншої траєкторії — це H1 теж виміряв.
+//! [`Leg::step_out`] exists so a run can continue from a leg boundary and get
+//! the same trajectory. Without it restarting from the middle is impossible,
+//! and it is exactly what makes cascade recomputation cheap: editing a
+//! manoeuvre discards the legs after it and computes on from the last
+//! survivor rather than from the epoch. Dropping the step costs seventyfold
+//! work and a different trajectory -- H1 measured that too.
 
 use std::sync::Arc;
 
 use core_rs::{State, Stop};
 
-/// Один прийнятий крок інтегратора, і де тоді були тіла.
+/// One accepted integrator step, and where the bodies were then.
 ///
-/// Позиції Землі й Місяця лежать поруч зі станом, бо саме вони потрібні, щоб
-/// цю точку намалювати: геоцентрично зараз, у синодичному фреймі — коли
-/// приїде сервіс фреймів (PROJECT.md §7). Ціна — 48 зайвих байтів на семпл і
-/// два звернення до ефемериди на крок; обидва дешевші за інтегрування, і
-/// обидва зникнуть, коли фрейми рахуватиме шейдер зі спільного буфера тіл.
+/// Earth's and the Moon's positions sit beside the state because they are what
+/// is needed to draw this point: geocentric now, in the synodic frame once the
+/// frame service arrives (PROJECT.md §7). The cost is 48 extra bytes per
+/// sample and two ephemeris calls per step; both are cheaper than the
+/// integration, and both disappear once a shader computes frames from a shared
+/// body buffer.
 #[derive(Clone, Copy, Debug)]
 pub struct Sample {
     pub state: State,
@@ -40,52 +43,54 @@ pub struct Sample {
     pub moon: [f64; 3],
 }
 
-/// Що дав один виклик `prop_run`.
+/// What one `prop_run` call produced.
 pub struct Leg {
-    /// Стан, з якого ланка почалася.
+    /// The state the leg started from.
     ///
-    /// Серед семплів його немає — `prop_run` не семплює початкову точку, тож
-    /// ланки зшиваються без повторених вершин. Але зберігати його треба, і не
-    /// заради зручності: після маневру `entry` — це стан **після** імпульсу,
-    /// тоді як останній семпл попередньої ланки — до нього. Без цього
-    /// інтерполяція згладила б розрив швидкості й намалювала дугу, якою
-    /// апарат не летів.
+    /// It is not among the samples -- `prop_run` does not sample the initial
+    /// point, so legs stitch without repeated vertices. But it must be stored,
+    /// and not for convenience: after a manoeuvre `entry` is the state
+    /// **after** the impulse, while the previous leg's last sample is before
+    /// it. Without this the interpolation would smooth the velocity
+    /// discontinuity and draw an arc the vessel never flew.
     pub entry: State,
-    /// Час, на якому ланка спинилася.
+    /// The time the leg stopped at.
     pub t1: f64,
-    /// Крок, з яким прогін її залишив. З ним і продовжувати.
+    /// The step the run left it with. Continue with that one.
     pub step_out: f64,
     pub samples: Vec<Sample>,
     pub stop: Stop,
 }
 
-/// Послідовність ланок одного апарата.
+/// The sequence of one vessel's legs.
 ///
-/// `Arc` на ланку, а не на всю траєкторію: снапшот копіює вектор вказівників,
-/// а не мегабайти семплів, і ланка, яку вже хтось малює, переживе публікацію
-/// наступної.
+/// An `Arc` per leg rather than per trajectory: a snapshot copies a vector of
+/// pointers rather than megabytes of samples, and a leg someone is already
+/// drawing survives the publication of the next.
 pub struct Trajectory {
-    /// Стан, з якого все почалося.
+    /// The state everything started from.
     ///
-    /// Лежить окремо, бо в ланках його немає: `prop_run` не семплює початкову
-    /// точку. Без нього траєкторія не мала б власного першого вузла — а він
-    /// потрібен і інтерполяції на найпершому відрізку, і сейву (J6), і
-    /// каскадному перерахунку, коли правка викидає геть усі ланки (J3).
+    /// Kept separately because the legs do not hold it: `prop_run` does not
+    /// sample the initial point. Without it the trajectory would have no first
+    /// node of its own -- and that is needed by the interpolation on the very
+    /// first segment, by the save (J6), and by cascade recomputation when an
+    /// edit discards every leg (J3).
     start: State,
     legs: Vec<Arc<Leg>>,
-    /// Скільки ланок від початку вже пройшли пенсію (N3a).
+    /// How many legs from the start have already been retired (N3a).
     ///
-    /// Індекс, а не прапорець у ланці: ланки йдуть на пенсію тільки з початку
-    /// й тільки один раз, тож одного числа досить, і воно не змушує чіпати
-    /// `Leg`, яку ділять снапшоти.
+    /// An index rather than a flag in the leg: legs retire only from the front
+    /// and only once, so one number suffices and it does not force touching a
+    /// `Leg` that snapshots share.
     retired: usize,
 
-    /// Кут, який радіус-вектор апарата обійшов навколо центрального тіла в
-    /// кожній ланці, радіани (N5a).
+    /// The angle the vessel's radius vector swept about the central body in
+    /// each leg, radians (N5a).
     ///
-    /// Поруч із ланками, а не в них: ланку ділять снапшоти, і додавати їй поле
-    /// заради політики вікна означало б розсилати це число всім читачам, яким
-    /// воно не потрібне. Довжина завжди дорівнює `legs`.
+    /// Beside the legs rather than inside them: snapshots share a leg, and
+    /// adding a field for the sake of the window policy would broadcast this
+    /// number to every reader that does not need it. The length always equals
+    /// `legs`.
     swept: Vec<f64>,
 }
 
@@ -112,7 +117,8 @@ impl Trajectory {
         &self.legs
     }
 
-    /// Копія переліку ланок для снапшоту — вектор вказівників, не семпли.
+    /// A copy of the leg list for a snapshot -- a vector of pointers, not
+    /// samples.
     pub fn share(&self) -> Vec<Arc<Leg>> {
         self.legs.clone()
     }
@@ -125,21 +131,22 @@ impl Trajectory {
         self.legs.iter().map(|leg| leg.samples.len()).sum()
     }
 
-    /// Відправляє на пенсію ланки, що лишилися позаду вікна навколо курсора
+    /// Retires the legs left behind the window around the cursor
     /// (ROADMAP.md, N3a).
     ///
-    /// **Пенсія — це проріджування семплів раз і назавжди**, а не викидання
-    /// ланки: слід має лишитися на карті (припущення Q4). Недоторканними
-    /// лишаються три речі, на яких стоїть сейв (`restart_at`): `entry`,
-    /// **останній семпл** і `step_out`. Дуглас-Пекер обидва кінці лишає завжди,
-    /// тож останній семпл переживає пенсію за побудовою, а не за вийнятком.
+    /// **Retirement is thinning the samples once and for all**, not
+    /// discarding the leg: the trail must stay on the map (assumption Q4).
+    /// Three things stay untouched, the ones the save rests on
+    /// (`restart_at`): `entry`, the **last sample** and `step_out`.
+    /// Douglas-Peucker always keeps both ends, so the last sample survives
+    /// retirement by construction rather than by exception.
     ///
-    /// ⚠ **Двері в один бік.** Інваріант 5 забороняє інтегрувати минуле вдруге,
-    /// тож викинуті семпли не повертаються ніколи. Тому допуск тут — не
-    /// налаштування, а рішення: `tol_m` мусить лишатися підпіксельним на тому
-    /// масштабі, з якого гравець колись подивиться на старе минуле.
+    /// WARNING: **a one-way door.** Invariant 5 forbids integrating the past a
+    /// second time, so discarded samples never come back. So the tolerance
+    /// here is a decision rather than a setting: `tol_m` must stay sub-pixel at
+    /// whatever scale the player will one day look at the old past from.
     ///
-    /// Повертає, скільки семплів зникло — це і є число кроку.
+    /// Returns how many samples disappeared -- that is the step's number.
     pub fn retire_before(&mut self, keep_raw_legs: usize, tol_m: f64) -> usize {
         if self.legs.len() <= keep_raw_legs {
             return 0;
@@ -173,28 +180,29 @@ impl Trajectory {
         dropped
     }
 
-    /// Викидає ланки, старші за `revolutions` обертів позаду курсора
-    /// (ROADMAP.md, N5a; рішення Q4).
+    /// Discards legs older than `revolutions` revolutions behind the cursor
+    /// (ROADMAP.md, N5a; decision Q4).
     ///
-    /// **Оберт міряється кутом, а не перицентром.** Сума кутів між сусідніми
-    /// геоцентричними радіус-векторами працює і на замкненій орбіті, і на
-    /// перельоті, і навколо L2 — там питання «де перицентр» доброї відповіді
-    /// не має.
+    /// **A revolution is measured by angle, not by periapsis.** The sum of
+    /// angles between adjacent geocentric radius vectors works on a closed
+    /// orbit, on a transfer and around L2 alike -- there the question "where is
+    /// periapsis" has no good answer.
     ///
-    /// ⚠ **Двері в один бік.** Інваріант 5 забороняє інтегрувати минуле вдруге,
-    /// тож викинута ланка не повертається. Тому `start` переїжджає на `entry`
-    /// найстарішої вцілілої: без цього `state_at` і каскадний перерахунок
-    /// брали б за основу стан, якого в траєкторії вже немає.
+    /// WARNING: **a one-way door.** Invariant 5 forbids integrating the past a
+    /// second time, so a discarded leg does not come back. Hence `start` moves
+    /// to the `entry` of the oldest survivor: without that, `state_at` and the
+    /// cascade recomputation would base themselves on a state the trajectory no
+    /// longer holds.
     ///
-    /// Повертає, скільки семплів зникло.
+    /// Returns how many samples disappeared.
     pub fn keep_revolutions(&mut self, cursor_t: f64, revolutions: f64) -> usize {
         if self.legs.is_empty() || revolutions <= 0.0 {
             return 0;
         }
 
-        // Від ланки під курсором, а не від останньої: прогноз біжить на
-        // `LEAD_LEGS` уперед, і рахувати вікно від нього означало б викидати
-        // те, що гравець щойно бачив.
+        // From the leg under the cursor rather than from the last: the
+        // prediction runs `LEAD_LEGS` ahead, and measuring the window from it
+        // would mean discarding what the player just saw.
         let cursor_leg = self
             .legs
             .partition_point(|leg| leg.t1 < cursor_t)
@@ -227,79 +235,83 @@ impl Trajectory {
         dropped
     }
 
-    /// Скільки важить історія в пам'яті, байти.
+    /// How much the history weighs in memory, bytes.
     ///
-    /// 104 байти на семпл — те саме число, яким говорить борг D7, і саме те,
-    /// яке має побачити гравець поруч із вибором вікна (N5a).
+    /// 104 bytes per sample -- the number debt D7 speaks in, and the one the
+    /// player should see beside the window choice (N5a).
     pub fn history_bytes(&self) -> usize {
         self.sample_count() * 104
     }
 
-    /// Час останнього семпла, якщо він є.
+    /// The last sample's time, if there is one.
     pub fn end(&self) -> Option<f64> {
         self.legs.last().map(|leg| leg.t1)
     }
 
-    /// Відкидає ланки, що закінчуються пізніше за `t`, і каже, звідки
-    /// продовжувати.
+    /// Discards the legs ending later than `t` and says where to continue
+    /// from.
     ///
-    /// Це весь каскадний перерахунок (PROJECT.md §6): не «перерахувати з
-    /// епохи», а «відрізати хвіст». Законним його робить вимір H1 — зшиті
-    /// ланки бітово дорівнюють одному прогону, разом із перенесеним кроком, —
-    /// тож продовження з межі ланки дає ту саму траєкторію, яку дав би
-    /// безперервний прогін.
+    /// This is the whole cascade recomputation (PROJECT.md §6): not "recompute
+    /// from the epoch" but "cut the tail". What makes it legitimate is the H1
+    /// measurement -- stitched legs equal one run bitwise, carried step
+    /// included -- so continuing from a leg boundary gives the same trajectory
+    /// a continuous run would.
     pub fn truncate_after(&mut self, t: f64) -> Restart {
         let keep = self.legs.partition_point(|leg| leg.t1 <= t);
         self.legs.truncate(keep);
         self.swept.truncate(keep);
-        // Каскад різав хвіст, тож пенсіонерів меншати не може — але межа
-        // мусить лишитися всередині вектора.
+        // The cascade cut the tail, so the retired count cannot shrink -- but
+        // the boundary must stay inside the vector.
         self.retired = self.retired.min(self.legs.len());
         restart_at(&self.legs, self.start, t)
     }
 
-    /// Докуди пораховано. Для порожньої траєкторії — момент старту.
+    /// How far it is computed. For an empty trajectory, the start instant.
     pub fn computed_to(&self) -> f64 {
         self.end().unwrap_or(self.start.t)
     }
 
-    /// Скільки ланок закінчуються пізніше за `t`.
+    /// How many legs end later than `t`.
     ///
-    /// Це і є міра «наскільки прогноз попереду курсора», і міряється вона
-    /// ланками, а не секундами: секунди на ланку залежать від того, як густо
-    /// інтегратор ставить кроки, тобто від самої траєкторії.
+    /// This is the measure of "how far the prediction is ahead of the cursor",
+    /// and it is measured in legs rather than seconds: seconds per leg depend
+    /// on how densely the integrator places steps, i.e. on the trajectory
+    /// itself.
     pub fn legs_after(&self, t: f64) -> usize {
-        // Ланки впорядковані за часом, тож перша з `t1 > t` відсікає хвіст.
+        // The legs are ordered in time, so the first with `t1 > t` cuts the
+        // tail.
         self.legs.len() - self.legs.partition_point(|leg| leg.t1 <= t)
     }
 
-    /// Стан у момент `t` — інтерполяцією Ерміта між сусідніми семплами.
+    /// The state at time `t`, by Hermite interpolation between adjacent
+    /// samples.
     ///
-    /// Кубічний Ерміт, а не лінійна інтерполяція, і це не про красу: у нас на
-    /// кожному вузлі є **і** позиція, **і** швидкість, тобто кубіка визначена
-    /// точно, без жодного припущення. Лінійна інтерполяція між кроками
-    /// завдовжки в години зрізала б кути орбіти на кілометри.
+    /// Cubic Hermite rather than linear interpolation, and not for beauty:
+    /// every node carries **both** position **and** velocity, so the cubic is
+    /// determined exactly, with no assumption. Linear interpolation between
+    /// steps hours long would cut orbit corners by kilometres.
     ///
-    /// За межами порахованого віддає крайню точку, а не `None`: курсор туди
-    /// й не пускають (`clock::Clock::advance`), і повертати «немає стану» в
-    /// момент, коли апарат очевидно десь є, означало б змусити кожного
-    /// викликача вигадувати, що з цим робити.
+    /// Past what is computed it returns the endpoint rather than `None`: the
+    /// cursor is not allowed there (`clock::Clock::advance`), and returning
+    /// "no state" at a moment when the vessel obviously is somewhere would
+    /// force every caller to invent what to do about it.
     pub fn state_at(&self, t: f64) -> State {
         state_at(&self.legs, self.start, t)
     }
 }
 
-/// Стан у момент `t` по вже порахованих ланках — та сама інтерполяція, але
-/// доступна тому, хто має лише снапшот.
+/// The state at time `t` over already computed legs -- the same interpolation,
+/// but available to whoever holds only a snapshot.
 ///
-/// Вільна функція з тієї самої причини, що [`restart_at`]: правило мусить бути
-/// **одне**. Світ читає траєкторію через [`Trajectory::state_at`], а панель і
-/// планувальник — зі снапшоту, де є лише `legs` і `start`; дві реалізації
-/// однієї інтерполяції розійшлися б тихо, у третьому знаку.
+/// A free function for the same reason as [`restart_at`]: the rule must be
+/// **one**. The world reads the trajectory through [`Trajectory::state_at`],
+/// while the panel and the planner read a snapshot, which holds only `legs`
+/// and `start`; two implementations of one interpolation would diverge
+/// quietly, in the third digit.
 ///
-/// За межами порахованого віддає крайню точку, а не `None`, — і саме тому
-/// викликач, якому потрібен стан **у майбутньому**, зобов'язаний спершу
-/// звіритися з `computed_to`: крайня точка виглядає як звичайний стан.
+/// Past what is computed it returns the endpoint rather than `None` -- which is
+/// exactly why a caller needing a state **in the future** must first check
+/// against `computed_to`: an endpoint looks like an ordinary state.
 pub fn state_at(legs: &[Arc<Leg>], start: State, t: f64) -> State {
     if t <= start.t || legs.is_empty() {
         return start;
@@ -307,7 +319,7 @@ pub fn state_at(legs: &[Arc<Leg>], start: State, t: f64) -> State {
 
     let leg_index = legs.partition_point(|leg| leg.t1 < t);
     let Some(leg) = legs.get(leg_index) else {
-        // Пізніше за все пораховане.
+        // Later than everything computed.
         return legs
             .last()
             .and_then(|leg| leg.samples.last())
@@ -316,14 +328,14 @@ pub fn state_at(legs: &[Arc<Leg>], start: State, t: f64) -> State {
 
     let index = leg.samples.partition_point(|s| s.state.t < t);
     let Some(after) = leg.samples.get(index) else {
-        // Ланка закінчується раніше за t лише якщо вона порожня, а таких
-        // ми не зберігаємо (`world::World::extend`).
+        // A leg ends earlier than t only if it is empty, and we do not store
+        // those (`world::World::extend`).
         return start;
     };
 
-    // На початку ланки лівий вузол — її `entry`, а НЕ останній семпл
-    // попередньої: після маневру це різні стани, і різняться вони рівно
-    // на Δv.
+    // At a leg's start the left node is its `entry`, NOT the previous leg's
+    // last sample: after a manoeuvre those are different states, differing by
+    // exactly dv.
     let before = if index > 0 {
         leg.samples[index - 1].state
     } else {
@@ -333,23 +345,23 @@ pub fn state_at(legs: &[Arc<Leg>], start: State, t: f64) -> State {
     hermite(&before, &after.state, t)
 }
 
-/// Звідки продовжувати після того, як хвіст траєкторії відкинули.
+/// Where to continue from after the trajectory's tail was discarded.
 #[derive(Debug, Clone, Copy)]
 pub struct Restart {
     pub state: State,
     pub step: f64,
 }
 
-/// Точка перезапуску для моменту `t`: остання межа ланки не пізніша за нього.
+/// The restart point for time `t`: the last leg boundary not later than it.
 ///
-/// Вільна функція, бо потрібна двом і мусить бути **однією**: світу — щоб
-/// перерахувати хвіст після правки плану, планувальнику — щоб порахувати
-/// прев'ю з тієї самої точки. Дві реалізації цього правила розійшлися б, і
-/// розійшлися б саме там, де ціна найвища: прев'ю показувало б лінію, якою
-/// апарат потім не полетить (ROADMAP J5).
+/// A free function because two callers need it and it must be **one**: the
+/// world, to recompute the tail after a plan edit, and the planner, to compute
+/// a preview from the same point. Two implementations of this rule would
+/// diverge, and would diverge exactly where the price is highest: the preview
+/// would show a line the vessel will not then fly (ROADMAP J5).
 ///
-/// `legs` мусять бути вже обрізані по `t` або впорядковані — береться остання
-/// з `t1 <= t`.
+/// `legs` must already be trimmed by `t` or ordered -- the last with
+/// `t1 <= t` is taken.
 pub fn restart_at(legs: &[Arc<Leg>], start: State, t: f64) -> Restart {
     let keep = legs.partition_point(|leg| leg.t1 <= t);
 
@@ -358,8 +370,8 @@ pub fn restart_at(legs: &[Arc<Leg>], start: State, t: f64) -> Restart {
             state: leg.samples.last().map_or(leg.entry, |s| s.state),
             step: leg.step_out,
         },
-        // Нуль означає «обери сам» — саме те, що треба, коли ланок не
-        // лишилося взагалі (`core/prop.h`).
+        // Zero means "choose one yourself" -- exactly what is wanted when no
+        // legs remain at all (`core/prop.h`).
         None => Restart {
             state: start,
             step: 0.0,
@@ -367,10 +379,11 @@ pub fn restart_at(legs: &[Arc<Leg>], start: State, t: f64) -> Restart {
     }
 }
 
-/// Кубічний Ерміт по позиції й швидкості.
+/// Cubic Hermite over position and velocity.
 ///
-/// Швидкість — похідна тієї самої кубіки, а не окремо інтерпольована: інакше
-/// намальована позиція й показана швидкість описували б різні рухи.
+/// The velocity is the derivative of that same cubic rather than interpolated
+/// separately: otherwise the drawn position and the displayed velocity would
+/// describe different motions.
 fn hermite(a: &State, b: &State, t: f64) -> State {
     let h = b.t - a.t;
     if h <= 0.0 {
@@ -413,12 +426,14 @@ fn hermite(a: &State, b: &State, t: f64) -> State {
     }
 }
 
-/// Кут, який радіус-вектор обійшов навколо центрального тіла за ці семпли.
+/// The angle the radius vector swept about the central body over these
+/// samples.
 ///
-/// Сума кутів між сусідніми векторами, через `atan2` від довжини векторного
-/// добутку й скалярного: біля нуля вона точна, тоді як `acos` там втрачає
-/// половину значущих цифр. Це політика сховища, не інтегратор, тож `libm`
-/// тут дозволена (інваріант 3 говорить про цикл інтегрування).
+/// The sum of angles between adjacent vectors, via `atan2` of the cross
+/// product's length and the dot product: near zero that is exact, whereas
+/// `acos` there loses half its significant digits. This is storage policy, not
+/// the integrator, so `libm` is allowed here (invariant 3 speaks of the
+/// integration loop).
 fn swept_angle(samples: &[Sample]) -> f64 {
     let geocentric = |s: &Sample| {
         [

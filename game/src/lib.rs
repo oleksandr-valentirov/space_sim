@@ -1,36 +1,38 @@
-//! Гра: світ, час, плани, сейви (ROADMAP, етап J).
+//! The game: world, time, plans, saves (ROADMAP, stage J).
 //!
-//! ## Що тут вирішується
+//! ## What is decided here
 //!
-//! Не фізика й не картинка — ті вже є. Тут вирішується, **хто чим володіє**
-//! (PROJECT.md §6), і одне рішення тягне за собою решту:
+//! Not the physics and not the picture -- those already exist. What is decided
+//! here is **who owns what** (PROJECT.md §6), and one decision drags the rest
+//! along:
 //!
-//! > Годинник не входить в інтегратор.
+//! > The clock does not enter the integrator.
 //!
-//! Майбутнє рахується до того, як до нього дійде час; час лише повзе курсором
-//! по вже порахованій ламаній. Тому фіксований крок симуляції не потрібен, а
-//! частота кадрів не може змінити жодного біта траєкторії. Умова, за якої це
-//! правда, — інваріант 9 CLAUDE.md: `t_end` у `prop_run` не походить від
-//! годинника, а обсяг роботи міряється **ланками** ([`leg`]).
+//! The future is computed before time reaches it; time only crawls a cursor
+//! along an already computed polyline. So no fixed simulation step is needed,
+//! and the frame rate cannot change one bit of a trajectory. The condition
+//! under which that is true is CLAUDE.md invariant 9: `t_end` in `prop_run`
+//! does not come from a clock, and work is measured in **legs** ([`leg`]).
 //!
-//! ## Напрямок залежностей
+//! ## Direction of dependencies
 //!
-//! `game → engine` і `game → core-rs`, ніколи навпаки. Рушій отримує
-//! `engine::scene::Scene` — камеру й геометрію — і не знає ні про апарати, ні
-//! про плани, ні про час ([`view`]). Це те саме рішення, що «кадр не знає про
-//! вікно», на рівень вище.
+//! `game -> engine` and `game -> core-rs`, never the other way. The engine
+//! receives an `engine::scene::Scene` -- camera and geometry -- and knows
+//! nothing of vessels, plans or time ([`view`]). The same decision as "the
+//! frame does not know about the window", one level up.
 //!
-//! ## Стан на J4
+//! ## State as of J4
 //!
-//! Світ живе у власній нитці ([`sim`]): команди каналом, снапшоти
-//! публікацією, спільного мутабельного стану немає. Код світу від переїзду не
-//! змінився жодним рядком — [`world::World::step`] як була звичайною
-//! функцією, так і лишилась, — і саме тому J1–J3 робилися однонитково.
+//! The world lives in its own thread ([`sim`]): commands by channel, snapshots
+//! by publication, no shared mutable state. The world's code did not change by
+//! a single line in the move -- [`world::World::step`] was an ordinary
+//! function and stayed one -- which is exactly why J1-J3 were done
+//! single-threaded.
 //!
-//! Час ([`clock`]): курсор, warp, пауза, горизонт у ланках попереду курсора.
-//! План маневрів ([`plan`]) перетворюється на послідовність викликів
-//! `prop_run` сегментами між маневрами; правка плану відрізає хвіст
-//! траєкторії, а не перераховує її з епохи.
+//! Time ([`clock`]): cursor, warp, pause, horizon in legs ahead of the cursor.
+//! The manoeuvre plan ([`plan`]) becomes a sequence of `prop_run` calls in
+//! segments between manoeuvres; editing the plan cuts the trajectory's tail
+//! rather than recomputing it from the epoch.
 
 pub mod app;
 pub mod clock;

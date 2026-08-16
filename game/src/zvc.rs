@@ -1,59 +1,61 @@
-//! Криві нульової швидкості (ROADMAP-UI.md, U6b3).
+//! Zero-velocity curves (ROADMAP-UI.md, U6b3).
 //!
-//! `v² = 2Ω − C`, тож там, де `2Ω < C`, швидкість була б уявною — область
-//! недосяжна. Межа цієї області і є крива; уся фізика тут — саме та
-//! нерівність, а не якесь обведення контуру.
+//! `v^2 = 2*Omega - C`, so where `2*Omega < C` the velocity would be imaginary
+//! -- the region is unreachable. That region's boundary is the curve; all the
+//! physics here is that inequality, not some contour tracing.
 //!
-//! ## Чому променями, і чому промінь без відповіді — теж відповідь
+//! ## Why by rays, and why a ray without an answer is also an answer
 //!
-//! `cr3bp_zvc_radius` (C) шукає перший перетин уздовж одного променя. Крива
-//! складається зі жмутка таких променів: кут у одиничний вектор перетворює
-//! Rust, бо `cos`/`sin` у `/core` заборонені (CLAUDE.md, інваріант 3).
+//! `cr3bp_zvc_radius` (C) finds the first crossing along one ray. The curve is
+//! a fan of such rays: Rust turns an angle into a unit vector, because
+//! `cos`/`sin` are forbidden in `/core` (CLAUDE.md, invariant 3).
 //!
-//! Промінь, уздовж якого перетину немає, повертає `ToleranceNotMet` — і це
-//! **топологія, а не збій**: у той бік область або цілком заборонена, або
-//! цілком відкрита. Такий промінь **розриває** ламану, а не замикається
-//! навпростець. Саме в цьому розриві й видно ворота біля L1: коли `C` падає
-//! нижче `C(L1)`, лоб Землі й лоб Місяця зливаються, і крива в тому напрямку
-//! просто перестає існувати.
+//! A ray with no crossing returns `ToleranceNotMet` -- **topology, not a
+//! failure**: in that direction the region is either wholly forbidden or
+//! wholly open. Such a ray **breaks** the polyline rather than closing it by a
+//! shortcut. It is in that break that the gate near L1 becomes visible: when
+//! `C` falls below `C(L1)`, Earth's lobe and the Moon's merge, and the curve
+//! in that direction simply stops existing.
 //!
-//! ## Чому два жмутки, а не один
+//! ## Why two fans rather than one
 //!
-//! Промінь знаходить **перший** перетин від своєї початкової точки. З
-//! барицентра промінь у бік Місяця впирається в межу лоба Землі й до лоба
-//! Місяця не доходить ніколи. Тому жмутків два — від Землі й від Місяця, — і
-//! кожен обводить свій лоб.
+//! A ray finds the **first** crossing from its own start point. From the
+//! barycentre a ray towards the Moon hits the boundary of Earth's lobe and
+//! never reaches the Moon's. So there are two fans -- from Earth and from the
+//! Moon -- each tracing its own lobe.
 //!
-//! Зовнішньої вітки (тієї, що обмежує область іззовні) тут немає: її промені
-//! йшли б ззовні всередину, а C так не вміє. Це названо, а не забуто —
-//! домальовувати її з іншого боку означало б вигадати ще один пошук кореня
-//! поруч із тим, що вже перевірений у `/core`.
+//! There is no outer branch (the one bounding the region from outside): its
+//! rays would run from outside inwards, which C cannot do. That is named
+//! rather than forgotten -- drawing it from the other side would mean
+//! inventing a second root search beside the one already checked in
+//! `/core`.
 
 use engine::scene::Polyline;
 
-/// Скільки променів на лоб. 180 — крок у два градуси: на 1280 пікселях це
-/// хорда коротша за піксель на будь-якому масштабі, де крива взагалі видима.
+/// How many rays per lobe. 180 is a two-degree step: at 1280 pixels that is a
+/// chord shorter than a pixel at any scale where the curve is visible at
+/// all.
 const RAYS: usize = 180;
 
-/// Доки шукати перетин уздовж променя, у безрозмірних одиницях.
+/// How far to search for a crossing along a ray, in dimensionless units.
 ///
-/// Півтори відстані між тілами: далі починається зовнішня вітка, якої цей
-/// прохід не малює.
+/// One and a half times the distance between the bodies: beyond that the outer
+/// branch begins, which this pass does not draw.
 const R_MAX: f64 = 1.5;
 
-/// Колір кривої. Напівпрозорий шар, а не лінія переднього плану: це довідка
-/// (PROJECT.md §7), і виглядати вона має саме так.
+/// The curve's colour. A translucent layer rather than a foreground line: this
+/// is reference information (PROJECT.md §7), and it should look like it.
 pub const COLOUR: [f32; 4] = [0.55, 0.75, 0.95, 0.35];
 
-/// Ламані кривої нульової швидкості для константи `c`.
+/// Zero-velocity curve polylines for the constant `c`.
 ///
-/// Координати — метри синодичного кадру, той самий масштаб, у якому лежать
-/// тіла й траєкторія (`crate::frame_view::SYNODIC_SCALE_M`).
+/// Coordinates are metres of the synodic frame, the same scale the bodies and
+/// the trajectory sit in (`crate::frame_view::SYNODIC_SCALE_M`).
 ///
-/// Порожній результат — законна відповідь: при малій `C` заборонених областей
-/// навколо тіл немає взагалі.
+/// An empty result is a legitimate answer: at small `C` there are no forbidden
+/// regions around the bodies at all.
 pub fn curves(mu: f64, c: f64, scale_m: f64) -> Vec<Polyline> {
-    // Тіла стоять на осі x за побудовою синодичного фрейму.
+    // The bodies sit on the x axis by the synodic frame's construction.
     let earth = core_rs::Vec3d {
         x: -mu,
         y: 0.0,
@@ -72,13 +74,15 @@ pub fn curves(mu: f64, c: f64, scale_m: f64) -> Vec<Polyline> {
     out
 }
 
-/// Обвід одного лоба: промені по колу, розірвані там, де перетину немає.
+/// Tracing one lobe: rays around a circle, broken where there is no
+/// crossing.
 fn lobe(mu: f64, c: f64, from: core_rs::Vec3d, scale_m: f64) -> Vec<Polyline> {
     let mut pieces = Vec::new();
     let mut run: Vec<[f64; 3]> = Vec::new();
 
-    // Один зайвий промінь наприкінці замикає коло: 0° і 360° — той самий
-    // напрямок, і без нього в замкненій кривій лишалася б щілина в один крок.
+    // One extra ray at the end closes the circle: 0 and 360 degrees are the
+    // same direction, and without it a closed curve would keep a one-step
+    // gap.
     for k in 0..=RAYS {
         let angle = std::f64::consts::TAU * k as f64 / RAYS as f64;
         let dir = core_rs::Vec3d {
@@ -93,7 +97,7 @@ fn lobe(mu: f64, c: f64, from: core_rs::Vec3d, scale_m: f64) -> Vec<Polyline> {
                 (from.y + r * dir.y) * scale_m,
                 0.0,
             ]),
-            // Тут крива закінчується — і саме звідси видно ворота.
+            // The curve ends here -- and this is where the gate shows.
             Err(_) => {
                 flush(&mut pieces, &mut run);
             }

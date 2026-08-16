@@ -1,37 +1,40 @@
-//! Кеш прорідженого сліду на ланку (ROADMAP.md, N2b).
+//! Per-leg cache of the thinned trail (ROADMAP.md, N2b).
 //!
-//! N2a показав, що критерій у пікселях коштує 415 мс на кадр — у сорок разів
-//! більше за 9 мс, які він економить. Тобто проріджування має сенс лише тоді,
-//! коли рахується **не щокадру**, і саме це робить цей модуль.
+//! N2a showed that the pixel criterion costs 415 ms per frame -- forty times
+//! more than the 9 ms it saves. So thinning is worth it only when computed
+//! **not every frame**, and that is what this module does.
 //!
-//! ## На чому кеш узагалі тримається
+//! ## What the cache actually rests on
 //!
-//! **Точка семпла в кадрі не залежить від часу кадру — ні в інерціальному
-//! фреймі, ні в обертовому.** Для інерціального це очевидно: `апарат − Земля`
-//! в мить семпла. Для обертового — ні, і це варто сказати прямо: `Synodic`
-//! семпла будується з його **власної** лінії Земля-Місяць і власної нормалі, а
-//! з кадру бере лише `scale` (стала `SYNODIC_SCALE_M`) і `mass_ratio` (з
-//! ассета). Отже позиція семпла в синодичних координатах — стала від моменту,
-//! коли семпл порахували, і кешувати її можна назавжди, а не до наступного
-//! кадру. Перевіряє це `game/tests/trail.rs`, а не цей коментар.
+//! **A sample's point in the frame does not depend on the frame's time --
+//! neither in the inertial frame nor in the rotating one.** For the inertial
+//! that is obvious: `vessel - Earth` at the sample's instant. For the rotating
+//! one it is not, and is worth saying outright: a sample's `Synodic` is built
+//! from **its own** Earth-Moon line and its own normal, taking from the frame
+//! only `scale` (the constant `SYNODIC_SCALE_M`) and `mass_ratio` (from the
+//! asset). So a sample's position in synodic coordinates is fixed from the
+//! moment the sample was computed, and can be cached forever rather than until
+//! the next frame. `game/tests/trail.rs` checks that, not this comment.
 //!
-//! ## Чому допуск у метрах, хоч критерій екранний
+//! ## Why the tolerance is in metres though the criterion is on screen
 //!
-//! N2a рахував відхилення у **пікселях**, тобто результат залежав від того,
-//! звідки камера дивиться, — і при повороті камери кеш довелося б викидати.
-//! Тут інакше: відхилення міряється в метрах, а допуск виводиться з відстані —
-//! `tol_px · d / focal_px`, де `d` — **найближча** точка ланки до камери.
-//! Просторове відхилення ніколи не менше за екранне, тож такий допуск
-//! консервативний: він може лишити зайву вершину, але не може прибрати видиму.
-//! Натомість він не залежить від напрямку погляду, тож кеш переживає обертання
-//! камери — а обертає її гравець постійно.
+//! N2a computed the deviation in **pixels**, so the result depended on where
+//! the camera looked from -- and rotating the camera would force the cache to
+//! be thrown away. Here it is different: the deviation is measured in metres
+//! and the tolerance derived from distance -- `tol_px * d / focal_px`, where
+//! `d` is the leg's **nearest** point to the camera. A spatial deviation is
+//! never smaller than a screen one, so such a tolerance is conservative: it
+//! may keep a superfluous vertex but cannot remove a visible one. In exchange
+//! it does not depend on view direction, so the cache survives rotating the
+//! camera -- which the player does constantly.
 //!
-//! ## Що інвалідує запис
+//! ## What invalidates an entry
 //!
-//! Ланка незмінна від моменту, коли її порахували, тож інвалідує лише зміна
-//! масштабу — і не будь-яка, а перехід через степінь двійки. Ключ — адреса
-//! `Arc<Leg>`, і запис **тримає той самий `Arc`**: інакше звільнена ланка
-//! віддала б свою адресу новій, і кеш тихо відповів би чужими точками.
+//! A leg is immutable from the moment it was computed, so only a change of
+//! scale invalidates -- and not any change, but crossing a power of two. The
+//! key is the address of the `Arc<Leg>`, and the entry **holds that same
+//! `Arc`**: otherwise a freed leg would give its address to a new one and the
+//! cache would quietly answer with someone else's points.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -41,23 +44,23 @@ use engine::camera::Camera;
 use crate::frame_view::{Synodic, ViewFrame};
 use crate::leg::Leg;
 
-/// Точка сліду: час семпла й позиція в тому фреймі, у якому малюють.
+/// A trail point: the sample's time and its position in the frame being drawn.
 ///
-/// Час потрібен, бо курсор ділить слід на історію й прогноз, а після
-/// проріджування семпла за індексом уже не знайти.
+/// The time is needed because the cursor splits the trail into history and
+/// prediction, and after thinning a sample can no longer be found by index.
 pub type Point = (f64, [f64; 3]);
 
 struct Entry {
-    /// Сама ланка — щоб її адреса, яка є ключем, лишалася зайнятою.
+    /// The leg itself -- so its address, which is the key, stays occupied.
     leg: Arc<Leg>,
     frame: ViewFrame,
-    /// Показник степеня двійки, у якому лежить допуск у метрах.
+    /// The power-of-two exponent the tolerance in metres falls in.
     bucket: i32,
-    /// Центр і радіус ланки в цьому фреймі — сталі, як і самі точки.
+    /// The leg's centre and radius in this frame -- fixed, like the points.
     centre: [f64; 3],
     radius: f64,
     points: Vec<Point>,
-    /// Номер кадру, на якому запис востаннє знадобився.
+    /// The frame number this entry was last needed on.
     used: u64,
 }
 
@@ -72,7 +75,7 @@ impl Cache {
         Cache::default()
     }
 
-    /// Скільки ланок лежить у кеші. Для тестів і зонда.
+    /// How many legs lie in the cache. For tests and the probe.
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -81,24 +84,25 @@ impl Cache {
         self.entries.is_empty()
     }
 
-    /// Новий кадр: далі `points` позначатиме потрібне саме йому.
+    /// A new frame: from here `points` marks what this frame needs.
     pub fn begin_frame(&mut self) {
         self.frame += 1;
     }
 
-    /// Викинути те, чого цей кадр не питав.
+    /// Discard what this frame did not ask for.
     ///
-    /// Без цього кеш тримав би ланки, яких у світі вже немає, — а після правки
-    /// плану каскад викидає їх десятками (J3).
+    /// Without this the cache would hold legs the world no longer has -- and
+    /// after a plan edit the cascade discards them by the dozen (J3).
     pub fn sweep(&mut self) {
         let frame = self.frame;
         self.entries.retain(|_, entry| entry.used == frame);
     }
 
-    /// Проріджені точки ланки в заданому фреймі.
+    /// The leg's thinned points in a given frame.
     ///
-    /// `synodic` — базис «зараз»; з нього беруться лише масштаб і `μ`, обидва
-    /// сталі (див. вступ модуля). `None` означає інерціальний фрейм.
+    /// `synodic` is the "now" basis; only the scale and `mu` are taken from
+    /// it, both constant (see the module intro). `None` means the inertial
+    /// frame.
     pub fn points(
         &mut self,
         leg: &Arc<Leg>,
@@ -111,9 +115,9 @@ impl Cache {
         let key = Arc::as_ptr(leg) as usize;
         let now = self.frame;
 
-        // Габарит потрібен, щоб узнати масштаб, а масштаб — щоб узнати, чи
-        // годиться запис. Тож перший прохід рахує габарит, якщо запису ще
-        // немає або він з іншого фрейму.
+        // The bounds are needed to learn the scale, and the scale to learn
+        // whether the entry fits. So the first pass computes the bounds if
+        // there is no entry yet or it belongs to another frame.
         let fresh = match self.entries.get(&key) {
             Some(entry) => Arc::ptr_eq(&entry.leg, leg) && entry.frame == frame,
             None => false,
@@ -138,7 +142,7 @@ impl Cache {
             return &self.entries[&key].points;
         }
 
-        let entry = self.entries.get_mut(&key).expect("щойно перевірили");
+        let entry = self.entries.get_mut(&key).expect("just checked");
         entry.used = now;
 
         let bucket = bucket_of(tolerance_m(
@@ -158,7 +162,7 @@ impl Cache {
     }
 }
 
-/// Точки ланки у фреймі, у якому їх малюють.
+/// The leg's points in the frame they are drawn in.
 fn transform(leg: &Leg, synodic: Option<&Synodic>) -> Vec<Point> {
     let normals = crate::view::plane_normals(&leg.samples);
     let mut out = Vec::with_capacity(leg.samples.len());
@@ -203,37 +207,41 @@ fn bounds(points: &[Point]) -> ([f64; 3], f64) {
     (centre, radius)
 }
 
-/// Допуск у метрах для ланки, найближча точка якої за `d` від камери.
+/// The tolerance in metres for a leg whose nearest point is `d` from the
+/// camera.
 ///
-/// `d` береться з габаритної сфери й ніколи не менший за невелику частку
-/// радіуса: камера **всередині** сфери ланки — це не «нуль метрів на піксель»,
-/// а той самий випадок, який двічі коштував кадру в патчах (D13, D14).
+/// `d` comes from the bounding sphere and is never smaller than a small
+/// fraction of the radius: the camera **inside** the leg's sphere is not "zero
+/// metres per pixel" but the same case that cost the frame twice in the
+/// patches (D13, D14).
 fn tolerance_m(camera: &Camera, centre: [f64; 3], radius: f64, focal_px: f64, tol_px: f64) -> f64 {
     let eye = camera.position();
     let d = [centre[0] - eye[0], centre[1] - eye[1], centre[2] - eye[2]];
     let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() - radius;
-    // Всередині габариту найближча точка може бути під самим оком; там
-    // проріджувати не можна взагалі, і сота частка радіуса — це «майже
-    // нічого», а не нуль, з якого вийшов би допуск нуль і жодної економії.
+    // Inside the bounds the nearest point may be right at the eye; there
+    // thinning is not allowed at all, and a hundredth of the radius is "almost
+    // nothing" rather than a zero, which would give a zero tolerance and no
+    // saving.
     let distance = distance.max(radius * 0.01).max(1.0);
     tol_px * distance / focal_px
 }
 
-/// Степінь двійки, у якому лежить допуск.
+/// The power of two the tolerance falls in.
 fn bucket_of(tolerance_m: f64) -> i32 {
     tolerance_m.log2().floor() as i32
 }
 
-/// Нижня межа кошика — саме її беруть за допуск.
+/// The bucket's lower bound -- that is what is taken as the tolerance.
 ///
-/// Нижня, а не середина: кошик має бути **не суворішим** за те, що просила
-/// камера, лише коли це безпечно. Беручи нижню межу, ми завжди прорідили
-/// менше, ніж дозволено, і жодна вершина не зникає раніше часу.
+/// The lower bound rather than the middle: the bucket should be **no stricter**
+/// than what the camera asked for, and only where that is safe. Taking the
+/// lower bound means we always thinned less than allowed, and no vertex
+/// disappears early.
 fn exponent_to_metres(bucket: i32) -> f64 {
     (bucket as f64).exp2()
 }
 
-/// Дуглас-Пекер у метрах, у просторі кадру.
+/// Douglas-Peucker in metres, in frame space.
 fn thin(points: &[Point], tol_m: f64) -> Vec<Point> {
     if points.len() <= 2 {
         return points.to_vec();

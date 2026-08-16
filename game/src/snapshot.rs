@@ -1,12 +1,14 @@
-//! Незмінний зріз світу (ROADMAP J1, PROJECT.md §6).
+//! An immutable slice of the world (ROADMAP J1, PROJECT.md §6).
 //!
-//! Це те, що з J4 публікуватиме `arc-swap`, і тому воно існує вже зараз, коли
-//! нитка одна: межа, проведена після появи потоку, проходить там, де зручно
-//! потоку, а не там, де правильно. Тут вона проходить по «неперервний стан».
+//! This is what `arc-swap` publishes from J4 onwards, which is why it exists
+//! already now, while there is one thread: a boundary drawn after the thread
+//! appears runs where the thread finds it convenient rather than where it is
+//! right. Here it runs along "continuous state".
 //!
-//! **Чого тут немає й не буде: подій.** Снапшот — це вибірка; читач, що
-//! пропустив публікацію, пропустив би подію назавжди. Дискретне ходить
-//! каналом (CLAUDE.md, інваріант 8), і в J4 це буде окремий тип.
+//! **What is not here and will not be: events.** A snapshot is a sample; a
+//! reader that missed a publication would miss an event forever. Discrete
+//! things travel by channel (CLAUDE.md, invariant 8), and in J4 that becomes
+//! its own type.
 
 use std::sync::Arc;
 
@@ -21,52 +23,55 @@ pub struct VesselSnapshot {
     pub id: VesselId,
     pub name: String,
 
-    /// Ланки як вони є. Клон цього вектора — це клон вказівників: ланка
-    /// незмінна від моменту, коли її порахували, тож ділити її безпечно й
-    /// нічого не коштує.
+    /// The legs as they are. Cloning this vector clones pointers: a leg is
+    /// immutable from the moment it was computed, so sharing it is safe and
+    /// free.
     ///
-    /// **Історія й прогноз тут не розділені, і це не недогляд.** Це ті самі
-    /// ланки; історією їх робить курсор, а не перезапис (PROJECT.md §4,
-    /// правило 5). Хто малює — ділить порівнянням `sample.t` з `t`.
+    /// **History and prediction are not separated here, and that is not an
+    /// oversight.** They are the same legs; the cursor makes them history, not
+    /// a rewrite (PROJECT.md §4, rule 5). Whoever draws splits them by
+    /// comparing `sample.t` with `t`.
     pub legs: Vec<Arc<Leg>>,
 
-    /// Де апарат **зараз** — інтерпольовано в момент `WorldSnapshot::t`.
+    /// Where the vessel is **now** -- interpolated at `WorldSnapshot::t`.
     pub state: State,
 
-    /// Константа Якобі апарата в синодичному фреймі Земля-Місяць, безрозмірна
+    /// The vessel's Jacobi constant in the Earth-Moon synodic frame,
+    /// dimensionless
     /// (ROADMAP-UI.md, U6b3).
     ///
-    /// Рахується тут, у нитці світу, з тієї ж причини, що й `state`: фрейм
-    /// будується з ефемериди, а панель і рендер її не кличуть (правило 5
-    /// етапу U). `None` означає, що фрейму немає — у ассеті немає пари, — а
-    /// не «нуль».
+    /// Computed here, in the world thread, for the same reason as `state`:
+    /// the frame is built from the ephemeris, and neither the panel nor the
+    /// renderer calls it (rule 5 of stage U). `None` means there is no frame
+    /// -- the asset has no pair -- rather than "zero".
     ///
-    /// **Це не інваріант руху, а миттєве значення.** `C` зберігається в CR3BP,
-    /// а гра літає в повній ефемериді: виміряно (U6b1) 0.007% дрейфу за добу й
-    /// 0.076% за місяць, доки апарат в околі пари.
+    /// **This is an instantaneous value, not an invariant of the motion.**
+    /// `C` is conserved in CR3BP while the game flies in the full ephemeris:
+    /// measured (U6b1) 0.007% drift per day and 0.076% per month, while the
+    /// vessel stays near the pair.
     pub jacobi: Option<f64>,
 
-    /// План, за яким ця траєкторія порахована.
+    /// The plan this trajectory was computed from.
     ///
-    /// Клонується цілком, а не ділиться `Arc`: план — це кілька десятків
-    /// байтів на маневр, а не мегабайти семплів (CLAUDE.md: клонуй вільно).
+    /// Cloned whole rather than shared by `Arc`: a plan is a few dozen bytes
+    /// per manoeuvre, not megabytes of samples (CLAUDE.md: clone freely).
     pub plan: Plan,
 
-    /// Стан, з якого траєкторія почалася. Потрібен тому, хто рахує точку
-    /// перезапуску (`leg::restart_at`) на ще порожній траєкторії.
+    /// The state the trajectory started from. Needed by whoever computes the
+    /// restart point (`leg::restart_at`) on a still-empty trajectory.
     pub start: State,
 
-    /// Кінець порахованого: стан, з якого прогноз продовжиться.
+    /// The end of what is computed: the state the prediction continues from.
     pub tip: State,
-    /// Час того кінця. Курсор не має права його обігнати.
+    /// The time of that end. The cursor may not outrun it.
     pub computed_to: f64,
 
-    /// Кінець місії апарата — те саме, що бачить світ.
+    /// The vessel's mission end -- the same one the world sees.
     pub horizon_end: f64,
 
-    /// Апарат так, як його бачить модель сил (K6b). Їде в снапшоті, щоб
-    /// планувальник міг попросити прев'ю **того самого** апарата: прогноз
-    /// з іншою площею — це лінія, якою цей корабель не полетить.
+    /// The vessel as the force model sees it (K6b). Travels in the snapshot
+    /// so the planner can ask for a preview of **the same** vessel: a
+    /// prediction with a different area is a line this ship will not fly.
     pub params: Option<core_rs::VesselParams>,
 
     pub failed: Option<CoreError>,
@@ -78,58 +83,63 @@ impl VesselSnapshot {
     }
 }
 
-/// Тіло в момент снапшоту (ROADMAP-PLANETS.md, R1c).
+/// A body at the snapshot's instant (ROADMAP-PLANETS.md, R1c).
 ///
-/// Читає це рендер (`crate::view` → `engine::scene::Body`), і саме тому воно
-/// в снапшоті, а не в кадрі: ефемерида кличеться один раз, у нитці світу, і
-/// всі, хто дивиться на цей кадр, бачать одне «зараз».
+/// The renderer reads this (`crate::view` -> `engine::scene::Body`), which is
+/// exactly why it lives in the snapshot rather than in the frame: the
+/// ephemeris is called once, in the world thread, and everyone looking at this
+/// frame sees one "now".
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BodySnapshot {
-    /// Індекс в ефемериді — потрібен тому, хто вибирає, що з чим малювати
-    /// (`view` бере Землю початком координат).
+    /// Index in the ephemeris -- needed by whoever chooses what to draw with
+    /// what (`view` takes Earth as the origin).
     pub body: i32,
-    /// Баріцентрична позиція, метри.
+    /// Barycentric position, metres.
     pub position: [f64; 3],
-    /// Баріцентрична швидкість, м/с.
+    /// Barycentric velocity, m/s.
     ///
-    /// Читає її обертовий фрейм (U6a2), і більше поки ніхто: нормаль
-    /// миттєвої площини Земля-Місяць — це `d × ḋ`, а `ḋ` більше нізвідки не
-    /// взяти. Ефемерида віддає її тим самим викликом, що й позицію, тож поле
-    /// не коштує нічого — і з'являється разом зі своїм читачем, а не наперед.
+    /// The rotating frame reads it (U6a2) and so far nobody else: the normal
+    /// of the instantaneous Earth-Moon plane is `d x d_dot`, and `d_dot` comes
+    /// from nowhere else. The ephemeris returns it in the same call as the
+    /// position, so the field costs nothing -- and appears together with its
+    /// reader rather than in advance.
     pub velocity: [f64; 3],
-    /// Середній радіус із ассета, метри; нуль означає «ассет не каже».
+    /// Mean radius from the asset, metres; zero means "the asset does not
+    /// say".
     pub radius_m: f64,
-    /// Гравітаційний параметр із ассета, м³/с². Обертовому фреймові він
-    /// потрібен, щоб знайти барицентр пари: `μ = mu_Місяця / (сума)`.
+    /// Gravitational parameter from the asset, m^3/s^2. The rotating frame
+    /// needs it to find the pair's barycentre: `mu = mu_Moon / (sum)`.
     pub mu: f64,
-    /// Поворот із системи тіла в систему ефемериди, `[w, x, y, z]`.
+    /// Rotation from the body frame into the ephemeris frame, `[w, x, y, z]`.
     pub orientation: [f64; 4],
 }
 
 pub struct WorldSnapshot {
     pub version: u64,
 
-    /// Курсор часу, секунди від епохи ассета. Одне «зараз» на весь кадр.
+    /// The time cursor, seconds from the asset epoch. One "now" per frame.
     pub t: f64,
     pub warp: f64,
-    /// Чому час стоїть, якщо стоїть. [`Stall::Horizon`] — це warp упирається
-    /// в пропускну здатність, і саме це UI має показати замість мовчазного
-    /// підгальмовування.
+    /// Why time is standing still, if it is. [`Stall::Horizon`] means warp is
+    /// hitting the throughput limit, and that is what the UI should show
+    /// instead of silently easing off.
     pub stall: Option<Stall>,
 
-    /// Тіла в кадрі — центр, розмір, поворот. Порожній список означає, що
-    /// ассет про них мовчить, а не «намалюй Землю за замовчуванням».
+    /// The bodies in frame -- centre, size, rotation. An empty list means the
+    /// asset says nothing about them, not "draw Earth by default".
     pub bodies: Vec<BodySnapshot>,
 
-    /// Баріцентрична позиція Сонця, метри — те саме «зараз», що й у тіл.
+    /// The Sun's barycentric position, metres -- the same "now" as the bodies.
     ///
-    /// Не в [`WorldSnapshot::bodies`] навмисно: там лежать тіла, які кадр
-    /// **малює**, і Сонце серед них розтягнуло б сцену на астрономічну
-    /// одиницю (`Frame::far_for` міряє розмах по тілах). Тут воно лише
-    /// джерело світла, тобто напрямок, а не куля.
+    /// Deliberately not in [`WorldSnapshot::bodies`]: that holds the bodies
+    /// the frame **draws**, and the Sun among them would stretch the scene to
+    /// an astronomical unit (`Frame::far_for` measures the span over the
+    /// bodies). Here it is only a light source, i.e. a direction, not a
+    /// sphere.
     ///
-    /// `None` означає, що ассет про Сонце мовчить — тоді кадр лишається зі
-    /// своїм типовим освітленням, а не з нулем, який погасив би все.
+    /// `None` means the asset says nothing about the Sun -- then the frame
+    /// keeps its default lighting rather than a zero that would black
+    /// everything out.
     pub sun: Option<[f64; 3]>,
 
     pub vessels: Vec<VesselSnapshot>,
