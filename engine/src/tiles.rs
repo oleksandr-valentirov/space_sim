@@ -1,8 +1,13 @@
-//! Тайли рельєфу: формат і читач (ROADMAP-PLANETS.md, R5b).
+//! Тайли поверхні: два формати й обидва читачі (R5b; етап T, T2c).
 //!
 //! PROJECT.md §7 забороняє завантажувати сирі формати в рантаймі, тож між
-//! LOLA й кадром стоїть кукер (`tools/dem-cook`). Формат — власний, з версією
-//! в заголовку, рівно як в ассета ефемериди.
+//! джерелом і кадром стоїть кукер (`tools/dem-cook`). Формати — власні, з
+//! версією в заголовку, рівно як в ассета ефемериди.
+//!
+//! Тайлсетів **два**: [`Terrain`] (висоти, `SSDEM`) і [`Colour`] (колір,
+//! `SSCOL`). Спільна в них лише геометрія піраміди — вільні функції нижче;
+//! чому саме так, а не один файл із двома каналами, сказано в [`Colour`].
+//! Усе, що йде далі в цьому вступі, стосується рельєфу.
 //!
 //! ## Чому формат живе тут, а не в кукері
 //!
@@ -86,6 +91,74 @@ const TILE_BYTES: usize = 4 + STORED * STORED * 2;
 /// Заголовок: підпис, версія, три числа й радіус.
 const HEADER_BYTES: usize = 8 + 4 + 4 + 4 + 8 + 4;
 
+// ── Геометрія піраміди ───────────────────────────────────────────────────
+//
+// Вільні функції, а не методи, і саме тому, що тайлсетів **два**: рельєф
+// ([`Terrain`]) і колір ([`Colour`]). Спільного в них рівно одне — де в
+// піраміді лежить тайл патча, — і залежить воно тільки від кількості рівнів.
+// Решта різна: тип відліку, кількість каналів, глибина піраміди й те, що
+// лежить у заголовку.
+//
+// Дві копії цієї арифметики розійшлися б не одразу, а на четвертій правці, і
+// розходження виглядало б як зсунутий на тайл колір — тобто як помилка
+// кукера. Дженерик натомість тут заборонений стилем (CLAUDE.md), і не
+// потрібен: параметр один, і це `u32`.
+
+/// Скільки тайлів має рівень `level`.
+pub fn per_level(level: u32) -> usize {
+    FACES << (2 * level)
+}
+
+/// Скільки тайлів у піраміді з `levels` рівнями.
+pub fn count(levels: u32) -> usize {
+    (0..levels).map(per_level).sum()
+}
+
+/// Порядковий номер тайла: рівень за рівнем, у кожному — грань за гранню,
+/// у кожній — рядок за рядком.
+///
+/// Порядок сталий і виводиться з самого патча, без таблиці: інакше кукер і
+/// читач мали б два способи дійти до одного числа.
+pub fn index(levels: u32, patch: &Patch) -> Option<usize> {
+    if patch.level >= levels {
+        return None;
+    }
+    let before: usize = (0..patch.level).map(per_level).sum();
+    let side = 1usize << patch.level;
+    Some(before + (patch.face * side + patch.i as usize) * side + patch.j as usize)
+}
+
+/// Патч, чий тайл накриває цей патч: він сам або найближчий предок у піраміді.
+///
+/// Разом із ним — у скільки разів тайл грубіший, тобто на скільки треба
+/// поділити локальні координати.
+pub fn covering(levels: u32, patch: &Patch) -> (Patch, u32) {
+    let mut it = *patch;
+    while it.level >= levels {
+        it = it.parent().expect("рівень 0 завжди в піраміді");
+    }
+    (it, patch.level - it.level)
+}
+
+/// Куди патч дивиться в тайлі, який його накриває (R7a).
+///
+/// Три числа: індекс тайла в піраміді, зсув патча всередині нього **у
+/// вузлах** і крок — скільки вузлів предка припадає на один вузол патча. При
+/// `deeper == 0` це `(0, 0)` і `1.0`.
+///
+/// Шейдер робить ту саму вибірку, і два незалежні обчислення того самого
+/// вікна розійшлися б — не одразу, а на четвертій правці. Тепер це одна
+/// формула, і тест звіряє GPU з нею, а не з другою її копією.
+pub fn window(levels: u32, patch: &Patch) -> (usize, [f64; 2], f64) {
+    let (tile, deeper) = covering(levels, patch);
+    let at = index(levels, &tile).expect("covering вже опустив рівень");
+
+    // `SIDE` вузлів предка на `2^deeper` дітей — отже крок дробовий.
+    let step = 1.0 / f64::from(1u32 << deeper);
+    let offset = |index: u32| f64::from(index % (1 << deeper)) * SIDE as f64 * step;
+    (at, [offset(patch.i), offset(patch.j)], step)
+}
+
 /// Рельєф одного тіла — піраміда тайлів по патчах кубосфери.
 #[derive(Clone, Debug)]
 pub struct Terrain {
@@ -102,39 +175,22 @@ pub struct Terrain {
 impl Terrain {
     /// Скільки тайлів має рівень `level`.
     fn per_level(level: u32) -> usize {
-        FACES << (2 * level)
+        crate::tiles::per_level(level)
     }
 
     /// Скільки тайлів у піраміді з `levels` рівнями.
     pub fn count(levels: u32) -> usize {
-        (0..levels).map(Terrain::per_level).sum()
+        crate::tiles::count(levels)
     }
 
-    /// Порядковий номер тайла: рівень за рівнем, у кожному — грань за гранню,
-    /// у кожній — рядок за рядком.
-    ///
-    /// Порядок сталий і виводиться з самого патча, без таблиці: інакше
-    /// кукер і читач мали б два способи дійти до одного числа.
+    /// Порядковий номер тайла в піраміді.
     pub fn index(&self, patch: &Patch) -> Option<usize> {
-        if patch.level >= self.levels {
-            return None;
-        }
-        let before: usize = (0..patch.level).map(Terrain::per_level).sum();
-        let side = 1usize << patch.level;
-        Some(before + (patch.face * side + patch.i as usize) * side + patch.j as usize)
+        crate::tiles::index(self.levels, patch)
     }
 
-    /// Патч, чий тайл накриває цей патч: він сам або найближчий предок у
-    /// піраміді.
-    ///
-    /// Разом із ним — у скільки разів тайл грубіший, тобто на скільки треба
-    /// поділити локальні координати.
+    /// Патч, чий тайл накриває цей патч: він сам або найближчий предок.
     pub fn covering(&self, patch: &Patch) -> (Patch, u32) {
-        let mut it = *patch;
-        while it.level >= self.levels {
-            it = it.parent().expect("рівень 0 завжди в піраміді");
-        }
-        (it, patch.level - it.level)
+        crate::tiles::covering(self.levels, patch)
     }
 
     /// Межі висот тайла в одиницях зберігання: найнижча й найвища.
@@ -180,24 +236,8 @@ impl Terrain {
     }
 
     /// Куди патч дивиться в тайлі, який його накриває (R7a).
-    ///
-    /// Три числа, і саме їх бракувало GPU-шляху: індекс тайла в піраміді,
-    /// зсув патча всередині нього **у вузлах** і крок — скільки вузлів
-    /// предка припадає на один вузол патча. При `deeper == 0` це `(0, 0)` і
-    /// `1.0`, тобто рівно те, що робив точний `Load` до цього кроку.
-    ///
-    /// Винесено з [`Terrain::height_m`], а не написано поруч: шейдер робить
-    /// ту саму вибірку, і два незалежні обчислення того самого вікна
-    /// розійшлися б — не одразу, а на четвертій правці. Тепер це одна
-    /// формула, і тест звіряє GPU з нею, а не з другою її копією.
     pub fn window(&self, patch: &Patch) -> (usize, [f64; 2], f64) {
-        let (tile, deeper) = self.covering(patch);
-        let index = self.index(&tile).expect("covering вже опустив рівень");
-
-        // `SIDE` вузлів предка на `2^deeper` дітей — отже крок дробовий.
-        let step = 1.0 / f64::from(1u32 << deeper);
-        let offset = |index: u32| f64::from(index % (1 << deeper)) * SIDE as f64 * step;
-        (index, [offset(patch.i), offset(patch.j)], step)
+        crate::tiles::window(self.levels, patch)
     }
 
     /// Висота у вузлі `(a, b)` заданого патча, метри.
@@ -429,6 +469,195 @@ impl Terrain {
     }
 }
 
+/// Підпис колірного тайлсета. Окремий файл, а не другий канал у рельєфі.
+pub const COLOUR_MAGIC: [u8; 8] = *b"SSCOL\0\0\0";
+
+/// Версія колірного формату. Починається з одиниці, і це не описка: рельєф
+/// лишається на своїй версії 2 незайманим.
+pub const COLOUR_VERSION: u32 = 1;
+
+/// Заголовок кольору: підпис, версія, вузли, рівні, канали, масштаб.
+const COLOUR_HEADER_BYTES: usize = 8 + 4 + 4 + 4 + 4 + 4;
+
+/// Колір поверхні — та сама піраміда тайлів, що й рельєф (етап T, T2c).
+///
+/// ## Чому окремий файл, а не другий канал у [`Terrain`]
+///
+/// Розвилку («один файл із двома каналами чи два тайлсети») закрив вимір T2a,
+/// і закрив числами, а не смаком: у висот і кольору **різні глибини піраміди**
+/// (5 проти 6, бо джерела різної дрібності) і **різні типи відліку** (`i16`
+/// проти `u8`). Спільний файл мусив би або зрівняти глибини — тобто вчетверо
+/// роздути висоти нічим, — або нести дірки. Спільною лишається геометрія
+/// піраміди, і вона справді спільна: вільні функції вгорі цього файлу.
+///
+/// Версія рельєфу при цьому **не росте**. Підпис інший (`SSCOL` проти
+/// `SSDEM`), тож переплутати файли неможливо, а підняти `VERSION` до 3
+/// означало б відкинути кожен уже скукований `.dem` заради зміни, якої в
+/// ньому немає.
+///
+/// ## Чому один канал, і що станеться з Землею
+///
+/// Мозаїка LROC WAC монохромна (643 нм), тож у Місяця канал один — це джерело,
+/// а не економія. Землі (T7) знадобиться чотири: `Rgba8Unorm` — найвужчий
+/// формат текстури, у якому є колір, бо **трибайтового формату не існує ні в
+/// wgpu, ні у Vulkan** без розширень. Тому кількість каналів — поле
+/// заголовка, і **у файлі лежить рівно те, що піде в текстуру**: перетворення
+/// на завантаженні — це місце, де байти можуть поїхати, і в рельєфу його
+/// свідомо немає (R5c).
+///
+/// ## Чому відліки цілі, а джерело — дійсне
+///
+/// Джерело несе відбивну здатність у `f32`, і зберігати її так означало б
+/// учетверо більший тайл заради динамічного діапазону, якого в поверхні немає.
+/// Виміряно на всій мозаїці: медіана 0.044, дев'яносто відсотків нижче 0.076,
+/// 99.9% нижче 0.197, а хвіст до 0.599 — це 0.09% пікселів. Отже 256 рівнів на
+/// діапазон `0 … scale` дають крок 0.00098 при `scale = 0.25`, тобто **23
+/// градації на контраст море-материк** (0.021 проти 0.044). Хвіст насичується
+/// в білий, і це чесніше, ніж витратити 96% шкали на 0.09% пікселів.
+#[derive(Clone, Debug)]
+pub struct Colour {
+    /// Скільки рівнів піраміди, від 0 включно.
+    pub levels: u32,
+    /// Скільки байтів на вузол: 1 для Місяця, 4 для Землі.
+    pub channels: u32,
+    /// Чому дорівнює відлік 255 — відбивна здатність, безрозмірна.
+    pub scale: f32,
+    /// Тайли підряд у канонічному порядку — див. [`index`].
+    tiles: Vec<u8>,
+}
+
+impl Colour {
+    /// Скільки байтів займає один тайл.
+    pub fn tile_len(channels: u32) -> usize {
+        STORED * STORED * channels as usize
+    }
+
+    /// Зібрати набір із готових тайлів — шлях кукера.
+    ///
+    /// Тайли подаються в канонічному порядку й **разом з ореолом**:
+    /// [`STORED`]×[`STORED`] вузлів, рядок за рядком, від вузла `−HALO`, по
+    /// `channels` байтів на вузол.
+    pub fn build(levels: u32, channels: u32, scale: f32, grids: &[Vec<u8>]) -> Colour {
+        assert!(
+            channels == 1 || channels == 4,
+            "каналів 1 або 4, не {channels}"
+        );
+        assert_eq!(
+            grids.len(),
+            count(levels),
+            "тайлів не стільки, скільки має бути в піраміді з {levels} рівнями"
+        );
+        let tile_len = Colour::tile_len(channels);
+        let mut tiles = Vec::with_capacity(grids.len() * tile_len);
+        for grid in grids {
+            assert_eq!(grid.len(), tile_len, "тайл не тієї форми");
+            tiles.extend_from_slice(grid);
+        }
+        Colour {
+            levels,
+            channels,
+            scale,
+            tiles,
+        }
+    }
+
+    /// Сирі байти одного тайла — рівно те, що поїде в текстуру.
+    pub fn tile_bytes(&self, index: usize) -> &[u8] {
+        let len = Colour::tile_len(self.channels);
+        &self.tiles[index * len..(index + 1) * len]
+    }
+
+    /// Відлік вузла тайла в одиницях зберігання.
+    ///
+    /// Індекси зі знаком, від `−HALO` до `SIDE + HALO`, як у рельєфу: сітка
+    /// патча — це `0..=SIDE`, решта — ореол. Зсув на `HALO` робиться тут і
+    /// більше ніде.
+    pub fn node(&self, index: usize, a: i32, b: i32, channel: u32) -> u8 {
+        assert!(channel < self.channels, "канал {channel} поза тайлом");
+        let shift = |v: i32| {
+            let v = v + HALO as i32;
+            assert!(
+                (0..STORED as i32).contains(&v),
+                "вузол {} поза тайлом з ореолом",
+                v - HALO as i32
+            );
+            v as usize
+        };
+        let at = index * Colour::tile_len(self.channels)
+            + (shift(a) * STORED + shift(b)) * self.channels as usize
+            + channel as usize;
+        self.tiles[at]
+    }
+
+    /// Відбивна здатність вузла — те саме, що [`Colour::node`], у одиницях
+    /// джерела.
+    pub fn reflectance(&self, index: usize, a: i32, b: i32, channel: u32) -> f64 {
+        f64::from(self.node(index, a, b, channel)) * f64::from(self.scale) / 255.0
+    }
+
+    /// Байти файлу.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(COLOUR_HEADER_BYTES + self.tiles.len());
+        out.extend_from_slice(&COLOUR_MAGIC);
+        out.extend_from_slice(&COLOUR_VERSION.to_le_bytes());
+        out.extend_from_slice(&(STORED as u32).to_le_bytes());
+        out.extend_from_slice(&self.levels.to_le_bytes());
+        out.extend_from_slice(&self.channels.to_le_bytes());
+        out.extend_from_slice(&self.scale.to_le_bytes());
+        out.extend_from_slice(&self.tiles);
+        out
+    }
+
+    /// Розібрати байти файлу.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Colour, String> {
+        if bytes.len() < COLOUR_HEADER_BYTES {
+            return Err(format!("{} байтів — це навіть не заголовок", bytes.len()));
+        }
+        if bytes[..8] != COLOUR_MAGIC {
+            return Err("не той підпис: це не колірний тайлсет".to_string());
+        }
+        let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        let version = word(8);
+        if version != COLOUR_VERSION {
+            return Err(format!(
+                "версія колірного формату {version}, а цей рушій читає {COLOUR_VERSION}"
+            ));
+        }
+        let nodes = word(12) as usize;
+        if nodes != STORED {
+            return Err(format!(
+                "тайл на {nodes} вузлів, а патч з ореолом має {STORED} — сітки \
+                 не збігаються"
+            ));
+        }
+        let levels = word(16);
+        let channels = word(20);
+        if channels != 1 && channels != 4 {
+            return Err(format!(
+                "{channels} каналів — текстури такого формату немає ні в wgpu, \
+                 ні у Vulkan"
+            ));
+        }
+        let scale = f32::from_le_bytes(bytes[24..28].try_into().unwrap());
+
+        let tiles = bytes[COLOUR_HEADER_BYTES..].to_vec();
+        let wanted = count(levels) * Colour::tile_len(channels);
+        if tiles.len() != wanted {
+            return Err(format!(
+                "{} байтів тайлів замість {wanted} на {levels} рівнів по {channels} каналів",
+                tiles.len()
+            ));
+        }
+
+        Ok(Colour {
+            levels,
+            channels,
+            scale,
+            tiles,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -629,5 +858,96 @@ mod tests {
             assert_eq!(step, 1.0, "власний тайл змінив крок");
             assert_eq!(index, terrain.index(&patch).expect("тайл є"));
         }
+    }
+
+    /// Колірна піраміда, у якої кожен вузол несе своє власне число.
+    ///
+    /// Значення виводиться з усіх трьох координат — тайла, `a` і `b`, — тож
+    /// будь-яка помилка адресації (переставлені осі, забутий ореол, зсув на
+    /// тайл) дає інший байт, а не інший відтінок.
+    fn speckle(levels: u32, channels: u32) -> Colour {
+        let mut grids = Vec::with_capacity(count(levels));
+        for index in 0..count(levels) {
+            let mut grid = Vec::with_capacity(Colour::tile_len(channels));
+            for a in 0..STORED {
+                for b in 0..STORED {
+                    for c in 0..channels as usize {
+                        grid.push((index * 7 + a * 13 + b * 31 + c * 61) as u8);
+                    }
+                }
+            }
+            grids.push(grid);
+        }
+        Colour::build(levels, channels, 0.25, &grids)
+    }
+
+    /// Файл кольору повертає рівно ті вузли, які в нього поклали — включно з
+    /// ореолом і з усіма каналами.
+    #[test]
+    fn a_colour_tileset_survives_the_round_trip() {
+        for channels in [1u32, 4] {
+            let built = speckle(2, channels);
+            let read = Colour::from_bytes(&built.to_bytes()).expect("свій же файл має читатися");
+            assert_eq!(read.levels, 2);
+            assert_eq!(read.channels, channels);
+            assert_eq!(read.scale, 0.25);
+
+            let edge = (SIDE + HALO) as i32;
+            for index in 0..count(2) {
+                for a in [-(HALO as i32), 0, 1, SIDE as i32, edge] {
+                    for b in [-(HALO as i32), 0, 1, SIDE as i32, edge] {
+                        for c in 0..channels {
+                            assert_eq!(
+                                read.node(index, a, b, c),
+                                built.node(index, a, b, c),
+                                "тайл {index}, вузол ({a}, {b}), канал {c}"
+                            );
+                        }
+                    }
+                }
+                assert_eq!(read.tile_bytes(index), built.tile_bytes(index));
+            }
+        }
+    }
+
+    /// Один тайлсет не читається як другий, і каже про це.
+    ///
+    /// Це та половина рішення «окремі файли», яку легко втратити: підписи
+    /// різні саме для того, щоб переплутаний файл давав помилку, а не
+    /// правдоподібну піраміду не тих чисел.
+    #[test]
+    fn the_two_tilesets_refuse_to_be_each_other() {
+        let terrain = ramp(2);
+        let colour = speckle(2, 1);
+
+        let message = Colour::from_bytes(&terrain.to_bytes()).expect_err("рельєф — не колір");
+        assert!(message.contains("підпис"), "не те повідомлення: {message}");
+        let message = Terrain::from_bytes(&colour.to_bytes()).expect_err("колір — не рельєф");
+        assert!(message.contains("підпис"), "не те повідомлення: {message}");
+    }
+
+    /// Різна глибина пірамід — не збіг, а те, заради чого файли розділені.
+    ///
+    /// Той самий патч читає **свій** тайл у глибшій піраміді й тайл предка в
+    /// мілкішій; вікно різне, і саме тому спільний файл мусив би зрівняти
+    /// глибини. Числа тут ті самі, що в асетів Місяця: 5 рівнів висоти проти
+    /// 6 кольору (T2a).
+    #[test]
+    fn the_shared_geometry_lets_the_depths_differ() {
+        let patch = Patch {
+            face: 2,
+            level: 5,
+            i: 9,
+            j: 17,
+        };
+        let (colour_index, colour_origin, colour_step) = window(6, &patch);
+        let (_, height_origin, height_step) = window(5, &patch);
+
+        assert_eq!(colour_step, 1.0, "патч рівня 5 має власний колірний тайл");
+        assert_eq!(colour_origin, [0.0, 0.0]);
+        assert_eq!(colour_index, index(6, &patch).expect("тайл є"));
+
+        assert_eq!(height_step, 0.5, "висоту той самий патч бере в предка");
+        assert_eq!(height_origin, [16.0, 16.0], "і дивиться в його половину");
     }
 }
