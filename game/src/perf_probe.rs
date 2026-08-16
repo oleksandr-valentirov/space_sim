@@ -1,29 +1,32 @@
-//! Скільки коштує **справжній** кадр гри (ROADMAP-UI.md, U8; скіл `perf-probe`).
+//! What the **real** game frame costs (ROADMAP-UI.md, U8; skill `perf-probe`).
 //!
-//! Зонд рушія (`engine::perf_probe`) міряє сцену рушія й **синтетичну** панель:
-//! прямокутник і рядок тексту. Це було правильно для U1b, який питав, скільки
-//! коштує сам прохід egui. Питання U8 інше — скільки коштує кадр, який бачить
-//! гравець, — а в ньому і панелі справжні (п'ять штук, дві колонки), і сцена
-//! справжня: ламана прогнозу з усіма її вершинами.
+//! The engine's probe (`engine::perf_probe`) measures the engine's scene and a
+//! **synthetic** panel: a rectangle and a line of text. That was right for
+//! U1b, which asked what the egui pass itself costs. U8's question is
+//! different -- what the frame the player sees costs -- and in it both the
+//! panels are real (five of them, two columns) and the scene is real: the
+//! prediction polyline with all its vertices.
 //!
-//! ## Чому це той самий вимір, що й у рушія
+//! ## Why this is the same measurement as the engine's
 //!
-//! Статистика рахується `engine::perf_probe::Stats::from_samples`, тобто тією
-//! самою формулою, і метод той самий синхронний `poll(Wait)` — з тими самими
-//! обмеженнями (скіл `perf-probe`, «Обмеження методу»): це **верхня межа**
-//! часу кадру, порівнянна між прогонами на одній машині й ні з чим більше.
+//! The statistics are computed by
+//! `engine::perf_probe::Stats::from_samples`, i.e. the same formula, and the
+//! method is the same synchronous `poll(Wait)` -- with the same limits (skill
+//! `perf-probe`, "Обмеження методу"): this is an **upper bound** on frame
+//! time, comparable between runs on one machine and with nothing else.
 //!
-//! ## Чому тут же міряється D7
+//! ## Why D7 is measured here too
 //!
-//! Борг каже: історія росте без межі, і мільйон вершин ламаної — це ~3 мс CPU
-//! і 24 МБ на кадр. U8 не закриває борг, але зобов'язаний **подивитись**: до
-//! цього кроку число «мільйон» стояло в ROADMAP як викладка, а не як вимір.
-//! Тому зонд друкує поруч із часом кадру ще й те, з чого цей час складається —
-//! скільки вершин у сцені, скільки семплів у історії та скільки вони важать.
+//! The debt says: history grows without bound, and a million polyline vertices
+//! is about 3 ms of CPU and 24 MB per frame. U8 does not close the debt but is
+//! obliged to **look**: before this step the "million" stood in ROADMAP as a
+//! derivation rather than a measurement. So the probe prints, beside the frame
+//! time, what that time is made of -- how many vertices are in the scene, how
+//! many samples are in history and how much they weigh.
 //!
-//! Довжину місії задає викликач (`--perf-probe <діб>`), бо саме вона й
-//! вирішує: годинна місія не покаже нічого, а та, що впирається в борг, —
-//! покаже.
+//! The caller sets the mission's length (`--perf-probe <days>`), because that
+//! is what decides: an hour-long mission shows nothing, while one that hits
+//! the debt shows it.
 
 use std::time::Instant;
 
@@ -43,24 +46,26 @@ use crate::text::Language;
 use crate::view;
 use crate::world::EARTH;
 
-/// Кадрів на прогрів — стільки ж, скільки в зонда рушія.
+/// Warm-up frames -- as many as the engine's probe uses.
 const WARMUP_FRAMES: u32 = 30;
 
-/// Те, з чого складається кадр: не час, а обсяг.
+/// What a frame is made of: volume rather than time.
 ///
-/// Друкується поруч зі `Stats`, бо час кадру без цих чисел не порівняти з
-/// наступним виміром: 0.2 мс на тисячі вершин і на мільйоні — це два різні
-/// твердження про рушій.
+/// Printed beside `Stats`, because without these numbers a frame time cannot
+/// be compared with the next measurement: 0.2 ms at a thousand vertices and at
+/// a million are two different claims about the engine.
 pub struct SceneSize {
-    /// Вершин у всіх ламаних сцени разом.
+    /// Vertices across all the scene's polylines.
     pub vertices: usize,
-    /// Семплів у траєкторіях усіх апаратів.
+    /// Samples across all vessels' trajectories.
     pub samples: usize,
-    /// Скільки важить історія в пам'яті гри, за 104 байти на семпл (D7).
+    /// How much history weighs in the game's memory, at 104 bytes per sample
+    /// (D7).
     pub history_bytes: usize,
-    /// Скільки важать вершини в буфері кадру, за 24 байти на вершину (D7).
+    /// How much the vertices weigh in the frame buffer, at 24 bytes per
+    /// vertex (D7).
     pub buffer_bytes: usize,
-    /// Ламаних у сцені.
+    /// Polylines in the scene.
     pub polylines: usize,
 }
 
@@ -72,9 +77,10 @@ impl SceneSize {
         SceneSize {
             vertices,
             samples,
-            // Числа з D7, і саме тому вони тут константами, а не
-            // `size_of::<Sample>()`: борг говорить про них, і вимір мусить
-            // говорити тими самими, поки борг не закритий.
+            // The numbers come from D7, which is exactly why they are
+            // constants here rather than `size_of::<Sample>()`: the debt
+            // speaks in them, and the measurement must speak in the same ones
+            // until the debt is closed.
             history_bytes: samples * 104,
             buffer_bytes: vertices * 24,
             polylines: scene.polylines.len(),
@@ -82,24 +88,25 @@ impl SceneSize {
     }
 }
 
-/// Що малюється поверх сцени.
+/// What is drawn over the scene.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {
-    /// Тільки сцена — щоб було з чим порівняти ціну панелей.
+    /// The scene alone -- so the panels' price has something to be compared
+    /// against.
     None,
-    /// Справжні панелі гри, обидві колонки.
+    /// The game's real panels, both columns.
     Panels,
 }
 
-/// Проганяє `frames` кадрів заданої сцени й повертає час кадру.
+/// Runs `frames` frames of a given scene and returns the frame time.
 ///
-/// Панелі малюються **ті самі**, що в `app::draw`, і зі стилем із `palette`
-/// (U7c): панель із типовими відступами egui мала б інший розмір, тобто
-/// вимірювався б не той кадр, що в грі.
+/// The panels drawn are **the same** ones as in `app::draw`, with the style
+/// from `palette` (U7c): a panel with egui's default spacing would be a
+/// different size, i.e. the frame measured would not be the game's.
 ///
-/// Аргументів вісім, і збивати їх у структуру нема сенсу: кожен тут —
-/// незалежна вісь виміру, і структура з восьми полів, яку заповнюють на місці
-/// виклику, це той самий список, тільки довший.
+/// There are eight arguments, and collecting them into a struct is pointless:
+/// each is an independent axis of the measurement, and an eight-field struct
+/// filled at the call site is the same list, only longer.
 #[allow(clippy::too_many_arguments)]
 pub fn measure(
     gpu: &Gpu,
@@ -115,8 +122,8 @@ pub fn measure(
     let mut interface = Ui::new(gpu, shot::FORMAT);
     palette::apply(interface.context());
 
-    // COPY_SRC свідомо відсутній — з тієї ж причини, що в зонда рушія: читання
-    // пікселів назад у справжньому кадрі не відбувається.
+    // COPY_SRC is deliberately absent, for the same reason as in the engine's
+    // probe: reading pixels back does not happen in a real frame.
     let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("game perf probe"),
         size: wgpu::Extent3d {
@@ -133,8 +140,9 @@ pub fn measure(
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-    // Друге число кадру, а не третє в дужках: розвилка N1 питає саме про
-    // нього — чи справді найдорожче в кадрі це прохід по вершинах ламаних.
+    // The frame's second number rather than a third in brackets: the N1 fork
+    // asks about exactly this -- whether the pass over polyline vertices really
+    // is the most expensive thing in the frame.
     let mut draw_once = || -> Result<(f64, f64), String> {
         let start = Instant::now();
 
@@ -156,8 +164,9 @@ pub fn measure(
                 viewport,
                 viewport.quiet_input(),
                 |ui| {
-                    // Дослівно те, що робить `app::draw`, — інакше вимір
-                    // описував би панелі, яких у грі немає.
+                    // Literally what `app::draw` does -- otherwise the
+                    // measurement would describe panels the game does not
+                    // have.
                     engine::egui::Panel::left("time")
                         .exact_size(220.0)
                         .resizable(false)
@@ -208,7 +217,7 @@ pub fn measure(
                 submission_index: None,
                 timeout: None,
             })
-            .map_err(|e| format!("не дочекалися GPU: {e}"))?;
+            .map_err(|e| format!("gave up waiting for the GPU: {e}"))?;
 
         Ok((
             start.elapsed().as_secs_f64() * 1000.0,
@@ -234,42 +243,44 @@ pub fn measure(
     ))
 }
 
-/// Скільки коштує зібрати сцену зі снапшоту — тобто прохід по всіх вершинах
-/// на CPU.
+/// What assembling a scene from a snapshot costs -- i.e. the pass over every
+/// vertex on the CPU.
 ///
-/// Друга половина D7 живе саме тут: `view::build_in` проганяє **кожен** семпл
-/// кожної ланки, а в обертовому фреймі до цього додається перетворення фрейму
-/// на точку (U6a1 виміряв 2.69 → 10.56 нс). Міряється окремо від кадру, бо в
-/// грі це теж окрема робота — і бо саме це число вирішує, чи борг про кадр,
-/// чи про підготовку до нього.
+/// The second half of D7 lives exactly here: `view::build_in` walks **every**
+/// sample of every leg, and in the rotating frame the frame transform per
+/// point is added to that (U6a1 measured 2.69 -> 10.56 ns). Measured
+/// separately from the frame, because in the game it is separate work too --
+/// and because this number decides whether the debt is about the frame or
+/// about preparing for it.
 pub fn build_ms(
     snapshot: &WorldSnapshot,
     camera: impl Fn() -> engine::camera::Camera,
     frame: ViewFrame,
 ) -> f64 {
-    // Прогрів: перший прохід платить за алокацію векторів, і без нього
-    // міряється саме вона.
+    // Warm-up: the first pass pays for allocating the vectors, and without it
+    // that is what gets measured.
     let _ = view::build_in(snapshot, camera(), frame);
 
     let start = Instant::now();
     let scene = view::build_in(snapshot, camera(), frame);
     let elapsed = start.elapsed().as_secs_f64() * 1000.0;
 
-    // Щоб оптимізатор не викинув побудову: сцена мусить бути прочитана.
+    // So the optimiser does not discard the build: the scene must be read.
     assert!(!scene.polylines.is_empty() || snapshot.vessels.is_empty());
     elapsed
 }
 
-/// Скільки коштує сама крива нульової швидкості.
+/// What the zero-velocity curve itself costs.
 ///
-/// Окремо від [`build_ms`], і не заради повноти: перший прогін U8 показав, що
-/// в обертовому фреймі побудова сцени дорожча за інерціальну **на порядок**,
-/// а зайвих вершин при цьому лічені сотні. Отже платить не перетворення точок
-/// (U6a1: 10.56 нс на точку), а щось інше — і поки це не виміряно окремо,
-/// «обертовий фрейм дорогий» лишається здогадом про причину.
+/// Separate from [`build_ms`], and not for completeness: the first U8 run
+/// showed that in the rotating frame building the scene is **an order**
+/// dearer than the inertial one, while the extra vertices number in the
+/// hundreds. So what pays is not the point transform (U6a1: 10.56 ns per
+/// point) but something else -- and until that is measured separately, "the
+/// rotating frame is expensive" stays a guess about the cause.
 ///
-/// Повертає `None`, якщо кривої в цьому снапшоті немає: у інерціальному
-/// фреймі її не рахують узагалі.
+/// Returns `None` if the snapshot has no curve: in the inertial frame it is
+/// not computed at all.
 pub fn zvc_ms(snapshot: &WorldSnapshot) -> Option<(f64, usize)> {
     let earth = snapshot.bodies.iter().find(|b| b.body == EARTH)?;
     let moon = snapshot
@@ -290,18 +301,18 @@ pub fn zvc_ms(snapshot: &WorldSnapshot) -> Option<(f64, usize)> {
     Some((ms, vertices))
 }
 
-/// Прогін зонда цілком: побудувати світ, догнати місію, поміряти, надрукувати.
+/// The whole probe run: build the world, catch the mission up, measure, print.
 ///
-/// Живе тут, а не в `main`, з тієї ж причини, що й у рушія: `main` розбирає
-/// аргументи, а що саме міряється — це вимір, і воно має лежати поруч із
-/// методикою.
+/// It lives here rather than in `main`, for the same reason as in the engine:
+/// `main` parses arguments, while what is measured is the measurement itself
+/// and belongs beside the methodology.
 pub fn run(options: &app::Options, days: f64, frames: u32) -> Result<(), String> {
     let gpu = Gpu::new(wgpu::Instance::default(), None)?;
-    println!("адаптер: {}", gpu.describe());
+    println!("adapter: {}", gpu.describe());
     println!(
-        "профіль: {}",
+        "profile: {}",
         if cfg!(debug_assertions) {
-            "debug — числа непорівнянні з release, різниця тринадцятикратна"
+            "debug -- numbers incomparable with release, a thirteenfold difference"
         } else {
             "release"
         }
@@ -315,27 +326,29 @@ pub fn run(options: &app::Options, days: f64, frames: u32) -> Result<(), String>
     let snapshot = world.snapshot();
     let flown_days = (snapshot.t - start_t) / 86400.0;
 
-    // Густина семплів — та величина, на якій стоїть уся викладка D7 (171 на
-    // добу з `bench_prop`), тож вона друкується, а не лишається в голові.
+    // Sample density is the quantity the whole D7 derivation rests on (171 per
+    // day from `bench_prop`), so it is printed rather than left in someone's
+    // head.
     let samples: usize = snapshot.vessels.iter().map(|v| v.sample_count()).sum();
     let vessel_days = snapshot.vessels.len() as f64 * flown_days;
     println!(
-        "флот: {} апаратів, {:.0} семплів на апарат за добу",
+        "fleet: {} vessels, {:.0} samples per vessel per day",
         snapshot.vessels.len(),
         samples as f64 / vessel_days.max(f64::MIN_POSITIVE)
     );
 
-    // Апарат, що зійшов з орбіти, тихо зменшує вимір — тож про нього кажемо
-    // вголос. Станція на 600 км за сто діб цього робити не повинна, і саме
-    // тому мовчазна відмова тут була б найгіршим із результатів.
+    // A vessel that deorbited quietly shrinks the measurement -- so it is
+    // announced. A station at 600 km should not do that over a hundred days,
+    // which is exactly why a silent failure here would be the worst
+    // outcome.
     for vessel in &snapshot.vessels {
         if let Some(error) = &vessel.failed {
-            println!("  ⚠ {} не долетів: {error}", vessel.name);
+            println!("  WARNING: {} did not make it: {error}", vessel.name);
         }
     }
 
-    // Замиканням, а не значенням: `Camera` не `Copy`, а створити її наново
-    // дешевше за будь-яку гру з клонами (той самий прийом, що в
+    // A closure rather than a value: `Camera` is not `Copy`, and building it
+    // anew is cheaper than any game with clones (the same trick as in
     // `game/tests/scene.rs`).
     let camera = || engine::orbit::Orbit::at_altitude(crate::mission::CAMERA_ALTITUDE_M).camera();
 
@@ -345,42 +358,44 @@ pub fn run(options: &app::Options, days: f64, frames: u32) -> Result<(), String>
         let build = build_ms(&snapshot, camera, frame);
 
         println!();
-        println!("=== фрейм {frame:?}, доба {flown_days:.1} ({steps} кроків)");
+        println!("=== frame {frame:?}, day {flown_days:.1} ({steps} steps)");
         println!(
-            "  сцена: {} вершин у {} ламаних, {} семплів історії, {} апаратів",
+            "  scene: {} vertices in {} polylines, {} history samples, {} vessels",
             size.vertices,
             size.polylines,
             size.samples,
             snapshot.vessels.len()
         );
         println!(
-            "  пам'ять: історія {:.1} МіБ, буфер кадру {:.2} МіБ на кадр",
+            "  memory: history {:.1} MiB, frame buffer {:.2} MiB per frame",
             size.history_bytes as f64 / (1024.0 * 1024.0),
             size.buffer_bytes as f64 / (1024.0 * 1024.0)
         );
-        println!("  view::build_in: {build:.3} мс на кадр (CPU, без рушія)");
+        println!("  view::build_in: {build:.3} ms per frame (CPU, no engine)");
         if frame == ViewFrame::Rotating {
             match zvc_ms(&snapshot) {
                 Some((ms, vertices)) => println!(
-                    "    з них крива нульової швидкості: {ms:.3} мс на {vertices} вершин \
-                     ({:.0} нс на вершину)",
+                    "    of which the zero-velocity curve: {ms:.3} ms for {vertices} \
+                     vertices ({:.0} ns per vertex)",
                     ms * 1.0e6 / vertices.max(1) as f64
                 ),
-                None => println!("    кривої в цьому снапшоті немає"),
+                None => println!("    this snapshot has no curve"),
             }
         }
 
         for (width, height) in [(1280u32, 720u32), (1920, 1080)] {
-            // Проріджена сцена будується під **свою** роздільність: критерій
-            // екранний, і на 1080p пів пікселя — це інша величина в метрах.
-            // Кеш новий на кожну роздільність: критерій від неї залежить, і
-            // теплий кеш чужої роздільності виміряв би не те.
+            // The thinned scene is built for **its own** resolution: the
+            // criterion is on screen, and at 1080p half a pixel is a different
+            // quantity in metres. A fresh cache per resolution: the criterion
+            // depends on it, and a cache warmed at another resolution would
+            // measure the wrong thing.
             let mut cache = crate::trail::Cache::new();
             let mut thinning = view::Thinning {
                 cache: &mut cache,
                 height_px: height,
             };
-            // Перший прохід наповнює кеш, другий — те, що платить гра щокадру.
+            // The first pass fills the cache, the second is what the game pays
+            // every frame.
             let _ = view::build_thinned(&snapshot, camera(), &[], frame, &mut thinning);
             let thinned_start = Instant::now();
             let thinned = view::build_thinned(&snapshot, camera(), &[], frame, &mut thinning);
@@ -388,19 +403,19 @@ pub fn run(options: &app::Options, days: f64, frames: u32) -> Result<(), String>
             let thinned_size = SceneSize::of(&thinned, &snapshot);
 
             println!(
-                "  {width}×{height}, проріджування: {} → {} вершин (×{:.0}), \
-                 побудова з теплим кешем {thinned_ms:.3} мс, ланок у кеші {}",
+                "  {width}x{height}, thinning: {} -> {} vertices (x{:.0}), \
+                 build with a warm cache {thinned_ms:.3} ms, legs cached {}",
                 size.vertices,
                 thinned_size.vertices,
                 size.vertices as f64 / thinned_size.vertices.max(1) as f64,
                 thinning.cache.len()
             );
 
-            for (overlay, name) in [(Overlay::None, "немає"), (Overlay::Panels, "панелі")]
+            for (overlay, name) in [(Overlay::None, "none"), (Overlay::Panels, "panels")]
             {
                 for (scene, size, label) in [
-                    (&scene, &size, "повний"),
-                    (&thinned, &thinned_size, "проріджений"),
+                    (&scene, &size, "full"),
+                    (&thinned, &thinned_size, "thinned"),
                 ] {
                     let (stats, upload) = measure(
                         &gpu,
@@ -413,14 +428,14 @@ pub fn run(options: &app::Options, days: f64, frames: u32) -> Result<(), String>
                         earth_radius_m,
                     )?;
                     println!(
-                        "  {width}×{height}, інтерфейс {name}, слід {label}: \
-                         mean {:.3} мс, p95 {:.3} мс, запас до 60 Hz {:+.2} мс",
+                        "  {width}x{height}, interface {name}, trail {label}: \
+                         mean {:.3} ms, p95 {:.3} ms, margin to 60 Hz {:+.2} ms",
                         stats.mean_ms,
                         stats.p95_ms,
                         stats.headroom_ms(1000.0 / 60.0)
                     );
                     println!(
-                        "    з них Lines::upload: {:.3} мс ({:.0}% кадру, {:.1} нс на вершину)",
+                        "    of which Lines::upload: {:.3} ms ({:.0}% of the frame, {:.1} ns per vertex)",
                         upload.mean_ms,
                         100.0 * upload.mean_ms / stats.mean_ms.max(f64::MIN_POSITIVE),
                         upload.mean_ms * 1.0e6 / size.vertices.max(1) as f64

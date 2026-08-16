@@ -1,128 +1,129 @@
-//! Рядки інтерфейсу через таблицю ключів (ROADMAP-UI.md, правило 7 і U7a).
+//! Interface strings through a key table (ROADMAP-UI.md, rule 7 and U7a).
 //!
-//! Рішення розробника: **англійська як основна мова, шар локалізації з
-//! першого рядка UI**. Причина не в перекладі, а в тому, що розкидані по
-//! віджетах літерали доводиться потім вишукувати поодинці — а «потім» тут
-//! означає кожну панель, яку встигли написати.
+//! The developer's decision: **English as the primary language, a localisation
+//! layer from the first line of UI**. The reason is not translation but that
+//! literals scattered through widgets have to be hunted down one by one
+//! afterwards -- and "afterwards" here means every panel written by then.
 //!
-//! Форма — найпростіша, що працює: перелік ключів і дві таблиці. Не `fluent`
-//! і не `gettext`: нам потрібні рядки, а не відмінювання за граматичними
-//! правилами, і кожна з тих бібліотек — це формат, залежність і збірковий
-//! крок. Якщо колись знадобляться числівники й відмінки — тоді й дивитись у
-//! їхній бік; таблиця цього не блокує.
+//! The form is the simplest that works: an enum of keys and two tables. Not
+//! `fluent` and not `gettext`: we need strings rather than inflection by
+//! grammatical rules, and each of those libraries is a format, a dependency
+//! and a build step. If numerals and cases are ever needed, that is when to
+//! look their way; the table does not block it.
 //!
-//! Числа сюди не потрапляють: формат «доба 12.34» збирається на місці, бо
-//! інакше таблиця перетворилася б на шаблонізатор.
+//! Numbers do not reach here: a format like "day 12.34" is assembled on the
+//! spot, because otherwise the table would become a template engine.
 
-/// Ключ рядка. Перелік, а не `&str`: пропущений ключ має бути помилкою
-/// компіляції, а не порожнім місцем на екрані.
+/// A string key. An enum rather than a `&str`: a missing key must be a
+/// compile error rather than an empty space on screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
-    /// Заголовок панелі часу.
+    /// The time panel's heading.
     Time,
-    /// «доба» — підпис перед числом доби місії.
+    /// "day" -- the label before the mission day number.
     Day,
-    /// «warp» — підпис перед множником часу.
+    /// "warp" -- the label before the time multiplier.
     Warp,
-    /// Пауза (кнопка).
+    /// Pause (a button).
     Pause,
-    /// Продовжити (та сама кнопка, інший стан).
+    /// Resume (the same button, a different state).
     Resume,
-    /// Швидше вдвічі.
+    /// Twice as fast.
     Faster,
-    /// Повільніше вдвічі.
+    /// Twice as slow.
     Slower,
-    /// Причина зупинки: пауза.
+    /// Reason for stalling: paused.
     StalledPaused,
-    /// Причина зупинки: прогноз упирається в горизонт.
+    /// Reason for stalling: the prediction is hitting the horizon.
     StalledHorizon,
-    /// Причина зупинки: місія скінчилася.
+    /// Reason for stalling: the mission is over.
     StalledMissionEnd,
 
-    /// Заголовок панелі апарата.
+    /// The vessel panel's heading.
     Vessel,
-    /// Висота над поверхнею тіла.
+    /// Altitude above the body's surface.
     Altitude,
-    /// Швидкість відносно тіла.
+    /// Speed relative to the body.
     Speed,
-    /// Час до наступного маневру.
+    /// Time to the next manoeuvre.
     NextBurn,
-    /// Сумарний Δv плану.
+    /// The plan's total dv.
     TotalDv,
-    /// Наскільки прогноз випереджає курсор.
+    /// How far the prediction runs ahead of the cursor.
     ComputedAhead,
-    /// Апарат зупинився помилкою.
+    /// The vessel stopped with an error.
     Failed,
-    /// Маневрів у плані більше немає.
+    /// There are no manoeuvres left in the plan.
     NoBurns,
 
-    /// Заголовок панелі розкладу.
+    /// The schedule panel's heading.
     Schedule,
-    /// Перицентр.
+    /// Periapsis.
     Periapsis,
-    /// Апоцентр.
+    /// Apoapsis.
     Apoapsis,
-    /// Подій у порахованому ще немає.
+    /// There are no events in what is computed yet.
     NoEvents,
 
-    /// Заголовок панелі плану.
+    /// The plan panel's heading.
     Plan,
-    /// Додати маневр.
+    /// Add a manoeuvre.
     AddBurn,
-    /// Летіти показаним планом.
+    /// Fly the plan as shown.
     Commit,
-    /// План порожній.
+    /// The plan is empty.
     NoPlan,
-    /// План відхилено: маневр у минулому.
+    /// The plan was rejected: a manoeuvre in the past.
     RejectedInThePast,
-    /// План прийнято.
+    /// The plan was accepted.
     PlanAccepted,
 
-    /// Заголовок панелі вікон перельоту.
+    /// The transfer-window panel's heading.
     Porkchop,
-    /// Порахувати сітку вікон.
+    /// Compute the window grid.
     ComputeWindows,
-    /// Сітки ще немає.
+    /// There is no grid yet.
     NoGrid,
-    /// Момент відходу.
+    /// The departure instant.
     Depart,
-    /// Тривалість перельоту.
+    /// The flight time.
     FlightTime,
-    /// «діб» — одиниця після числа.
+    /// "days" -- the unit after a number.
     Days,
-    /// Гіперболічний надлишок швидкості на обох кінцях.
+    /// Hyperbolic excess speed at both ends.
     Vinf,
-    /// У цій клітинці Ламберт не зійшовся.
+    /// Lambert did not converge in this cell.
     NoSolution,
-    /// Підказка: наведіть або клікніть, щоб побачити вікно.
+    /// A hint: hover or click to see a window.
     PickWindow,
-    /// Прогноз ще не відійшов від курсора — сітку нема на чому будувати.
+    /// The prediction has not left the cursor yet -- there is nothing to build
+    /// a grid on.
     NoGridYet,
 
-    /// Заголовок панелі вигляду.
+    /// The view panel's heading.
     View,
-    /// Фрейм, у якому показана сцена.
+    /// The frame the scene is shown in.
     Frame,
-    /// Інерціальний фрейм (кнопка перемикача).
+    /// The inertial frame (a toggle button).
     FrameInertial,
-    /// Обертовий фрейм Земля-Місяць (кнопка перемикача).
+    /// The Earth-Moon rotating frame (a toggle button).
     FrameRotating,
-    /// Підпис кривої нульової швидкості.
+    /// The zero-velocity curve's label.
     ZeroVelocity,
-    /// Головне застереження про криву: це довідка, а не межа.
+    /// The main caveat about the curve: it is reference, not a boundary.
     CurveIsAdvice,
-    /// Апарат пішов від пари — там крива нічого не означає.
+    /// The vessel has left the pair -- the curve means nothing there.
     CurveFarAway,
 
-    /// Підпис перемикача мови.
+    /// The language switch's label.
     Language,
-    /// Назва англійської — **власною мовою, в обох таблицях**.
+    /// The name of English -- **in its own language, in both tables**.
     LanguageEnglish,
-    /// Назва української — так само.
+    /// The name of Ukrainian, likewise.
     LanguageUkrainian,
 }
 
-/// Мова інтерфейсу. Дві, бо саме дві таблиці й перевіряються.
+/// The interface language. Two, because exactly two tables are checked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Language {
     #[default]
@@ -131,9 +132,9 @@ pub enum Language {
 }
 
 impl Language {
-    /// Наступна мова по колу — під перемикач, той самий патерн, що у
-    /// `ViewFrame`: мов рівно дві, і пара кнопок означала б стан «жодна не
-    /// вибрана», якого не буває.
+    /// The next language in the cycle, for the switch -- the same pattern as
+    /// `ViewFrame`: there are exactly two languages, and a pair of buttons
+    /// would imply a "neither selected" state that does not exist.
     pub fn next(self) -> Language {
         match self {
             Language::English => Language::Ukrainian,
@@ -141,8 +142,8 @@ impl Language {
         }
     }
 
-    /// Ключ із власною назвою мови — щоб кнопка була читабельна тому, хто
-    /// поточної мови не знає.
+    /// The key holding a language's own name, so the button is readable to
+    /// someone who does not know the current language.
     pub fn name_key(self) -> Key {
         match self {
             Language::English => Key::LanguageEnglish,
@@ -151,7 +152,7 @@ impl Language {
     }
 }
 
-/// Рядок за ключем.
+/// A string by key.
 pub fn tr(language: Language, key: Key) -> &'static str {
     match language {
         Language::English => english(key),
@@ -207,13 +208,15 @@ fn english(key: Key) -> &'static str {
         Key::CurveIsAdvice => "a guide, not a wall: C only holds in the CR3BP",
         Key::CurveFarAway => "the vessel has left the pair - the curve means little there",
         Key::Language => "language",
-        // Назви мов — ендоніми, і тому однакові в обох таблицях. Кнопка, що
-        // пропонує «Ukrainian» англійською, читається лише тим, хто вже
-        // читає англійською, — тобто саме тим, кому вона не потрібна.
+        // Language names are endonyms and therefore identical in both tables.
+        // A button offering "Ukrainian" in English is readable only to someone
+        // who already reads English -- exactly the person who does not need
+        // it.
         //
-        // Побічний наслідок, важливіший за саму кнопку: **кирилиця потрібна
-        // навіть в англійському інтерфейсі**, бо цей рядок є в англійській
-        // таблиці. U7b перевіряє гліфи не заради українського перекладу.
+        // A side effect more important than the button itself: **Cyrillic is
+        // needed even in the English interface**, because this string is in
+        // the English table. U7b checks the glyphs for reasons other than the
+        // Ukrainian translation.
         Key::LanguageEnglish => "English",
         Key::LanguageUkrainian => "Українська",
     }
@@ -272,8 +275,8 @@ fn ukrainian(key: Key) -> &'static str {
     }
 }
 
-/// Усі ключі — для перевірок і для того, хто колись малюватиме таблицю
-/// перекладу.
+/// Every key -- for the checks, and for whoever one day draws a translation
+/// table.
 pub const ALL: [Key; 48] = [
     Key::Time,
     Key::Day,
@@ -329,55 +332,57 @@ pub const ALL: [Key; 48] = [
 mod tests {
     use super::*;
 
-    /// Кожен ключ має значення в **обох** таблицях.
+    /// Every key has a value in **both** tables.
     ///
-    /// `match` без гілки не збереться, тож компілятор ловить пропущений ключ
-    /// сам. Лишається те, чого він не ловить: порожній рядок замість
-    /// перекладу — а це рівно те, що виглядає на екрані як зникла кнопка.
+    /// A `match` without an arm does not compile, so the compiler catches a
+    /// missing key itself. What remains is what it does not catch: an empty
+    /// string instead of a translation -- which is exactly what looks on
+    /// screen like a vanished button.
     #[test]
     fn every_key_says_something_in_both_tables() {
         for key in ALL {
             for language in [Language::English, Language::Ukrainian] {
                 assert!(
                     !tr(language, key).is_empty(),
-                    "{key:?} у {language:?} — порожній рядок"
+                    "{key:?} in {language:?} is an empty string"
                 );
             }
         }
     }
 
-    /// Назви мов однакові в обох таблицях — і це навмисно.
+    /// The language names are identical in both tables -- deliberately.
     ///
-    /// Ендонім лишається собою в будь-якому інтерфейсі: перекласти
-    /// «Українська» на «Ukrainian» означало б зробити кнопку нечитабельною
-    /// рівно для того, хто її шукає. Перевірка тут тому, що правило легко
-    /// зламати з найкращих міркувань.
+    /// An endonym stays itself in any interface: translating "Українська" into
+    /// "Ukrainian" would make the button unreadable to exactly the person
+    /// looking for it. The check is here because the rule is easy to break
+    /// with the best of intentions.
     #[test]
     fn the_names_of_languages_are_the_same_in_both_tables() {
         for key in [Key::LanguageEnglish, Key::LanguageUkrainian] {
             assert_eq!(
                 tr(Language::English, key),
                 tr(Language::Ukrainian, key),
-                "{key:?} переклали, а мав лишитись ендонімом"
+                "{key:?} was translated, but should have stayed an endonym"
             );
         }
     }
 
-    /// Перемикач ходить по колу й повертається до себе.
+    /// The switch cycles and returns to itself.
     #[test]
     fn the_switch_comes_back_to_where_it_started() {
         for language in [Language::English, Language::Ukrainian] {
-            assert_ne!(language.next(), language, "перемикач стоїть на місці");
+            assert_ne!(language.next(), language, "the switch stands still");
             assert_eq!(language.next().next(), language);
-            // Кнопка підписується назвою тієї мови, на яку перемкне.
+            // The button is labelled with the name of the language it will
+            // switch to.
             assert!(!tr(language, language.next().name_key()).is_empty());
         }
     }
 
-    /// `ALL` не відстає від переліку.
+    /// `ALL` does not fall behind the enum.
     ///
-    /// Список, який хтось забув доповнити, робить перевірку вище тихо
-    /// слабшою — вона просто не подивиться на новий ключ.
+    /// A list somebody forgot to extend makes the check above quietly
+    /// weaker -- it simply will not look at the new key.
     #[test]
     fn the_list_of_keys_is_complete() {
         let mut seen = ALL.to_vec();
@@ -385,9 +390,10 @@ mod tests {
         seen.dedup();
         assert_eq!(seen.len(), ALL.len(), "у ALL є повтори");
 
-        // Кожен ключ переліку має бути в ALL. Перелічити його інакше не можна
-        // без макросів, тож перевірка спирається на англійську таблицю: два
-        // різні ключі з однаковим текстом тут були б помилкою самі по собі.
+        // Every key of the enum must be in ALL. It cannot be enumerated any
+        // other way without macros, so the check leans on the English table:
+        // two different keys with identical text would be an error in
+        // themselves.
         let texts: Vec<&str> = ALL.iter().map(|&k| english(k)).collect();
         let mut unique = texts.clone();
         unique.sort_unstable();
