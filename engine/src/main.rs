@@ -552,6 +552,64 @@ fn run_perf_probe() -> Result<(), String> {
         }
     }
 
+    // Борг D19 на його власному порозі: два тіла з тайлами в одному кадрі
+    // (T7h). Питання боргу дослівне — масив текстур платить за свій розмір, а
+    // не за намальоване, — тож перевіряється саме сума.
+    match (
+        surface_assets("assets/moon.dem", "assets/moon.col"),
+        surface_assets("assets/earth.dem", "assets/earth.col"),
+    ) {
+        (Some((moon_dem, moon_col)), Some((earth_dem, earth_col))) => {
+            let textures = |t: &engine::tiles::Terrain, c: &engine::tiles::Colour| {
+                engine::tiles::count(t.levels) + engine::tiles::count(c.levels)
+            };
+            let moon_textures = textures(&moon_dem, &moon_col);
+            let earth_textures = textures(&earth_dem, &earth_col);
+            println!(
+                "\nДва тіла з тайлами (борг D19): камера на 10⁹ м, обидва тіла\n\
+                 в кілька пікселів — різниця це прив'язка масивів, не малювання.\n\n\
+                 Місяць {moon_textures} текстур, Земля {earth_textures}, разом {}.\n",
+                moon_textures + earth_textures
+            );
+            println!("{:>16} {:>10} {:>12}", "сцена", "кадр, мс", "нс/текстуру");
+            for (label, first, second, count) in [
+                (
+                    "лише Місяць",
+                    (&moon_dem, Some(&moon_col)),
+                    None,
+                    moon_textures,
+                ),
+                (
+                    "лише Земля",
+                    (&earth_dem, Some(&earth_col)),
+                    None,
+                    earth_textures,
+                ),
+                (
+                    "обидва",
+                    (&moon_dem, Some(&moon_col)),
+                    Some((&earth_dem, Some(&earth_col))),
+                    moon_textures + earth_textures,
+                ),
+            ] {
+                let stats = engine::perf_probe::two_body_cost(
+                    &gpu, 1280, 720, FRAMES, 1.0e9, first, second,
+                )?;
+                println!(
+                    "{:>16} {:>10.3} {:>12.1}",
+                    label,
+                    stats.mean_ms,
+                    stats.mean_ms * 1.0e6 / count as f64
+                );
+            }
+        }
+        _ => println!(
+            "\nДва тіла з тайлами (D19): немає обох асетів на диску — рядок пропущено.\n\
+             \x20              полікувати: make cook-dem && make cook-colour, потім\n\
+             \x20              cargo run -p dem-cook -- --body earth [--colour]"
+        ),
+    }
+
     // Окремо — CPU-прохід планети, до й після R1d. Два числа, бо одне без
     // другого не каже, чи виграш узагалі є.
     let was_ms = camera_pass_ms(200);
@@ -576,9 +634,13 @@ fn run_perf_probe() -> Result<(), String> {
 /// Обидва разом або жодного: вимір порівнює кадр **з кольором і без**, і
 /// половина пари не дає ні того, ні того.
 fn tile_assets() -> Option<(engine::tiles::Terrain, engine::tiles::Colour)> {
-    let terrain =
-        engine::tiles::Terrain::from_bytes(&std::fs::read("assets/moon.dem").ok()?).ok()?;
-    let colour = engine::tiles::Colour::from_bytes(&std::fs::read("assets/moon.col").ok()?).ok()?;
+    surface_assets("assets/moon.dem", "assets/moon.col")
+}
+
+/// Скукована поверхня з диска — рельєф і колір разом, або нічого.
+fn surface_assets(dem: &str, col: &str) -> Option<(engine::tiles::Terrain, engine::tiles::Colour)> {
+    let terrain = engine::tiles::Terrain::from_bytes(&std::fs::read(dem).ok()?).ok()?;
+    let colour = engine::tiles::Colour::from_bytes(&std::fs::read(col).ok()?).ok()?;
     Some((terrain, colour))
 }
 

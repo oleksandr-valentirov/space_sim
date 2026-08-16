@@ -349,6 +349,70 @@ pub fn tile_cost(
     )
 }
 
+/// Скільки коштує кадр із **двома** тілами, у яких свої тайли (T7h, борг D19).
+///
+/// Питання боргу дослівне: масив текстур платить щокадру за свій розмір, а не
+/// за намальоване, тож два тіла з пірамідами платять двічі. T8 виміряв це на
+/// одному тілі й передбачив суму; тут вона перевіряється.
+///
+/// Обидва тіла в кадрі малі — камера стоїть так, що кожне займає кілька
+/// пікселів. Це навмисно: інакше в різницю ввійшла б робота другого набору
+/// патчів, а питання не про неї.
+///
+/// Тіла рознесені по осі `x` на десять своїх радіусів: ближче вони перекрили б
+/// одне одного, далі — вийшли б за кадр.
+pub fn two_body_cost(
+    gpu: &Gpu,
+    width: u32,
+    height: u32,
+    frames: u32,
+    distance_m: f64,
+    first: (&crate::tiles::Terrain, Option<&crate::tiles::Colour>),
+    second: Option<(&crate::tiles::Terrain, Option<&crate::tiles::Colour>)>,
+) -> Result<Stats, String> {
+    let mut frame = Frame::new(gpu, shot::FORMAT);
+    let camera = crate::camera::Camera::look_at(
+        [distance_m * 0.82, distance_m * 0.42, distance_m * 0.39],
+        [0.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+    );
+    let mut scene = crate::scene::Scene::new(camera);
+    scene.sun = [1.0, 0.0, 0.0];
+
+    let mut place = |frame: &mut Frame,
+                     scene: &mut crate::scene::Scene,
+                     surface: (&crate::tiles::Terrain, Option<&crate::tiles::Colour>),
+                     offset: f64|
+     -> Result<(), String> {
+        let (terrain, colour) = surface;
+        let id = frame.load_surface(gpu, terrain, colour)?;
+        scene.bodies.push(crate::scene::Body {
+            centre: [offset * terrain.reference_m, 0.0, 0.0],
+            radius_m: terrain.reference_m,
+            orientation: [1.0, 0.0, 0.0, 0.0],
+            tiles: crate::scene::TileSet::Loaded(id),
+            colour: frame::COLOUR,
+            air: None,
+        });
+        Ok(())
+    };
+
+    place(&mut frame, &mut scene, first, 0.0)?;
+    if let Some(surface) = second {
+        place(&mut frame, &mut scene, surface, 10.0)?;
+    }
+
+    measure_with_frame(
+        gpu,
+        &mut frame,
+        width,
+        height,
+        frames,
+        Overlay::None,
+        &scene,
+    )
+}
+
 /// Те саме для сцени, яку зібрав хтось інший.
 pub fn measure_scene(
     gpu: &Gpu,
