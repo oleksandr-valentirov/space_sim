@@ -48,6 +48,7 @@ pub mod frame;
 pub mod gpu;
 pub mod live;
 pub mod lod;
+pub mod moon_demo;
 pub mod orbit;
 pub mod perf_probe;
 pub mod rotating_probe;
