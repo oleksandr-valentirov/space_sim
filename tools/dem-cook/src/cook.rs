@@ -75,7 +75,25 @@ pub fn build(grid: &Grid, levels: u32) -> Terrain {
     // Одиниці зберігання ті самі, що в джерела: перекладати їх означало б
     // округлити двічі там, де досить нуля разів.
     let scale = grid.scale_m as f32;
+    // Місяць моря не має, і сентинел каже це прямо: правило матеріалу
+    // працює на ньому скрізь, як і до T7f.
+    Terrain::build(
+        levels,
+        grid.reference_m,
+        scale,
+        tiles::NO_SEA,
+        &height_grids(grid, levels),
+    )
+}
 
+/// Сітки висот **з ореолом** — рівно те, що приймає `Terrain::build`.
+///
+/// Окремо від [`build`] не заради структури, а заради оракула: з версії 4
+/// формату ореол у файл не потрапляє (нахил запечений, градієнт переїхав у
+/// записувач), тож перевірити «ореол — це справді вузол сусіда» можна лише
+/// тут, до того як його з'їдять. Перевіряє це
+/// `tests/cook.rs::the_halo_holds_the_neighbours_own_node`.
+pub fn height_grids(grid: &Grid, levels: u32) -> Vec<Vec<i16>> {
     let mut grids = Vec::with_capacity(Terrain::count(levels));
     for level in 0..levels {
         let side = 1u32 << level;
@@ -104,10 +122,7 @@ pub fn build(grid: &Grid, levels: u32) -> Terrain {
             }
         }
     }
-
-    // Місяць моря не має, і сентинел каже це прямо: правило матеріалу
-    // працює на ньому скрізь, як і до T7f.
-    Terrain::build(levels, grid.reference_m, scale, tiles::NO_SEA, &grids)
+    grids
 }
 
 /// Скукувати тайлсет висот Землі з ETOPO.

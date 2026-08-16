@@ -75,7 +75,9 @@ struct PatchData
     uint tile;
     float2 window_origin;
     float window_step;
-    float window_delta;
+    // Вирівнювання: тут жив `window_delta` до етапу W. Слово лишилось, бо
+    // std430 однаково вимагає восьмибайтового вирівнювання під `colour_origin`.
+    float pad;
     // Колірне вікно (T3b). Відбір його не читає — воно тут рівно заради
     // **кроку** буфера, і саме тому порядок полів мусить бути той самий, що
     // в `patch.slang`: `float2` після скалярів, інакше std430 додасть дірку.

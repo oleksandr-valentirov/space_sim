@@ -151,8 +151,8 @@ struct Uniforms {
     /// канали, `w` — рівень моря в одиницях зберігання (`tiles::NO_SEA`, якщо
     /// моря немає).
     terrain: [f32; 4],
-    /// Процедурний детайл (R7c): радіус тіла, множник нахилу
-    /// (`Terrain::slope_rise`), довжина хвилі найгрубішої октави
+    /// Процедурний детайл (R7c): радіус тіла, одиниця зберігання нахилу
+    /// (`tiles::SLOPE_UNIT`), довжина хвилі найгрубішої октави
     /// (`detail::base_m`) і пікселів на радіан.
     detail: [f32; 4],
 }
@@ -588,8 +588,10 @@ impl Frame {
             }
         }
 
-        let side = tiles::STORED as u32;
-        let upload = |label, format, bytes_per_texel: u32, payload: &[&[u8]]| {
+        // Сітки в двох тайлсетів різні, і це не недогляд: з версії 4 рельєф
+        // ореолу не несе (нахил запечений, градієнт переїхав у кукер), а
+        // колір несе його досі.
+        let upload = |label, format, side: u32, bytes_per_texel: u32, payload: &[&[u8]]| {
             let mut views = Vec::with_capacity(payload.len());
             for bytes in payload {
                 let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -627,12 +629,14 @@ impl Frame {
 
         // Цілі зі знаком у висот і байт у кольору — рівно те, що лежить у
         // тайлі: жодного перетворення між асетом і текстурою, отже й жодного
-        // місця, де воно поїде.
+        // місця, де воно поїде. Два канали в рельєфу — висота й нахил, і
+        // лежать вони в одному текселі саме тому, що вибірка в них одна.
         let height_tiles: Vec<&[u8]> = (0..count).map(|i| terrain.tile_bytes(i)).collect();
         let heights = upload(
             "terrain tile",
-            wgpu::TextureFormat::R16Sint,
-            2,
+            wgpu::TextureFormat::Rg16Sint,
+            tiles::NODES as u32,
+            4,
             &height_tiles,
         );
         // Порожній масив прив'язати не можна, тож тіло без кольору дістає одну
@@ -647,7 +651,13 @@ impl Frame {
             Some(c) => (colour_format(c), c.channels),
             None => (NO_COLOUR_FORMAT, 1),
         };
-        let colours = upload("colour tile", format, bytes_per_texel, &colour_tiles);
+        let colours = upload(
+            "colour tile",
+            format,
+            tiles::STORED as u32,
+            bytes_per_texel,
+            &colour_tiles,
+        );
 
         let height_views: Vec<&wgpu::TextureView> = heights.iter().collect();
         let colour_views: Vec<&wgpu::TextureView> = colours.iter().collect();
@@ -1811,7 +1821,7 @@ impl Planet {
                     })
                     .create_view(&wgpu::TextureViewDescriptor::default())
             };
-            let height = one("no terrain", wgpu::TextureFormat::R16Sint);
+            let height = one("no terrain", wgpu::TextureFormat::Rg16Sint);
             let colour = one("no colour", NO_COLOUR_FORMAT);
             gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("no terrain"),
@@ -2196,21 +2206,23 @@ impl Planet {
                 // `(0, 0)` і `1`, тобто те саме, що робив точний `Load`. Для
                 // глибшого — підпрямокутник предка, і рахує його
                 // `Terrain::window`, той самий код, що й `height_m` на CPU.
-                let (tile, origin_uv, step, delta) = match (terrain, self.cache.resident[slot]) {
+                let (tile, origin_uv, step) = match (terrain, self.cache.resident[slot]) {
                     (Some(t), Some(patch)) => {
                         let (index, origin_uv, step) = t.data.window(&patch);
-                        (index as u32, origin_uv, step, t.data.delta_nodes(&patch))
+                        (index as u32, origin_uv, step)
                     }
-                    _ => (0, [0.0, 0.0], 1.0, 1.0),
+                    _ => (0, [0.0, 0.0], 1.0),
                 };
                 origin_bytes.extend_from_slice(&tile.to_le_bytes());
                 origin_bytes.extend_from_slice(&(origin_uv[0] as f32).to_le_bytes());
                 origin_bytes.extend_from_slice(&(origin_uv[1] as f32).to_le_bytes());
                 origin_bytes.extend_from_slice(&(step as f32).to_le_bytes());
-                // Восьме слово — крок центральної різниці у вузлах цього ж
-                // тайла (R7c). Було вирівнювальним нулем; місце під нього тут
-                // і трималося.
-                origin_bytes.extend_from_slice(&(delta as f32).to_le_bytes());
+                // Восьме слово — вирівнювання, і нічого більше. До етапу W тут
+                // жив крок центральної різниці (`delta_nodes`); нахил тепер
+                // лежить у тайлі, а слово лишилось, бо std430 однаково вимагає
+                // восьмибайтового вирівнювання під `colour_origin` нижче —
+                // структура без нього має ті самі 48 байтів, лише з дірою.
+                origin_bytes.extend_from_slice(&0f32.to_le_bytes());
 
                 // Друге вікно — у колірній піраміді, і рахується воно **її**
                 // глибиною (T3b). Той самий патч цілком законно має власний
@@ -2270,9 +2282,13 @@ impl Planet {
                     // тайлів нахилу нема звідки взяти, а деталь без нахилу —
                     // це рівний килим, тобто рівно те, чого крок не робить.
                     detail: match terrain {
-                        Some(t) => [
+                        Some(_) => [
                             body.radius_m as f32,
-                            t.data.slope_rise() as f32,
+                            // Одиниця зберігання нахилу — стала, не властивість
+                            // тіла: нахил безрозмірний (етап W). Тут вона рівно
+                            // тому, що шейдер має перевести прочитаний `i16` у
+                            // метри на метр, а іншої константи в нього немає.
+                            tiles::SLOPE_UNIT as f32,
                             detail::base_m(body.radius_m) as f32,
                             focal as f32,
                         ],

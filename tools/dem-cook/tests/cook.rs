@@ -15,7 +15,7 @@
 use dem_cook::cook::build;
 use dem_cook::Grid;
 use engine::cubesphere::{Patch, FACES, SIDE};
-use engine::tiles::Terrain;
+use engine::tiles::{self, Terrain};
 use std::path::Path;
 
 const LEVELS: u32 = 3;
@@ -174,9 +174,14 @@ fn a_patch_deeper_than_the_pyramid_reads_its_ancestor() {
 /// лежить на один крок за ребром» — доводить окремо й **незалежно від
 /// формули** `engine::tests::cubesphere::a_halo_node_sits_one_step_past_the_edge`
 /// (усередині грані бітово, через ребро куба відношенням кроків). Тут
-/// доводиться друге: що кукер поклав це число **в ту комірку тайла**, з якої
-/// його читатиме шейдер, і що воно бітово дорівнює тому, що сусід зберігає у
-/// себе як звичайний вузол сітки.
+/// доводиться друге: що кукер поклав це число **в ту комірку сітки**, з якої
+/// його візьме центральна різниця, і що воно бітово дорівнює тому, що сусід
+/// зберігає у себе як звичайний вузол.
+///
+/// ⚠ **Дивиться на вхід `Terrain::build`, а не на тайлсет**, і інакше з етапу W
+/// не можна: у файлі ореолу більше немає (версія 4). Перевірка від цього не
+/// ослабла, а посилилась — вона тепер про те місце, де ореол справді
+/// вживається, а не про його копію на диску.
 ///
 /// Дві половини, і без другої перша нічого не варта:
 ///
@@ -191,8 +196,14 @@ fn a_patch_deeper_than_the_pyramid_reads_its_ancestor() {
 fn the_halo_holds_the_neighbours_own_node() {
     use engine::cubesphere::{Edge, EDGES};
 
+    use engine::tiles::{HALO, STORED};
+
     let grid = grid();
-    let terrain = build(&grid, LEVELS);
+    let grids = dem_cook::cook::height_grids(&grid, LEVELS);
+    // Вузол сітки з ореолом за координатами патча: `−1` і `SIDE + 1` законні.
+    let node = |tile: usize, a: i32, b: i32| {
+        grids[tile][(a + HALO as i32) as usize * STORED + (b + HALO as i32) as usize]
+    };
 
     let mut compared = 0;
     let mut same_as_edge = 0;
@@ -202,12 +213,12 @@ fn the_halo_holds_the_neighbours_own_node() {
             for i in 0..side {
                 for j in 0..side {
                     let patch = Patch { face, level, i, j };
-                    let here = terrain.index(&patch).expect("рівень у піраміді");
+                    let here = tiles::index(LEVELS, &patch).expect("рівень у піраміді");
                     for edge in EDGES {
                         for along in 0..=SIDE {
                             let (there, na, nb) = patch.halo_node(edge, along);
-                            let theirs = terrain.node(
-                                terrain.index(&there).expect("сусід у тій самій піраміді"),
+                            let theirs = node(
+                                tiles::index(LEVELS, &there).expect("сусід у тій самій піраміді"),
                                 na as i32,
                                 nb as i32,
                             );
@@ -220,13 +231,13 @@ fn the_halo_holds_the_neighbours_own_node() {
                                 Edge::BMin => (k, -1, k, 0),
                                 Edge::BMax => (k, side + 1, k, side),
                             };
-                            let mine = terrain.node(here, ha, hb);
+                            let mine = node(here, ha, hb);
                             assert_eq!(
                                 mine, theirs,
                                 "{patch:?} / {edge:?}: ореол ({ha}, {hb}) дає {mine}, \
                                  а сусід {there:?} у вузлі ({na}, {nb}) — {theirs}"
                             );
-                            if mine == terrain.node(here, ea, eb) {
+                            if mine == node(here, ea, eb) {
                                 same_as_edge += 1;
                             }
                             compared += 1;

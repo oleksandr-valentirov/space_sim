@@ -42,11 +42,11 @@ struct Uniforms
     // фрагмент лишається на `colour`. z — скільки каналів у колірному тайлі:
     // один (яскравість Місяця) чи чотири (колір Землі, T7g). w — запас.
     float4 terrain;
-    // Процедурний детайл (R7c): x — радіус тіла в метрах, y — множник
-    // «різниця в одиницях зберігання → нахил» (`Terrain::slope_rise`),
-    // z — довжина хвилі найгрубішої октави (`detail::base_m`, тобто радіус
-    // тіла поділений на сталу, а НЕ глибина піраміди: та є станом кукера),
-    // w — пікселів на радіан (`lod::focal_px`).
+    // Процедурний детайл (R7c): x — радіус тіла в метрах, y — одиниця
+    // зберігання нахилу (`tiles::SLOPE_UNIT`), z — довжина хвилі найгрубішої
+    // октави (`detail::base_m`, тобто радіус тіла поділений на сталу, а НЕ
+    // глибина піраміди: та є станом кукера), w — пікселів на радіан
+    // (`lod::focal_px`).
     float4 detail;
 };
 
@@ -73,9 +73,11 @@ struct PatchData
     // незалежні вікна розійшлися б, і різницю було б видно тріщиною.
     float2 window_origin;
     float window_step;
-    // Крок центральної різниці у вузлах цього ж тайла (R7c). Один для патчів
-    // глибше за піраміду, частка вузла для грубших — `Terrain::delta_nodes`.
-    float window_delta;
+    // Вирівнювання, і нічого більше. До етапу W тут жив крок центральної
+    // різниці; нахил тепер лежить у самому тайлі. Слово лишилось, бо std430
+    // однаково вимагає восьмибайтового вирівнювання під `colour_origin`:
+    // структура без нього має ті самі 48 байтів, лише з дірою.
+    float pad;
     // Те саме, але в **колірній** піраміді (T3b): номер тайла, зсув у вузлах
     // і крок.
     //
@@ -96,22 +98,27 @@ struct PatchData
 
 StructuredBuffer<PatchData> patches;
 
-// Висоти тайлів — **bindless-масив текстур**, з першої ж текстури в рушії
+// Тайли рельєфу — **bindless-масив текстур**, з першої ж текстури в рушії
 // (правило 6 етапу R). Семплера поруч немає, і це не пропуск: тайл лежить
 // вузол у вузол із сіткою патча, тож вибірка тут — точний `Load` за цілим
 // індексом, а не фільтрація.
+//
+// Два канали, і обидва в одному текселі: `x` — висота, `y` — нахил, запечений
+// кукером (етап W, Q3). Розділяти їх на дві текстури не можна навіть у думці —
+// D19 платить за КІЛЬКІСТЬ текстур у масиві, тобто другий масив коштував би
+// стільки ж, скільки весь рельєф.
 //
 // ⚠ Окрема група прив'язки (set 1), і це вимога wgpu, а не смак: «bind groups
 // may not contain both a binding array and a dynamically offset buffer». А
 // динамічний зсув у групі 0 — це вибір проходу глибини (R4a), тобто те, що
 // нікуди не подінеться. Отже масив живе окремо.
 [[vk::binding(0, 1)]]
-Texture2D<int> tiles[];
+Texture2D<int2> tiles[];
 
 // Колір тієї самої поверхні — другий масив у тій самій групі (T3b).
 //
 // Семплера немає й тут, хоч кольору фільтрація потрібна: вибірка робиться
-// вручну, чотирма `Load`, рівно як у `sample_height`. Причина не в економії —
+// вручну, чотирма `Load`, рівно як у `sample_tile`. Причина не в економії —
 // **фільтрація семплером не знає про вікно**. Патч, глибший за колірну
 // піраміду, читає підпрямокутник тайла предка, і координати текселя для нього
 // рахує `colour_origin`/`colour_step`; UV для семплера довелося б виводити з
@@ -149,10 +156,15 @@ StructuredBuffer<PatchDraw> draws;
 static const uint SIDE = 32;
 static const uint NODES = SIDE + 1;
 
-// Ореол тайла у вузлах — `engine::tiles::HALO` (R7b). Текстура тайла ширша
-// за сітку патча на дві смуги, тож вузол `(a, b)` патча лежить у текселі
-// `(a + HALO, b + HALO)`. Зсув робиться в одному місці — при `Load`.
-static const int HALO = 1;
+// Ореол **колірного** тайла у вузлах — `engine::tiles::HALO` (R7b). Текстура
+// кольору ширша за сітку патча на дві смуги, тож вузол `(a, b)` патча лежить у
+// текселі `(a + COLOUR_HALO, b + COLOUR_HALO)`.
+//
+// ⚠ Рельєфу це більше не стосується: з версії 4 формату його тайл — рівно
+// сітка патча, бо ореол існував заради градієнта, а градієнт переїхав у кукер
+// (етап W). Дві сітки в одному шейдері — саме те, що ця константа тепер
+// розрізняє.
+static const int COLOUR_HALO = 1;
 
 // Процедурний детайл (R7c). Числа — дослівно `engine::detail`; звіряє їх
 // `engine::tests::detail`, бо константа тут і константа там — два місця.
@@ -265,8 +277,10 @@ VertexOutput place(uint slot, PatchVertex vertex, uint2 grid, float3 offset)
     output.tint = 1.0;
     output.colour_tile = patch.colour_tile;
     // Вузол патча → тексель колірного тайла, тим самим вікном, що й у висоти,
-    // але **своїм**. Ореол додається тут, як і в `sample_height`.
-    output.colour_node = patch.colour_origin + float2(grid) * patch.colour_step + float(HALO);
+    // але **своїм**. Ореол додається тут, і тільки тут: він лишився рівно
+    // в кольору.
+    output.colour_node = patch.colour_origin + float2(grid) * patch.colour_step
+        + float(COLOUR_HALO);
     output.position = mul(uniforms.projection, float4(world, 1.0));
     // Той самий поворот, що й для зсуву: нормаль, повернута інакше, ніж
     // геометрія, дає освітлення чужого тіла. Радіус у матриці нормаль лише
@@ -288,17 +302,23 @@ VertexOutput vertex_smooth(VertexInput input)
     return place(draw.slot, vertex, node.grid, vertex.offset);
 }
 
-// Висота у вузлі патча, в одиницях зберігання (R7a).
+// Висота й нахил у вузлі патча, в одиницях зберігання (R7a; етап W).
 //
-// Дослівний двійник `Terrain::height_m` — рівно так само, як `cull.slang` є
+// Дослівний двійник `Terrain::sample` — рівно так само, як `cull.slang` є
 // двійником `engine::cull`. Оракул той самий: числа з обох боків мусять
 // збігтися, і тест їх звіряє.
+//
+// **Одна вибірка на два числа.** Висота й нахил лежать у тому самому текселі, а
+// вікно в них одне, тож чотири `Load` дають обидва. До етапу W нахил рахувався
+// тут центральною різницею — чотири вибірки по чотири `Load`, тобто двадцять
+// на вузол проти теперішніх чотирьох, — і на куті куба давав три різні
+// відповіді залежно від грані (Q3).
 //
 // Тайл лежить вузол у вузол із сіткою патча, і `a` в ньому — рядок, тобто
 // `y` текстури. Коли патч має власний тайл, `window_step == 1`, зсув нульовий,
 // і всі чотири відліки падають в один вузол — вибірка вироджується в точний
 // `Load`, який тут і був до R7a.
-float sample_height(PatchData patch, uint2 grid)
+float2 sample_tile(PatchData patch, uint2 grid)
 {
     float x = patch.window_origin.x + float(grid.x) * patch.window_step;
     float y = patch.window_origin.y + float(grid.y) * patch.window_step;
@@ -312,68 +332,21 @@ float sample_height(PatchData patch, uint2 grid)
     // сусіда всередині нього. Крок ділить `SIDE` націло, тож затиснута
     // вибірка трапляється рівно на межі, де `tx` або `ty` вже нульові, і на
     // результат не впливає.
-    //
-    // Ореол сюди НЕ входить свідомо: висота поверхні — це сітка патча, а
-    // ореол існує лише для градієнта (R7c). Затиснути по `SIDE`, маючи поруч
-    // `SIDE + 1`, — не втрата: вага там нульова.
     int xi = int(x0);
     int yi = int(y0);
     int xi1 = min(xi + 1, int(SIDE));
     int yi1 = min(yi + 1, int(SIDE));
 
     // `Load` бере (x, y, mip) текстури = (b, a, 0): `b` — стовпець, `a` — рядок.
-    // Обидві координати зсунуті на ореол — це єдине місце, де він видимий.
-    float h00 = float(tiles[patch.tile].Load(int3(yi + HALO, xi + HALO, 0)).x);
-    float h01 = float(tiles[patch.tile].Load(int3(yi1 + HALO, xi + HALO, 0)).x);
-    float h10 = float(tiles[patch.tile].Load(int3(yi + HALO, xi1 + HALO, 0)).x);
-    float h11 = float(tiles[patch.tile].Load(int3(yi1 + HALO, xi1 + HALO, 0)).x);
+    // Зсуву на ореол тут немає: тайл рельєфу — це рівно сітка патча.
+    float2 h00 = float2(tiles[patch.tile].Load(int3(yi, xi, 0)).xy);
+    float2 h01 = float2(tiles[patch.tile].Load(int3(yi1, xi, 0)).xy);
+    float2 h10 = float2(tiles[patch.tile].Load(int3(yi, xi1, 0)).xy);
+    float2 h11 = float2(tiles[patch.tile].Load(int3(yi1, xi1, 0)).xy);
 
-    float top = h00 * (1.0 - ty) + h01 * ty;
-    float bottom = h10 * (1.0 - ty) + h11 * ty;
+    float2 top = h00 * (1.0 - ty) + h01 * ty;
+    float2 bottom = h10 * (1.0 - ty) + h11 * ty;
     return top * (1.0 - tx) + bottom * tx;
-}
-
-// Висота в ДОВІЛЬНІЙ точці тайла — двійник `Terrain::units_at` (R7c).
-//
-// Різниця з `sample_height` рівно одна й вона свідома: тут затискання йде по
-// `SIDE + HALO`, тобто вибірка має право зайти в ореол. Саме заради цього
-// ореол і існує: центральна різниця на краю патча інакше впиралася б у край
-// тайла й давала двом бокам межі різні нахили.
-float units_at(PatchData patch, float x, float y)
-{
-    float x0 = floor(x);
-    float y0 = floor(y);
-    float tx = x - x0;
-    float ty = y - y0;
-
-    int top = int(SIDE) + HALO;
-    int xi = int(x0);
-    int yi = int(y0);
-    int xi1 = min(xi + 1, top);
-    int yi1 = min(yi + 1, top);
-
-    float h00 = float(tiles[patch.tile].Load(int3(yi + HALO, xi + HALO, 0)).x);
-    float h01 = float(tiles[patch.tile].Load(int3(yi1 + HALO, xi + HALO, 0)).x);
-    float h10 = float(tiles[patch.tile].Load(int3(yi + HALO, xi1 + HALO, 0)).x);
-    float h11 = float(tiles[patch.tile].Load(int3(yi1 + HALO, xi1 + HALO, 0)).x);
-
-    float left = h00 * (1.0 - ty) + h01 * ty;
-    float right = h10 * (1.0 - ty) + h11 * ty;
-    return left * (1.0 - tx) + right * tx;
-}
-
-// Нахил поверхні у вузлі — двійник `Terrain::slope_at`.
-float sample_slope(PatchData patch, uint2 grid)
-{
-    float x = patch.window_origin.x + float(grid.x) * patch.window_step;
-    float y = patch.window_origin.y + float(grid.y) * patch.window_step;
-    float d = patch.window_delta;
-
-    float du = units_at(patch, x + d, y) - units_at(patch, x - d, y);
-    float dv = units_at(patch, x, y + d) - units_at(patch, x, y - d);
-
-    float rise = uniforms.detail.y;
-    return sqrt(du * du * rise * rise + dv * dv * rise * rise);
 }
 
 // Хеш трьох цілих у [0, 1) — двійник `engine::detail::hash`.
@@ -494,7 +467,11 @@ VertexOutput vertex_terrain(VertexInput input)
     PatchVertex vertex = vertices[node.index];
     PatchData patch = patches[draw.slot];
 
-    float height = sample_height(patch, node.grid);
+    // Два числа з однієї вибірки: `x` — висота в одиницях зберігання, `y` —
+    // нахил у своїх (`tiles::SLOPE_UNIT`).
+    float2 tile = sample_tile(patch, node.grid);
+    float height = tile.x;
+    float slope = tile.y * uniforms.detail.y;
 
     // Відстань до камери береться по НЕЗСУНУТІЙ вершині, і це не недогляд:
     // `origin` уже camera-relative, тож довжина суми і є відстанню. Рахувати
@@ -507,7 +484,6 @@ VertexOutput vertex_terrain(VertexInput input)
     float3 base_world = patch.origin + mul(uniforms.model, float4(vertex.offset, 0.0)).xyz;
     float distance = length(base_world);
 
-    float slope = sample_slope(patch, node.grid);
     float2 detail = detail_sample(vertex.normal, slope, distance);
 
     // Обидві висоти зсувають вершину вздовж нормалі патча — на ОДИНИЧНІЙ
@@ -549,15 +525,15 @@ float3 shade(float3 normal, float3 albedo)
 
 // Колір у точці колірного тайла, білінійно між чотирма текселями (T3b).
 //
-// Та сама форма, що `sample_height`, і та сама причина: вікно вже перевело
+// Та сама форма, що `sample_tile`, і та сама причина: вікно вже перевело
 // вузол патча в тексель **цього** тайла, а між текселями треба інтерполювати
 // самим — семплер про вікно не знає.
 //
-// Затискання по обох осях до `[0, NODES + 2*HALO − 1]`: у вузлі на самому краю
+// Затискання по обох осях до `[0, NODES + 2*COLOUR_HALO − 1]`: у вузлі на краю
 // ореолу правий сусід уже поза текстурою, а вага його там нульова.
 float3 sample_colour(uint tile, float2 node)
 {
-    float top = float(NODES + 2u * uint(HALO) - 1u);
+    float top = float(NODES + 2u * uint(COLOUR_HALO) - 1u);
     float x = clamp(node.x, 0.0, top);
     float y = clamp(node.y, 0.0, top);
 
@@ -569,7 +545,7 @@ float3 sample_colour(uint tile, float2 node)
     int yi1 = min(yi + 1, int(top));
 
     // `a` — рядок тайла, тобто `y` текстури: той самий порядок, що в
-    // `sample_height`, і переставити його тут означало б транспонувати колір
+    // `sample_tile`, і переставити його тут означало б транспонувати колір
     // відносно рельєфу.
     float3 c00 = colours[tile].Load(int3(yi, xi, 0)).rgb;
     float3 c01 = colours[tile].Load(int3(yi1, xi, 0)).rgb;
