@@ -14,9 +14,11 @@
 //!
 //! Усе, що потребує самого продукту, пропускається без нього.
 
-use dem_cook::cook::build_earth;
+use dem_cook::bmng::Mosaic;
+use dem_cook::cook::{build_earth, build_earth_colour};
 use dem_cook::etopo::{Relief, REFERENCE_M};
 use engine::cubesphere::{self, Patch, SIDE};
+use engine::tiles::{self as tiles, Colour};
 use std::path::{Path, PathBuf};
 
 fn source() -> PathBuf {
@@ -205,4 +207,160 @@ fn the_coastline_lands_where_the_source_has_it() {
             grid.sample_direction_m(unit)
         );
     }
+}
+
+// ── Колір (T7e) ──────────────────────────────────────────────────────────
+
+/// Мозаїка BMNG, або `None` — тоді тест каже, чого бракує, і не падає (Q5).
+fn mosaic() -> Option<Mosaic> {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/bmng/world.topo.bathy.200407.jpg");
+    match Mosaic::read(&path) {
+        Ok(map) => Some(map),
+        Err(_) => {
+            eprintln!(
+                "ПРОПУЩЕНО: немає {}. Як покласти назад — data/bmng/README.md",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
+/// Заголовок кольору Землі несе те, що відрізняє її від Місяця.
+///
+/// Чотири канали, шкала одиниця й **простір sRGB** — останнє нове в форматі
+/// (версія 2). Без цього поля байт «колір» означав би різне для двох тіл, а
+/// дізнатися, яке саме, можна було б лише за кількістю каналів, тобто здогадом.
+#[test]
+fn the_colour_asset_says_what_space_it_is_in() {
+    let Some(map) = mosaic() else { return };
+
+    let colour = build_earth_colour(&map, 1);
+
+    assert_eq!(colour.channels, 4);
+    assert_eq!(colour.scale, 1.0);
+    assert!(colour.srgb);
+
+    let read = Colour::from_bytes(&colour.to_bytes()).expect("свій же файл");
+    assert_eq!(read.srgb, colour.srgb);
+    assert_eq!(read.channels, colour.channels);
+}
+
+/// Кожен вузол кольору — джерело, прочитане іншим шляхом, і саме в sRGB.
+///
+/// Ланцюг тут той самий, що у висот, тож звіряти треба з тією сіткою, яку
+/// вибрав `source_for`, а не з мозаїкою.
+#[test]
+fn every_colour_node_is_the_source_read_a_second_way() {
+    let Some(map) = mosaic() else { return };
+
+    let levels = 2;
+    let colour = build_earth_colour(&map, levels);
+    let chain = map.chain();
+    let rads = chain.iter().map(Mosaic::pixel_rad).collect::<Vec<f64>>();
+    let source = &chain[dem_cook::cook::source_for(&rads, levels - 1)];
+
+    let patch = Patch {
+        face: 3,
+        level: levels - 1,
+        i: 0,
+        j: 1,
+    };
+    let index = tiles::index(colour.levels, &patch).expect("патч у піраміді");
+    for a in (0..=SIDE).step_by(7) {
+        for b in (0..=SIDE).step_by(7) {
+            let linear = source.sample_direction(patch.vertex(a, b, 1.0));
+            for channel in 0..3u32 {
+                let expect = dem_cook::bmng::to_srgb(linear[channel as usize]);
+                let got = colour.node(index, a as i32, b as i32, channel);
+                assert_eq!(got, expect, "вузол ({a}, {b}), канал {channel}");
+            }
+            // Четвертий канал існує лише тому, що трибайтової текстури немає.
+            assert_eq!(colour.node(index, a as i32, b as i32, 3), u8::MAX);
+        }
+    }
+}
+
+/// Те, що читає CPU, лишається лінійним — незалежно від того, як лежить байт.
+///
+/// Це і є причина заводити поле `srgb`: сяйво планети (T6) питає про світло, і
+/// на темному океані різниця між байтом і світлом двадцятикратна.
+#[test]
+fn what_the_cpu_reads_is_linear() {
+    let Some(map) = mosaic() else { return };
+
+    let colour = build_earth_colour(&map, 1);
+    let degrees = std::f64::consts::PI / 180.0;
+    let (lat, lon) = (0.0f64, -140.0 * degrees);
+    let unit = [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()];
+
+    // Нульовий рівень усереднений ланцюгом, тож звіряємо не з мозаїкою, а з
+    // самим тайлом: питання тут не «яке число», а «в якому воно просторі».
+    let (a, b) = (0, 0);
+    let index = tiles::index(
+        colour.levels,
+        &Patch {
+            face: cubesphere::locate(unit).face,
+            level: 0,
+            i: 0,
+            j: 0,
+        },
+    )
+    .expect("нульовий рівень є завжди");
+
+    for channel in 0..3u32 {
+        let byte = f64::from(colour.node(index, a, b, channel)) / 255.0;
+        let linear = colour.reflectance(index, a, b, channel);
+        assert!(
+            linear < byte,
+            "канал {channel}: {linear} не темніший за байт {byte} — sRGB не розкодовано"
+        );
+    }
+}
+
+/// Колір і висота стоять в одному вузлі: море синє там, де воно нижче нуля.
+///
+/// Це та сама перевірка берегової лінії, але вже **між двома ассетами**, а не
+/// між ассетом і джерелом: обидва тайлсети мають однакову геометрію піраміди
+/// й спільний обхід, тож розбіжність тут означала б зсув на пів вузла — саме
+/// те, проти чого спільний `direction` і написаний.
+#[test]
+fn colour_and_height_agree_on_the_shore() {
+    let Some(map) = mosaic() else { return };
+    let Some(grid) = relief() else { return };
+
+    let levels = 3;
+    let colour = build_earth_colour(&map, levels);
+    let terrain = build_earth(&grid, levels);
+
+    let patch = Patch {
+        face: 0,
+        level: levels - 1,
+        i: 2,
+        j: 1,
+    };
+    let ci = tiles::index(colour.levels, &patch).expect("патч у піраміді");
+    let ti = terrain.index(&patch).expect("патч у піраміді");
+
+    let mut agree = 0;
+    let mut total = 0;
+    for a in 0..=SIDE {
+        for b in 0..=SIDE {
+            let height = f64::from(terrain.node(ti, a as i32, b as i32));
+            let blue = colour.node(ci, a as i32, b as i32, 2);
+            let red = colour.node(ci, a as i32, b as i32, 0);
+            if (height < 0.0) == (blue > red) {
+                agree += 1;
+            }
+            total += 1;
+        }
+    }
+
+    let fraction = f64::from(agree) / f64::from(total);
+    assert!(
+        fraction > 0.9,
+        "колір і висота згодні лише на {:.1}% вузлів — тайлсети зсунуті",
+        100.0 * fraction
+    );
 }

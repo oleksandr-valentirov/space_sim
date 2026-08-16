@@ -472,12 +472,15 @@ impl Terrain {
 /// Підпис колірного тайлсета. Окремий файл, а не другий канал у рельєфі.
 pub const COLOUR_MAGIC: [u8; 8] = *b"SSCOL\0\0\0";
 
-/// Версія колірного формату. Починається з одиниці, і це не описка: рельєф
-/// лишається на своїй версії 2 незайманим.
-pub const COLOUR_VERSION: u32 = 1;
+/// Версія колірного формату. Рельєф лишається на своїй версії 2 незайманим.
+///
+/// Версія 2 додала простір відліку (`srgb`): без нього однобайтове поле
+/// «колір» означало б різне для Місяця й Землі, і дізнатися, яке саме, можна
+/// було б лише за кількістю каналів — тобто здогадом (T7e).
+pub const COLOUR_VERSION: u32 = 2;
 
-/// Заголовок кольору: підпис, версія, вузли, рівні, канали, масштаб.
-const COLOUR_HEADER_BYTES: usize = 8 + 4 + 4 + 4 + 4 + 4;
+/// Заголовок кольору: підпис, версія, вузли, рівні, канали, масштаб, простір.
+const COLOUR_HEADER_BYTES: usize = 8 + 4 + 4 + 4 + 4 + 4 + 4;
 
 /// Колір поверхні — та сама піраміда тайлів, що й рельєф (етап T, T2c).
 ///
@@ -522,6 +525,17 @@ pub struct Colour {
     pub channels: u32,
     /// Чому дорівнює відлік 255 — відбивна здатність, безрозмірна.
     pub scale: f32,
+    /// Чи закодовані відліки в sRGB, а не лінійно.
+    ///
+    /// Місяць — ні: WAC несе фізичну відбивну здатність, і в байті лежить
+    /// вона сама. Земля — так: BMNG це картинка для ока, а лінійне значення
+    /// в байті віддало б океану (0.0015) нуль, тобто чорну діру замість води.
+    ///
+    /// Поле, а не домовленість «чотири канали означають sRGB»: обидва
+    /// споживачі мусять знати простір явно — текстура вибирає між
+    /// `Rgba8Unorm` і `Rgba8UnormSrgb`, а [`Colour::reflectance`] розкодовує
+    /// сама, тож усе, що читає CPU, лишається лінійним незалежно від тіла.
+    pub srgb: bool,
     /// Тайли підряд у канонічному порядку — див. [`index`].
     tiles: Vec<u8>,
 }
@@ -537,7 +551,7 @@ impl Colour {
     /// Тайли подаються в канонічному порядку й **разом з ореолом**:
     /// [`STORED`]×[`STORED`] вузлів, рядок за рядком, від вузла `−HALO`, по
     /// `channels` байтів на вузол.
-    pub fn build(levels: u32, channels: u32, scale: f32, grids: &[Vec<u8>]) -> Colour {
+    pub fn build(levels: u32, channels: u32, scale: f32, srgb: bool, grids: &[Vec<u8>]) -> Colour {
         assert!(
             channels == 1 || channels == 4,
             "каналів 1 або 4, не {channels}"
@@ -557,6 +571,7 @@ impl Colour {
             levels,
             channels,
             scale,
+            srgb,
             tiles,
         }
     }
@@ -590,9 +605,24 @@ impl Colour {
     }
 
     /// Відбивна здатність вузла — те саме, що [`Colour::node`], у одиницях
-    /// джерела.
+    /// джерела й **завжди лінійна**.
+    ///
+    /// Якщо тайлсет закодований у sRGB ([`Colour::srgb`]), розкодування
+    /// відбувається тут: споживач на CPU (сяйво планети, T6) питає про
+    /// світло, а не про байт, і різниця між ними на темному океані —
+    /// двадцятикратна.
     pub fn reflectance(&self, index: usize, a: i32, b: i32, channel: u32) -> f64 {
-        f64::from(self.node(index, a, b, channel)) * f64::from(self.scale) / 255.0
+        let unit = f64::from(self.node(index, a, b, channel)) / 255.0;
+        let linear = if self.srgb {
+            if unit <= 0.04045 {
+                unit / 12.92
+            } else {
+                ((unit + 0.055) / 1.055).powf(2.4)
+            }
+        } else {
+            unit
+        };
+        linear * f64::from(self.scale)
     }
 
     /// Відбивна здатність у напрямку `direction` від центра тіла (T6c).
@@ -638,6 +668,7 @@ impl Colour {
         out.extend_from_slice(&self.levels.to_le_bytes());
         out.extend_from_slice(&self.channels.to_le_bytes());
         out.extend_from_slice(&self.scale.to_le_bytes());
+        out.extend_from_slice(&u32::from(self.srgb).to_le_bytes());
         out.extend_from_slice(&self.tiles);
         out
     }
@@ -673,6 +704,11 @@ impl Colour {
             ));
         }
         let scale = f32::from_le_bytes(bytes[24..28].try_into().unwrap());
+        let srgb = match word(28) {
+            0 => false,
+            1 => true,
+            other => return Err(format!("простір відліку {other}: буває 0 або 1")),
+        };
 
         let tiles = bytes[COLOUR_HEADER_BYTES..].to_vec();
         let wanted = count(levels) * Colour::tile_len(channels);
@@ -687,6 +723,7 @@ impl Colour {
             levels,
             channels,
             scale,
+            srgb,
             tiles,
         })
     }
@@ -912,7 +949,7 @@ mod tests {
             }
             grids.push(grid);
         }
-        Colour::build(levels, channels, 0.25, &grids)
+        Colour::build(levels, channels, 0.25, false, &grids)
     }
 
     /// Файл кольору повертає рівно ті вузли, які в нього поклали — включно з
@@ -1000,7 +1037,7 @@ mod tests {
             let mark = if tile < FACES { 40 * tile + 10 } else { 0 };
             grids.push(vec![mark as u8; Colour::tile_len(1)]);
         }
-        let colour = Colour::build(levels, 1, 1.0, &grids);
+        let colour = Colour::build(levels, 1, 1.0, false, &grids);
 
         let axis = [
             ([1.0, 0.0, 0.0], 0),
@@ -1037,7 +1074,7 @@ mod tests {
         }
         let mut grids = vec![vec![0u8; Colour::tile_len(1)]; count(levels)];
         grids[4] = grid; // грань +Z
-        let colour = Colour::build(levels, 1, 1.0, &grids);
+        let colour = Colour::build(levels, 1, 1.0, false, &grids);
 
         // Грань +Z: `u → x`, `v → y`. Отже рампа йде по `x`.
         let low = colour.under([-0.9, 0.0, 1.0], 0);

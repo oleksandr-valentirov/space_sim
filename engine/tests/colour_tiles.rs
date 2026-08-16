@@ -103,7 +103,7 @@ fn latitude_ramp() -> Colour {
             }
         }
     }
-    Colour::build(COLOUR_LEVELS, 1, 0.25, &grids)
+    Colour::build(COLOUR_LEVELS, 1, 0.25, false, &grids)
 }
 
 /// Місяць у кадрі, освітлений з боку камери.
@@ -305,7 +305,7 @@ fn the_tile_boundaries_leave_no_seam() {
 /// Стала мозаїка: та сама одиниця зберігання в кожному вузлі.
 fn plain(value: u8, scale: f32) -> Colour {
     let grids = vec![vec![value; STORED * STORED]; tiles::count(COLOUR_LEVELS)];
-    Colour::build(COLOUR_LEVELS, 1, scale, &grids)
+    Colour::build(COLOUR_LEVELS, 1, scale, false, &grids)
 }
 
 /// Піксель несе саме ту відбивну здатність, яку виміряла мозаїка (T5b).

@@ -141,7 +141,7 @@ fn two_zones() -> Colour {
     }
     // Тайли рівня 0 — по одному на грань, у порядку граней (`tiles::index`).
     assert_eq!(grids.len(), tiles::count(LEVELS));
-    Colour::build(LEVELS, 1, SCALE, &grids)
+    Colour::build(LEVELS, 1, SCALE, false, &grids)
 }
 
 /// Знімальна: одна текстура, один кадр, скільки завгодно сцен.

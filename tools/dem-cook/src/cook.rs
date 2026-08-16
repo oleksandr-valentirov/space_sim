@@ -30,6 +30,7 @@
 //! і CPU поза інтегратором.
 
 use crate::albedo::Albedo;
+use crate::bmng::{self, Mosaic};
 use crate::etopo::{self, Relief};
 use crate::Grid;
 use engine::cubesphere::{Edge, Patch, FACES, SIDE};
@@ -230,7 +231,88 @@ pub fn build_colour(map: &Albedo, levels: u32) -> (Colour, usize) {
             }
         }
     }
-    (Colour::build(levels, 1, SCALE, &grids), saturated)
+    (Colour::build(levels, 1, SCALE, false, &grids), saturated)
+}
+
+/// Скукувати колірний тайлсет Землі з мозаїки BMNG.
+pub fn cook_earth_colour(source: &Path, out: &Path, levels: u32) -> Result<String, String> {
+    let map = Mosaic::read(source)?;
+    let colour = build_earth_colour(&map, levels);
+    let bytes = colour.to_bytes();
+
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(out, &bytes).map_err(|e| format!("{}: {e}", out.display()))?;
+
+    let mean = map.mean();
+    Ok(format!(
+        "{} — {levels} рівнів, {} тайлів, {:.1} МіБ, чотири канали sRGB; \
+         середній колір {:.4} {:.4} {:.4} лінійних",
+        out.display(),
+        tiles::count(levels),
+        bytes.len() as f64 / (1024.0 * 1024.0),
+        mean[0],
+        mean[1],
+        mean[2],
+    ))
+}
+
+/// Піраміда колірних тайлів Землі — без запису на диск, щоб тест звірив двічі.
+///
+/// ## Чотири канали, з яких несе колір три
+///
+/// Трибайтового формату текстури не існує ні в wgpu, ні у Vulkan (T2a), тож
+/// четвертий байт є в будь-якому разі. Він заповнюється `255` і не читається
+/// ніким: маска води виводиться з висоти безкоштовно (`h < 0`), а поле, яке
+/// ніхто не читає, гірше за свою відсутність — тому туди й не кладеться нічого
+/// «про запас».
+///
+/// ## Байт зберігає sRGB, а не лінійне світло
+///
+/// Усе всередині — і білінійна вага, і ланцюг — рахується лінійно
+/// (`bmng::Mosaic`), а в тайл кладеться sRGB-кодований байт. Причина числова:
+/// лінійна яскравість океану — 0.0015, тобто нуль у восьми бітах. Розкодує
+/// його GPU при вибірці (`Rgba8UnormSrgb`), безкоштовно, а на CPU —
+/// `Colour::reflectance`.
+pub fn build_earth_colour(map: &Mosaic, levels: u32) -> Colour {
+    let chain = map.chain();
+    let rads = chain.iter().map(Mosaic::pixel_rad).collect::<Vec<f64>>();
+
+    let mut grids = Vec::with_capacity(tiles::count(levels));
+    for level in 0..levels {
+        let source = &chain[source_for(&rads, level)];
+        let side = 1u32 << level;
+        for face in 0..FACES {
+            for i in 0..side {
+                for j in 0..side {
+                    let patch = Patch { face, level, i, j };
+                    let mut tile = Vec::with_capacity(STORED * STORED * 4);
+                    for a in 0..STORED as isize {
+                        for b in 0..STORED as isize {
+                            let (a, b) = (a - HALO as isize, b - HALO as isize);
+                            let linear = match direction(&patch, a, b) {
+                                Some(unit) => source.sample_direction(unit),
+                                // Кут ореолу: сусіда через ребро там немає, і
+                                // ніхто його не читає (`engine::tiles`).
+                                None => [0.0; 3],
+                            };
+                            for value in linear {
+                                tile.push(bmng::to_srgb(value));
+                            }
+                            tile.push(u8::MAX);
+                        }
+                    }
+                    grids.push(tile);
+                }
+            }
+        }
+    }
+
+    // Шкала одиниця: у байті лежить весь діапазон кольору, і стискати його
+    // нема куди — на відміну від відбивної здатності Місяця, у якої 99.9%
+    // відліків нижчі за 0.2 (`SCALE`).
+    Colour::build(levels, 4, 1.0, true, &grids)
 }
 
 /// Яку сітку ланцюга читає рівень піраміди.

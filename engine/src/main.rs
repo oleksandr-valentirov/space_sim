@@ -592,7 +592,7 @@ fn truncated(colour: &engine::tiles::Colour, levels: u32) -> engine::tiles::Colo
     let grids: Vec<Vec<u8>> = (0..engine::tiles::count(levels))
         .map(|i| colour.tile_bytes(i).to_vec())
         .collect();
-    engine::tiles::Colour::build(levels, colour.channels, colour.scale, &grids)
+    engine::tiles::Colour::build(levels, colour.channels, colour.scale, colour.srgb, &grids)
 }
 
 /// Проліт від поверхні до орбіти (ROADMAP F5).

@@ -7,11 +7,12 @@
 //!     cargo run -p dem-cook                       data/lola  → assets/moon.dem
 //!     cargo run -p dem-cook -- --colour           data/wac   → assets/moon.col
 //!     cargo run -p dem-cook -- --body earth       data/etopo → assets/earth.dem
+//!     cargo run -p dem-cook -- --body earth --colour  data/bmng → assets/earth.col
 //!
 //! Тіло — окремий прапорець, а не окремий бінарник: спільного в них рівно
 //! стільки, скільки й мало б бути — обхід кубосфери й формат тайла.
 
-use dem_cook::cook::{cook, cook_colour, cook_earth};
+use dem_cook::cook::{cook, cook_colour, cook_earth, cook_earth_colour};
 use std::path::PathBuf;
 
 /// Скільки рівнів піраміди висот кукати за замовчуванням.
@@ -89,10 +90,11 @@ fn main() {
             "assets/earth.dem",
             DEFAULT_EARTH_LEVELS,
         ),
-        (true, true) => {
-            eprintln!("колір Землі кукається кроком T7e — його ще немає");
-            std::process::exit(2);
-        }
+        (true, true) => (
+            "data/bmng/world.topo.bathy.200407.jpg",
+            "assets/earth.col",
+            DEFAULT_EARTH_LEVELS,
+        ),
     };
     let source = source.unwrap_or_else(|| PathBuf::from(default_source));
     let out = out.unwrap_or_else(|| PathBuf::from(default_out));
@@ -101,7 +103,8 @@ fn main() {
     let result = match (earth, colour) {
         (false, false) => cook(&source, &out, levels),
         (false, true) => cook_colour(&source, &out, levels),
-        (true, _) => cook_earth(&source, &out, levels),
+        (true, false) => cook_earth(&source, &out, levels),
+        (true, true) => cook_earth_colour(&source, &out, levels),
     };
 
     match result {

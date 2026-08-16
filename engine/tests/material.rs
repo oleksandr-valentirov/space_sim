@@ -146,7 +146,7 @@ fn flat() -> Terrain {
 /// мозаїки була б домішкою до самого виміру.
 fn plain_colour(levels: u32) -> Colour {
     let grids = vec![vec![FLAT_COLOUR; STORED * STORED]; tiles::count(levels)];
-    Colour::build(levels, 1, 0.25, &grids)
+    Colour::build(levels, 1, 0.25, false, &grids)
 }
 
 /// Вузол, над яким стоїть камера.
