@@ -25,6 +25,7 @@ use engine::frame::{self, Frame};
 use engine::gpu::Gpu;
 use engine::scene::{Body, Scene, TileSet};
 use engine::shot::{self, Shot};
+use engine::srgb;
 use engine::tiles::{self, Colour, Terrain, HALO, STORED};
 
 const SIZE: u32 = 256;
@@ -299,4 +300,78 @@ fn the_tile_boundaries_leave_no_seam() {
     );
     assert!(pairs > 5000, "перевірено лише {pairs} пар пікселів");
     assert_eq!(jumps, 0, "знайшлися {jumps} стрибків — це шов між тайлами");
+}
+
+/// Стала мозаїка: та сама одиниця зберігання в кожному вузлі.
+fn plain(value: u8, scale: f32) -> Colour {
+    let grids = vec![vec![value; STORED * STORED]; tiles::count(COLOUR_LEVELS)];
+    Colour::build(COLOUR_LEVELS, 1, scale, &grids)
+}
+
+/// Піксель несе саме ту відбивну здатність, яку виміряла мозаїка (T5b).
+///
+/// Це найпряміший оракул етапу й перший, який взагалі став можливим: до T5b у
+/// шейдері стояла заглушка `terrain.y = 1`, тобто кадр малював **одиниці
+/// зберігання**, а не альбедо, і питати про фізичне число не було сенсу. Тепер
+/// множник — `Colour::scale`, і весь ланцюг перевіряється одним рівнянням.
+///
+/// Фікстура прибирає з дороги все, крім самого альбедо:
+///
+/// * рельєф плаский, тож правило матеріалу дає рівно одиницю;
+/// * мозаїка стала, тож вибірка й вікна нічого не додають;
+/// * світло вздовж погляду, а тіло далеко — у центрі кадру нормаль дивиться
+///   і в камеру, і на світило, тобто дифузний член рівно один, і множники
+///   `0.05 + 0.95·cos` з шейдера в передбачення не входять узагалі.
+///
+/// Лишається `байт = srgb(unit · scale)` — і саме це число тест і порівнює.
+#[test]
+fn the_pixel_carries_the_reflectance_the_mosaic_measured() {
+    let Some(gpu) = gpu() else { return };
+
+    // Три відбивні здатності, що накривають діапазон Місяця: темне море,
+    // типовий матерік, світлий промінь свіжого кратера.
+    for (value, scale) in [(45u8, 0.25f32), (160, 0.25), (255, 0.25)] {
+        let colour = plain(value, scale);
+        let expected_reflectance = colour.reflectance(0, 0, 0, 0);
+        let expected = srgb::linear_to_byte(expected_reflectance);
+
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("reflectance"),
+            size: wgpu::Extent3d {
+                width: SIZE,
+                height: SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: shot::FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut frame = Frame::new(&gpu, shot::FORMAT);
+        let id = frame
+            .load_surface(&gpu, &flat(), Some(&colour))
+            .expect("поверхня мала завантажитись");
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("reflectance"),
+            });
+        let scene = moon(TileSet::Loaded(id), 3.0e5);
+        frame.draw(&gpu, &mut encoder, &view, SIZE, SIZE, &scene);
+        let shot = shot::read_back(&gpu, encoder, &texture, SIZE, SIZE).expect("кадр");
+
+        let got = shot.pixel(SIZE / 2, SIZE / 2)[0];
+        println!(
+            "  одиниця {value} × {scale} = {expected_reflectance:.4}: чекали байт \
+             {expected}, у кадрі {got}"
+        );
+        assert!(
+            got.abs_diff(expected) <= 1,
+            "відбивна здатність {expected_reflectance:.4} мала дати байт \
+             {expected}, а кадр дав {got}"
+        );
+    }
 }
