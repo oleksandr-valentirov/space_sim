@@ -187,7 +187,7 @@ fn place_0( slot_2 : u32,  vertex_1 : ptr<function, PatchVertex_std430_0>,  grid
     var output_0 : VertexOutput_0;
     output_0.tint_0 = 1.0f;
     output_0.colour_tile_1 = patch_0.colour_tile_0;
-    output_0.colour_node_0 = patch_0.colour_origin_0 + vec2<f32>(grid_1) * vec2<f32>(patch_0.colour_step_0) + vec2<f32>(1.0f);
+    output_0.colour_node_0 = patch_0.colour_origin_0 + vec2<f32>(grid_1) * vec2<f32>(patch_0.colour_step_0);
     output_0.position_0 = (((vec4<f32>(world_1, 1.0f)) * (mat4x4<f32>(uniforms_0.projection_0.data_0[i32(0)][i32(0)], uniforms_0.projection_0.data_0[i32(1)][i32(0)], uniforms_0.projection_0.data_0[i32(2)][i32(0)], uniforms_0.projection_0.data_0[i32(3)][i32(0)], uniforms_0.projection_0.data_0[i32(0)][i32(1)], uniforms_0.projection_0.data_0[i32(1)][i32(1)], uniforms_0.projection_0.data_0[i32(2)][i32(1)], uniforms_0.projection_0.data_0[i32(3)][i32(1)], uniforms_0.projection_0.data_0[i32(0)][i32(2)], uniforms_0.projection_0.data_0[i32(1)][i32(2)], uniforms_0.projection_0.data_0[i32(2)][i32(2)], uniforms_0.projection_0.data_0[i32(3)][i32(2)], uniforms_0.projection_0.data_0[i32(0)][i32(3)], uniforms_0.projection_0.data_0[i32(1)][i32(3)], uniforms_0.projection_0.data_0[i32(2)][i32(3)], uniforms_0.projection_0.data_0[i32(3)][i32(3)]))));
     output_0.normal_1 = (((vec4<f32>((*vertex_1).normal_0, 0.0f)) * (mat4x4<f32>(uniforms_0.model_0.data_0[i32(0)][i32(0)], uniforms_0.model_0.data_0[i32(1)][i32(0)], uniforms_0.model_0.data_0[i32(2)][i32(0)], uniforms_0.model_0.data_0[i32(3)][i32(0)], uniforms_0.model_0.data_0[i32(0)][i32(1)], uniforms_0.model_0.data_0[i32(1)][i32(1)], uniforms_0.model_0.data_0[i32(2)][i32(1)], uniforms_0.model_0.data_0[i32(3)][i32(1)], uniforms_0.model_0.data_0[i32(0)][i32(2)], uniforms_0.model_0.data_0[i32(1)][i32(2)], uniforms_0.model_0.data_0[i32(2)][i32(2)], uniforms_0.model_0.data_0[i32(3)][i32(2)], uniforms_0.model_0.data_0[i32(0)][i32(3)], uniforms_0.model_0.data_0[i32(1)][i32(3)], uniforms_0.model_0.data_0[i32(2)][i32(3)], uniforms_0.model_0.data_0[i32(3)][i32(3)])))).xyz;
     output_0.world_0 = world_1;
@@ -444,14 +444,14 @@ fn outward_0( cross_product_0 : vec3<f32>,  sphere_0 : vec3<f32>) -> vec3<f32>
 
 fn sample_colour_0( tile_1 : u32,  node_2 : vec2<f32>) -> vec3<f32>
 {
-    var x_3 : f32 = clamp(node_2.x, 0.0f, 34.0f);
-    var y_2 : f32 = clamp(node_2.y, 0.0f, 34.0f);
+    var x_3 : f32 = clamp(node_2.x, 0.0f, 32.0f);
+    var y_2 : f32 = clamp(node_2.y, 0.0f, 32.0f);
     var xi_1 : i32 = i32(floor(x_3));
     var yi_1 : i32 = i32(floor(y_2));
     var tx_1 : f32 = x_3 - f32(xi_1);
     var ty_1 : f32 = y_2 - f32(yi_1);
-    var _S34 : i32 = min(xi_1 + i32(1), i32(34));
-    var _S35 : i32 = min(yi_1 + i32(1), i32(34));
+    var _S34 : i32 = min(xi_1 + i32(1), i32(32));
+    var _S35 : i32 = min(yi_1 + i32(1), i32(32));
     var _S36 : vec3<i32> = vec3<i32>(yi_1, xi_1, i32(0));
     var _S37 : vec3<i32> = vec3<i32>(_S35, xi_1, i32(0));
     var _S38 : vec3<i32> = vec3<i32>(yi_1, _S34, i32(0));

@@ -156,16 +156,6 @@ StructuredBuffer<PatchDraw> draws;
 static const uint SIDE = 32;
 static const uint NODES = SIDE + 1;
 
-// Ореол **колірного** тайла у вузлах — `engine::tiles::HALO` (R7b). Текстура
-// кольору ширша за сітку патча на дві смуги, тож вузол `(a, b)` патча лежить у
-// текселі `(a + COLOUR_HALO, b + COLOUR_HALO)`.
-//
-// ⚠ Рельєфу це більше не стосується: з версії 4 формату його тайл — рівно
-// сітка патча, бо ореол існував заради градієнта, а градієнт переїхав у кукер
-// (етап W). Дві сітки в одному шейдері — саме те, що ця константа тепер
-// розрізняє.
-static const int COLOUR_HALO = 1;
-
 // Процедурний детайл (R7c). Числа — дослівно `engine::detail`; звіряє їх
 // `engine::tests::detail`, бо константа тут і константа там — два місця.
 static const uint OCTAVES = 6u;
@@ -277,10 +267,9 @@ VertexOutput place(uint slot, PatchVertex vertex, uint2 grid, float3 offset)
     output.tint = 1.0;
     output.colour_tile = patch.colour_tile;
     // Вузол патча → тексель колірного тайла, тим самим вікном, що й у висоти,
-    // але **своїм**. Ореол додається тут, і тільки тут: він лишився рівно
-    // в кольору.
-    output.colour_node = patch.colour_origin + float2(grid) * patch.colour_step
-        + float(COLOUR_HALO);
+    // але **своїм**. Зсуву на ореол тут немає з етапу W: обидва тайли — рівно
+    // сітка патча.
+    output.colour_node = patch.colour_origin + float2(grid) * patch.colour_step;
     output.position = mul(uniforms.projection, float4(world, 1.0));
     // Той самий поворот, що й для зсуву: нормаль, повернута інакше, ніж
     // геометрія, дає освітлення чужого тіла. Радіус у матриці нормаль лише
@@ -529,11 +518,11 @@ float3 shade(float3 normal, float3 albedo)
 // вузол патча в тексель **цього** тайла, а між текселями треба інтерполювати
 // самим — семплер про вікно не знає.
 //
-// Затискання по обох осях до `[0, NODES + 2*COLOUR_HALO − 1]`: у вузлі на краю
-// ореолу правий сусід уже поза текстурою, а вага його там нульова.
+// Затискання по обох осях до `[0, NODES − 1]`: у вузлі на самому краю патча
+// правий сусід уже поза текстурою, а вага його там нульова.
 float3 sample_colour(uint tile, float2 node)
 {
-    float top = float(NODES + 2u * uint(COLOUR_HALO) - 1u);
+    float top = float(NODES - 1u);
     float x = clamp(node.x, 0.0, top);
     float y = clamp(node.y, 0.0, top);
 

@@ -588,9 +588,10 @@ impl Frame {
             }
         }
 
-        // Сітки в двох тайлсетів різні, і це не недогляд: з версії 4 рельєф
-        // ореолу не несе (нахил запечений, градієнт переїхав у кукер), а
-        // колір несе його досі.
+        // Сітка тепер одна на обидва тайлсети — рівно сітка патча: ореол
+        // зник із рельєфу разом із запеченим нахилом (версія 4) і з кольору,
+        // де його ніколи не читали (версія 3). Параметром лишається, бо
+        // текстура однаково мусить знати свій бік.
         let upload = |label, format, side: u32, bytes_per_texel: u32, payload: &[&[u8]]| {
             let mut views = Vec::with_capacity(payload.len());
             for bytes in payload {
@@ -642,7 +643,7 @@ impl Frame {
         // Порожній масив прив'язати не можна, тож тіло без кольору дістає одну
         // текстуру-заглушку — той самий прийом, що й `no_tiles`. Читати її
         // ніхто не буде: `terrain.y` в уніформах лишиться нулем.
-        let blank = vec![0u8; tiles::STORED * tiles::STORED];
+        let blank = vec![0u8; tiles::NODES * tiles::NODES];
         let colour_tiles: Vec<&[u8]> = match colour {
             Some(c) => (0..colour_count).map(|i| c.tile_bytes(i)).collect(),
             None => vec![blank.as_slice()],
@@ -654,7 +655,7 @@ impl Frame {
         let colours = upload(
             "colour tile",
             format,
-            tiles::STORED as u32,
+            tiles::NODES as u32,
             bytes_per_texel,
             &colour_tiles,
         );

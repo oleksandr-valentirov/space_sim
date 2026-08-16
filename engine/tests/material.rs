@@ -36,7 +36,7 @@ use engine::frame::{self, Frame};
 use engine::gpu::Gpu;
 use engine::scene::{Body, Scene, TileSet};
 use engine::shot::{self, Shot};
-use engine::tiles::{self, Colour, Terrain, HALO, STORED};
+use engine::tiles::{self, Colour, Terrain, HALO, NODES, STORED};
 use engine::{detail, material, srgb};
 
 const SIZE: u32 = 256;
@@ -154,7 +154,7 @@ fn flat() -> Terrain {
 /// той тест питає про адресацію, а цей про яскравість, і будь-яка неоднорідність
 /// мозаїки була б домішкою до самого виміру.
 fn plain_colour(levels: u32) -> Colour {
-    let grids = vec![vec![FLAT_COLOUR; STORED * STORED]; tiles::count(levels)];
+    let grids = vec![vec![FLAT_COLOUR; NODES * NODES]; tiles::count(levels)];
     Colour::build(levels, 1, 0.25, false, &grids)
 }
 

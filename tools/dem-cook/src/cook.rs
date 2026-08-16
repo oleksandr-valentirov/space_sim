@@ -34,7 +34,7 @@ use crate::bmng::{self, Mosaic};
 use crate::etopo::{self, Relief};
 use crate::Grid;
 use engine::cubesphere::{Patch, FACES, SIDE};
-use engine::tiles::{self, node_direction, Colour, Terrain, HALO, STORED};
+use engine::tiles::{self, node_direction, Colour, Terrain, HALO, NODES, STORED};
 use std::path::Path;
 
 /// Чому дорівнює відлік 255 у колірному тайлі — відбивна здатність.
@@ -204,7 +204,7 @@ pub fn cook_colour(source: &Path, out: &Path, levels: u32) -> Result<String, Str
     }
     std::fs::write(out, &bytes).map_err(|e| format!("{}: {e}", out.display()))?;
 
-    let nodes = tiles::count(levels) * STORED * STORED;
+    let nodes = tiles::count(levels) * NODES * NODES;
     Ok(format!(
         "{} — {levels} рівнів, {} тайлів, {:.1} МіБ; шкала {SCALE}, насичено \
          {saturated} вузлів з {nodes} ({:.4}%)",
@@ -231,16 +231,13 @@ pub fn build_colour(map: &Albedo, levels: u32) -> (Colour, usize) {
             for i in 0..side {
                 for j in 0..side {
                     let patch = Patch { face, level, i, j };
-                    let mut tile = Vec::with_capacity(STORED * STORED);
-                    for a in 0..STORED as isize {
-                        for b in 0..STORED as isize {
-                            let (a, b) = (a - HALO as isize, b - HALO as isize);
-                            let value = match node_direction(&patch, a, b) {
-                                Some(unit) => source.sample_direction(unit),
-                                // Кут ореолу: сусіда через ребро там немає, і
-                                // ніхто його не читає (`engine::tiles`).
-                                None => 0.0,
-                            };
+                    let mut tile = Vec::with_capacity(NODES * NODES);
+                    for a in 0..NODES {
+                        for b in 0..NODES {
+                            // Ореолу колірний тайл не несе (W4): градієнта в
+                            // кольору немає, а вибірка на краю патча має на
+                            // ньому вагу нуль.
+                            let value = source.sample_direction(patch.vertex(a, b, 1.0));
                             let unit = quantise_colour(value);
                             if unit == u8::MAX {
                                 saturated += 1;
@@ -317,16 +314,10 @@ pub fn build_earth_colour(map: &Mosaic, levels: u32) -> Colour {
             for i in 0..side {
                 for j in 0..side {
                     let patch = Patch { face, level, i, j };
-                    let mut tile = Vec::with_capacity(STORED * STORED * 4);
-                    for a in 0..STORED as isize {
-                        for b in 0..STORED as isize {
-                            let (a, b) = (a - HALO as isize, b - HALO as isize);
-                            let linear = match node_direction(&patch, a, b) {
-                                Some(unit) => source.sample_direction(unit),
-                                // Кут ореолу: сусіда через ребро там немає, і
-                                // ніхто його не читає (`engine::tiles`).
-                                None => [0.0; 3],
-                            };
+                    let mut tile = Vec::with_capacity(NODES * NODES * 4);
+                    for a in 0..NODES {
+                        for b in 0..NODES {
+                            let linear = source.sample_direction(patch.vertex(a, b, 1.0));
                             for value in linear {
                                 tile.push(bmng::to_srgb(value));
                             }

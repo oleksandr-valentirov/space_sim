@@ -11,22 +11,21 @@
 //!    помилки лишають кадр правдоподібним, але не смугастим.
 //! 3. **Шва між тайлами немає.** Рампа неперервна на всій сфері, тож у кадрі
 //!    не має бути жодного стрибка яскравості, більшого за крок самої рампи
-//!    між сусідніми пікселями. Тайл шириною 33 вузли з ореолом накриває
-//!    десятки пікселів, тож забутий ореол чи зсув на пів вузла дали б там
-//!    видиму лінію.
+//!    між сусідніми пікселями. Тайл шириною 33 вузли накриває десятки
+//!    пікселів, тож зсув на пів вузла дав би там видиму лінію.
 //!
 //! Рельєф у всіх трьох — **пласкі нулі**. Питання тут про колір, а гори
 //! домалювали б до яскравості власні тіні, тобто зробили б кожен оракул
 //! нечистим.
 
 use engine::camera::Camera;
-use engine::cubesphere::{Patch, FACES, SIDE};
+use engine::cubesphere::{Patch, FACES};
 use engine::frame::{self, Frame};
 use engine::gpu::Gpu;
 use engine::scene::{Body, Scene, TileSet};
 use engine::shot::{self, Shot};
 use engine::srgb;
-use engine::tiles::{self, Colour, Terrain, HALO, STORED};
+use engine::tiles::{self, Colour, Terrain, NODES, STORED};
 
 const SIZE: u32 = 256;
 const MOON_RADIUS_M: f64 = 1_737_400.0;
@@ -52,19 +51,6 @@ fn flat() -> Terrain {
     Terrain::build(HEIGHT_LEVELS, MOON_RADIUS_M, 0.5, tiles::NO_SEA, &grids)
 }
 
-/// Ореол пофарбований у колір, якого немає в сітці — це **індикатор**.
-///
-/// Причина міряна, а не вигадана. Перша версія фікстури продовжувала рампу й
-/// в ореол, і тоді забутий зсув на `HALO` не ловився **жодним** з трьох
-/// тестів: зсув на один вузол міняє широту на 0.35°, тобто яскравість на
-/// 0.6 одиниці — менше за поріг, за яким взагалі можна відрізнити шов від
-/// самої рампи. Ореол, помітно яскравіший за все інше, робить ту саму помилку
-/// гучною: неправильний зсув малює світлу лінію по кожному ребру патча.
-///
-/// Читатися він при цьому не має ніколи: у вузлі `SIDE` вага ореолу рівно
-/// нульова, а далі вузлів немає.
-const HALO_TRACER: u8 = 255;
-
 /// Колір як функція **широти**: від темного на південному полюсі до світлого
 /// на північному.
 ///
@@ -80,21 +66,14 @@ fn latitude_ramp() -> Colour {
             for i in 0..side {
                 for j in 0..side {
                     let patch = Patch { face, level, i, j };
-                    let mut tile = Vec::with_capacity(STORED * STORED);
-                    for a in 0..STORED as isize {
-                        for b in 0..STORED as isize {
-                            let (a, b) = (a - HALO as isize, b - HALO as isize);
-                            let inside = |v: isize| (0..=SIDE as isize).contains(&v);
-                            if !inside(a) || !inside(b) {
-                                tile.push(HALO_TRACER);
-                                continue;
-                            }
-                            let unit = patch.vertex(a as usize, b as usize, 1.0);
+                    let mut tile = Vec::with_capacity(NODES * NODES);
+                    for a in 0..NODES {
+                        for b in 0..NODES {
+                            let unit = patch.vertex(a, b, 1.0);
                             let z = unit[2] / (unit.iter().map(|v| v * v).sum::<f64>()).sqrt();
                             // 0.1 … 0.9 від полюса до полюса: краї шкали
                             // лишаються вільними, щоб квантування не впиралося
-                            // в нуль чи 255 — тобто щоб сітку не можна було
-                            // сплутати з ореолом.
+                            // ні в нуль, ні в 255.
                             tile.push((255.0 * (0.5 + 0.4 * z)) as u8);
                         }
                     }
@@ -304,7 +283,7 @@ fn the_tile_boundaries_leave_no_seam() {
 
 /// Стала мозаїка: та сама одиниця зберігання в кожному вузлі.
 fn plain(value: u8, scale: f32) -> Colour {
-    let grids = vec![vec![value; STORED * STORED]; tiles::count(COLOUR_LEVELS)];
+    let grids = vec![vec![value; NODES * NODES]; tiles::count(COLOUR_LEVELS)];
     Colour::build(COLOUR_LEVELS, 1, scale, false, &grids)
 }
 
@@ -378,8 +357,8 @@ fn the_pixel_carries_the_reflectance_the_mosaic_measured() {
 
 /// Стала чотириканальна мозаїка в sRGB — те, що несе Земля (T7e).
 fn plain_rgba(rgb: [u8; 3]) -> Colour {
-    let mut tile = Vec::with_capacity(STORED * STORED * 4);
-    for _ in 0..STORED * STORED {
+    let mut tile = Vec::with_capacity(NODES * NODES * 4);
+    for _ in 0..NODES * NODES {
         tile.extend_from_slice(&[rgb[0], rgb[1], rgb[2], u8::MAX]);
     }
     let grids = vec![tile; tiles::count(COLOUR_LEVELS)];

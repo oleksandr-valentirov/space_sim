@@ -59,10 +59,12 @@
 //! довелося б рахувати затиснутим індексом, а це дало б на двох боках межі
 //! різні нахили — тобто тріщину рівно там, де R2b її прибрав.
 //!
-//! ⚠ **Але у файл ореол більше не їде.** Він був потрібен градієнту, градієнт
-//! переїхав у кукер, і читати ореол після цього нема кому: висота його ніколи
-//! не брала (вибірка свідомо затиснута по сітці патча). Отже [`STORED`] — це
-//! форма **входу**, а [`NODES`] — форма файлу й текстури.
+//! ⚠ **Але у файл ореол більше не їде — у жоден із двох.** Він був потрібен
+//! градієнту, градієнт переїхав сюди, і читати ореол після цього нема кому:
+//! висота його ніколи не брала (вибірка свідомо затиснута по сітці патча), а
+//! колір мав його лише тому, що ділив сітку з рельєфом. Отже [`STORED`] — це
+//! форма **входу цієї функції**, а [`NODES`] — форма обох файлів і обох
+//! текстур.
 //!
 //! Кути ореолу (`(−1, −1)` і решта трьох) не заповнюються нічим осмисленим і
 //! ніким не читаються: на куті куба сходяться три патчі, а центральна різниця
@@ -106,15 +108,17 @@ pub const NO_SEA: f32 = f32::MIN;
 /// Скільки вузлів на бік тайла — стільки ж, скільки в сітки патча.
 pub const NODES: usize = SIDE + 1;
 
-/// Ширина ореолу у вузлах (R7b). Один: центральна різниця питає рівно про
-/// сусіда, і платити за другий нема за що.
+/// Ширина ореолу у вузлах (R7b) — **на вході** [`Terrain::build`], не у файлі.
+/// Один: центральна різниця питає рівно про сусіда, і платити за другий нема
+/// за що.
 pub const HALO: usize = 1;
 
 /// Скільки вузлів на бік має сітка, яку приймає [`Terrain::build`] — патч
 /// разом з ореолом.
 ///
-/// ⚠ Це форма **входу кукера**, а не файлу: з версії 4 ореол у тайл не
-/// потрапляє (див. вступ модуля). Форма файлу й текстури — [`NODES`].
+/// ⚠ Це форма **входу кукера висот**, і більше нічого: у файл ореол не їде з
+/// версії 4, а колірний тайлсет його не має з версії 3 свого формату. Форма
+/// обох файлів і обох текстур — [`NODES`].
 pub const STORED: usize = NODES + 2 * HALO;
 
 /// Скільки нахилу лежить в одиниці зберігання.
@@ -680,7 +684,7 @@ impl Terrain {
         let mut out = Vec::with_capacity(HEADER_BYTES + self.tiles.len());
         out.extend_from_slice(&MAGIC);
         out.extend_from_slice(&VERSION.to_le_bytes());
-        out.extend_from_slice(&(STORED as u32).to_le_bytes());
+        out.extend_from_slice(&(NODES as u32).to_le_bytes());
         out.extend_from_slice(&self.levels.to_le_bytes());
         out.extend_from_slice(&self.reference_m.to_le_bytes());
         out.extend_from_slice(&self.scale_m.to_le_bytes());
@@ -705,10 +709,9 @@ impl Terrain {
             ));
         }
         let nodes = word(12) as usize;
-        if nodes != STORED {
+        if nodes != NODES {
             return Err(format!(
-                "тайл на {nodes} вузлів, а патч з ореолом має {STORED} — сітки \
-                 не збігаються"
+                "тайл на {nodes} вузлів, а сітка патча має {NODES} — не збігаються"
             ));
         }
         let levels = word(16);
@@ -738,12 +741,13 @@ impl Terrain {
 /// Підпис колірного тайлсета. Окремий файл, а не другий канал у рельєфі.
 pub const COLOUR_MAGIC: [u8; 8] = *b"SSCOL\0\0\0";
 
-/// Версія колірного формату. Рельєф лишається на своїй версії 2 незайманим.
+/// Версія колірного формату — своя, незалежна від версії рельєфу.
 ///
 /// Версія 2 додала простір відліку (`srgb`): без нього однобайтове поле
 /// «колір» означало б різне для Місяця й Землі, і дізнатися, яке саме, можна
-/// було б лише за кількістю каналів — тобто здогадом (T7e).
-pub const COLOUR_VERSION: u32 = 2;
+/// було б лише за кількістю каналів — тобто здогадом (T7e). Версія 3 викинула
+/// ореол (етап W, W4).
+pub const COLOUR_VERSION: u32 = 3;
 
 /// Заголовок кольору: підпис, версія, вузли, рівні, канали, масштаб, простір.
 const COLOUR_HEADER_BYTES: usize = 8 + 4 + 4 + 4 + 4 + 4 + 4;
@@ -759,10 +763,10 @@ const COLOUR_HEADER_BYTES: usize = 8 + 4 + 4 + 4 + 4 + 4 + 4;
 /// роздути висоти нічим, — або нести дірки. Спільною лишається геометрія
 /// піраміди, і вона справді спільна: вільні функції вгорі цього файлу.
 ///
-/// Версія рельєфу при цьому **не росте**. Підпис інший (`SSCOL` проти
-/// `SSDEM`), тож переплутати файли неможливо, а підняти `VERSION` до 3
-/// означало б відкинути кожен уже скукований `.dem` заради зміни, якої в
-/// ньому немає.
+/// **Версії в них теж окремі, і ростуть незалежно.** Підпис різний (`SSCOL`
+/// проти `SSDEM`), тож переплутати файли неможливо, а спільна версія означала б,
+/// що зміна в одному відкидає скуковані файли другого — заради зміни, якої в
+/// них немає. Сьогодні це видно числами: рельєф на версії 4, колір на 3.
 ///
 /// ## Чому один канал, і що станеться з Землею
 ///
@@ -809,14 +813,18 @@ pub struct Colour {
 impl Colour {
     /// Скільки байтів займає один тайл.
     pub fn tile_len(channels: u32) -> usize {
-        STORED * STORED * channels as usize
+        NODES * NODES * channels as usize
     }
 
     /// Зібрати набір із готових тайлів — шлях кукера.
     ///
-    /// Тайли подаються в канонічному порядку й **разом з ореолом**:
-    /// [`STORED`]×[`STORED`] вузлів, рядок за рядком, від вузла `−HALO`, по
-    /// `channels` байтів на вузол.
+    /// Тайли подаються в канонічному порядку: [`NODES`]×[`NODES`] вузлів,
+    /// рядок за рядком, по `channels` байтів на вузол.
+    ///
+    /// ⚠ Ореолу тут немає й ніколи не було потрібно (версія 3, W4). Він жив у
+    /// кольору лише тому, що обидва тайлсети ділили одну сітку з рельєфом, а
+    /// рельєфу він був потрібен для градієнта. Читав його й там ніхто:
+    /// білінійна вибірка на самому краю патча має на ньому вагу рівно нуль.
     pub fn build(levels: u32, channels: u32, scale: f32, srgb: bool, grids: &[Vec<u8>]) -> Colour {
         assert!(
             channels == 1 || channels == 4,
@@ -850,22 +858,15 @@ impl Colour {
 
     /// Відлік вузла тайла в одиницях зберігання.
     ///
-    /// Індекси зі знаком, від `−HALO` до `SIDE + HALO`, як у рельєфу: сітка
-    /// патча — це `0..=SIDE`, решта — ореол. Зсув на `HALO` робиться тут і
-    /// більше ніде.
+    /// Індекси — координати патча, `0..=SIDE`, як у рельєфу.
     pub fn node(&self, index: usize, a: i32, b: i32, channel: u32) -> u8 {
         assert!(channel < self.channels, "канал {channel} поза тайлом");
-        let shift = |v: i32| {
-            let v = v + HALO as i32;
-            assert!(
-                (0..STORED as i32).contains(&v),
-                "вузол {} поза тайлом з ореолом",
-                v - HALO as i32
-            );
+        let check = |v: i32| {
+            assert!((0..NODES as i32).contains(&v), "вузол {v} поза тайлом");
             v as usize
         };
         let at = index * Colour::tile_len(self.channels)
-            + (shift(a) * STORED + shift(b)) * self.channels as usize
+            + (check(a) * NODES + check(b)) * self.channels as usize
             + channel as usize;
         self.tiles[at]
     }
@@ -899,8 +900,7 @@ impl Colour {
     ///
     /// Береться з **найгрубішого** рівня піраміди, і це та сама причина, що в
     /// [`Colour::under`]: джерело тут — уся видима півсфера, і дрібніший рівень
-    /// обіцяв би точність, якої в задачі немає. Ореол не входить: він копія
-    /// сусіда, і його вузли порахувалися б двічі.
+    /// обіцяв би точність, якої в задачі немає.
     ///
     /// ⚠ **Середнє незважене, тобто по вузлах, а не по площі.** Рівнокутна
     /// кубосфера розтягує клітинку до кута грані приблизно вдвічі, тож кути
@@ -970,7 +970,7 @@ impl Colour {
         let mut out = Vec::with_capacity(COLOUR_HEADER_BYTES + self.tiles.len());
         out.extend_from_slice(&COLOUR_MAGIC);
         out.extend_from_slice(&COLOUR_VERSION.to_le_bytes());
-        out.extend_from_slice(&(STORED as u32).to_le_bytes());
+        out.extend_from_slice(&(NODES as u32).to_le_bytes());
         out.extend_from_slice(&self.levels.to_le_bytes());
         out.extend_from_slice(&self.channels.to_le_bytes());
         out.extend_from_slice(&self.scale.to_le_bytes());
@@ -995,10 +995,9 @@ impl Colour {
             ));
         }
         let nodes = word(12) as usize;
-        if nodes != STORED {
+        if nodes != NODES {
             return Err(format!(
-                "тайл на {nodes} вузлів, а патч з ореолом має {STORED} — сітки \
-                 не збігаються"
+                "тайл на {nodes} вузлів, а сітка патча має {NODES} — не збігаються"
             ));
         }
         let levels = word(16);
@@ -1438,8 +1437,8 @@ mod tests {
         let mut grids = Vec::with_capacity(count(levels));
         for index in 0..count(levels) {
             let mut grid = Vec::with_capacity(Colour::tile_len(channels));
-            for a in 0..STORED {
-                for b in 0..STORED {
+            for a in 0..NODES {
+                for b in 0..NODES {
                     for c in 0..channels as usize {
                         grid.push((index * 7 + a * 13 + b * 31 + c * 61) as u8);
                     }
@@ -1461,10 +1460,9 @@ mod tests {
             assert_eq!(read.channels, channels);
             assert_eq!(read.scale, 0.25);
 
-            let edge = (SIDE + HALO) as i32;
             for index in 0..count(2) {
-                for a in [-(HALO as i32), 0, 1, SIDE as i32, edge] {
-                    for b in [-(HALO as i32), 0, 1, SIDE as i32, edge] {
+                for a in [0, 1, SIDE as i32 / 2, SIDE as i32] {
+                    for b in [0, 1, SIDE as i32 / 2, SIDE as i32] {
                         for c in 0..channels {
                             assert_eq!(
                                 read.node(index, a, b, c),
@@ -1565,9 +1563,9 @@ mod tests {
     fn inside_one_face_the_sample_moves_with_the_direction() {
         let levels = 1;
         let mut grid = vec![0u8; Colour::tile_len(1)];
-        for a in 0..STORED {
-            for b in 0..STORED {
-                grid[a * STORED + b] = (a * 255 / (STORED - 1)) as u8;
+        for a in 0..NODES {
+            for b in 0..NODES {
+                grid[a * NODES + b] = (a * 255 / (NODES - 1)) as u8;
             }
         }
         let mut grids = vec![vec![0u8; Colour::tile_len(1)]; count(levels)];
