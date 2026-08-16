@@ -25,10 +25,62 @@
 //! Повний розбір формату — це бібліотека, а не двадцять рядків, і жодного
 //! з її решти можливостей тут ніхто не покличе.
 
+pub mod albedo;
 pub mod cook;
 
 use std::collections::HashMap;
 use std::path::Path;
+
+/// Дробові індекси відліку для широти й довготи, **радіани**.
+///
+/// Спільна для обох джерел — LOLA і LROC WAC, — і саме тому винесена з
+/// [`Grid`]: сітки різні (цілі пів метра проти дійсної відбивної здатності),
+/// а **реєстрація однакова**, і помилитись у ній можна рівно один раз на весь
+/// проєкт. Дві копії розійшлися б на четвертій правці, а зсув на півклітинки
+/// дає карту, яка виглядає правильно й стоїть не там.
+///
+/// Сітка пікселе-реєстрована: центр першого відліку лежить не на краю
+/// діапазону, а на півклітинки всередині. Звідси `− 0.5` в обох формулах —
+/// той самий зсув, який етикетка LOLA називає `LINE_PROJECTION_OFFSET = 359.5`
+/// і `SAMPLE_PROJECTION_OFFSET = 719.5`. Забути його означає зсунути всю карту
+/// на пів клітинки джерела.
+pub fn index_of(per_degree: f64, lat: f64, lon: f64) -> (f64, f64) {
+    let degrees = 180.0 / std::f64::consts::PI;
+    let line = (90.0 - lat * degrees) * per_degree - 0.5;
+    let sample = (lon * degrees).rem_euclid(360.0) * per_degree - 0.5;
+    (line, sample)
+}
+
+/// Білінійна вибірка з циліндричної сітки: чотири сусіди, вага за дробовою
+/// частиною індексу.
+///
+/// Білінійно, а не найближчим: тайл кубосфери падає на цю сітку під довільним
+/// кутом, і сходинки найближчого сусіда стали б видимими рівно там, де тайл
+/// дрібніший за клітинку джерела.
+///
+/// Саме значення дістає викликач — `value(рядок, відлік)`; загортання по
+/// довготі й затискання по широті лишаються його ж роботою, бо це властивість
+/// сітки, а не інтерполяції.
+pub fn bilinear(per_degree: f64, lat: f64, lon: f64, value: impl Fn(i64, i64) -> f64) -> f64 {
+    let (line, sample) = index_of(per_degree, lat, lon);
+    let (l0, s0) = (line.floor(), sample.floor());
+    let (tl, ts) = (line - l0, sample - s0);
+    let (l0, s0) = (l0 as i64, s0 as i64);
+
+    let top = value(l0, s0) * (1.0 - ts) + value(l0, s0 + 1) * ts;
+    let bottom = value(l0 + 1, s0) * (1.0 - ts) + value(l0 + 1, s0 + 1) * ts;
+    top * (1.0 - tl) + bottom * tl
+}
+
+/// Широта й довгота напрямку (не обов'язково одиничного), радіани.
+///
+/// Напрямок, а не пара кутів, приходить від кубосфери, і переклад мусить жити
+/// в одному місці — тут, поруч із самими сітками.
+pub fn lat_lon(direction: [f64; 3]) -> (f64, f64) {
+    let [x, y, z] = direction;
+    let flat = (x * x + y * y).sqrt();
+    (z.atan2(flat), y.atan2(x))
+}
 
 /// Сітка висот у простій циліндричній проєкції.
 ///
@@ -56,7 +108,7 @@ pub struct Grid {
 }
 
 /// Значення ключа етикетки — усе, що після `=` до кінця рядка.
-fn label_values(text: &str) -> HashMap<String, String> {
+pub(crate) fn label_values(text: &str) -> HashMap<String, String> {
     let mut out = HashMap::new();
     for line in text.lines() {
         let Some((key, value)) = line.split_once('=') else {
@@ -81,7 +133,7 @@ fn label_values(text: &str) -> HashMap<String, String> {
 }
 
 /// Число з поля етикетки: `21008`, `0.5`, `1737400.`, `7580.84 <m/pix>`.
-fn number(values: &HashMap<String, String>, key: &str) -> Result<f64, String> {
+pub(crate) fn number(values: &HashMap<String, String>, key: &str) -> Result<f64, String> {
     let raw = values
         .get(key)
         .ok_or_else(|| format!("в етикетці немає {key}"))?;
@@ -176,44 +228,20 @@ impl Grid {
     }
 
     /// Дробові індекси відліку для широти й довготи, **радіани**.
-    ///
-    /// Сітка пікселе-реєстрована: центр першого відліку лежить не на краю
-    /// діапазону, а на півклітинки всередині. Звідси `− 0.5` в обох
-    /// формулах — той самий зсув, який етикетка називає
-    /// `LINE_PROJECTION_OFFSET = 359.5` і `SAMPLE_PROJECTION_OFFSET = 719.5`.
-    /// Забути його означає зсунути всю карту на 3.8 км.
     pub fn index_of(&self, lat: f64, lon: f64) -> (f64, f64) {
-        let degrees = 180.0 / std::f64::consts::PI;
-        let line = (90.0 - lat * degrees) * self.per_degree - 0.5;
-        let sample = (lon * degrees).rem_euclid(360.0) * self.per_degree - 0.5;
-        (line, sample)
+        crate::index_of(self.per_degree, lat, lon)
     }
 
     /// Висота в довільній точці, білінійно між чотирма відліками.
-    ///
-    /// Білінійно, а не найближчим: тайл кубосфери падає на цю сітку під
-    /// довільним кутом, і сходинки найближчого сусіда стали б видимими
-    /// рівно там, де тайл дрібніший за клітинку джерела.
     pub fn sample_m(&self, lat: f64, lon: f64) -> f64 {
-        let (line, sample) = self.index_of(lat, lon);
-        let (l0, s0) = (line.floor(), sample.floor());
-        let (tl, ts) = (line - l0, sample - s0);
-        let (l0, s0) = (l0 as i64, s0 as i64);
-
-        let h = |dl: i64, ds: i64| self.height_m(l0 + dl, s0 + ds);
-        let top = h(0, 0) * (1.0 - ts) + h(0, 1) * ts;
-        let bottom = h(1, 0) * (1.0 - ts) + h(1, 1) * ts;
-        top * (1.0 - tl) + bottom * tl
+        crate::bilinear(self.per_degree, lat, lon, |line, sample| {
+            self.height_m(line, sample)
+        })
     }
 
     /// Висота в напрямку `direction` (не обов'язково одиничному), метри.
-    ///
-    /// Напрямок, а не пара кутів: кубосфера оперує напрямками, і переклад
-    /// у широту-довготу мусить жити в одному місці — тут, де поруч стоїть
-    /// сама сітка.
     pub fn sample_direction_m(&self, direction: [f64; 3]) -> f64 {
-        let [x, y, z] = direction;
-        let flat = (x * x + y * y).sqrt();
-        self.sample_m(z.atan2(flat), y.atan2(x))
+        let (lat, lon) = crate::lat_lon(direction);
+        self.sample_m(lat, lon)
     }
 }
