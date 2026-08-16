@@ -59,10 +59,7 @@ fn header_from_label() {
         header.per_degree
     );
     assert_eq!(header.corner_deg, (-180.0, 90.0));
-    assert!(
-        header.covers_globe(),
-        "the grid must cover the whole globe"
-    );
+    assert!(header.covers_globe(), "the grid must cover the whole globe");
 }
 
 /// A truncated label is no less a valid TIFF for the header, but not for the

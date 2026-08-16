@@ -169,12 +169,11 @@ fn the_handle_can_be_shared_between_threads() {
 
     let first = eph.body_state(4, 0.0).unwrap().r.x;
     for handle in handles {
-        let got = handle.join().expect("the thread should not have panicked").unwrap();
-        assert_eq!(
-            got.to_bits(),
-            first.to_bits(),
-            "concurrent reads diverged"
-        );
+        let got = handle
+            .join()
+            .expect("the thread should not have panicked")
+            .unwrap();
+        assert_eq!(got.to_bits(), first.to_bits(), "concurrent reads diverged");
     }
 }
 
@@ -311,10 +310,7 @@ fn propagation_matches_the_raw_call_bit_for_bit() {
     }
 
     assert_eq!(run.filled, raw_count, "sample count");
-    assert!(
-        run.filled > 0,
-        "a run with no samples proves nothing"
-    );
+    assert!(run.filled > 0, "a run with no samples proves nothing");
     for (i, (safe, raw)) in samples[..run.filled]
         .iter()
         .zip(raw_samples[..raw_count].iter())
@@ -384,7 +380,10 @@ fn events_come_back_as_events() {
     let dy = run.final_state.r.y - earth.r.y;
     let dz = run.final_state.r.z - earth.r.z;
     let r = (dx * dx + dy * dy + dz * dz).sqrt();
-    assert!(r < VESSEL_DX, "periapsis must be closer than the start: {r} m");
+    assert!(
+        r < VESSEL_DX,
+        "periapsis must be closer than the start: {r} m"
+    );
 }
 
 /// Altitude arrives as altitude, not as distance (ROADMAP K7c).
@@ -480,7 +479,10 @@ fn altitude_is_measured_from_the_surface() {
 fn a_body_without_a_size_answers_zero() {
     let eph = load();
 
-    assert!(eph.body_radius(EARTH) > 0.0, "Earth has a radius in the fixture");
+    assert!(
+        eph.body_radius(EARTH) > 0.0,
+        "Earth has a radius in the fixture"
+    );
     assert_eq!(eph.body_radius(-1), 0.0, "negative body index");
     assert_eq!(eph.body_radius(999), 0.0, "index past the list");
 }
@@ -555,7 +557,10 @@ fn stitched_legs_are_the_same_trajectory() {
         assert!(n_legs < 1000, "the legs never end -- no progress");
     }
 
-    assert!(n_legs > 1, "a four-sample buffer should have sliced the run");
+    assert!(
+        n_legs > 1,
+        "a four-sample buffer should have sliced the run"
+    );
     assert!(
         same_bits(&state, &single.final_state),
         "the trajectory diverged"

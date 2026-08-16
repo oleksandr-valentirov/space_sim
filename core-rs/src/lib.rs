@@ -468,7 +468,10 @@ pub struct Stm(pub [f64; STM_LEN]);
 impl Stm {
     /// dy_i(t_end) / dy_j(t0), state in the order `(x, y, z, vx, vy, vz)`.
     pub fn get(&self, row: usize, col: usize) -> f64 {
-        assert!(row < 6 && col < 6, "STM is 6x6, but ({row}, {col}) was asked for");
+        assert!(
+            row < 6 && col < 6,
+            "STM is 6x6, but ({row}, {col}) was asked for"
+        );
         self.0[row * 6 + col]
     }
 

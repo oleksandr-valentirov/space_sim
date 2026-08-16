@@ -200,7 +200,13 @@ pub const EARTH_COLOUR_ASSET: &str = "assets/earth.col";
 /// D12 was: terrain that supposedly exists while the screen shows none, and
 /// nobody knows why.
 pub fn load_moon_terrain(gpu: &Gpu, frame: &mut Frame) -> Option<engine::scene::TerrainId> {
-    load_surface(gpu, frame, "the Moon", MOON_TERRAIN_ASSET, MOON_COLOUR_ASSET)
+    load_surface(
+        gpu,
+        frame,
+        "the Moon",
+        MOON_TERRAIN_ASSET,
+        MOON_COLOUR_ASSET,
+    )
 }
 
 /// Loads Earth's surface into the frame (T7g) -- by the same path as the
@@ -291,8 +297,12 @@ pub fn build_world(options: &Options) -> Result<World, String> {
     // vessels. Nobody needs them together, and silently combining them would
     // mean measuring a third scene.
     if options.stations > 0 {
-        return mission::fleet(&options.asset, options.stations)
-            .map_err(|e| format!("the fleet does not build ({}): {e}", options.asset.display()));
+        return mission::fleet(&options.asset, options.stations).map_err(|e| {
+            format!(
+                "the fleet does not build ({}): {e}",
+                options.asset.display()
+            )
+        });
     }
 
     let build = if options.demo_plan {
@@ -300,8 +310,12 @@ pub fn build_world(options: &Options) -> Result<World, String> {
     } else {
         mission::world
     };
-    build(&options.asset)
-        .map_err(|e| format!("the world does not build ({}): {e}", options.asset.display()))
+    build(&options.asset).map_err(|e| {
+        format!(
+            "the world does not build ({}): {e}",
+            options.asset.display()
+        )
+    })
 }
 
 pub fn run(options: Options) -> Result<(), String> {

@@ -382,7 +382,11 @@ fn propagation_matches_the_c_oracle_bit_for_bit() {
     let oracle_ends = tagged(&records, "end");
 
     assert!(!oracle_samples.is_empty(), "the oracle gave no sample");
-    assert_eq!(oracle_runs.len(), 2, "the oracle should have given two runs");
+    assert_eq!(
+        oracle_runs.len(),
+        2,
+        "the oracle should have given two runs"
+    );
     assert_eq!(oracle_ends.len(), 2);
 
     unsafe {
@@ -491,13 +495,20 @@ fn propagation_matches_the_c_oracle_bit_for_bit() {
         // Not only "matched the oracle" but "the thing asked for happened":
         // had the event not fired, both sides would equally have reached t_end
         // and the comparison would have passed silently.
-        assert_eq!(stop, CORE_STOP_EVENT, "the event should have stopped the run");
+        assert_eq!(
+            stop, CORE_STOP_EVENT,
+            "the event should have stopped the run"
+        );
         assert_eq!(event, 0);
 
         let run = &oracle_runs[1];
         assert_eq!(run.values[1] as i32, stop);
         assert_eq!(run.values[2] as i32, event);
-        assert_eq!(run.values[3].to_bits(), step.to_bits(), "step after the event");
+        assert_eq!(
+            run.values[3].to_bits(),
+            step.to_bits(),
+            "step after the event"
+        );
         same_bits(&oracle_ends[1].state(0), &final_state, "state at the event");
 
         // --- prop_run_stm (ROADMAP K8) --------------------------------
@@ -612,7 +623,10 @@ fn propagation_matches_the_c_oracle_bit_for_bit() {
             .filter(|k| k / 6 != k % 6)
             .map(|k| phi[k].abs())
             .sum();
-        assert!(off_diagonal > 1.0, "the STM looks like the identity: {phi:?}");
+        assert!(
+            off_diagonal > 1.0,
+            "the STM looks like the identity: {phi:?}"
+        );
 
         // --- A vessel feeling air (ROADMAP K7b) -------------------------
         //
@@ -662,10 +676,7 @@ fn propagation_matches_the_c_oracle_bit_for_bit() {
         assert_eq!(result, CORE_OK);
 
         let run = &oracle_drag_run[0];
-        assert_eq!(
-            run.values[0] as usize, count,
-            "sample count under drag"
-        );
+        assert_eq!(run.values[0] as usize, count, "sample count under drag");
         assert_eq!(run.values[3].to_bits(), step.to_bits(), "step under drag");
         same_bits(
             &oracle_drag_end[0].state(0),
@@ -789,7 +800,11 @@ fn lambert_matches_the_c_oracle_bit_for_bit() {
 fn lambert_refusals_cross_the_boundary() {
     let records = records_from(ORACLE_PLANNING);
     let refused = tagged(&records, "lerr");
-    assert_eq!(refused.len(), 2, "the oracle should have given two rejections");
+    assert_eq!(
+        refused.len(),
+        2,
+        "the oracle should have given two rejections"
+    );
 
     let r1 = core_sys::Vec3d {
         x: 1.4959787e11,
@@ -820,7 +835,11 @@ fn lambert_refusals_cross_the_boundary() {
 
     for (label, got, expected) in [
         ("n_revs = 1", many_revs, refused[0].values[0] as i32),
-        ("collinear r1 and r2", collinear, refused[1].values[0] as i32),
+        (
+            "collinear r1 and r2",
+            collinear,
+            refused[1].values[0] as i32,
+        ),
     ] {
         assert_eq!(
             got, expected,
@@ -1035,7 +1054,11 @@ fn cr3bp_crosses_the_boundary_unchanged() {
     // line is precisely the case easily mistaken for a failure, which is why
     // it is in the oracle and here.
     let zvc = tagged(&records, "zvc");
-    assert_eq!(zvc.len(), 2, "the oracle should have given both sides of the gate");
+    assert_eq!(
+        zvc.len(),
+        2,
+        "the oracle should have given both sides of the gate"
+    );
     for row in zvc {
         let (c, result_c, r_c) = (row.values[0], row.values[1] as i32, row.values[2]);
         let mut r = 0.0;
@@ -1084,7 +1107,11 @@ fn the_synodic_frame_crosses_the_boundary_whole() {
     let records = oracle_records();
     let syn = tagged(&records, "syn");
     let fri = tagged(&records, "fri");
-    assert_eq!(syn.len(), fri.len(), "the oracle should have given a pair per instant");
+    assert_eq!(
+        syn.len(),
+        fri.len(),
+        "the oracle should have given a pair per instant"
+    );
     assert!(!syn.is_empty());
 
     unsafe {

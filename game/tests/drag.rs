@@ -56,11 +56,13 @@ fn low_orbit_world(cd: f64) -> World {
     // for the ephemeris rather than for the mission (`mission::world` does the
     // same).
     let t0 = 86_400.0;
-    let mut world =
-        World::new(&mission::default_asset(), mission::config(), t0, 1.0).expect("the world builds");
+    let mut world = World::new(&mission::default_asset(), mission::config(), t0, 1.0)
+        .expect("the world builds");
 
     let eph = world.ephemeris();
-    let earth = eph.body_state(EARTH, t0).expect("Earth is within the asset");
+    let earth = eph
+        .body_state(EARTH, t0)
+        .expect("Earth is within the asset");
 
     // Earth's mean radius in the asset is 6371010 m
     // (core/cook/cook_fixture.c). It is needed here only to end up inside the

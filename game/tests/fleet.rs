@@ -29,7 +29,9 @@ fn every_station_flies_its_own_orbit() {
     let world = build();
     let eph = world.ephemeris();
     let start = mission::start();
-    let earth = eph.body_state(EARTH, start.t).expect("Earth is in the asset");
+    let earth = eph
+        .body_state(EARTH, start.t)
+        .expect("Earth is in the asset");
 
     // The halo stays first -- the rest of the game rests on it.
     assert_eq!(world.vessels().len(), STATIONS + 1);
@@ -80,7 +82,9 @@ fn every_station_starts_circular_at_its_shell() {
     let world = build();
     let eph = world.ephemeris();
     let start = mission::start();
-    let earth = eph.body_state(EARTH, start.t).expect("Earth is in the asset");
+    let earth = eph
+        .body_state(EARTH, start.t)
+        .expect("Earth is in the asset");
     let mu = eph.body_mu(EARTH);
     let surface = eph.body_radius(EARTH);
 

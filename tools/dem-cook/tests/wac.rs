@@ -217,7 +217,9 @@ fn a_special_value_stops_the_reader() {
     let result = Albedo::read(&path);
     std::fs::remove_file(&path).ok();
 
-    let message = result.expect_err("the reader must have refused").to_string();
+    let message = result
+        .expect_err("the reader must have refused")
+        .to_string();
     assert!(
         message.contains("1 PDS3 special values"),
         "wrong message: {message}"

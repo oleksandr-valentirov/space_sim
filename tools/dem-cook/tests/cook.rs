@@ -223,7 +223,8 @@ fn the_halo_holds_the_neighbours_own_node() {
                         for along in 0..=SIDE {
                             let (there, na, nb) = patch.halo_node(edge, along);
                             let theirs = node(
-                                tiles::index(LEVELS, &there).expect("neighbour in the same pyramid"),
+                                tiles::index(LEVELS, &there)
+                                    .expect("neighbour in the same pyramid"),
                                 na as i32,
                                 nb as i32,
                             );

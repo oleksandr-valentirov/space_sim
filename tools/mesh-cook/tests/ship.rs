@@ -36,9 +36,7 @@ fn number(value: &Value, key: &str) -> f64 {
 }
 
 fn triple(value: &Value, key: &str) -> [f64; 3] {
-    let list = value[key]
-        .as_array()
-        .unwrap_or_else(|| panic!("no {key}"));
+    let list = value[key].as_array().unwrap_or_else(|| panic!("no {key}"));
     [
         list[0].as_f64().unwrap(),
         list[1].as_f64().unwrap(),
@@ -62,7 +60,10 @@ fn the_volume_is_the_one_blender_measured() {
     let cooked = ship();
     let expected = number(&oracle(), "volume_m3");
     let off = (cooked.volume_m3 - expected).abs() / expected.abs();
-    println!("  volume: {} against {expected} ({off:.2e})", cooked.volume_m3);
+    println!(
+        "  volume: {} against {expected} ({off:.2e})",
+        cooked.volume_m3
+    );
     assert!(
         off < 1e-6,
         "volume diverged: {} against {expected}",
@@ -244,12 +245,12 @@ fn the_paint_lands_where_the_model_put_it() {
             assert!(off < 0.09, "yellow outside the porthole: {point:?}, {off}");
         }
     }
-    println!("  red vertices: {} on the nose, {} on the tail", red.0, red.1);
-    println!("  yellow vertices: {yellow}");
-    assert!(
-        red.0 > 0 && red.1 > 0,
-        "red was found on one side only"
+    println!(
+        "  red vertices: {} on the nose, {} on the tail",
+        red.0, red.1
     );
+    println!("  yellow vertices: {yellow}");
+    assert!(red.0 > 0 && red.1 > 0, "red was found on one side only");
     assert!(yellow > 0, "there is no yellow at all");
 }
 
@@ -332,7 +333,10 @@ fn both_index_types_read_the_same() {
         meshes.push(cooked.model.mesh.indices.clone());
         std::fs::remove_dir_all(&folder).ok();
     }
-    assert_eq!(meshes[0], meshes[1], "the index types gave different triangles");
+    assert_eq!(
+        meshes[0], meshes[1],
+        "the index types gave different triangles"
+    );
     assert_eq!(meshes[0], vec![0, 1, 2]);
 }
 
@@ -353,9 +357,6 @@ fn a_bin_that_disagrees_with_the_json_is_an_error() {
 
     let message = mesh_cook::cook(&path).expect_err("the divergence should have been an error");
     println!("  {message}");
-    assert!(
-        message.contains("diverged"),
-        "wrong message: {message}"
-    );
+    assert!(message.contains("diverged"), "wrong message: {message}");
     std::fs::remove_dir_all(&folder).ok();
 }

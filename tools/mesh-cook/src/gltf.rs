@@ -72,7 +72,9 @@ pub fn load(path: &Path) -> Result<Loaded, String> {
     let primitive = &primitive[0];
     if let Some(mode) = primitive.get("mode").and_then(Value::as_u64) {
         if mode != 4 {
-            return Err(format!("mode {mode}, but the reader understands only triangles (4)"));
+            return Err(format!(
+                "mode {mode}, but the reader understands only triangles (4)"
+            ));
         }
     }
 
@@ -158,7 +160,9 @@ fn read_buffers(root: &Value, folder: &Path) -> Result<Vec<Vec<u8>>, String> {
             .and_then(Value::as_str)
             .ok_or_else(|| format!("buffer {k} has no uri: embedded data is not read"))?;
         if uri.starts_with("data:") {
-            return Err(format!("buffer {k} is embedded in JSON, but a .bin is expected"));
+            return Err(format!(
+                "buffer {k} is embedded in JSON, but a .bin is expected"
+            ));
         }
         let path = folder.join(uri);
         let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -201,10 +205,10 @@ fn view<'a>(
         .get("componentType")
         .and_then(Value::as_u64)
         .ok_or("accessor without componentType")?;
-    let index = a
-        .get("bufferView")
-        .and_then(Value::as_u64)
-        .ok_or("accessor without bufferView: sparse accessors are not read")? as usize;
+    let index =
+        a.get("bufferView")
+            .and_then(Value::as_u64)
+            .ok_or("accessor without bufferView: sparse accessors are not read")? as usize;
     let offset = a.get("byteOffset").and_then(Value::as_u64).unwrap_or(0) as usize;
 
     let v = root
@@ -217,9 +221,9 @@ fn view<'a>(
         .and_then(Value::as_u64)
         .map(|v| v as usize)
         .unwrap_or(element_bytes);
-    let bytes = buffers
-        .get(buffer)
-        .ok_or_else(|| format!("bufferView {index} points at buffer {buffer}, which does not exist"))?;
+    let bytes = buffers.get(buffer).ok_or_else(|| {
+        format!("bufferView {index} points at buffer {buffer}, which does not exist")
+    })?;
 
     let start = view_offset + offset;
     let need = start + (count - 1) * stride + element_bytes;

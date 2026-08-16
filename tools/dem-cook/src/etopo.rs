@@ -127,7 +127,10 @@ impl Header {
 
         let tie = doubles(decoder, TAG_TIEPOINT, "ModelTiepoint")?;
         if tie.len() < 6 {
-            return Err(format!("ModelTiepoint has {} numbers instead of 6", tie.len()));
+            return Err(format!(
+                "ModelTiepoint has {} numbers instead of 6",
+                tie.len()
+            ));
         }
         // The first triple is the pixel, the second its coordinates. The
         // cooker can read only a tie to the raster corner; any other means a

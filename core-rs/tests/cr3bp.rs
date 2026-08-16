@@ -129,7 +129,10 @@ fn the_jacobi_constant_orders_the_gates_the_way_the_textbook_does() {
         },
         mu,
     );
-    assert!(moving < c1, "motion should have reduced C: {moving:.6} against {c1:.6}");
+    assert!(
+        moving < c1,
+        "motion should have reduced C: {moving:.6} against {c1:.6}"
+    );
     assert!(
         (c1 - moving - 0.01).abs() < 1e-12,
         "C should have dropped by exactly v^2 = 0.01, but dropped by {:.12}",

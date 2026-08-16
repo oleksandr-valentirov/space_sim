@@ -112,7 +112,9 @@ impl Header {
         }
         let bits = number(&values, "SAMPLE_BITS")?;
         if bits != 32.0 {
-            return Err(format!("expected 32 bits per sample, the label says {bits}"));
+            return Err(format!(
+                "expected 32 bits per sample, the label says {bits}"
+            ));
         }
         // One band is not a simplification but the product itself: WAC GLOBAL
         // is shot through a single filter (643 nm). A multi-band mosaic would

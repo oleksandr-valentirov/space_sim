@@ -312,7 +312,10 @@ mod tests {
         let s = Synodic::new(d, [0.1, 0.3, 1.0], l, mu).expect("the basis exists");
 
         let moon = s.apply(d, d);
-        assert!((moon[0] - (1.0 - mu) * l).abs() < 1.0, "the Moon is at {moon:?}");
+        assert!(
+            (moon[0] - (1.0 - mu) * l).abs() < 1.0,
+            "the Moon is at {moon:?}"
+        );
         assert!(
             moon[1].abs() < 1.0 && moon[2].abs() < 1.0,
             "the Moon is at {moon:?}"

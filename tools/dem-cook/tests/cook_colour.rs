@@ -71,7 +71,10 @@ fn cooking_twice_gives_the_same_bytes() {
     );
     // The fixture does not reach the scale: saturation here would mean the
     // test measures clamping rather than quantisation.
-    assert_eq!(saturated, 0, "the fixture saturated -- {SCALE} is too small");
+    assert_eq!(
+        saturated, 0,
+        "the fixture saturated -- {SCALE} is too small"
+    );
 }
 
 /// The tile's colour equals the source's colour in the same direction.

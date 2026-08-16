@@ -107,7 +107,11 @@ fn the_size_of_a_tick_does_not_change_the_numbers() {
 
     for (i, (a, b)) in slow.iter().zip(fast.iter()).enumerate() {
         assert_eq!(a.state.t.to_bits(), b.state.t.to_bits(), "sample {i}: time");
-        assert_eq!(a.state.r.x.to_bits(), b.state.r.x.to_bits(), "sample {i}: x");
+        assert_eq!(
+            a.state.r.x.to_bits(),
+            b.state.r.x.to_bits(),
+            "sample {i}: x"
+        );
         assert_eq!(
             a.state.v.z.to_bits(),
             b.state.v.z.to_bits(),

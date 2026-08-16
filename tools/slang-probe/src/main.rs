@@ -417,7 +417,9 @@ fn verify(pixels: &[u8]) -> Result<(), String> {
     for (label, x, y) in BACKGROUND {
         let got = pixel(*x, *y);
         if got != [0, 0, 0] {
-            problems.push(format!("{label}: should have stayed background, got {got:?}"));
+            problems.push(format!(
+                "{label}: should have stayed background, got {got:?}"
+            ));
         }
     }
 

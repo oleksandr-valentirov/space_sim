@@ -411,8 +411,7 @@ pub fn run(options: &app::Options, days: f64, frames: u32) -> Result<(), String>
                 thinning.cache.len()
             );
 
-            for (overlay, name) in [(Overlay::None, "none"), (Overlay::Panels, "panels")]
-            {
+            for (overlay, name) in [(Overlay::None, "none"), (Overlay::Panels, "panels")] {
                 for (scene, size, label) in [
                     (&scene, &size, "full"),
                     (&thinned, &thinned_size, "thinned"),

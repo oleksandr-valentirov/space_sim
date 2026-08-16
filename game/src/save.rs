@@ -363,7 +363,9 @@ fn state_line(state: &State) -> String {
 }
 
 fn number<'a>(words: &mut impl Iterator<Item = &'a str>, what: &str) -> Result<f64, String> {
-    let word = words.next().ok_or_else(|| format!("{what} without a value"))?;
+    let word = words
+        .next()
+        .ok_or_else(|| format!("{what} without a value"))?;
     let raw = u64::from_str_radix(word, 16).map_err(|_| format!("{what}: '{word}' is not bits"))?;
     Ok(f64::from_bits(raw))
 }
