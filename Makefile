@@ -24,6 +24,8 @@
 #   make cook             перегенерувати ассет-фікстуру (робити свідомо!)
 #   make cook-dem         скукувати тайли рельєфу з data/lola у /assets/
 #   make cook-colour      скукувати колірні тайли з data/wac у /assets/
+#   make model-ship       перебудувати модель корабля в Blender (пише в git!)
+#   make cook-ship        скукувати корабель з assets-src/ у /assets/
 #   make cook ANCHOR_BARYCENTRE=0   те саме, без закріплення баріцентру —
 #                         лише щоб зміряти ефект, у гру їде анкерований ассет
 #   make csv              вивести результати ядра у build/csv/*.csv
@@ -203,7 +205,7 @@ DEP := $(CORE_OBJ:.o=.d) $(OFFLINE_OBJ:.o=.d) $(PLANNING_OBJ:.o=.d) \
 -include $(DEP)
 
 .PHONY: all test unit asan valgrind check-libm determinism determinism-bless \
-        hashes cook cook-dem cook-colour csv plots bench flags clean
+        hashes cook cook-dem cook-colour model-ship cook-ship csv plots bench flags clean
 
 all: $(LIB) $(LIB_OFFLINE) $(LIB_PLANNING)
 
@@ -429,6 +431,29 @@ cook-dem:
 .PHONY: cook-colour
 cook-colour:
 	cargo run --release -p dem-cook -- --colour
+
+# Корабель з Blender (етап T, T5d).
+#
+# Дві цілі, бо інструменти різні й потрібні в різний час. `model-ship` кличе
+# Blender і переписує `assets-src/` — тобто **файли в git**; робити це треба
+# свідомо й дивитись у діф. `cook-ship` лише перекладає вже закомічений
+# експорт у `/assets/`, якого в git немає, і Blender йому не потрібен зовсім.
+#
+# Шлях до Blender — змінною: на цій машині він стоїть через Steam і в `PATH`
+# його немає (скіл `blender-assets`). Свій шлях задавайте так:
+#   make model-ship BLENDER=/шлях/до/blender
+BLENDER ?= $(HOME)/snap/steam/common/.steam/steam/steamapps/common/Blender/blender
+
+.PHONY: model-ship
+model-ship:
+	$(BLENDER) -b --factory-startup -noaudio -P tools/blender/ship.py -- assets-src
+	@echo ""
+	@echo "Перегенеровано assets-src/. Перевірте git diff: у .gltf лежить"
+	@echo "версія Blender, тож діф може бути й без зміни моделі."
+
+.PHONY: cook-ship
+cook-ship:
+	cargo run --release -p mesh-cook
 
 # --- Поставка M0: подивитися очима ----------------------------------------
 #

@@ -542,6 +542,19 @@ impl Frame {
         self.load_surface(gpu, terrain, None)
     }
 
+    /// Замінити корпус корабля скукованою моделлю (етап T, крок T5d3).
+    ///
+    /// Хендла не видає — на відміну від поверхні, тут нема чого вибирати:
+    /// меш у кадрі один. Асета може не бути на диску (`/assets/` не в git),
+    /// і тоді кадр малює процедурну заглушку V1 — рівно як тіло без тайлсета
+    /// малюється своїм кольором.
+    ///
+    /// Масштаб лишається за грою: у файлі меш одиничної висоти, а `height_m`
+    /// і `extent` з нього гра кладе у `Scene::Ship` сама.
+    pub fn load_ship(&mut self, gpu: &Gpu, model: &crate::mesh::Model) {
+        self.ships.load(gpu, &model.mesh);
+    }
+
     /// Рельєф **і колір** одним хендлом (етап T, T3b).
     ///
     /// Одна поверхня — один слот, і не тому, що так менше коду: група
@@ -2503,6 +2516,38 @@ impl Ships {
         }
     }
 
+    /// Замінити геометрію корабля на іншу (етап T, крок T5d3).
+    ///
+    /// Меш у кадрі **один на всі кораблі**, і це не спрощення заради коду:
+    /// у гри сьогодні один тип апарата, а структура, у якої немає другого
+    /// викликача, гірша за свою відсутність (CLAUDE.md). Другий тип корпусу
+    /// приведе за собою і хендл у `Scene::Ship`, як `TileSet::Loaded` — але
+    /// разом із собою, а не наперед.
+    fn load(&mut self, gpu: &Gpu, mesh: &crate::sphere::Mesh) {
+        let index_bytes: Vec<u8> = mesh.indices.iter().flat_map(|i| i.to_le_bytes()).collect();
+        self.index_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ship indices"),
+            size: index_bytes.len() as u64,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        gpu.queue.write_buffer(&self.index_buffer, 0, &index_bytes);
+        self.index_count = mesh.indices.len() as u32;
+        self.vertices_per_ship = mesh.positions.len();
+        self.mesh = mesh.clone();
+
+        // Вершинні буфери перевиділяються тут, а не при першому `upload`:
+        // їхній розмір рахується з `vertices_per_ship`, і лишити старий
+        // означало б писати новий меш у буфер під старий.
+        self.capacity = self.vertices_per_ship;
+        let (position, normal, colour, material, shine) = Ships::buffers(gpu, self.capacity);
+        self.position_buffer = position;
+        self.normal_buffer = normal;
+        self.colour_buffer = colour;
+        self.material_buffer = material;
+        self.shine_buffer = shine;
+    }
+
     fn buffers(
         gpu: &Gpu,
         vertices: usize,
@@ -3117,7 +3162,8 @@ mod tests {
     /// константами тесту.
     #[test]
     fn a_ship_over_a_planet_needs_two_depth_ranges() {
-        let scene = crate::ship_demo::scene_at(0, crate::ship_demo::FRAMES);
+        let scene =
+            crate::ship_demo::scene_at(0, crate::ship_demo::FRAMES, crate::ship_demo::STUB_EXTENT);
         let ranges = Frame::depth_ranges(&scene, 16.0 / 9.0);
 
         assert_eq!(ranges.len(), 2, "діапазонів мало б бути два: {ranges:?}");

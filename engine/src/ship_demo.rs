@@ -25,8 +25,12 @@ use std::path::Path;
 use crate::chase::{self, Chase};
 use crate::frame::Frame;
 use crate::gpu::Gpu;
+use crate::mesh::Model;
 use crate::scene::{Atmosphere, Body, Scene, Ship, TileSet};
 use crate::{ship, shot, sphere};
+
+/// Скукований корпус. Немає його — малюється заглушка V1.
+pub const SHIP_ASSET: &str = "assets/ship.mesh";
 
 /// Висота орбіти демонстрації, метри.
 const ALTITUDE_M: f64 = 400_000.0;
@@ -37,11 +41,18 @@ const RANGE_M: f64 = 14.0;
 pub const FRAMES: u32 = 240;
 pub const FPS: u16 = 60;
 
+/// Радіус обмежувальної сфери заглушки V1 — у частках висоти.
+///
+/// Число з `ship::generate`: стабілізатори виступають до 1.9 найбільшого
+/// радіуса, тобто далі за ніс. Живе тут, а не в `ship`, бо потрібне саме
+/// сцені — як запасне значення, коли моделі на диску немає.
+pub const STUB_EXTENT: f64 = 0.5;
+
 /// Сцена на кадр номер `k` з `frames`.
 ///
 /// Побудована з нуля щокадру навмисно: сцена — це дані, і зонд, який тримав
 /// би її між кадрами, перевіряв би свій кеш, а не кадр.
-pub fn scene_at(k: u32, frames: u32) -> Scene {
+pub fn scene_at(k: u32, frames: u32, extent: f64) -> Scene {
     let phase = 2.0 * std::f64::consts::PI * f64::from(k) / f64::from(frames);
 
     // Місцевий базис на орбіті: `up` — від центра планети.
@@ -64,7 +75,11 @@ pub fn scene_at(k: u32, frames: u32) -> Scene {
         centre,
         orientation: multiply(roll, nose),
         height_m: ship::DEFAULT_HEIGHT_M,
-        extent_m: 0.5 * ship::DEFAULT_HEIGHT_M,
+        // Радіус обмежувальної сфери — властивість **форми**, тож приходить
+        // з моделі, коли вона є (T5d3). На ньому стоять і `near`, і відстань
+        // камери третьої особи, тож брати тут стале число означало б камеру,
+        // яка не помічає, що корпус змінився.
+        extent_m: extent * ship::DEFAULT_HEIGHT_M,
         colour: [0.72, 0.74, 0.78, 1.0],
         roughness: crate::ship::HULL_ROUGHNESS,
         metallic: crate::ship::HULL_METALLIC,
@@ -112,6 +127,37 @@ fn multiply(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
     ]
 }
 
+/// Прочитати скукований корпус, якщо він є (етап T, крок T5d3).
+///
+/// Відсутність асета — не помилка: `/assets/` немає в git, тож на чистому
+/// клоні його й не буде, доки не пройде `make model-ship && make cook-ship`.
+/// Тоді зонд малює процедурну заглушку V1 — рівно як тіло без тайлсета
+/// малюється своїм кольором.
+pub fn hull() -> Option<Model> {
+    let bytes = match std::fs::read(SHIP_ASSET) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("корпусу {SHIP_ASSET} немає ({e}) — малюємо заглушку.");
+            eprintln!("полікувати: make cook-ship");
+            return None;
+        }
+    };
+    match Model::from_bytes(&bytes) {
+        Ok(model) => {
+            println!(
+                "корпус: {SHIP_ASSET}, {} вершин, довжина моделі {:.2} м",
+                model.mesh.positions.len(),
+                model.height_m
+            );
+            Some(model)
+        }
+        Err(e) => {
+            eprintln!("корпус {SHIP_ASSET} не читається ({e}) — малюємо заглушку.");
+            None
+        }
+    }
+}
+
 /// Малює `frames` кадрів і складає їх в анімований PNG.
 pub fn render(gpu: &Gpu, width: u32, height: u32, frames: u32, path: &Path) -> Result<(), String> {
     let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -134,6 +180,14 @@ pub fn render(gpu: &Gpu, width: u32, height: u32, frames: u32, path: &Path) -> R
     // патчів переживає кадр, і зонд міряє те саме, що робить вікно.
     let mut frame = Frame::new(gpu, shot::FORMAT);
 
+    // Корпус з асета, якщо він скукований. Висоту корабля лишає сцена — у
+    // файлі меш одиничний, і скільки метрів у цьому апараті, вирішує гра, не
+    // модель. А от `extent` — властивість форми, і його сцена бере звідти.
+    let hull = hull();
+    if let Some(model) = &hull {
+        frame.load_ship(gpu, model);
+    }
+
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }
@@ -150,8 +204,10 @@ pub fn render(gpu: &Gpu, width: u32, height: u32, frames: u32, path: &Path) -> R
         .map_err(|e| format!("APNG: {e}"))?;
     let mut writer = encoder.write_header().map_err(|e| format!("APNG: {e}"))?;
 
+    let extent = hull.as_ref().map_or(STUB_EXTENT, |model| model.extent);
+
     for k in 0..frames {
-        let scene = scene_at(k, frames);
+        let scene = scene_at(k, frames, extent);
 
         let mut commands = gpu
             .device
