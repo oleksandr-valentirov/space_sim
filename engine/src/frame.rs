@@ -352,11 +352,13 @@ struct Ships {
     position_buffer: wgpu::Buffer,
     normal_buffer: wgpu::Buffer,
     colour_buffer: wgpu::Buffer,
+    material_buffer: wgpu::Buffer,
     capacity: usize,
 
     position_bytes: Vec<u8>,
     normal_bytes: Vec<u8>,
     colour_bytes: Vec<u8>,
+    material_bytes: Vec<u8>,
 }
 
 pub struct Frame {
@@ -2139,6 +2141,14 @@ impl Ships {
             offset: 0,
             shader_location: 2,
         }];
+        // Матеріал — атрибут вершини з тієї самої причини, що й колір: усі
+        // записи в чергу відбуваються ДО проходу, тож з uniform виграв би
+        // останній корабель (J1).
+        let material_attrs = [wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x2,
+            offset: 0,
+            shader_location: 3,
+        }];
 
         let pipeline = gpu
             .device
@@ -2164,6 +2174,11 @@ impl Ships {
                             array_stride: 16,
                             step_mode: wgpu::VertexStepMode::Vertex,
                             attributes: &colour_attrs,
+                        }),
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: 8,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &material_attrs,
                         }),
                     ],
                 },
@@ -2231,7 +2246,7 @@ impl Ships {
 
         let index_count = mesh.indices.len() as u32;
         let vertices_per_ship = mesh.positions.len();
-        let (position_buffer, normal_buffer, colour_buffer) =
+        let (position_buffer, normal_buffer, colour_buffer, material_buffer) =
             Ships::buffers(gpu, vertices_per_ship);
 
         Ships {
@@ -2245,14 +2260,19 @@ impl Ships {
             position_buffer,
             normal_buffer,
             colour_buffer,
+            material_buffer,
             capacity: vertices_per_ship,
             position_bytes: Vec::new(),
             normal_bytes: Vec::new(),
             colour_bytes: Vec::new(),
+            material_bytes: Vec::new(),
         }
     }
 
-    fn buffers(gpu: &Gpu, vertices: usize) -> (wgpu::Buffer, wgpu::Buffer, wgpu::Buffer) {
+    fn buffers(
+        gpu: &Gpu,
+        vertices: usize,
+    ) -> (wgpu::Buffer, wgpu::Buffer, wgpu::Buffer, wgpu::Buffer) {
         let make = |label: &str, stride: usize| {
             gpu.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
@@ -2265,6 +2285,7 @@ impl Ships {
             make("ship positions", 12),
             make("ship normals", 12),
             make("ship colours", 16),
+            make("ship materials", 8),
         )
     }
 
@@ -2277,20 +2298,33 @@ impl Ships {
         if scene.ships.is_empty() {
             return;
         }
-        let sun = narrow_sun(scene);
+        // ⚠ **Світило й нормалі повертаються в КАМЕРНІ осі, і це не смак.**
+        // Позиції вершин корабля вже камерні (`Camera::relative` повертає, а
+        // не лише віднімає), а з T5c шейдер бере з них напрямок на око:
+        // `view = −position`. Отже нормаль і світило, лишені у світових осях,
+        // порівнювалися б з вектором іншого простору — `n·l` тоді просто
+        // неправильний, і жоден тест про «яскравість більша за нуль» цього не
+        // побачив би. До T5c шейдер ока не мав узагалі, тож світові осі там
+        // були самоузгоджені.
+        let sun = {
+            let d = scene.camera.rotate(scene.sun);
+            [d[0], d[1], d[2], 0.0]
+        };
 
         let needed = scene.ships.len() * self.vertices_per_ship;
         if needed > self.capacity {
             self.capacity = needed.next_power_of_two();
-            let (position, normal, colour) = Ships::buffers(gpu, self.capacity);
+            let (position, normal, colour, material) = Ships::buffers(gpu, self.capacity);
             self.position_buffer = position;
             self.normal_buffer = normal;
             self.colour_buffer = colour;
+            self.material_buffer = material;
         }
 
         self.position_bytes.clear();
         self.normal_bytes.clear();
         self.colour_bytes.clear();
+        self.material_bytes.clear();
 
         for ship in &scene.ships {
             let r = rotation(ship.orientation);
@@ -2317,18 +2351,22 @@ impl Ships {
                     self.position_bytes.extend_from_slice(&value.to_le_bytes());
                 }
 
-                let n = turn([
+                // Поворот корабля, а потім у камерні осі — той самий простір,
+                // у якому лежать позиції й світило.
+                let n = scene.camera.rotate(turn([
                     f64::from(normal[0]),
                     f64::from(normal[1]),
                     f64::from(normal[2]),
-                ]);
+                ]));
                 for value in n {
-                    self.normal_bytes
-                        .extend_from_slice(&(value as f32).to_le_bytes());
+                    self.normal_bytes.extend_from_slice(&value.to_le_bytes());
                 }
 
                 for value in ship.colour {
                     self.colour_bytes.extend_from_slice(&value.to_le_bytes());
+                }
+                for value in [ship.roughness, ship.metallic] {
+                    self.material_bytes.extend_from_slice(&value.to_le_bytes());
                 }
             }
         }
@@ -2354,6 +2392,8 @@ impl Ships {
             .write_buffer(&self.normal_buffer, 0, &self.normal_bytes);
         gpu.queue
             .write_buffer(&self.colour_buffer, 0, &self.colour_bytes);
+        gpu.queue
+            .write_buffer(&self.material_buffer, 0, &self.material_bytes);
     }
 
     fn draw(&self, pass: &mut wgpu::RenderPass<'_>, scene: &Scene, index: usize) {
@@ -2366,6 +2406,7 @@ impl Ships {
         pass.set_vertex_buffer(0, self.position_buffer.slice(..));
         pass.set_vertex_buffer(1, self.normal_buffer.slice(..));
         pass.set_vertex_buffer(2, self.colour_buffer.slice(..));
+        pass.set_vertex_buffer(3, self.material_buffer.slice(..));
         pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
         // Виклик на корабель: індекси спільні, зсуває їх `base_vertex`.
@@ -2766,6 +2807,8 @@ mod tests {
             height_m: crate::ship::DEFAULT_HEIGHT_M,
             extent_m: 0.5 * crate::ship::DEFAULT_HEIGHT_M,
             colour: [0.7, 0.7, 0.75, 1.0],
+            roughness: crate::ship::HULL_ROUGHNESS,
+            metallic: crate::ship::HULL_METALLIC,
         });
 
         let with = Frame::near_for(&scene);
@@ -2910,6 +2953,8 @@ mod tests {
                     height_m: height,
                     extent_m: extent,
                     colour: [0.7, 0.7, 0.75, 1.0],
+                    roughness: crate::ship::HULL_ROUGHNESS,
+                    metallic: crate::ship::HULL_METALLIC,
                 });
 
                 let ranges = Frame::depth_ranges(&scene, 16.0 / 9.0);

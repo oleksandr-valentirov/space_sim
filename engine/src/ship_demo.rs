@@ -66,6 +66,8 @@ pub fn scene_at(k: u32, frames: u32) -> Scene {
         height_m: ship::DEFAULT_HEIGHT_M,
         extent_m: 0.5 * ship::DEFAULT_HEIGHT_M,
         colour: [0.72, 0.74, 0.78, 1.0],
+        roughness: crate::ship::HULL_ROUGHNESS,
+        metallic: crate::ship::HULL_METALLIC,
     };
 
     // Камера — та сама третя особа, що в грі (V4), і обходить корабель вона

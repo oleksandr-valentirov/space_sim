@@ -15,6 +15,8 @@ struct VertexOutput_0
     @builtin(position) position_0 : vec4<f32>,
     @location(0) normal_0 : vec3<f32>,
     @location(1) colour_0 : vec4<f32>,
+    @interpolate(flat) @location(2) material_0 : vec2<f32>,
+    @location(3) view_0 : vec3<f32>,
 };
 
 struct vertexInput_0
@@ -22,6 +24,7 @@ struct vertexInput_0
     @location(0) position_1 : vec3<f32>,
     @location(1) normal_1 : vec3<f32>,
     @location(2) colour_1 : vec4<f32>,
+    @location(3) material_1 : vec2<f32>,
 };
 
 @vertex
@@ -31,7 +34,33 @@ fn vertex_main( _S1 : vertexInput_0) -> VertexOutput_0
     output_0.position_0 = (((vec4<f32>(_S1.position_1, 1.0f)) * (mat4x4<f32>(uniforms_0.projection_0.data_0[i32(0)][i32(0)], uniforms_0.projection_0.data_0[i32(1)][i32(0)], uniforms_0.projection_0.data_0[i32(2)][i32(0)], uniforms_0.projection_0.data_0[i32(3)][i32(0)], uniforms_0.projection_0.data_0[i32(0)][i32(1)], uniforms_0.projection_0.data_0[i32(1)][i32(1)], uniforms_0.projection_0.data_0[i32(2)][i32(1)], uniforms_0.projection_0.data_0[i32(3)][i32(1)], uniforms_0.projection_0.data_0[i32(0)][i32(2)], uniforms_0.projection_0.data_0[i32(1)][i32(2)], uniforms_0.projection_0.data_0[i32(2)][i32(2)], uniforms_0.projection_0.data_0[i32(3)][i32(2)], uniforms_0.projection_0.data_0[i32(0)][i32(3)], uniforms_0.projection_0.data_0[i32(1)][i32(3)], uniforms_0.projection_0.data_0[i32(2)][i32(3)], uniforms_0.projection_0.data_0[i32(3)][i32(3)]))));
     output_0.normal_0 = _S1.normal_1;
     output_0.colour_0 = _S1.colour_1;
+    output_0.material_0 = _S1.material_1;
+    output_0.view_0 = (vec3<f32>(0) - _S1.position_1);
     return output_0;
+}
+
+fn fresnel_0( f0_0 : vec3<f32>,  v_dot_h_0 : f32) -> vec3<f32>
+{
+    var t_0 : f32 = saturate(1.0f - v_dot_h_0);
+    return f0_0 + (vec3<f32>(1.0f) - f0_0) * vec3<f32>((t_0 * t_0 * t_0 * t_0 * t_0));
+}
+
+fn distribution_0( n_dot_h_0 : f32,  roughness_0 : f32) -> f32
+{
+    var _S2 : f32 = max(roughness_0, 0.04500000178813934f);
+    var a_0 : f32 = _S2 * _S2;
+    var a2_0 : f32 = a_0 * a_0;
+    var d_0 : f32 = n_dot_h_0 * n_dot_h_0 * (a2_0 - 1.0f) + 1.0f;
+    return a2_0 / (3.14159274101257324f * d_0 * d_0);
+}
+
+fn visibility_0( n_dot_v_0 : f32,  n_dot_l_0 : f32,  roughness_1 : f32) -> f32
+{
+    var _S3 : f32 = max(roughness_1, 0.04500000178813934f);
+    var a_1 : f32 = _S3 * _S3;
+    var a2_1 : f32 = a_1 * a_1;
+    var _S4 : f32 = 1.0f - a2_1;
+    return 0.5f / max(n_dot_l_0 * sqrt(n_dot_v_0 * n_dot_v_0 * _S4 + a2_1) + n_dot_v_0 * sqrt(n_dot_l_0 * n_dot_l_0 * _S4 + a2_1), 1.00000000317107685e-30f);
 }
 
 struct pixelOutput_0
@@ -43,12 +72,38 @@ struct pixelInput_0
 {
     @location(0) normal_2 : vec3<f32>,
     @location(1) colour_2 : vec4<f32>,
+    @interpolate(flat) @location(2) material_2 : vec2<f32>,
+    @location(3) view_1 : vec3<f32>,
 };
 
 @fragment
-fn fragment_main( _S2 : pixelInput_0, @builtin(position) position_2 : vec4<f32>) -> pixelOutput_0
+fn fragment_main( _S5 : pixelInput_0, @builtin(position) position_2 : vec4<f32>) -> pixelOutput_0
 {
-    var _S3 : pixelOutput_0 = pixelOutput_0( vec4<f32>(_S2.colour_2.xyz * vec3<f32>((0.05000000074505806f + 0.94999998807907104f * max(dot(normalize(_S2.normal_2), uniforms_0.light_dir_0.xyz), 0.0f))), 1.0f) );
-    return _S3;
+    var n_0 : vec3<f32> = normalize(_S5.normal_2);
+    var v_0 : vec3<f32> = normalize(_S5.view_1);
+    var l_0 : vec3<f32> = uniforms_0.light_dir_0.xyz;
+    var n_1 : vec3<f32>;
+    if((dot(n_0, v_0)) < 0.0f)
+    {
+        n_1 = (vec3<f32>(0) - n_0);
+    }
+    else
+    {
+        n_1 = n_0;
+    }
+    var n_dot_l_1 : f32 = dot(n_1, l_0);
+    var n_dot_v_1 : f32 = dot(n_1, v_0);
+    if(n_dot_l_1 <= 0.0f)
+    {
+        var _S6 : pixelOutput_0 = pixelOutput_0( vec4<f32>(0.0f, 0.0f, 0.0f, 1.0f) );
+        return _S6;
+    }
+    var h_0 : vec3<f32> = normalize(v_0 + l_0);
+    var roughness_2 : f32 = _S5.material_2.x;
+    var metallic_0 : f32 = _S5.material_2.y;
+    var base_0 : vec3<f32> = _S5.colour_2.xyz;
+    var f_0 : vec3<f32> = fresnel_0(mix(vec3<f32>(0.03999999910593033f), base_0, vec3<f32>(metallic_0)), saturate(dot(v_0, h_0)));
+    var _S7 : pixelOutput_0 = pixelOutput_0( vec4<f32>(((vec3<f32>(1.0f) - f_0) * vec3<f32>((1.0f - metallic_0)) * base_0 / vec3<f32>(3.14159274101257324f) + vec3<f32>((distribution_0(saturate(dot(n_1, h_0)), roughness_2) * visibility_0(n_dot_v_1, n_dot_l_1, roughness_2))) * f_0) * vec3<f32>(n_dot_l_1), 1.0f) );
+    return _S7;
 }
 

@@ -289,6 +289,8 @@ pub fn ship_cost(
             height_m: crate::ship::DEFAULT_HEIGHT_M,
             extent_m: 0.5 * crate::ship::DEFAULT_HEIGHT_M,
             colour: [0.72, 0.74, 0.78, 1.0],
+            roughness: crate::ship::HULL_ROUGHNESS,
+            metallic: crate::ship::HULL_METALLIC,
         });
     }
     measure_scene(gpu, width, height, frames, Overlay::None, &scene)

@@ -172,6 +172,8 @@ mod tests {
             height_m: 2.0 * extent_m,
             extent_m,
             colour: [0.7, 0.7, 0.75, 1.0],
+            roughness: crate::ship::HULL_ROUGHNESS,
+            metallic: crate::ship::HULL_METALLIC,
         }
     }
 

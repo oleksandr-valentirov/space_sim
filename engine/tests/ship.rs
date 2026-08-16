@@ -37,6 +37,8 @@ fn scene_with(orientation: [f64; 4]) -> Scene {
         height_m: ship::DEFAULT_HEIGHT_M,
         extent_m: 0.5 * ship::DEFAULT_HEIGHT_M,
         colour: [0.72, 0.74, 0.78, 1.0],
+        roughness: engine::ship::HULL_ROUGHNESS,
+        metallic: engine::ship::HULL_METALLIC,
     });
     scene
 }
