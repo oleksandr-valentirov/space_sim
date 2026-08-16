@@ -582,14 +582,6 @@ impl Frame {
                 ));
             }
         }
-        if let Some(c) = colour {
-            if c.channels != 1 {
-                return Err(format!(
-                    "{} каналів кольору: кадр читає одноканальні тайли (T3b)",
-                    c.channels
-                ));
-            }
-        }
 
         let side = tiles::STORED as u32;
         let upload = |label, format, bytes_per_texel: u32, payload: &[&[u8]]| {
@@ -646,7 +638,11 @@ impl Frame {
             Some(c) => (0..colour_count).map(|i| c.tile_bytes(i)).collect(),
             None => vec![blank.as_slice()],
         };
-        let colours = upload("colour tile", COLOUR_FORMAT, 1, &colour_tiles);
+        let (format, bytes_per_texel) = match colour {
+            Some(c) => (colour_format(c), c.channels),
+            None => (NO_COLOUR_FORMAT, 1),
+        };
+        let colours = upload("colour tile", format, bytes_per_texel, &colour_tiles);
 
         let height_views: Vec<&wgpu::TextureView> = heights.iter().collect();
         let colour_views: Vec<&wgpu::TextureView> = colours.iter().collect();
@@ -1400,12 +1396,28 @@ const MIN_PATCHES: usize = 64;
 /// пропорційно, тож стеля «про запас» коштувала б пам'яті на кожен тайлсет.
 const MAX_TILES: u32 = 8192;
 
-/// Формат колірного тайла в пам'яті GPU (етап T, T3b).
+/// Формат колірного тайла в пам'яті GPU — рівно те, що лежить в асеті.
 ///
-/// Один канал, як у самому асеті: мозаїка LROC WAC монохромна, і три канали
-/// зберігали б той самий байт тричі. Виміряна ціна цього — 12–16 КіБ на тайл
-/// проти 4 (T2a).
-const COLOUR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
+/// Одноканальний (Місяць): мозаїка LROC WAC монохромна, і три канали
+/// зберігали б той самий байт тричі — 12–16 КіБ на тайл проти 4 (T2a).
+/// Чотириканальний (Земля, T7g): трибайтового формату текстури немає ні в
+/// wgpu, ні у Vulkan, тож четвертий байт існує в будь-якому разі.
+///
+/// **Простір бере з асета** (`Colour::srgb`), а не з кількості каналів:
+/// апаратне розкодування sRGB відбувається при читанні текселя, тобто
+/// `Load` у шейдері вже віддає лінійне значення — і саме тому формат тут
+/// мусить сказати правду про те, що в байті. Помилка в цьому полі не падає
+/// нічим: поверхня просто виходить світлішою чи темнішою, ніж є.
+fn colour_format(colour: &tiles::Colour) -> wgpu::TextureFormat {
+    match (colour.channels, colour.srgb) {
+        (1, _) => wgpu::TextureFormat::R8Unorm,
+        (_, true) => wgpu::TextureFormat::Rgba8UnormSrgb,
+        (_, false) => wgpu::TextureFormat::Rgba8Unorm,
+    }
+}
+
+/// Формат тайла-заглушки для тіла без кольору — найдешевший з можливих.
+const NO_COLOUR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 
 /// Кеш геометрії патчів: слот на патч, спільний для всіх тіл.
 ///
@@ -1770,7 +1782,7 @@ impl Planet {
                     .create_view(&wgpu::TextureViewDescriptor::default())
             };
             let height = one("no terrain", wgpu::TextureFormat::R16Sint);
-            let colour = one("no colour", COLOUR_FORMAT);
+            let colour = one("no colour", NO_COLOUR_FORMAT);
             gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("no terrain"),
                 layout,
@@ -2209,7 +2221,17 @@ impl Planet {
                     // справжнє альбедо давало майже чорний диск. Після T5a
                     // ціль кодує гамму, і причини для заглушки не лишилось:
                     // 0.044 (медіана мозаїки) — це байт 59, а не 11.
-                    terrain: [height_scale, colour.map_or(0.0, |c| c.scale), 0.0, 0.0],
+                    // `z` — скільки каналів у колірному тайлі: один означає
+                    // яскравість (Місяць), чотири — колір (Земля, T7g).
+                    // Шейдер не може спитати про це саму текстуру: у
+                    // bindless-масиві лежать тайли одного тіла, але тип
+                    // ресурсу в WGSL однаковий для обох форматів.
+                    terrain: [
+                        height_scale,
+                        colour.map_or(0.0, |c| c.scale),
+                        colour.map_or(0.0, |c| c.channels as f32),
+                        0.0,
+                    ],
                     // Процедурний детайл (R7c). Гладке тіло дістає нулі: без
                     // тайлів нахилу нема звідки взяти, а деталь без нахилу —
                     // це рівний килим, тобто рівно те, чого крок не робить.

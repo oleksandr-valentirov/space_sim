@@ -112,6 +112,8 @@ struct State {
     /// бути (`make cook-dem` його робить, і в git він не лежить). Гра з
     /// гладким Місяцем — робочий стан, а не помилка.
     moon_terrain: Option<engine::scene::TerrainId>,
+    /// Те саме для Землі (T7g). Друге тіло з тайлами, і воно ж — поріг D19.
+    earth_terrain: Option<engine::scene::TerrainId>,
 
     /// Світ живе у власній нитці; тут лише ручка до неї (`crate::sim`).
     /// Головна нитка світ не рахує й не чіпає — вона його читає.
@@ -169,6 +171,13 @@ pub const MOON_TERRAIN_ASSET: &str = "assets/moon.dem";
 /// самої причини, з якої окремий і формат: піраміди різної глибини (T2c).
 pub const MOON_COLOUR_ASSET: &str = "assets/moon.col";
 
+/// Скукований рельєф Землі й її колір (етап T, T7d і T7e).
+///
+/// Друге тіло з тайлами, і саме на ньому вперше платиться ціна
+/// bindless-масивів за їхнім розміром, а не за намальованим (борг D19).
+pub const EARTH_TERRAIN_ASSET: &str = "assets/earth.dem";
+pub const EARTH_COLOUR_ASSET: &str = "assets/earth.col";
+
 /// Читає рельєф Місяця в кадр (D12).
 ///
 /// **Гучно каже, коли не вийшло, і йде далі.** Три причини не мати рельєфу
@@ -178,10 +187,29 @@ pub const MOON_COLOUR_ASSET: &str = "assets/moon.col";
 /// **тихий** гладкий Місяць був би точно тим, чим D12 і був: рельєфом, який
 /// начебто є, а на екрані його нема, і ніхто не знає чому.
 pub fn load_moon_terrain(gpu: &Gpu, frame: &mut Frame) -> Option<engine::scene::TerrainId> {
-    let bytes = match std::fs::read(MOON_TERRAIN_ASSET) {
+    load_surface(gpu, frame, "Місяця", MOON_TERRAIN_ASSET, MOON_COLOUR_ASSET)
+}
+
+/// Читає поверхню Землі в кадр (T7g) — тим самим шляхом, що й місячну.
+///
+/// Окремої функції не заводиться: відрізняються лише два шляхи й слово у
+/// звіті, а все інше — та сама відсутність, та сама поблажливість і той самий
+/// хендл. Дві копії цього коду розійшлися б на першій же правці.
+pub fn load_earth_terrain(gpu: &Gpu, frame: &mut Frame) -> Option<engine::scene::TerrainId> {
+    load_surface(gpu, frame, "Землі", EARTH_TERRAIN_ASSET, EARTH_COLOUR_ASSET)
+}
+
+fn load_surface(
+    gpu: &Gpu,
+    frame: &mut Frame,
+    whose: &str,
+    terrain_asset: &str,
+    colour_asset: &str,
+) -> Option<engine::scene::TerrainId> {
+    let bytes = match std::fs::read(terrain_asset) {
         Ok(bytes) => bytes,
         Err(e) => {
-            eprintln!("рельєфу Місяця немає ({MOON_TERRAIN_ASSET}: {e}) — малюємо гладкий.");
+            eprintln!("рельєфу {whose} немає ({terrain_asset}: {e}) — малюємо гладкий.");
             eprintln!("полікувати: make cook-dem");
             return None;
         }
@@ -190,7 +218,7 @@ pub fn load_moon_terrain(gpu: &Gpu, frame: &mut Frame) -> Option<engine::scene::
     let terrain = match engine::tiles::Terrain::from_bytes(&bytes) {
         Ok(terrain) => terrain,
         Err(e) => {
-            eprintln!("рельєф {MOON_TERRAIN_ASSET} не читається ({e}) — малюємо гладкий.");
+            eprintln!("рельєф {terrain_asset} не читається ({e}) — малюємо гладкий.");
             return None;
         }
     };
@@ -198,16 +226,16 @@ pub fn load_moon_terrain(gpu: &Gpu, frame: &mut Frame) -> Option<engine::scene::
     // Колір — окремий асет і окрема відсутність (T2c). Немає його — Місяць
     // лишається сірим за `Body::colour`, тобто рівно таким, як до етапу T;
     // гори при цьому нікуди не діваються.
-    let colour = match std::fs::read(MOON_COLOUR_ASSET) {
+    let colour = match std::fs::read(colour_asset) {
         Ok(bytes) => match engine::tiles::Colour::from_bytes(&bytes) {
             Ok(colour) => Some(colour),
             Err(e) => {
-                eprintln!("колір {MOON_COLOUR_ASSET} не читається ({e}) — малюємо сірий.");
+                eprintln!("колір {colour_asset} не читається ({e}) — малюємо сірий.");
                 None
             }
         },
         Err(e) => {
-            eprintln!("кольору Місяця немає ({MOON_COLOUR_ASSET}: {e}) — малюємо сірий.");
+            eprintln!("кольору {whose} немає ({colour_asset}: {e}) — малюємо сірий.");
             eprintln!("полікувати: make cook-colour");
             None
         }
@@ -217,9 +245,9 @@ pub fn load_moon_terrain(gpu: &Gpu, frame: &mut Frame) -> Option<engine::scene::
     let colour_levels = colour.as_ref().map(|c| c.levels);
     match frame.load_surface(gpu, &terrain, colour.as_ref()) {
         Ok(id) => {
-            println!("рельєф Місяця: {MOON_TERRAIN_ASSET}, {levels} рівнів піраміди");
+            println!("рельєф {whose}: {terrain_asset}, {levels} рівнів піраміди");
             if let Some(levels) = colour_levels {
-                println!("колір Місяця: {MOON_COLOUR_ASSET}, {levels} рівнів піраміди");
+                println!("колір {whose}: {colour_asset}, {levels} рівнів піраміди");
             }
             Some(id)
         }
@@ -458,6 +486,7 @@ impl State {
 
         let mut frame = Frame::new(&gpu, target.format());
         let moon_terrain = load_moon_terrain(&gpu, &mut frame);
+        let earth_terrain = load_earth_terrain(&gpu, &mut frame);
         let ui = Ui::new(&gpu, target.format());
         // Приладова палітра (U7c) — раз при старті, а не щокадру: `Style`
         // всередині контексту живе далі сам, а перевстановлення його в кадрі
@@ -491,6 +520,7 @@ impl State {
             language: Language::default(),
             earth_radius_m,
             moon_terrain,
+            earth_terrain,
             orbit: Orbit::at_altitude(mission::CAMERA_ALTITUDE_M),
             sim,
             planner,
@@ -837,6 +867,9 @@ impl State {
         // `view` про кадр не знає, а хендл видає саме кадр.
         if let Some(terrain) = self.moon_terrain {
             view::attach_terrain(&mut scene, &snapshot, MOON, terrain);
+        }
+        if let Some(terrain) = self.earth_terrain {
+            view::attach_terrain(&mut scene, &snapshot, EARTH, terrain);
         }
 
         self.frame.draw(

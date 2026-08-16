@@ -39,7 +39,8 @@ struct Uniforms
     // x — скільки одиниць одиничної сфери в одній одиниці зберігання висоти,
     // тобто `scale_m / radius_m`. y — множник «одиниця зберігання кольору →
     // сірий на екрані»; **нуль у ньому означає, що кольору немає**, і тоді
-    // фрагмент лишається на `colour`. Решта — запас, свідомо нульовий.
+    // фрагмент лишається на `colour`. z — скільки каналів у колірному тайлі:
+    // один (яскравість Місяця) чи чотири (колір Землі, T7g). w — запас.
     float4 terrain;
     // Процедурний детайл (R7c): x — радіус тіла в метрах, y — множник
     // «різниця в одиницях зберігання → нахил» (`Terrain::slope_rise`),
@@ -116,7 +117,7 @@ Texture2D<int> tiles[];
 // рахує `colour_origin`/`colour_step`; UV для семплера довелося б виводити з
 // тих самих чисел, тобто писати ту саму арифметику двічі.
 [[vk::binding(1, 1)]]
-Texture2D<float> colours[];
+Texture2D<float4> colours[];
 
 // Геометрія патча: зсув вершини й нормаль, обидва на ОДИНИЧНІЙ сфері.
 //
@@ -519,7 +520,7 @@ float3 shade(float3 normal, float3 albedo)
 //
 // Затискання по обох осях до `[0, NODES + 2*HALO − 1]`: у вузлі на самому краю
 // ореолу правий сусід уже поза текстурою, а вага його там нульова.
-float sample_colour(uint tile, float2 node)
+float3 sample_colour(uint tile, float2 node)
 {
     float top = float(NODES + 2u * uint(HALO) - 1u);
     float x = clamp(node.x, 0.0, top);
@@ -535,13 +536,13 @@ float sample_colour(uint tile, float2 node)
     // `a` — рядок тайла, тобто `y` текстури: той самий порядок, що в
     // `sample_height`, і переставити його тут означало б транспонувати колір
     // відносно рельєфу.
-    float c00 = colours[tile].Load(int3(yi, xi, 0)).x;
-    float c01 = colours[tile].Load(int3(yi1, xi, 0)).x;
-    float c10 = colours[tile].Load(int3(yi, xi1, 0)).x;
-    float c11 = colours[tile].Load(int3(yi1, xi1, 0)).x;
+    float3 c00 = colours[tile].Load(int3(yi, xi, 0)).rgb;
+    float3 c01 = colours[tile].Load(int3(yi1, xi, 0)).rgb;
+    float3 c10 = colours[tile].Load(int3(yi, xi1, 0)).rgb;
+    float3 c11 = colours[tile].Load(int3(yi1, xi1, 0)).rgb;
 
-    float left = c00 * (1.0 - ty) + c01 * ty;
-    float right = c10 * (1.0 - ty) + c11 * ty;
+    float3 left = c00 * (1.0 - ty) + c01 * ty;
+    float3 right = c10 * (1.0 - ty) + c11 * ty;
     return left * (1.0 - tx) + right * tx;
 }
 
@@ -562,8 +563,13 @@ float3 surface_albedo(VertexOutput input)
     {
         return uniforms.colour.rgb * input.tint;
     }
-    float unit = sample_colour(input.colour_tile, input.colour_node);
-    return float3(unit * uniforms.terrain.y * input.tint);
+    float3 unit = sample_colour(input.colour_tile, input.colour_node);
+    // Одноканальний тайлсет (Місяць) несе яскравість, і читається з нього
+    // рівно перший канал — решта в такій текстурі нулі. Чотириканальний
+    // (Земля) несе колір; sRGB розкодовує апаратура при читанні текселя, тож
+    // сюди він приходить уже лінійним.
+    float3 albedo = uniforms.terrain.z >= 2.0 ? unit : unit.xxx;
+    return albedo * uniforms.terrain.y * input.tint;
 }
 
 [shader("fragment")]

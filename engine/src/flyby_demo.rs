@@ -280,7 +280,7 @@ fn look_along(forward: [f64; 3], up: [f64; 3]) -> [f64; 4] {
 ///
 /// Будується з нуля щокадру навмисно: сцена — це дані, і зонд, який тримав би
 /// її між кадрами, перевіряв би свій кеш, а не кадр.
-pub fn scene_at(k: u32, frames: u32, tiles: TileSet, extent: f64) -> Scene {
+pub fn scene_at(k: u32, frames: u32, tiles: TileSet, earth: TileSet, extent: f64) -> Scene {
     let t = f64::from(k) / f64::from(frames.max(2));
 
     // Рівномірно за **істинною** аномалією: від апогею через перигей і назад.
@@ -339,7 +339,7 @@ pub fn scene_at(k: u32, frames: u32, tiles: TileSet, extent: f64) -> Scene {
         centre: earth_centre(),
         radius_m: sphere::EARTH_RADIUS_M,
         orientation: [1.0, 0.0, 0.0, 0.0],
-        tiles: TileSet::Smooth,
+        tiles: earth,
         colour: frame::COLOUR,
         air: None,
     });
@@ -351,6 +351,10 @@ pub fn scene_at(k: u32, frames: u32, tiles: TileSet, extent: f64) -> Scene {
 pub fn render(gpu: &Gpu, width: u32, height: u32, frames: u32, path: &Path) -> Result<(), String> {
     let mut frame = Frame::new(gpu, shot::FORMAT);
     let surface = load_surface(gpu, &mut frame)?;
+    let earth = match load_earth(gpu, &mut frame) {
+        Some(id) => TileSet::Loaded(id),
+        None => TileSet::Smooth,
+    };
 
     // Корпус з асета, якщо він скукований; інакше заглушка V1.
     let hull = ship_demo::hull();
@@ -393,7 +397,7 @@ pub fn render(gpu: &Gpu, width: u32, height: u32, frames: u32, path: &Path) -> R
     let mut writer = encoder.write_header().map_err(|e| format!("APNG: {e}"))?;
 
     for k in 0..frames {
-        let scene = scene_at(k, frames, TileSet::Loaded(surface), extent);
+        let scene = scene_at(k, frames, TileSet::Loaded(surface), earth, extent);
         let mut commands = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -449,6 +453,22 @@ fn load_surface(gpu: &Gpu, frame: &mut Frame) -> Result<TerrainId, String> {
     let colour = tiles::Colour::from_bytes(&bytes)?;
     frame.load_surface(gpu, &terrain, Some(&colour))
 }
+
+/// Поверхня Землі — **друге** тіло з тайлами в одному кадрі (T7g).
+///
+/// Мовчки повертає `None`, коли асета немає: він поза git (Q5), а зонд має
+/// малюватись і без нього — тоді Земля лишається гладкою кулею, як була до
+/// цього кроку. Це та сама поблажливість, що в `game::app::load_surface`, і
+/// та сама причина: відсутній ассет не є поламаним рушієм.
+fn load_earth(gpu: &Gpu, frame: &mut Frame) -> Option<TerrainId> {
+    let terrain = tiles::Terrain::from_bytes(&std::fs::read(EARTH_TERRAIN_ASSET).ok()?).ok()?;
+    let colour = tiles::Colour::from_bytes(&std::fs::read(EARTH_COLOUR_ASSET).ok()?).ok()?;
+    frame.load_surface(gpu, &terrain, Some(&colour)).ok()
+}
+
+/// Скукована поверхня Землі (T7d, T7e).
+const EARTH_TERRAIN_ASSET: &str = "assets/earth.dem";
+const EARTH_COLOUR_ASSET: &str = "assets/earth.col";
 
 #[cfg(test)]
 mod tests {
@@ -517,7 +537,7 @@ mod tests {
     #[test]
     fn the_ship_points_where_it_flies() {
         for k in [0u32, 37, 180, 300] {
-            let scene = scene_at(k, FRAMES, TileSet::Smooth, 0.647);
+            let scene = scene_at(k, FRAMES, TileSet::Smooth, TileSet::Smooth, 0.647);
             let ship = &scene.ships[0];
             let true_anomaly =
                 std::f64::consts::PI * (2.0 * f64::from(k) / f64::from(FRAMES) - 1.0);
@@ -539,7 +559,7 @@ mod tests {
     #[test]
     fn the_moon_is_in_the_middle_and_the_ship_beside_it() {
         for k in [0u32, 600, 1200, 1800, 2400, 3000] {
-            let scene = scene_at(k, FRAMES, TileSet::Smooth, 0.647);
+            let scene = scene_at(k, FRAMES, TileSet::Smooth, TileSet::Smooth, 0.647);
             let eye = scene.camera.position();
             let to_moon = [-eye[0], -eye[1], -eye[2]];
             let to_ship = {
@@ -571,7 +591,7 @@ mod tests {
     #[test]
     fn the_earth_clears_the_limb_high_up_and_hides_behind_it_low_down() {
         let separation = |k: u32| {
-            let scene = scene_at(k, FRAMES, TileSet::Smooth, 0.647);
+            let scene = scene_at(k, FRAMES, TileSet::Smooth, TileSet::Smooth, 0.647);
             let eye = scene.camera.position();
             let to_moon = [-eye[0], -eye[1], -eye[2]];
             let earth = earth_centre();
@@ -625,7 +645,7 @@ mod tests {
     #[test]
     fn the_camera_moves_without_jerks() {
         let direction = |k: u32| {
-            let scene = scene_at(k % FRAMES, FRAMES, TileSet::Smooth, 0.647);
+            let scene = scene_at(k % FRAMES, FRAMES, TileSet::Smooth, TileSet::Smooth, 0.647);
             unit(scene.camera.position())
         };
         let mut steps = Vec::with_capacity(FRAMES as usize);

@@ -375,3 +375,75 @@ fn the_pixel_carries_the_reflectance_the_mosaic_measured() {
         );
     }
 }
+
+/// Стала чотириканальна мозаїка в sRGB — те, що несе Земля (T7e).
+fn plain_rgba(rgb: [u8; 3]) -> Colour {
+    let mut tile = Vec::with_capacity(STORED * STORED * 4);
+    for _ in 0..STORED * STORED {
+        tile.extend_from_slice(&[rgb[0], rgb[1], rgb[2], u8::MAX]);
+    }
+    let grids = vec![tile; tiles::count(COLOUR_LEVELS)];
+    Colour::build(COLOUR_LEVELS, 4, 1.0, true, &grids)
+}
+
+/// Чотириканальний тайлсет малює свій колір, а не свій перший канал (T7g).
+///
+/// Три речі ловляться однією фікстурою, і кожна з них раніше була неможлива:
+///
+/// 1. **канали не переплутані.** Значення взяті різними навмисно — червоний
+///    менший за синій, як у справжнього океану. Обмін `r` і `b` дає той самий
+///    кадр на будь-якому сірому тесті й видно лише тут;
+/// 2. **sRGB розкодовано рівно один раз.** Байт у тайлі — кодований, апаратура
+///    розкодовує його при читанні текселя, а ціль кодує назад. Отже кадр
+///    мусить повернути **той самий байт**, що лежить в асеті: подвійне
+///    розкодування дало б помітно темніший піксель, жодного — світліший;
+/// 3. **одноканальний тайлсет не зламався.** Гілка за `terrain.z` живе у
+///    фрагментній стадії, і сусідні тести вище перевіряють саме її другу
+///    половину — сірий Місяць лишився сірим.
+#[test]
+fn a_four_channel_tileset_paints_its_own_colour() {
+    let Some(gpu) = gpu() else { return };
+
+    // Океан BMNG: темний, синій, з різними каналами.
+    for rgb in [[5u8, 17, 43], [197, 155, 107]] {
+        let colour = plain_rgba(rgb);
+
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("rgba tiles"),
+            size: wgpu::Extent3d {
+                width: SIZE,
+                height: SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: shot::FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut frame = Frame::new(&gpu, shot::FORMAT);
+        let id = frame
+            .load_surface(&gpu, &flat(), Some(&colour))
+            .expect("поверхня мала завантажитись");
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("rgba tiles"),
+            });
+        let scene = moon(TileSet::Loaded(id), 3.0e5);
+        frame.draw(&gpu, &mut encoder, &view, SIZE, SIZE, &scene);
+        let shot = shot::read_back(&gpu, encoder, &texture, SIZE, SIZE).expect("кадр");
+
+        let got = shot.pixel(SIZE / 2, SIZE / 2);
+        println!("  асет {rgb:?} → кадр [{}, {}, {}]", got[0], got[1], got[2]);
+        for (channel, &in_frame) in got.iter().take(3).enumerate() {
+            let expected = srgb::linear_to_byte(colour.reflectance(0, 0, 0, channel as u32));
+            assert!(
+                in_frame.abs_diff(expected) <= 1,
+                "канал {channel}: чекали {expected}, у кадрі {in_frame}"
+            );
+        }
+    }
+}

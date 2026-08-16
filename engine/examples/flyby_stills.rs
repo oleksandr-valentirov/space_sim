@@ -53,7 +53,13 @@ fn main() -> Result<(), String> {
     // Апогей, покриття Землі, спуск, перигей, підйом — п'ять моментів витка.
     let quarter = flyby_demo::FRAMES / 4;
     for k in [0, 180, quarter, 2 * quarter, 3 * quarter] {
-        let scene = flyby_demo::scene_at(k, flyby_demo::FRAMES, TileSet::Loaded(id), extent);
+        let scene = flyby_demo::scene_at(
+            k,
+            flyby_demo::FRAMES,
+            TileSet::Loaded(id),
+            TileSet::Smooth,
+            extent,
+        );
         let mut commands = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
