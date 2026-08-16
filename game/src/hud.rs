@@ -1,18 +1,21 @@
-//! Панелі, що показують (ROADMAP-UI.md, U2).
+//! The panels that display (ROADMAP-UI.md, U2).
 //!
-//! ## Дві межі, які тут тримаються
+//! ## The two boundaries held here
 //!
-//! **Панель нічого не рахує наперед і нічого не пам'ятає** (правило 1): усе,
-//! що вона показує, виводиться зі снапшоту в цьому ж кадрі. Тому функції тут
-//! беруть снапшот і повертають **команди**, а не надсилають їх: хто надсилає,
-//! той і знає про канал, а панель має знати лише про те, що намальовано.
+//! **A panel computes nothing ahead and remembers nothing** (rule 1):
+//! everything it shows is derived from the snapshot in that same frame. So the
+//! functions here take a snapshot and return **commands** rather than sending
+//! them: whoever sends knows about the channel, while a panel need know only
+//! what was drawn.
 //!
-//! **Панель не кличе ефемериду й не пропагує** (правило 5). Календарна дата —
-//! єдине обчислення тут, і воно з арифметики, а не з ассета.
+//! **A panel does not call the ephemeris and does not propagate** (rule 5).
+//! The calendar date is the only computation here, and it comes from
+//! arithmetic rather than from the asset.
 //!
-//! Наслідок для перевірки: панель малюється в тесті без вікна, а «клік по
-//! паузі кладе рівно `TogglePause` і **нічого більше**» — це порівняння
-//! повернутого вектора, а не спостереження за грою.
+//! The consequence for checking: a panel is drawn in a test without a window,
+//! and "clicking pause puts exactly `TogglePause` and **nothing else**" is a
+//! comparison of the returned vector rather than an observation of the
+//! game.
 
 use engine::egui;
 
@@ -27,28 +30,29 @@ use crate::snapshot::{VesselSnapshot, WorldSnapshot};
 use crate::text::{tr, Key, Language};
 use crate::world::{EARTH, MOON};
 
-/// Секунд у добі. Тут — не фізична стала, а одиниця показу.
+/// Seconds in a day. Here a display unit rather than a physical constant.
 const DAY_S: f64 = 86400.0;
 
-/// Зсув шкали ассета (TT) до UT1, секунди (ROADMAP K3b).
+/// Offset from the asset's scale (TT) to UT1, seconds (ROADMAP K3b).
 ///
-/// Стала, і це записано чесно: реальний TT−UT1 непередбачуваний, бо залежить
-/// від обертання Землі, яке ніхто не гарантує наперед. Отже дата на екрані
-/// точна до секунди-двох на століття — і саме тому вона властивість UI, а не
-/// фізики (у зворотний бік це число не повертається ніколи).
+/// A constant, and that is recorded honestly: the real TT-UT1 is
+/// unpredictable, because it depends on Earth's rotation, which nobody
+/// guarantees in advance. So the date on screen is accurate to a second or two
+/// per century -- which is exactly why it is a property of the UI rather than
+/// of the physics (this number never travels back the other way).
 const TT_MINUS_UT1_S: f64 = 63.8286;
 
-/// Панель часу: доба місії, дата, warp, причина зупинки, кнопки.
+/// The time panel: mission day, date, warp, reason for stalling, buttons.
 ///
-/// Повертає команди в порядку натискання. Порожній вектор — нормальний
-/// результат: гравець просто дивиться.
+/// Returns commands in the order they were pressed. An empty vector is a
+/// normal result: the player is simply looking.
 pub fn time_panel(ui: &mut egui::Ui, language: Language, snapshot: &WorldSnapshot) -> Vec<Command> {
     let mut commands = Vec::new();
 
     let day = (snapshot.t - mission::start().t) / DAY_S;
-    // Пауза читається зі `stall`, а не з warp: `Clock::warp()` віддає
-    // **заданий** множник і в паузі не обнуляється — інакше натиснути «далі»
-    // означало б згадати, на чому зупинились.
+    // Pause is read from `stall` rather than from warp: `Clock::warp()`
+    // returns the **set** multiplier and does not zero on pause -- otherwise
+    // pressing "resume" would mean remembering where you stopped.
     let paused = snapshot.stall == Some(Stall::Paused);
 
     ui.heading(tr(language, Key::Time));
@@ -60,8 +64,8 @@ pub fn time_panel(ui: &mut egui::Ui, language: Language, snapshot: &WorldSnapsho
     ui.label(calendar(snapshot.t));
     ui.label(format!("{} ×{:.0}", tr(language, Key::Warp), snapshot.warp));
 
-    // Причина зупинки — словами. Мовчазне підгальмовування виглядає як
-    // зламана гра, а не як «прогноз ще рахується».
+    // The reason for stalling, in words. Silently easing off looks like a
+    // broken game rather than "the prediction is still computing".
     if let Some(stall) = snapshot.stall {
         ui.label(tr(
             language,
@@ -89,34 +93,34 @@ pub fn time_panel(ui: &mut egui::Ui, language: Language, snapshot: &WorldSnapsho
     commands
 }
 
-/// Сталі адреси кнопок панелі часу.
+/// Stable ids for the time panel's buttons.
 ///
-/// Потрібні не грі, а перевірці: без них тест шукав би кнопку підібраними
-/// пікселями, і від першої зміни відступів почав би клікати в порожнечу,
-/// лишаючись зеленим. Підпис для цього не годиться — він змінюється разом
-/// із мовою.
+/// Needed by the checks rather than by the game: without them a test would
+/// hunt for a button by guessed pixels, and from the first change of spacing
+/// would start clicking into emptiness while staying green. A label will not
+/// do for this -- it changes with the language.
 pub const PAUSE: &str = "hud.time.pause";
 pub const SLOWER: &str = "hud.time.slower";
 pub const FASTER: &str = "hud.time.faster";
 
-/// Кнопка зі сталою адресою.
+/// A button with a stable id.
 ///
-/// egui дає віджетам автоматичні `Id`, відтворити які ззовні не можна, тож
-/// поверх намальованої кнопки заводиться друга взаємодія — з нашим іменем і
-/// тим самим прямокутником. Вона й вирішує, чи був клік: зареєстрована
-/// пізніше, тобто лежить зверху.
+/// egui gives widgets automatic `Id`s that cannot be reproduced from outside,
+/// so a second interaction is registered over the drawn button -- with our own
+/// name and the same rectangle. It is what decides whether a click happened:
+/// registered later, i.e. lying on top.
 fn button(ui: &mut egui::Ui, id: &str, label: &str) -> bool {
     let drawn = ui.button(label);
     ui.interact(drawn.rect, egui::Id::new(id), egui::Sense::click())
         .clicked()
 }
 
-/// Панель розкладу: маркери подій, клік по рядку — перемотати туди
+/// The schedule panel: event markers, clicking a row seeks there
 /// (ROADMAP-UI.md, U3b).
 ///
-/// Показуються лише події **попереду курсора**: минуле вже пролетіли, а назад
-/// курсор не ходить (J-етап), тож рядок «перицентр учора» був би кнопкою, яка
-/// завжди відмовляє.
+/// Only events **ahead of the cursor** are shown: the past has been flown and
+/// the cursor does not go backwards (stage J), so a "periapsis yesterday" row
+/// would be a button that always refuses.
 pub fn schedule_panel(
     ui: &mut egui::Ui,
     language: Language,
@@ -141,14 +145,14 @@ pub fn schedule_panel(
             },
         );
         let label = format!(
-            "{name}: +{:.2} діб, {:.0} км",
+            "{name}: +{:.2} days, {:.0} km",
             (marker.t - now) / DAY_S,
             marker.distance_m / 1000.0
         );
 
-        // Адреса рядка — його порядковий номер у списку маркерів, а не час:
-        // час — `f64`, і як частина `Id` він перетворив би найменше уточнення
-        // інтерполяції на інший віджет.
+        // A row's id is its ordinal in the marker list rather than its time:
+        // time is an `f64`, and as part of an `Id` it would turn the smallest
+        // refinement of the interpolation into a different widget.
         if button(ui, &format!("{SEEK}{index}"), &label) {
             commands.push(Command::SeekTo(marker.t));
         }
@@ -166,37 +170,38 @@ pub fn schedule_panel(
     commands
 }
 
-/// Префікс адрес рядків розкладу.
+/// Prefix for the schedule rows' ids.
 pub const SEEK: &str = "hud.schedule.seek.";
 
-/// Скільки подій показувати. Розклад — це «куди перемотати далі», а не
-/// журнал: перші кілька відповідають на це питання, решта лише займає екран.
+/// How many events to show. The schedule is "where to seek next" rather than a
+/// log: the first few answer that question, the rest only take screen.
 const MAX_ROWS: usize = 6;
 
-/// Чернетка плану, яку редагує гравець.
+/// The plan draft the player edits.
 ///
-/// Це той рідкісний власний стан UI, який правило 1 дозволяє: **редагований,
-/// але ще не поданий план не існує поза екраном**. Щойно гравець просить
-/// прев'ю або коміт, чернетка перетворюється на `Plan` і йде в нитку — і з
-/// того моменту істина знову в снапшоті.
+/// This is the rare UI-owned state rule 1 permits: **a plan being edited but
+/// not yet submitted does not exist outside the screen**. As soon as the
+/// player asks for a preview or a commit, the draft becomes a `Plan` and goes
+/// into the thread -- and from that moment the truth is in the snapshot
+/// again.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PlanDraft {
     pub manoeuvres: Vec<Manoeuvre>,
 }
 
 impl PlanDraft {
-    /// Чернетка з плану, яким апарат летить зараз.
+    /// A draft from the plan the vessel is currently flying.
     pub fn from_plan(plan: &Plan) -> PlanDraft {
         PlanDraft {
             manoeuvres: plan.manoeuvres().to_vec(),
         }
     }
 
-    /// План у тому вигляді, в якому його прийме світ.
+    /// The plan in the form the world will accept.
     ///
-    /// `Plan::insert` тримає порядок за часом сам, тож чернетка не зобов'язана
-    /// його берегти: гравець може посунути маневр у минуле відносно сусіда, і
-    /// це не має ставати помилкою редагування.
+    /// `Plan::insert` keeps time order itself, so the draft need not preserve
+    /// it: the player may move a manoeuvre into the past relative to its
+    /// neighbour, and that must not become an editing error.
     pub fn plan(&self) -> Plan {
         let mut plan = Plan::new();
         for manoeuvre in &self.manoeuvres {
@@ -206,29 +211,30 @@ impl PlanDraft {
     }
 }
 
-/// Що панель плану просить зробити.
+/// What the plan panel asks to be done.
 ///
-/// Обидва варіанти несуть **той самий** план, який показано на екрані, і в
-/// цьому вся суть кроку: лінія, яку бачив, і є лінія, якою полетиш (J5).
+/// Both variants carry **the same** plan shown on screen, and that is the
+/// whole point of the step: the line you saw is the line you will fly (J5).
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlanAction {
-    /// Показати, що вийде. Іде в планувальник, у світ не пише нічого.
+    /// Show what comes out. Goes to the planner, writes nothing into the
+    /// world.
     Preview(Plan),
-    /// Летіти цим. Іде в нитку симуляції.
+    /// Fly this. Goes to the simulation thread.
     Commit(Plan),
 }
 
-/// Адреси віджетів плану. Ті самі міркування, що в `SEEK`: тест мусить
-/// знаходити віджет за іменем, а не за пікселем.
+/// Ids for the plan's widgets. The same reasoning as `SEEK`: a test must find
+/// a widget by name rather than by pixel.
 pub const PLAN_ADD: &str = "hud.plan.add";
 pub const PLAN_COMMIT: &str = "hud.plan.commit";
 pub const PLAN_DELETE: &str = "hud.plan.delete.";
 
-/// Панель плану: маневри рядками, час і три компоненти Δv у VNB.
+/// The plan panel: manoeuvres as rows, time and three dv components in VNB.
 ///
-/// `draft` — власний стан UI (див. [`PlanDraft`]); `notice` — те, що світ
-/// відповів на попередню спробу, і панель показує саме його, а не власне
-/// припущення про успіх (правило 8).
+/// `draft` is UI-owned state (see [`PlanDraft`]); `notice` is what the world
+/// answered to the previous attempt, and the panel shows exactly that rather
+/// than its own assumption of success (rule 8).
 pub fn plan_panel(
     ui: &mut egui::Ui,
     language: Language,
@@ -245,8 +251,8 @@ pub fn plan_panel(
     let mut delete = None;
     for (index, manoeuvre) in draft.manoeuvres.iter_mut().enumerate() {
         ui.horizontal(|ui| {
-            // Час у добах від «зараз» — те, чим гравець думає. У план він
-            // іде абсолютним, як вимагає `Manoeuvre::t`.
+            // Time in days from "now" -- what the player thinks in. Into the
+            // plan it goes absolute, as `Manoeuvre::t` requires.
             let mut days = (manoeuvre.t - now) / DAY_S;
             let response = ui.add(
                 egui::DragValue::new(&mut days)
@@ -281,8 +287,9 @@ pub fn plan_panel(
     ui.horizontal(|ui| {
         if button(ui, PLAN_ADD, tr(language, Key::AddBurn)) {
             draft.manoeuvres.push(Manoeuvre {
-                // Доба вперед — не «зараз»: маневр у поточній миті світ
-                // відхилить, бо курсор його вже проходить.
+                // A day ahead rather than "now": the world rejects a manoeuvre
+                // at the current instant, because the cursor is already
+                // passing it.
                 t: now + DAY_S,
                 dv: [0.0; 3],
                 frame: Frame::Vnb { body },
@@ -298,8 +305,8 @@ pub fn plan_panel(
         ui.label(text);
     }
 
-    // Прев'ю — після коміту в списку дій, бо зміна цього кадру могла бути
-    // саме тією, яку коміт і забирає.
+    // The preview comes after the commit in the action list, because this
+    // frame's change may have been exactly the one the commit takes away.
     if changed {
         actions.push(PlanAction::Preview(draft.plan()));
     }
@@ -307,59 +314,62 @@ pub fn plan_panel(
     actions
 }
 
-/// Стан плоту вікон, який існує лише на екрані (ROADMAP-UI.md, U5c).
+/// The window plot's state, which exists only on screen (U5c).
 ///
-/// Той самий виняток із правила 1, що [`PlanDraft`]: текстура — це сітка,
-/// перекладена в пікселі, а обране вікно — це «на що я дивлюсь», і поза
-/// екраном ні того, ні того немає. Числа при цьому не запам'ятовуються жодні:
-/// усе, що показано, щоразу виводиться з `Grid`.
+/// The same exception to rule 1 as [`PlanDraft`]: the texture is the grid
+/// translated into pixels, and the selected window is "what I am looking at",
+/// and outside the screen neither exists. No numbers are remembered
+/// meanwhile: everything shown is derived from `Grid` each time.
 #[derive(Default)]
 pub struct PlotState {
-    /// Текстура й номер сітки, з якої вона зроблена.
+    /// The texture and the number of the grid it was made from.
     ///
-    /// Номер тут не для порядку, а щоб не перебудовувати зображення щокадру:
-    /// сітка 100×100 — це 10⁴ пікселів, і сама вона не змінюється взагалі,
-    /// доки не приїде наступна.
+    /// The number is not for tidiness but to avoid rebuilding the image every
+    /// frame: a 100x100 grid is 1e4 pixels, and it does not change at all
+    /// until the next one arrives.
     texture: Option<(u64, egui::TextureHandle)>,
-    /// Обране вікно — індекси на осях, а не час: осі задає той, хто просив
-    /// сітку, і тримати другу копію їхніх значень означало б дати їм
-    /// розійтися.
+    /// The selected window as axis indices rather than a time: whoever asked
+    /// for the grid sets the axes, and keeping a second copy of their values
+    /// would let them diverge.
     pub chosen: Option<(usize, usize)>,
 }
 
-/// Що плот просить зробити.
+/// What the plot asks to be done.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PorkchopAction {
-    /// Порахувати сітку — кнопка. Осі вибирає той, хто надсилає запит.
+    /// Compute the grid -- a button. Whoever sends the request chooses the
+    /// axes.
     Compute,
-    /// Гравець обрав вікно: індекси на осях сітки.
+    /// The player selected a window: indices on the grid's axes.
     Choose(usize, usize),
 }
 
-/// Адреси віджетів плоту.
+/// Ids for the plot's widgets.
 pub const PLOT_COMPUTE: &str = "hud.porkchop.compute";
 pub const PLOT_IMAGE: &str = "hud.porkchop.image";
 
-/// Скільки пікселів екрана віддати плоту. Квадрат: осі різні за змістом, але
-/// однакові за важливістю, і витягнутий плот читається як «одна з них
-/// точніша».
+/// How many screen pixels to give the plot. A square: the axes differ in
+/// meaning but are equal in importance, and a stretched plot reads as "one of
+/// them is more precise".
 const PLOT_SIDE: f32 = 200.0;
 
-/// Числа обраного (чи наведеного) вікна — те, що показує курсор.
+/// The numbers of the selected (or hovered) window -- what the cursor shows.
 ///
-/// Окремо від малювання з тієї ж причини, що [`VesselReadout`]: оракул кроку —
-/// «число в панелі дорівнює числу в сітці», а пікселі з числами не звіряються.
+/// Separate from drawing for the same reason as [`VesselReadout`]: the step's
+/// oracle is "the number in the panel equals the number in the grid", and
+/// pixels cannot be compared with numbers.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WindowReadout {
-    /// Момент відходу, абсолютний час ассета.
+    /// The departure instant, absolute asset time.
     pub t1: f64,
-    /// Тривалість перельоту, секунди.
+    /// The flight time, seconds.
     pub tof: f64,
-    /// Клітинка; `None` — заборонена зона, і саме так її треба показати.
+    /// The cell; `None` is a forbidden zone, and that is exactly how it must
+    /// be shown.
     pub cell: Option<crate::porkchop::Cell>,
 }
 
-/// Числа вікна за індексами на осях. Нічого не рахує, крім вибірки.
+/// A window's numbers by axis indices. Computes nothing beyond the lookup.
 pub fn read_window(grid: &Grid, i_t1: usize, i_tof: usize) -> Option<WindowReadout> {
     Some(WindowReadout {
         t1: *grid.t1.get(i_t1)?,
@@ -368,11 +378,11 @@ pub fn read_window(grid: &Grid, i_t1: usize, i_tof: usize) -> Option<WindowReado
     })
 }
 
-/// Панель плоту: сітка зображенням, осі в датах, курсор із числами.
+/// The plot panel: the grid as an image, axes in dates, a cursor with numbers.
 ///
-/// `grid` — те, що порахувала нитка планувальника (правило 6); `None` означає
-/// «ще не просили» або «ще рахується», і панель у цьому разі показує кнопку й
-/// нічого не вигадує.
+/// `grid` is what the planner thread computed (rule 6); `None` means "not
+/// asked yet" or "still computing", and in that case the panel shows the
+/// button and invents nothing.
 pub fn porkchop_panel(
     ui: &mut egui::Ui,
     language: Language,
@@ -392,15 +402,16 @@ pub fn porkchop_panel(
         return actions;
     };
 
-    // Текстура будується один раз на сітку, а не на кадр.
+    // The texture is built once per grid rather than per frame.
     let texture = match &state.texture {
         Some((id, texture)) if *id == grid.id => texture.clone(),
         _ => {
             let texture = ui.ctx().load_texture(
                 "porkchop",
                 image_of(grid),
-                // Без згладжування: піксель — це клітинка, і розмита межа
-                // між клітинкою й діркою — це вигаданий проміжний стан.
+                // No filtering: a pixel is a cell, and a blurred boundary
+                // between a cell and a hole is an invented intermediate
+                // state.
                 egui::TextureOptions::NEAREST,
             );
             state.texture = Some((grid.id, texture.clone()));
@@ -419,12 +430,14 @@ pub fn porkchop_panel(
         egui::Color32::WHITE,
     );
 
-    // Друга взаємодія з нашим іменем — та сама причина, що в `button`: тест
-    // мусить знаходити плот за іменем, а не за підібраним пікселем.
+    // A second interaction with our own name -- the same reason as in
+    // `button`: a test must find the plot by name rather than by a guessed
+    // pixel.
     let named = ui.interact(rect, egui::Id::new(PLOT_IMAGE), egui::Sense::click());
 
-    // Найдешевше вікно позначене хрестиком: плот існує, щоб його знайти, і
-    // шукати мінімум оком по градієнту — робота, яку вже зробила машина.
+    // The cheapest window is marked with a cross: the plot exists to find it,
+    // and hunting the minimum by eye along a gradient is work the machine has
+    // already done.
     if let Some((i, j, _)) = grid.best() {
         let at = cell_centre(rect, grid, i, j);
         let arm = 4.0;
@@ -445,9 +458,9 @@ pub fn porkchop_panel(
         );
     }
 
-    // Осі: дати по краях замість підписів на кожній поділці. Плот шириною
-    // 200 пікселів не витримає більшого, а два кінці вже кажуть, що це за
-    // проміжок.
+    // The axes: dates at the edges instead of labels on every tick. A plot 200
+    // pixels wide will not take more, and two ends already say what interval
+    // this is.
     let (first, last) = (grid.t1[0], grid.t1[grid.t1.len() - 1]);
     ui.label(format!(
         "{} — {}",
@@ -462,7 +475,8 @@ pub fn porkchop_panel(
         tr(language, Key::Days)
     ));
 
-    // Під курсором — те, на що дивляться; без курсора — те, що обрали.
+    // Under the cursor, what is being looked at; without a cursor, what was
+    // selected.
     let under_pointer = response
         .hover_pos()
         .and_then(|at| cell_at(grid, from_left(rect, at), from_bottom(rect, at)));
@@ -483,18 +497,19 @@ pub fn porkchop_panel(
             ));
             match readout.cell {
                 Some(cell) => {
-                    // Два числа, розділені скісною: маневр відходу — той, що
-                    // піде в план, — і швидкість відносно тіла на приході,
-                    // тобто ціна ще не порахованого гальмування.
+                    // Two numbers separated by a slash: the departure
+                    // manoeuvre -- the one that goes into the plan -- and the
+                    // speed relative to the body on arrival, i.e. the price of
+                    // the braking not yet computed.
                     ui.label(format!(
-                        "{}: {:.0} / {:.0} м/с",
+                        "{}: {:.0} / {:.0} m/s",
                         tr(language, Key::Vinf),
                         cell.dv_m_s,
                         cell.v_inf_arrive
                     ));
                 }
-                // Дірка називається дірою. Порожній рядок тут читався б як
-                // «безкоштовно».
+                // A hole is called a hole. An empty line here would read as
+                // "free".
                 None => {
                     ui.label(tr(language, Key::NoSolution));
                 }
@@ -527,7 +542,7 @@ fn from_bottom(rect: egui::Rect, at: egui::Pos2) -> f32 {
     (rect.max.y - at.y) / rect.height()
 }
 
-/// Центр клітинки в пікселях — для позначки на плоті.
+/// A cell's centre in pixels -- for the mark on the plot.
 fn cell_centre(rect: egui::Rect, grid: &Grid, i_t1: usize, i_tof: usize) -> egui::Pos2 {
     let x = (i_t1 as f32 + 0.5) / grid.t1.len() as f32;
     let y = (i_tof as f32 + 0.5) / grid.tof.len() as f32;
@@ -537,10 +552,10 @@ fn cell_centre(rect: egui::Rect, grid: &Grid, i_t1: usize, i_tof: usize) -> egui
     )
 }
 
-/// Сітка в зображення: піксель — клітинка, рядок 0 — найдовший переліт.
+/// The grid into an image: a pixel is a cell, row 0 is the longest flight.
 ///
-/// Переворот саме тут, в одному місці: далі його знає лише [`from_bottom`],
-/// і обидва підпорядковані одній угоді — `tof` росте вгору.
+/// The flip happens here, in one place: beyond it only [`from_bottom`] knows
+/// about it, and both obey one convention -- `tof` grows upwards.
 fn image_of(grid: &Grid) -> egui::ColorImage {
     let (low, high) = grid.scale().unwrap_or((0.0, 1.0));
     let (w, h) = (grid.t1.len(), grid.tof.len());
@@ -556,39 +571,39 @@ fn image_of(grid: &Grid) -> egui::ColorImage {
     egui::ColorImage::new([w, h], pixels)
 }
 
-/// Числа панелі апарата, зняті зі снапшоту (ROADMAP-UI.md, U2c).
+/// The vessel panel's numbers, taken from the snapshot (U2c).
 ///
-/// Окремо від малювання навмисно: оракул кроку — «значення в панелі збігається
-/// з незалежно порахованим зі снапшоту», а порівнювати числа з пікселями
-/// неможливо. Кожне поле читається [`vessel_panel`], тож структури, яку ніхто
-/// не читає, тут немає.
+/// Deliberately separate from drawing: the step's oracle is "the value in the
+/// panel equals one computed independently from the snapshot", and numbers
+/// cannot be compared with pixels. Every field is read by [`vessel_panel`], so
+/// there is no struct here that nobody reads.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VesselReadout {
-    /// Висота над **поверхнею** тіла: відстань від центра мінус середній
-    /// радіус з ассета (`eph_body_radius`, U2a). Не над намальованою сферою
-    /// і не над опорним радіусом гармонік — для Місяця це різні числа,
-    /// і різняться вони на 470 м (K5e).
+    /// Altitude above the body's **surface**: distance from the centre minus
+    /// the asset's mean radius (`eph_body_radius`, U2a). Not above the drawn
+    /// sphere and not above the harmonics reference radius -- for the Moon
+    /// those are different numbers, differing by 470 m (K5e).
     pub altitude_m: f64,
-    /// Швидкість **відносно тіла**, не барицентрична.
+    /// Speed **relative to the body**, not barycentric.
     pub speed_m_s: f64,
-    /// Скільки лишилось до наступного маневру плану; `None` — маневрів
-    /// попереду немає.
+    /// How long remains to the plan's next manoeuvre; `None` means there are
+    /// no manoeuvres ahead.
     pub next_burn_s: Option<f64>,
-    /// Сумарний Δv плану — **сума норм**, а не норма суми: два маневри
-    /// в протилежні боки коштують палива обидва.
+    /// The plan's total dv -- **the sum of norms** rather than the norm of the
+    /// sum: two manoeuvres in opposite directions both cost fuel.
     pub total_dv_m_s: f64,
-    /// Наскільки прогноз випереджає курсор.
+    /// How far the prediction runs ahead of the cursor.
     pub computed_ahead_s: f64,
-    /// Апарат зупинився помилкою.
+    /// The vessel stopped with an error.
     pub failed: bool,
 }
 
-/// Знімає числа апарата зі снапшоту.
+/// Takes the vessel's numbers from the snapshot.
 ///
-/// Ефемериду не кличе (правило 5): позиція тіла береться з найближчого
-/// семпла, який її вже несе (`leg::Sample::earth` — саме для цього вона там
-/// і лежить). Радіус приходить аргументом, бо це властивість тіла, а не
-/// кадру: його читають один раз при старті.
+/// Does not call the ephemeris (rule 5): the body's position comes from the
+/// nearest sample, which already carries it (`leg::Sample::earth` is there for
+/// exactly this). The radius arrives as an argument, because it is a property
+/// of the body rather than of the frame: it is read once at startup.
 pub fn read_vessel(
     snapshot: &WorldSnapshot,
     vessel: &VesselSnapshot,
@@ -634,35 +649,35 @@ pub fn read_vessel(
     }
 }
 
-/// Панель апарата. Нічого не надсилає — U2 лише показує.
+/// The vessel panel. Sends nothing -- U2 only displays.
 pub fn vessel_panel(ui: &mut egui::Ui, language: Language, name: &str, readout: &VesselReadout) {
     ui.heading(tr(language, Key::Vessel));
     ui.label(name);
     ui.label(format!(
-        "{}: {:.1} км",
+        "{}: {:.1} km",
         tr(language, Key::Altitude),
         readout.altitude_m / 1000.0
     ));
     ui.label(format!(
-        "{}: {:.1} м/с",
+        "{}: {:.1} m/s",
         tr(language, Key::Speed),
         readout.speed_m_s
     ));
     ui.label(match readout.next_burn_s {
         Some(seconds) => format!(
-            "{}: {:.2} діб",
+            "{}: {:.2} days",
             tr(language, Key::NextBurn),
             seconds / DAY_S
         ),
         None => tr(language, Key::NoBurns).to_string(),
     });
     ui.label(format!(
-        "{}: {:.2} м/с",
+        "{}: {:.2} m/s",
         tr(language, Key::TotalDv),
         readout.total_dv_m_s
     ));
     ui.label(format!(
-        "{}: {:.2} діб",
+        "{}: {:.2} days",
         tr(language, Key::ComputedAhead),
         readout.computed_ahead_s / DAY_S
     ));
@@ -671,12 +686,12 @@ pub fn vessel_panel(ui: &mut egui::Ui, language: Language, name: &str, readout: 
     }
 }
 
-/// Позиція й швидкість Землі в найближчому до `t` семплі.
+/// Earth's position and velocity in the sample nearest to `t`.
 ///
-/// Семпл несе позицію тіла саме для цього (`crate::leg`), тож ефемерида в
-/// кадрі не потрібна. Швидкість семпл не несе, тож вона береться скінченною
-/// різницею між двома сусідніми семплами — того самого порядку точності, що
-/// й сама лінія на екрані.
+/// A sample carries the body's position for exactly this (`crate::leg`), so no
+/// ephemeris is needed in the frame. A sample does not carry velocity, so that
+/// is taken as a finite difference between two adjacent samples -- of the same
+/// order of accuracy as the line on screen itself.
 fn body_near(vessel: &VesselSnapshot, t: f64) -> ([f64; 3], [f64; 3]) {
     let mut best: Option<(f64, [f64; 3], [f64; 3])> = None;
 
@@ -687,7 +702,8 @@ fn body_near(vessel: &VesselSnapshot, t: f64) -> ([f64; 3], [f64; 3]) {
                 continue;
             }
 
-            // Сусід для різниці: наступний, якщо він є, інакше попередній.
+            // A neighbour for the difference: the next one if there is one,
+            // otherwise the previous.
             let velocity = match leg.samples.get(i + 1).or_else(|| {
                 if i > 0 {
                     leg.samples.get(i - 1)
@@ -717,25 +733,26 @@ fn body_near(vessel: &VesselSnapshot, t: f64) -> ([f64; 3], [f64; 3]) {
     best.map_or(([0.0; 3], [0.0; 3]), |(_, r, v)| (r, v))
 }
 
-/// Календарна дата з секунд від епохи ассета (J2000 TDB), UTC-подібна.
+/// A calendar date from seconds since the asset epoch (J2000 TDB), UTC-like.
 ///
-/// TDB замість TT нічого тут не змінює: різниця між ними періодична й не
-/// перевищує 1.7 мс, тобто лежить на три порядки нижче за секунду, якою
-/// закінчується цей рядок. Записано, щоб наступний читач не шукав похибку
-/// там, де її немає.
+/// TDB instead of TT changes nothing here: the difference between them is
+/// periodic and does not exceed 1.7 ms, i.e. lies three orders below the
+/// second this string ends with. Recorded so the next reader does not hunt for
+/// an error where there is none.
 ///
-/// Перетворення живе в грі, а не у фізиці: воно кличе рівно те, чого в циклі
-/// інтегрування бути не може, і назад у нього не повертається (ROADMAP-UI.md,
-/// U2b). Алгоритм — цивільний календар із номера дня (Хаувард Гіннант,
-/// `civil_from_days`), цілочисельний і без жодної тригонометрії.
+/// The conversion lives in the game rather than in the physics: it calls
+/// exactly what cannot exist in the integration loop, and never travels back
+/// into it (ROADMAP-UI.md, U2b). The algorithm is the civil calendar from a
+/// day number (Howard Hinnant, `civil_from_days`), integer and with no
+/// trigonometry at all.
 pub fn calendar(t: f64) -> String {
-    // J2000 — це 2000-01-01 12:00:00, тобто полудень. Півдоби зсуву роблять
-    // з нього північ, від якої рахуються дні.
+    // J2000 is 2000-01-01 12:00:00, i.e. noon. Half a day of offset turns it
+    // into the midnight days are counted from.
     let seconds = t - TT_MINUS_UT1_S + 0.5 * DAY_S;
     let days = seconds.div_euclid(DAY_S);
     let rest = seconds.rem_euclid(DAY_S);
 
-    // Днів від 1970-01-01 до 2000-01-01 — 10957.
+    // There are 10957 days from 1970-01-01 to 2000-01-01.
     let (year, month, day) = civil_from_days(days as i64 + 10957);
 
     let hour = (rest / 3600.0) as u32;
@@ -745,7 +762,7 @@ pub fn calendar(t: f64) -> String {
     format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
 }
 
-/// День від 1970-01-01 → (рік, місяць, день). Цілочисельний, без бібліотек.
+/// A day since 1970-01-01 to (year, month, day). Integer, no libraries.
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
@@ -759,33 +776,36 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-/// Панель вигляду: у якому фреймі показана сцена (ROADMAP-UI.md, U6a4).
+/// The view panel: which frame the scene is shown in (U6a4).
 ///
-/// Повертає **новий фрейм**, а не команду, і це не дрібниця: команда пішла б у
-/// нитку світу, а фрейм не змінює в світі жодного числа — це стан вигляду,
-/// який правило 1 етапу U прямо дозволяє тримати в UI. Тому й повернення інше,
-/// ніж у `time_panel`: та надсилає команди, ця віддає вибір.
+/// Returns a **new frame** rather than a command, and that is no small thing:
+/// a command would go into the world thread, while a frame changes no number
+/// in the world -- it is view state, which rule 1 of stage U explicitly allows
+/// the UI to hold. Hence the return differs from `time_panel`'s: that one
+/// sends commands, this one hands back a choice.
 ///
-/// `None` означає «гравець нічого не натиснув», а не «інерціальний»: різниця в
-/// тому, що перше нічого не перезаписує.
-/// Що панель каже про криву нульової швидкості (ROADMAP-UI.md, U6b4).
+/// `None` means "the player pressed nothing" rather than "inertial": the
+/// difference is that the first overwrites nothing.
+/// What the panel says about the zero-velocity curve (U6b4).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CurveReadout {
-    /// Константа Якобі, за якою крива побудована.
+    /// The Jacobi constant the curve is built from.
     pub jacobi: f64,
-    /// Апарат далеко від пари — там `C` перестає щось означати.
+    /// The vessel is far from the pair -- there `C` stops meaning anything.
     pub far_away: bool,
 }
 
-/// Читає криву зі снапшоту: `C` апарата й те, чи він іще біля пари.
+/// Reads the curve from the snapshot: the vessel's `C` and whether it is still
+/// near the pair.
 ///
-/// Виводиться зі снапшоту, не накопичується (правило 1 етапу U), і ефемериди
-/// не кличе (правило 5): `C` уже порахована в нитці світу, а відстань — це
-/// віднімання двох позицій, які тут-таки й лежать.
+/// Derived from the snapshot, not accumulated (rule 1 of stage U), and calls
+/// no ephemeris (rule 5): `C` is already computed in the world thread, and the
+/// distance is a subtraction of two positions lying right here.
 ///
-/// `far_away` міряється у **відстанях між тілами**: усе, що далі за дві, — це
-/// вже не околиця пари, а те, для чого CR3BP не писався. Виміряно на U6b1:
-/// саме там `C` уздовж місії перестає бути сталою й розмах стрибає з 0.08% до
+/// `far_away` is measured in **distances between the bodies**: anything beyond
+/// two is no longer the pair's neighbourhood but what CR3BP was not written
+/// for. Measured at U6b1: that is where `C` along the mission stops being
+/// constant and its spread jumps from 0.08% to
 /// 82%.
 pub fn read_curve(snapshot: &WorldSnapshot) -> Option<CurveReadout> {
     let vessel = snapshot.vessels.first()?;
@@ -813,16 +833,16 @@ pub fn read_curve(snapshot: &WorldSnapshot) -> Option<CurveReadout> {
     })
 }
 
-/// Те, що гравець вибрав у панелі вигляду за цей кадр.
+/// What the player chose in the view panel during this frame.
 ///
-/// Структура, а не пара `Option`ів: два `Option` того самого розміру
-/// переставляються місцями мовчки, і компілятор про це не скаже. Обидва поля
-/// читаються в `app::draw` — інакше їх тут не було б.
+/// A struct rather than a pair of `Option`s: two `Option`s of the same size
+/// swap places silently, and the compiler will not say so. Both fields are
+/// read in `app::draw` -- otherwise they would not be here.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ViewChoice {
-    /// Новий фрейм, якщо натиснули перемикач.
+    /// A new frame, if the toggle was pressed.
     pub frame: Option<ViewFrame>,
-    /// Нова мова, якщо натиснули її перемикач.
+    /// A new language, if its toggle was pressed.
     pub language: Option<Language>,
 }
 
@@ -847,8 +867,9 @@ pub fn view_panel(
         )
     ));
 
-    // Одна кнопка-перемикач, а не дві: фреймів рівно два, і пара кнопок
-    // означала б стан «жоден не натиснутий», якого не буває.
+    // One toggle button rather than two: there are exactly two frames, and a
+    // pair of buttons would imply a "neither pressed" state that does not
+    // exist.
     let next = match frame {
         ViewFrame::Inertial => ViewFrame::Rotating,
         ViewFrame::Rotating => ViewFrame::Inertial,
@@ -864,11 +885,11 @@ pub fn view_panel(
         choice.frame = Some(next);
     }
 
-    // Крива існує лише в обертовому фреймі, тож і підпис до неї — теж.
+    // The curve exists only in the rotating frame, so its label does too.
     //
-    // **Застереження друкується завжди, а не при негараздах.** Крива, показана
-    // як стіна, крізь яку апарат потім спокійно пролетить, гірша за відсутню:
-    // `C` зберігається в CR3BP, а гра літає в повній ефемериді.
+    // **The caveat is printed always, not on trouble.** A curve shown as a
+    // wall the vessel then calmly flies through is worse than none: `C` is
+    // conserved in CR3BP, and the game flies in the full ephemeris.
     if frame == ViewFrame::Rotating {
         if let Some(curve) = curve {
             ui.separator();
@@ -884,14 +905,15 @@ pub fn view_panel(
         }
     }
 
-    // Мова — теж властивість вигляду, і тому живе в цій панелі, а не в
-    // окремій: прохід egui має лишитися одним (U1b виміряв, що платить саме
-    // прохід, а не віджети). Внизу, бо перемикають її раз і назавжди, а
-    // фрейм — постійно.
+    // The language is a property of the view too, and so lives in this panel
+    // rather than its own: the egui pass must stay single (U1b measured that
+    // the pass is what pays, not the widgets). At the bottom, because it is
+    // switched once and for all while the frame is switched constantly.
     //
-    // Кнопка підписана назвою мови, **на яку перемкне**, а не поточної. Той
-    // самий вибір, що в перемикача фрейму вище, і з тієї ж причини: підпис
-    // поточного стану на кнопці читається як «натисни, щоб лишити як є».
+    // The button is labelled with the name of the language it will **switch
+    // to** rather than the current one. The same choice as the frame toggle
+    // above, for the same reason: a button labelled with the current state
+    // reads as "press to leave as is".
     ui.separator();
     ui.label(format!(
         "{}: {}",
@@ -906,44 +928,44 @@ pub fn view_panel(
     choice
 }
 
-/// Стала адреса кнопки перемикача фрейму — з тієї ж причини, що [`PAUSE`].
+/// A stable id for the frame toggle -- for the same reason as [`PAUSE`].
 pub const FRAME: &str = "hud.view.frame";
 
-/// Те саме для перемикача мови.
+/// The same for the language toggle.
 pub const LANGUAGE: &str = "hud.view.language";
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Епоха ассета — це J2000, тобто полудень першого січня 2000-го.
+    /// The asset epoch is J2000, i.e. noon on the first of January 2000.
     ///
-    /// Оракул тут — означення епохи, а не інша реалізація того самого
-    /// перетворення: друга реалізація помилялася б разом із першою, якби я
-    /// переплутав напрямок зсуву.
+    /// The oracle here is the epoch's definition rather than another
+    /// implementation of the same conversion: a second implementation would
+    /// err along with the first if the offset's direction were confused.
     #[test]
     fn the_epoch_is_noon_on_the_first_of_january_2000() {
         let text = calendar(0.0);
         assert!(
             text.starts_with("2000-01-01 11:58:5"),
-            "епоха дала {text}, а мала дати полудень мінус 63.8 с (TT−UT1)"
+            "the epoch gave {text}, but should give noon minus 63.8 s (TT-UT1)"
         );
     }
 
-    /// Доба вперед — це наступний день у ту саму хвилину.
+    /// A day forward is the next day at the same minute.
     #[test]
     fn a_day_later_is_the_next_day() {
         assert!(calendar(DAY_S).starts_with("2000-01-02 11:58:5"));
     }
 
-    /// І високосний рік проходиться наскрізь, а не обходиться.
+    /// And a leap year is walked through rather than around.
     ///
-    /// 2000-й — високосний (ділиться на 400), і це той випадок, який валить
-    /// наївне «кожні чотири роки, крім сотих».
+    /// 2000 is a leap year (divisible by 400), the case that breaks the naive
+    /// "every four years except centuries".
     #[test]
     fn the_year_2000_has_a_twenty_ninth_of_february() {
-        // 59 діб від 1 січня (полудень) — це 29 лютого.
+        // 59 days from 1 January (noon) is 29 February.
         let text = calendar(59.0 * DAY_S);
-        assert!(text.starts_with("2000-02-29"), "вийшло {text}");
+        assert!(text.starts_with("2000-02-29"), "got {text}");
     }
 }
