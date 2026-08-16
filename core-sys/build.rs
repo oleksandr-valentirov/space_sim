@@ -1,67 +1,68 @@
-//! Збірка числового ядра на C через крейт `cc` (ROADMAP D1).
+//! Build of the C numeric core through the `cc` crate (ROADMAP D1).
 //!
-//! Це закриває борг, записаний ще в A1: ті самі `.c` файли тепер збирає і
-//! `Makefile`, і `cargo`, і прапорці мусять збігатися **бітово**. Розбіжність
-//! тут не падає й не попереджає — вона тихо змінює числа, і ловиться аж на
-//! звірці хешів десь через тиждень (PROJECT.md §4).
+//! This closes the debt recorded back in A1: the same `.c` files are now built
+//! by both `Makefile` and `cargo`, and the flags must match **bitwise**. A
+//! divergence here neither fails nor warns -- it quietly changes the numbers,
+//! and is caught at the hash comparison about a week later (PROJECT.md
+//! section 4).
 //!
-//! Тому прапорці не задані ні тут, ні в `Makefile`: обидва читають
-//! `core/cflags.txt`. Це не зручність, а єдине джерело істини.
+//! So the flags are set neither here nor in `Makefile`: both read
+//! `core/cflags.txt`. That is a single source of truth, not a convenience.
 //!
-//! ## Що саме збирається
+//! ## What is built
 //!
-//! 1. `core/*.c` → `libcore.a` у `OUT_DIR`, лінкується в крейт. Рантаймова
-//!    зона: без `libm`, дозволені лише `+ - * /` і `sqrt`.
-//! 2. `core/scenario/*.c` → виконувані файли, теж у `OUT_DIR`. Вони і є
-//!    перевіркою D1: `tests/determinism.rs` запускає їх і звіряє вивід із
-//!    `core/scenario/golden.txt` — тим самим еталоном, з яким звіряється
-//!    `make determinism`. Збіг означає, що cargo дав ті самі біти.
-//! 3. `core/planning/*.c` → **окрема** `libcore_planning.a` (ROADMAP L3).
+//! 1. `core/*.c` -> `libcore.a` in `OUT_DIR`, linked into the crate. Runtime
+//!    zone: no `libm`, only `+ - * /` and `sqrt` allowed.
+//! 2. `core/scenario/*.c` -> executables, also in `OUT_DIR`. They are the D1
+//!    check: `tests/determinism.rs` runs them and compares the output against
+//!    `core/scenario/golden.txt` -- the same golden file `make determinism`
+//!    uses. Agreement means cargo produced the same bits.
+//! 3. `core/planning/*.c` -> a **separate** `libcore_planning.a` (ROADMAP L3).
 //!
-//! Сценарії лінкуються з **тими самими** об'єктними файлами, що підуть у
-//! Rust, а не перезбираються окремо. Інакше перевірялися б прапорці, а не
-//! бібліотека, яку насправді використає крейт.
+//! The scenarios link against the **same** object files that go into Rust
+//! rather than being rebuilt separately. Otherwise the check would cover the
+//! flags, not the library the crate actually uses.
 //!
-//! ## Чому планування — окрема бібліотека, а не ще кілька файлів у `libcore.a`
+//! ## Why planning is its own library
 //!
-//! `core/planning/` кличе `libm` вільно й свідомо: межа детермінізму проходить
-//! по пропагації, а не по плануванню (PROJECT.md §4), і `Makefile` тримає його
-//! окремою `libcore_planning.a` саме тому. Тут те саме, і не заради симетрії
-//! з `Makefile`.
+//! `core/planning/` calls `libm` freely and deliberately: the determinism
+//! boundary runs along propagation, not planning (PROJECT.md section 4), which
+//! is why `Makefile` keeps it in a separate `libcore_planning.a`. Same here,
+//! and not for symmetry with `Makefile`.
 //!
-//! Причина конкретна. Сценарії детермінізму й оракул лінкуються з `libcore.a`
-//! **без `-lm`**, і це не оформлення, а перевірка: якщо тригонометрія колись
-//! просочиться в рантаймову зону, лінкування впаде тут і зараз. Кинути
-//! `lambert.c` у той самий архів означає внести в нього `acos`, `sinh` і
-//! `cosh` — і хоч GNU ld витягує з архіву лише потрібні об'єктні файли, тобто
-//! зібралося б усе одно, твердження «цей архів не містить libm» перестало б
-//! бути правдою. Перевірка, яка більше нічого не забороняє, гірша за свою
-//! відсутність.
+//! The reason is concrete. The determinism scenarios and the oracle link
+//! against `libcore.a` **without `-lm`**, and that is a check, not decoration:
+//! if trigonometry ever seeps into the runtime zone, the link fails here and
+//! now. Throwing `lambert.c` into the same archive would bring `acos`, `sinh`
+//! and `cosh` into it -- and although GNU ld extracts only the object files it
+//! needs, so it would still link, the claim "this archive contains no libm"
+//! would stop being true. A check that no longer forbids anything is worse
+//! than no check.
 //!
-//! Другий наслідок того самого: оракул для планування — **окремий бінарник з
-//! `-lm`**. Наявний `oracle.c` лінкується без libm навмисно, і злити їх
-//! означало б утратити рівно те твердження, заради якого він такий.
+//! Second consequence of the same: the planning oracle is a **separate binary
+//! with `-lm`**. The existing `oracle.c` links without libm on purpose, and
+//! merging the two would lose exactly the claim it exists to make.
 //!
-//! ## Чому `no_default_flags`
+//! ## Why `no_default_flags`
 //!
-//! `cc` за замовчуванням додає свої `-O`, `-g` і `-W` за профілем cargo. У
-//! debug це `-O0` — а `core/cflags.txt` прямо каже, що при `-O0` gcc кличе
-//! `sqrt` як функцію `libm`, і сценарії, які свідомо лінкуються без `-lm`,
-//! не злінкуються.
+//! By default `cc` adds its own `-O`, `-g` and `-W` per the cargo profile. In
+//! debug that is `-O0` -- and `core/cflags.txt` says outright that at `-O0`
+//! gcc calls `sqrt` as a `libm` function, so the scenarios, which deliberately
+//! link without `-lm`, fail to link.
 //!
-//! **Виміряно, cc 1.4.2:** `no_default_flags(true)` прибирає не все. Фактичний
-//! виклик — `cc -I core -Wall -Wextra <наші прапорці> -fPIC -o … -c …`, тобто
-//! `-Wall -Wextra` крейт вставляє все одно, і вставляє їх ПЕРЕД нашими. На
-//! числа це не впливає (вони й так є в `cflags.txt`), але висновок ширший:
-//! повного контролю над командною строкою `no_default_flags` не дає, і
-//! покладатися на нього як на гарантію не можна.
+//! **Measured, cc 1.4.2:** `no_default_flags(true)` does not remove
+//! everything. The actual invocation is `cc -I core -Wall -Wextra <our flags>
+//! -fPIC -o ... -c ...` -- the crate inserts `-Wall -Wextra` anyway, and
+//! inserts them BEFORE ours. That does not affect the numbers (they are in
+//! `cflags.txt` already), but the wider conclusion is: `no_default_flags` does
+//! not give full control of the command line and cannot be relied on as a
+//! guarantee.
 //!
-//! Гарантією лишається `tests/determinism.rs`: будь-який прапорець, який
-//! `cc` колись вставить і який змінить арифметику, зсуне хеші й буде
-//! спійманий там. Прапорці — перше місце, куди дивитися; хеші — те, що
-//! справді перевіряється.
+//! The guarantee remains `tests/determinism.rs`: any flag `cc` ever inserts
+//! that changes the arithmetic will shift the hashes and be caught there.
+//! Flags are the first place to look; hashes are what is actually checked.
 //!
-//! Побачити фактичний виклик: `CC_ENABLE_DEBUG_OUTPUT=1 cargo build -vv`.
+//! See the real invocation with: `CC_ENABLE_DEBUG_OUTPUT=1 cargo build -vv`.
 
 use std::env;
 use std::fs;
@@ -72,7 +73,7 @@ fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let root = manifest
         .parent()
-        .expect("core-sys має лежати в репозиторії");
+        .expect("core-sys must live inside the repository");
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
     let core_dir = root.join("core");
@@ -82,11 +83,11 @@ fn main() {
     let scenarios = build_scenarios(&compiler, &core_dir, &out_dir, &flags);
     build_planning(&core_dir, &flags);
 
-    // Оракул для tests/ffi.rs (ROADMAP D2). Лежить у крейті, а не в
-    // core/scenario/, бо там він змінив би golden.txt: це риштування межі,
-    // а не сценарій детермінізму.
+    // Oracle for tests/ffi.rs (ROADMAP D2). It lives in the crate rather than
+    // in core/scenario/, where it would change golden.txt: this is scaffolding
+    // for the boundary, not a determinism scenario.
     //
-    // Без `-lm`, як і сценарії: див. коментар угорі файлу.
+    // Without `-lm`, like the scenarios: see the comment at the top.
     let oracle = link(
         &compiler,
         &flags,
@@ -97,8 +98,8 @@ fn main() {
         &[],
     );
 
-    // Оракул для планування (ROADMAP L3) — другий бінарник, і саме тому, що
-    // йому потрібен `-lm`. Перший цього не має й не отримає.
+    // The planning oracle (ROADMAP L3) is a second binary precisely because it
+    // needs `-lm`. The first does not have it and will not get it.
     let oracle_planning = link(
         &compiler,
         &flags,
@@ -116,14 +117,15 @@ fn main() {
     println!("cargo:rerun-if-changed=oracle.c");
     println!("cargo:rerun-if-changed=oracle_planning.c");
 
-    // Планування кличе libm, і крейт, що його лінкує, мусить її мати. На
-    // glibc 2.34+ вона злита з libc і рядок нічого не змінює; на старших і на
-    // musl — змінює. Windows-gnu має математику в CRT.
+    // Planning calls libm, and the crate linking it must have it. On glibc
+    // 2.34+ it is merged into libc and this line changes nothing; on older
+    // glibc and on musl it does. windows-gnu has the maths in its CRT.
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         println!("cargo:rustc-link-lib=m");
     }
 
-    // Тест не має вгадувати, де що лежить, і не має другої копії прапорців.
+    // The test should not guess where things are, nor hold a second copy of
+    // the flags.
     println!("cargo:rustc-env=CORE_CFLAGS={}", flags.join(" "));
     println!("cargo:rustc-env=CORE_SCENARIO_DIR={}", scenarios.display());
     println!("cargo:rustc-env=CORE_ORACLE={}", oracle.display());
@@ -134,18 +136,18 @@ fn main() {
     println!("cargo:rustc-env=CORE_REPO_ROOT={}", root.display());
 }
 
-/// Читає `core/cflags.txt` так само, як це робить `Makefile`: знімає
-/// коментарі, склеює решту.
+/// Reads `core/cflags.txt` exactly as `Makefile` does: strip comments, join
+/// the rest.
 ///
-/// Дві перевірки нижче дослівно повторюють ті, що вже є в `Makefile`, і
-/// повторюють свідомо. Вони ловлять різні речі: порожній список — зламане
-/// читання файлу, відсутній `-ffp-contract=off` — правку самого файлу, яка
-/// забрала прапорець не подумавши. Обидві помилки без цієї перевірки
-/// проявилися б однаково: збірка мовчки пішла б з дефолтними прапорцями
-/// компілятора, а впала б звірка хешів — за кілометр від причини.
+/// The two checks below repeat those in `Makefile` verbatim, and deliberately.
+/// They catch different things: an empty list means a broken file read, a
+/// missing `-ffp-contract=off` means an edit to the file itself that dropped
+/// the flag without thinking. Without this check both would look identical:
+/// the build would quietly proceed with the compiler's default flags and the
+/// hash comparison would fail a mile from the cause.
 fn read_flags(path: &Path) -> Vec<String> {
     let text =
-        fs::read_to_string(path).unwrap_or_else(|e| panic!("не читається {}: {e}", path.display()));
+        fs::read_to_string(path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
 
     let flags: Vec<String> = text
         .lines()
@@ -156,26 +158,26 @@ fn read_flags(path: &Path) -> Vec<String> {
 
     if flags.is_empty() {
         panic!(
-            "прапорці не витягнулися з {}. Збірка з дефолтними прапорцями \
-             компілятора порушила б детермінізм, тому це помилка, а не \
-             попередження.",
+            "could not extract flags from {}. Building with the compiler's \
+             default flags would break determinism, so this is an error, not \
+             a warning.",
             path.display()
         );
     }
 
     if !flags.iter().any(|f| f == "-ffp-contract=off") {
         panic!(
-            "у прапорцях немає -ffp-contract=off. Без нього компілятор зливає \
-             множення й додавання у FMA, і той самий код дає різні біти на \
-             різних платформах — PROJECT.md §4."
+            "flags do not contain -ffp-contract=off. Without it the compiler \
+             fuses multiply and add into FMA, and the same code gives \
+             different bits on different platforms -- PROJECT.md section 4."
         );
     }
 
     flags
 }
 
-/// `core/*.c` → `libcore.a`. Повертає компілятор, яким це зроблено, щоб
-/// сценарії збиралися тим самим, а не тим, що вдруге вибере `cc`.
+/// `core/*.c` -> `libcore.a`. Returns the compiler used, so the scenarios are
+/// built by the same one rather than whatever `cc` picks a second time.
 fn build_library(core_dir: &Path, flags: &[String]) -> cc::Tool {
     let mut build = cc::Build::new();
     build.no_default_flags(true);
@@ -184,15 +186,15 @@ fn build_library(core_dir: &Path, flags: &[String]) -> cc::Tool {
         build.flag(flag);
     }
 
-    // Єдиний прапорець поза cflags.txt, і він там бути не може: файл — плоский
-    // список, а цей залежить від платформи. Виконувані файли Rust на Linux
-    // за замовчуванням PIE, тож об'єкти без -fPIC у них не злінкуються.
+    // The only flag outside cflags.txt, and it cannot live there: that file is
+    // a flat list while this one depends on the platform. Rust executables on
+    // Linux are PIE by default, so objects without -fPIC will not link.
     //
-    // На бітову точність не впливає: -fPIC змінює адресацію, а не арифметику.
-    // І це не припущення — сценарії нижче збираються саме з цих об'єктів, а
-    // їхні хеші звіряються з еталоном, порахованим збіркою `make` БЕЗ -fPIC.
-    // Тобто тест перевіряє в тому числі й це твердження, і на D1 воно
-    // підтвердилося: усі одинадцять хешів збіглися.
+    // Does not affect bitwise accuracy: -fPIC changes addressing, not
+    // arithmetic. And that is not an assumption -- the scenarios below are
+    // built from these very objects, and their hashes are compared against a
+    // golden file produced by the `make` build WITHOUT -fPIC. So the test
+    // checks this claim too, and at D1 it held: every hash matched.
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         build.flag("-fPIC");
     }
@@ -200,10 +202,10 @@ fn build_library(core_dir: &Path, flags: &[String]) -> cc::Tool {
     let tool = build.get_compiler();
     if tool.is_like_msvc() {
         panic!(
-            "core/cflags.txt написаний під gcc/clang, а тут MSVC. На Windows \
-             беріть тулчейн x86_64-pc-windows-gnu — саме ним (через MSYS2) \
-             збирається джоб windows-mingw у CI. Звірка прапорців MSVC — \
-             окремий борг, ROADMAP A1."
+            "core/cflags.txt is written for gcc/clang, but this is MSVC. On \
+             Windows use the x86_64-pc-windows-gnu toolchain -- that is what \
+             the windows-mingw CI job builds with, through MSYS2. Matching \
+             MSVC flags is a separate debt, ROADMAP A1."
         );
     }
 
@@ -216,16 +218,16 @@ fn build_library(core_dir: &Path, flags: &[String]) -> cc::Tool {
     tool
 }
 
-/// `core/planning/*.c` → `libcore_planning.a` (ROADMAP L3).
+/// `core/planning/*.c` -> `libcore_planning.a` (ROADMAP L3).
 ///
-/// Ті самі прапорці з `cflags.txt` — детермінізм тут ні до чого, але два
-/// набори прапорців у одному крейті були б двома наборами, які хтось колись
-/// розсинхронить. Різниця з `libcore.a` рівно одна й вона в лінкуванні: цей
-/// архів кличе `libm`, той — ні.
+/// The same flags from `cflags.txt` -- determinism is irrelevant here, but two
+/// flag sets in one crate would be two sets someone eventually desynchronises.
+/// There is exactly one difference from `libcore.a`, and it is in linking:
+/// this archive calls `libm`, that one does not.
 ///
-/// `-Icore/planning` додається лише тут: заголовки планування не потрібні
-/// нікому в рантаймовій зоні, і шлях, який нічого не дає, згодом дає
-/// несподіванку.
+/// `-Icore/planning` is added only here: nobody in the runtime zone needs the
+/// planning headers, and a path that gives nothing eventually gives a
+/// surprise.
 fn build_planning(core_dir: &Path, flags: &[String]) {
     let planning_dir = core_dir.join("planning");
 
@@ -249,15 +251,16 @@ fn build_planning(core_dir: &Path, flags: &[String]) {
     build.compile("core_planning");
 }
 
-/// `core/scenario/*.c` → виконувані файли.
+/// `core/scenario/*.c` -> executables.
 ///
-/// Без `libcore_offline.a` і без `-lm`, точно як у `Makefile`: лінкування тут
-/// саме по собі є перевіркою того, що в рантайм не просочилася тригонометрія.
-/// Якщо просочиться — впаде саме тут, а не через тиждень на іншій платформі.
+/// Without `libcore_offline.a` and without `-lm`, exactly as in `Makefile`:
+/// linking here is itself the check that no trigonometry seeped into the
+/// runtime. If it does, it fails right here rather than a week later on
+/// another platform.
 fn build_scenarios(tool: &cc::Tool, core_dir: &Path, out_dir: &Path, flags: &[String]) -> PathBuf {
     let scenario_dir = core_dir.join("scenario");
     let bin_dir = out_dir.join("scenario");
-    fs::create_dir_all(&bin_dir).expect("не створюється каталог для сценаріїв");
+    fs::create_dir_all(&bin_dir).expect("cannot create the scenario directory");
 
     let lib = out_dir.join("libcore.a");
     let core_owned = core_dir.to_path_buf();
@@ -279,16 +282,16 @@ fn build_scenarios(tool: &cc::Tool, core_dir: &Path, out_dir: &Path, flags: &[St
     bin_dir
 }
 
-/// Лінкує одну програму на C проти вже зібраних архівів.
+/// Links one C program against the already built archives.
 ///
-/// **`extra` порожній — і це головне.** Для сценаріїв і для `oracle.c` там
-/// немає `-lm`, тож лінкування саме по собі є перевіркою того, що в
-/// рантаймову зону не просочилася тригонометрія: `sin` чи `pow` тут просто не
-/// знайдуть символу. Дешевша й раніша перевірка за «поліцію libm», і вона
-/// тримається сама, без окремого скрипта.
+/// **`extra` being empty is the point.** For the scenarios and for `oracle.c`
+/// there is no `-lm`, so linking is itself the check that no trigonometry
+/// seeped into the runtime zone: `sin` or `pow` simply find no symbol. A
+/// cheaper and earlier check than the "libm police", and it holds itself up
+/// without a separate script.
 ///
-/// Непорожній `extra` буває рівно в одного викликача — оракула планування, —
-/// і саме тому він окремий бінарник, а не ще один тег у першому.
+/// Exactly one caller passes a non-empty `extra` -- the planning oracle -- and
+/// that is why it is a separate binary rather than another flag on the first.
 fn link(
     tool: &cc::Tool,
     flags: &[String],
@@ -309,10 +312,10 @@ fn link(
 
     let status = cmd
         .status()
-        .unwrap_or_else(|e| panic!("не запускається {:?}: {e}", tool.path()));
+        .unwrap_or_else(|e| panic!("cannot run {:?}: {e}", tool.path()));
 
     if !status.success() {
-        panic!("{} не зібрався: {cmd:?}", src.display());
+        panic!("{} failed to build: {cmd:?}", src.display());
     }
 
     exe.to_path_buf()
@@ -325,13 +328,13 @@ fn exe_suffix() -> &'static str {
     }
 }
 
-/// Файли `.c` каталогу, відсортовані.
+/// The directory's `.c` files, sorted.
 ///
-/// Сортування не для краси: порядок сценаріїв визначає порядок рядків, які
-/// звіряються з еталоном, а `read_dir` сталого порядку не гарантує.
+/// Sorting matters: scenario order sets the order of the lines compared
+/// against the golden file, and `read_dir` guarantees no stable order.
 fn sources(dir: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("не читається {}: {e}", dir.display()))
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
         .filter_map(|entry| entry.ok().map(|e| e.path()))
         .filter(|path| path.extension().is_some_and(|ext| ext == "c"))
         .collect();
@@ -340,20 +343,18 @@ fn sources(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// Перезбирати, коли змінилося будь-що з входів. Заголовки теж: `cc` сам їх
-/// не відстежує, а зміна `.h` без зміни `.c` — звичайна річ.
+/// Rebuild when any input changed. Headers too: `cc` does not track them, and
+/// editing a `.h` without touching a `.c` is routine.
 ///
-/// **Каталоги, не лише файли.** Знайдено ROADMAP G1: перевірка на `sc_uncertainty`
-/// мовчки проходила зі старим (10-рядковим, без цього сценарію) виводом,
-/// доки жоден із уже відстежених файлів не змінювався — `cargo:rerun-if-changed`
-/// для окремих файлів каже cargo перезібрати, коли змінився ФАЙЛ із цього
-/// списку, а не коли до каталогу додався новий. `core/scenario/sc_uncertainty.c`
-/// з'явився в комітованому дереві, а не в чиємусь щойно збудованому `target/`,
-/// тож перший `cargo build` з порожнім кешем підхопив би його одразу — діра
-/// відкривається лише там, де `target/` пережив кілька комітів поспіль
-/// (кеш CI, або сесія розробки, що не чіпала build.rs). Рядок нижче каже
-/// cargo стежити за самим каталогом: зміна його mtime (додавання чи видалення
-/// файлу) тепер теж перезбирає.
+/// **Directories, not only files.** Found at ROADMAP G1: the `sc_uncertainty`
+/// check passed silently against stale output as long as no already-tracked
+/// file changed -- `cargo:rerun-if-changed` on individual files tells cargo to
+/// rebuild when a FILE from that list changes, not when a new one is added to
+/// the directory. The hole only opens where `target/` survives several commits
+/// (a CI cache, or a dev session that never touched build.rs); a first `cargo
+/// build` with an empty cache would pick the new file up at once. The line
+/// below tells cargo to watch the directory itself, so its mtime changing
+/// (a file added or removed) rebuilds as well.
 fn watch(core_dir: &Path) {
     println!("cargo:rerun-if-changed=build.rs");
     println!(

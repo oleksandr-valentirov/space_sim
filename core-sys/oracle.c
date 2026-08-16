@@ -1,46 +1,49 @@
-/* Оракул для перевірки FFI-декларацій (ROADMAP D2).
+/* Oracle for checking the FFI declarations (ROADMAP D2).
  *
- * Друкує те, що `eph_body_state` повертає в C, щоб `tests/ffi.rs` могло
- * звірити з тим, що та сама функція повертає через Rust. Порівняння бітове.
+ * Prints what `eph_body_state` returns in C so `tests/ffi.rs` can compare it
+ * against what the same function returns through Rust. The comparison is
+ * bitwise.
  *
- * Навіщо окрема програма замість чисел, вписаних у тест. Помилка в межі не
- * падає — вона дає правдоподібні числа. Переплутані поля `State`, `int`
- * замість `size_t`, забутий `const` у сигнатурі: усе це компілюється й
- * повертає щось. Впаяні в тест літерали таку помилку зловили б, але
- * протухли б при першому `make cook` і не мали б способу оновитися — а тут
- * оракул перезбирається разом із ассетом, і звірка лишається живою.
+ * Why a separate program rather than numbers written into the test: a
+ * boundary error does not fail, it gives plausible numbers. Swapped `State`
+ * fields, `int` instead of `size_t`, a forgotten `const` in a signature -- all
+ * of it compiles and returns something. Literals baked into the test would
+ * catch such an error but would go stale at the first `make cook` with no way
+ * to update; here the oracle is rebuilt alongside the asset and the comparison
+ * stays alive.
  *
- * Це не частина ядра й не сценарій детермінізму: у `core/scenario/` він
- * змінив би `golden.txt`, а тут він просто риштування крейта.
+ * Not part of the core and not a determinism scenario: in `core/scenario/` it
+ * would change `golden.txt`; here it is merely crate scaffolding.
  *
- * Друк у %.17g: сімнадцять значущих цифр однозначно відновлюють double, тож
- * текст посередині нічого не втрачає.
+ * Printed as %.17g: seventeen significant digits recover a double uniquely,
+ * so the text in the middle loses nothing.
  *
- * Формат: перше поле — тег, далі числа в %.17g.
+ * Format: first field is a tag, then numbers in %.17g.
  *
  *   eph  <body> <t> <x> <y> <z> <vx> <vy> <vz>
- *   rad  <body> <metres>                         середній радіус тіла
- *   mu   <body> <m^3/s^2>                        гравітаційний параметр
- *   samp <k> <t> <x> <y> <z> <vx> <vy> <vz>      семпл прогону
- *   run  <count> <stop> <event> <step>           підсумок прогону
- *   end  <t> <x> <y> <z> <vx> <vy> <vz>          кінцевий стан прогону
- *   cmu  <gm1> <gm2> <mu>                        частка маси пари (CR3BP)
- *   jac  <x> <z> <vy> <mu> <C>                   константа Якобі
- *   lag  <point> <x> <y> <z>                     точка Лагранжа
- *   zvc  <c> <result> <r>                        промінь до кривої нульової
- *                                                швидкості
- *   syn  <t> <L> <dL/dt> <rate> <mu>             синодичний фрейм пари
- *   fri  <t> <x> <y> <z> <vx> <vy> <vz>          Місяць у власному фреймі
+ *   rad  <body> <metres>                         mean body radius
+ *   mu   <body> <m^3/s^2>                        gravitational parameter
+ *   samp <k> <t> <x> <y> <z> <vx> <vy> <vz>      run sample
+ *   run  <count> <stop> <event> <step>           run summary
+ *   end  <t> <x> <y> <z> <vx> <vy> <vz>          final state of the run
+ *   cmu  <gm1> <gm2> <mu>                        pair mass fraction (CR3BP)
+ *   jac  <x> <z> <vy> <mu> <C>                   Jacobi constant
+ *   lag  <point> <x> <y> <z>                     Lagrange point
+ *   zvc  <c> <result> <r>                        ray to the zero-velocity
+ *                                                curve
+ *   syn  <t> <L> <dL/dt> <rate> <mu>             synodic frame of the pair
+ *   fri  <t> <x> <y> <z> <vx> <vy> <vz>          Moon in its own frame
  *
- * Прогонів два: без подій до заданого часу і з озброєним перицентром.
- * Другий важливий окремо — він проходить через `CoreEvent`, а структура з
- * enum, int і double поспіль це саме те місце, де розкладка й вирівнювання
- * розходяться тихо.
+ * Two runs: one without events to a given time, one with periapsis armed. The
+ * second matters on its own -- it goes through `CoreEvent`, and a struct of
+ * enum, int and double in a row is exactly where layout and alignment diverge
+ * quietly.
  *
- * Апарат заданий літералами, а не порахований: `sqrt` тут немає, бо оракул
- * лінкується без `libm` — так само, як сценарії детермінізму (build.rs).
+ * The vessel is given as literals rather than computed: there is no `sqrt`
+ * here, because the oracle links without `libm`, like the determinism
+ * scenarios (build.rs).
  *
- * Запускається з кореня репозиторію. */
+ * Run from the repository root. */
 
 #include "cr3bp.h"
 #include "ephemeris.h"
@@ -52,10 +55,10 @@
 #define ASSET "data/fixture/earth_moon.eph"
 #define DAY 86400.0
 
-/* Індекси в порядку кукера (core/cook/cook_fixture.c) і моменти всередині
- * 120-денного проміжку фікстури. Сонце й Місяць навмисно: перше майже не
- * рухається на цьому масштабі, друге рухається найшвидше, тож помилка в
- * розкладці полів на одному з них видна напевно. */
+/* Indices in cooker order (core/cook/cook_fixture.c) and instants inside the
+ * fixture's 120-day span. Sun and Moon on purpose: the first barely moves at
+ * this scale, the second moves fastest, so a field layout error shows on one
+ * of them for certain. */
 static const int BODIES[] = { 0, 3, 4 };
 #define N_BODIES (sizeof BODIES / sizeof BODIES[0])
 
@@ -65,20 +68,22 @@ static const double TIMES[] = { 0.0, 30.0 * DAY, 119.0 * DAY };
 /* An index past the end of any asset we cook (ROADMAP U2a). */
 #define NO_SUCH_BODY 99
 
-/* Апарат на витягнутій навколоземній орбіті: зсув від Землі й швидкість,
- * задані числами. 0.8 колової швидкості на геостаціонарному радіусі — тобто
- * орбіта з перицентром, який є що шукати. */
+/* A vessel on an elongated Earth orbit: offset from Earth and velocity given
+ * as numbers. 0.8 of circular speed at geostationary radius, i.e. an orbit
+ * whose periapsis is worth searching for. */
 #define VESSEL_T0 (1.0 * DAY)
 #define VESSEL_DX 42164.0e3
 #define VESSEL_VY 1967.84
 #define VESSEL_VZ 1475.88
 
-/* І другий апарат, низько (ROADMAP K7b). Той, що вище, висить на 35786 км,
- * де повітря немає взагалі — прогін з ненульовим `cd` там надрукував би те
- * саме, що без нього, і переставлені `cr` і `cd` пройшли б звірку.
+/* And a second vessel, low (ROADMAP K7b). The one above hangs at 35786 km,
+ * where there is no air at all -- a run with non-zero `cd` there would print
+ * what it prints without it, and swapped `cr` and `cd` would pass the
+ * comparison.
  *
- * 320 км над екваторіальним радіусом, майже колова, нахилена: швидкість
- * узята літералами, як і вся решта тут, бо оракул лінкується без libm. */
+ * 320 km above the equatorial radius, near-circular, inclined: the velocity is
+ * literals like everything else here, because the oracle links without
+ * libm. */
 #define LEO_DX 6698137.0
 #define LEO_VY 6680.0
 #define LEO_VZ 3860.0
@@ -133,7 +138,7 @@ static int propagate(const EphemerisCtx *eph)
     printf("run %zu %d %d %.17g\n", n, (int)stop, event, step);
     print_state("end", &final_state);
 
-    /* Той самий апарат, але прогін зупиняє подія. */
+    /* The same vessel, but an event stops the run. */
     CoreEvent ev;
     ev.kind = CORE_EVENT_PERIAPSIS;
     ev.body_id = 3;
@@ -149,9 +154,10 @@ static int propagate(const EphemerisCtx *eph)
     printf("run %zu %d %d %.17g\n", n, (int)stop, event, step);
     print_state("end", &final_state);
 
-    /* Та сама ланка, але з матрицею переходу (ROADMAP K8). Друкується і
-     * кінцевий стан, і крок: обіцянка межі в тому, що це бітово те саме,
-     * що дав би prop_run, тож звірка мусить бачити обидва. */
+    /* The same leg, but with the transition matrix (ROADMAP K8). Both the
+     * final state and the step are printed: the boundary promises this is
+     * bit-identical to what prop_run would give, so the comparison must see
+     * both. */
     step = 0.0;
     double phi[36];
     if (prop_run_stm(p, &vessel, NULL, VESSEL_T0 + 0.5 * DAY, &final_state, phi,
@@ -166,10 +172,10 @@ static int propagate(const EphemerisCtx *eph)
         printf("stm %d %.17g\n", i, phi[i]);
     }
 
-    /* І та сама ланка з апаратом, який відчуває тиск світла (ROADMAP K6b).
-     * Кожен аргумент межі має бути тут хоч раз ненульовим: `vessel` як
-     * NULL уже надруковано вище, а вказівник, який ніхто не розіменовує,
-     * не довів би, що поля структури оголошені в тому самому порядку. */
+    /* And the same leg with a vessel that feels radiation pressure (K6b).
+     * Every boundary argument must be non-null here at least once: `vessel` as
+     * NULL is already printed above, and a pointer nobody dereferences would
+     * not prove the struct fields are declared in the same order. */
     VesselParams sail;
     sail.mass_kg = 1000.0;
     sail.area_m2 = 20.0;
@@ -186,9 +192,10 @@ static int propagate(const EphemerisCtx *eph)
     printf("srprun %zu %d %d %.17g\n", n, (int)stop, event, step);
     print_state("srpend", &final_state);
 
-    /* І низька орбіта з апаратом, який відчуває повітря (ROADMAP K7b).
-     * Десять хвилин: на 320 км цього досить, щоб опір зрушив останні біти
-     * далеко за межу звірки, і мало, щоб ланка лишалась однією ланкою. */
+    /* And a low orbit with a vessel that feels air (ROADMAP K7b). Ten
+     * minutes: at 320 km that is enough for drag to move the last bits well
+     * past the comparison threshold, and little enough for the leg to stay one
+     * leg. */
     State low;
     low.r = vec3(earth.r.x + LEO_DX, earth.r.y, earth.r.z);
     low.v = vec3(earth.v.x, earth.v.y + LEO_VY, earth.v.z + LEO_VZ);
@@ -272,14 +279,15 @@ int main(void)
     printf("rad %d %.17g\n", NO_SUCH_BODY,
            eph_body_radius(eph, NO_SUCH_BODY));
 
-    /* CR3BP: частка маси пари, константа Якобі, точки Лагранжа й промінь до
-     * кривої нульової швидкості (ROADMAP-UI.md, U6b2).
+    /* CR3BP: pair mass fraction, Jacobi constant, Lagrange points and the ray
+     * to the zero-velocity curve (ROADMAP-UI.md, U6b2).
      *
-     * Числа безрозмірні, і саме тому вони тут: декларація, яка переплутала б
-     * порядок аргументів `cr3bp_jacobi(r, v, mu)`, повернула б цілком
-     * правдоподібну константу — просто не ту. Стан узятий із каталогу JPL
-     * (halo 1151), а не вигаданий: у `core/test/test_correct.c` він же
-     * названий x = 1.169, vy = -0.194. */
+     * The numbers are dimensionless, which is exactly why they are here: a
+     * declaration that swapped the argument order of `cr3bp_jacobi(r, v, mu)`
+     * would return a perfectly plausible constant -- just not the right one.
+     * The state comes from the JPL catalogue (halo 1151) rather than being
+     * invented: `core/test/test_correct.c` names it x = 1.169,
+     * vy = -0.194. */
     {
         double mu = cr3bp_mu(eph_body_mu(eph, 3), eph_body_mu(eph, 4));
         printf("cmu %.17g %.17g %.17g\n", eph_body_mu(eph, 3),
@@ -301,8 +309,9 @@ int main(void)
             printf("lag %d %.17g %.17g %.17g\n", point, l.x, l.y, l.z);
         }
 
-        /* Ворота біля L1: трохи вище за C(L1) — перетин є, трохи нижче —
-         * променю відповіді немає взагалі, і це відповідь, а не збій. */
+        /* The gate near L1: slightly above C(L1) there is a crossing,
+         * slightly below there is no answer for the ray at all -- and that is
+         * an answer, not a failure. */
         Vec3d l1;
         cr3bp_lagrange(mu, 1, &l1);
         double c1 = cr3bp_jacobi(l1, vec3_zero(), mu);
@@ -316,13 +325,13 @@ int main(void)
         }
     }
 
-    /* Синодичний фрейм і перехід у нього (ROADMAP-UI.md, U6b1).
+    /* The synodic frame and the transform into it (ROADMAP-UI.md, U6b1).
      *
-     * Друкується не сам базис, а величини, які його визначають, і стан
-     * Місяця, переведений у власний фрейм: там він за побудовою стоїть у
-     * (1 - mu, 0, 0) майже нерухомо, і будь-яка помилка в розкладці
-     * SynodicFrame зіпсувала б саме це. Структуру C заповнює сам, тож
-     * розбіжність у розмірі означала б запис за межі, а не дивне число. */
+     * What is printed is not the basis itself but the quantities defining it,
+     * plus the Moon's state taken into its own frame: there, by construction,
+     * it sits at (1 - mu, 0, 0) almost motionless, and any SynodicFrame layout
+     * error would spoil exactly that. C fills the struct itself, so a size
+     * mismatch would mean a write past the end, not a strange number. */
     for (size_t k = 0; k < N_TIMES; k++) {
         SynodicFrame f;
         if (frame_synodic(eph, 3, 4, TIMES[k], &f) != CORE_OK) {

@@ -1,18 +1,18 @@
-//! Перевірка кроку D2: декларації межі описують саме те, що є в C.
+//! The D2 check: the boundary declarations describe exactly what is in C.
 //!
-//! Помилка в FFI не падає. Переплутані поля `State`, `int` замість `size_t`,
-//! `*mut` там, де C очікує `*const` — усе це компілюється й повертає числа,
-//! які виглядають як координати. Тому перевірка тут бітова, а не «в межах
-//! допуску»: та сама функція, той самий ассет, ті самі моменти часу, викликані
-//! з C і з Rust, мусять дати **однакові біти**. Будь-яка розбіжність у
-//! розкладці зіпсує їх до невпізнання.
+//! An FFI error does not fail. Swapped `State` fields, `int` instead of
+//! `size_t`, `*mut` where C expects `*const` -- all of it compiles and returns
+//! numbers that look like coordinates. So the check here is bitwise rather
+//! than "within tolerance": the same function, the same asset, the same
+//! instants, called from C and from Rust, must give **identical bits**. Any
+//! layout divergence ruins them beyond recognition.
 //!
-//! Оракул на C — `core-sys/oracle.c`, збирається в `build.rs`.
+//! The C oracle is `core-sys/oracle.c`, built by `build.rs`.
 //!
-//! `unsafe` тут є, і це не порушення інваріанта з CLAUDE.md: правило про
-//! «наш `unsafe` лише в core-rs» стосується коду, який ми постачаємо. Тест
-//! сирого шару інакше написати не можна — він саме про те, що виклик через
-//! межу коректний.
+//! There is `unsafe` here, and it does not violate the CLAUDE.md invariant:
+//! the rule "our `unsafe` only in core-rs" is about the code we ship. A test
+//! of the raw layer cannot be written any other way -- it is precisely about
+//! the call across the boundary being correct.
 
 use std::ffi::CString;
 use std::path::Path;
@@ -32,7 +32,7 @@ const REPO_ROOT: &str = env!("CORE_REPO_ROOT");
 const ASSET: &str = "data/fixture/earth_moon.eph";
 const DAY: f64 = 86400.0;
 
-/// Один рядок виводу оракула: тег і числа після нього.
+/// One line of oracle output: a tag and the numbers after it.
 #[derive(Clone)]
 struct Record {
     tag: String,
@@ -57,10 +57,10 @@ impl Record {
     }
 }
 
-/// Бітова звірка двох станів із зрозумілим повідомленням.
+/// Bitwise comparison of two states with a legible message.
 ///
-/// Порівнюються біти, а не значення: різниця тут — це розкладка структур або
-/// типи в декларації, і жоден допуск про неї нічого не скаже.
+/// Bits are compared, not values: a difference here is struct layout or the
+/// types in a declaration, and no tolerance says anything about that.
 fn same_bits(from_c: &State, from_rust: &State, what: &str) {
     let c = [
         from_c.t, from_c.r.x, from_c.r.y, from_c.r.z, from_c.v.x, from_c.v.y, from_c.v.z,
@@ -79,47 +79,47 @@ fn same_bits(from_c: &State, from_rust: &State, what: &str) {
         assert_eq!(
             a.to_bits(),
             b.to_bits(),
-            "{what}, компонента {i}: C дало {a:.17e}, Rust {b:.17e}.\n\
-             Це розкладка структур або типи в декларації, а не фізика."
+            "{what}, component {i}: C gave {a:.17e}, Rust {b:.17e}.\n\
+             This is struct layout or declaration types, not physics."
         );
     }
 }
 
-/// Запускає оракул і розбирає його вивід.
+/// Runs the oracle and parses its output.
 ///
-/// `%.17g` однозначно відновлює double, а парсер Rust коректно заокруглює,
-/// тож текст посередині нічого не втрачає — порівнювати можна побітово.
+/// `%.17g` recovers a double uniquely and Rust's parser rounds correctly, so
+/// the text in between loses nothing -- the comparison can be bitwise.
 fn oracle_records() -> Vec<Record> {
     records_from(ORACLE)
 }
 
-/// Те саме для будь-якого оракула. Їх два, і другий не примха: оракул
-/// планування лінкується з `-lm`, а цей — навмисно без неї (build.rs).
+/// The same for any oracle. There are two, and the second is not a whim: the
+/// planning oracle links with `-lm`, this one deliberately without (build.rs).
 fn records_from(oracle: &str) -> Vec<Record> {
     let output = Command::new(oracle)
         .current_dir(REPO_ROOT)
         .output()
-        .unwrap_or_else(|e| panic!("не запускається {oracle}: {e}"));
+        .unwrap_or_else(|e| panic!("cannot run {oracle}: {e}"));
 
     assert!(
         output.status.success(),
-        "оракул завершився з {}:\n{}",
+        "the oracle exited with {}:\n{}",
         output.status,
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let text = String::from_utf8(output.stdout).expect("оракул видав не UTF-8");
+    let text = String::from_utf8(output.stdout).expect("oracle output is not UTF-8");
     let mut records = Vec::new();
 
     for line in text.lines() {
         let fields: Vec<&str> = line.split_whitespace().collect();
-        assert!(fields.len() > 1, "неочікуваний рядок оракула: {line}");
+        assert!(fields.len() > 1, "unexpected oracle line: {line}");
 
         let values = fields[1..]
             .iter()
             .map(|f| {
                 f.parse()
-                    .unwrap_or_else(|e| panic!("не число в '{line}': {e}"))
+                    .unwrap_or_else(|e| panic!("not a number in '{line}': {e}"))
             })
             .collect();
 
@@ -131,34 +131,34 @@ fn records_from(oracle: &str) -> Vec<Record> {
 
     assert!(
         !records.is_empty(),
-        "оракул {oracle} нічого не вивів — порожня звірка мовчки \
-         'проходить', тому це провал"
+        "oracle {oracle} printed nothing -- an empty comparison silently \
+         'passes', so this is a failure"
     );
 
     records
 }
 
-/// Рядки одного тегу, у порядку виводу. Клонує замість позичання — межа тут
-/// не в продуктивності, а в тому, щоб код читався (CLAUDE.md, стиль Rust).
+/// The lines of one tag, in output order. Clones rather than borrows -- the
+/// limit here is readability, not performance (CLAUDE.md, Rust style).
 fn tagged(records: &[Record], tag: &str) -> Vec<Record> {
     records.iter().filter(|r| r.tag == tag).cloned().collect()
 }
 
-/// Завантажує фікстуру. Викликач зобов'язаний віддати результат у `eph_free` —
-/// саме та зобов'язаність, яку D3 зробить неможливо порушити.
+/// Loads the fixture. The caller must pass the result to `eph_free` -- exactly
+/// the obligation D3 makes impossible to break.
 ///
 /// # Safety
 ///
-/// Повертає сирий вказівник, дійсний до `eph_free`.
+/// Returns a raw pointer, valid until `eph_free`.
 unsafe fn load_fixture() -> *mut EphemerisCtx {
     let path = Path::new(REPO_ROOT).join(ASSET);
-    let c_path = CString::new(path.to_str().expect("шлях не UTF-8")).expect("шлях із \\0");
+    let c_path = CString::new(path.to_str().expect("path is not UTF-8")).expect("path holds a \\0");
 
     let mut ctx: *mut EphemerisCtx = std::ptr::null_mut();
     let result: CoreResult = eph_load(c_path.as_ptr(), &mut ctx);
 
-    assert_eq!(result, CORE_OK, "eph_load не прочитав {}", path.display());
-    assert!(!ctx.is_null(), "eph_load повернув CORE_OK і NULL");
+    assert_eq!(result, CORE_OK, "eph_load did not read {}", path.display());
+    assert!(!ctx.is_null(), "eph_load returned CORE_OK and NULL");
 
     ctx
 }
@@ -167,7 +167,7 @@ unsafe fn load_fixture() -> *mut EphemerisCtx {
 fn states_match_the_c_oracle_bit_for_bit() {
     let records = oracle_records();
     let samples = tagged(&records, "eph");
-    assert!(!samples.is_empty(), "оракул не дав жодного рядка eph");
+    assert!(!samples.is_empty(), "the oracle gave no eph line");
 
     unsafe {
         let ctx = load_fixture();
@@ -178,34 +178,34 @@ fn states_match_the_c_oracle_bit_for_bit() {
 
             let mut state = State::default();
             let result = eph_body_state(ctx, body, t, &mut state);
-            assert_eq!(result, CORE_OK, "тіло {body} у момент {t}");
+            assert_eq!(result, CORE_OK, "body {body} at time {t}");
 
             let mut expected = sample.state(1);
-            // Час у рядку — той, про який просили; решта з C.
+            // The time in the line is the one requested; the rest is from C.
             expected.t = t;
-            same_bits(&expected, &state, &format!("тіло {body}, момент {t}"));
+            same_bits(&expected, &state, &format!("body {body}, time {t}"));
         }
 
         eph_free(ctx);
     }
 }
 
-/// Орієнтація звіряється бітово, всі чотири компоненти (R1c).
+/// Orientation compared bitwise, all four components (R1c).
 ///
-/// Найлегша помилка тут — не арифметична, а домовленісна: половина світу
-/// пише кватерніон як `(x, y, z, w)`, і переставлений `w` лишається цілком
-/// правильним обертанням, просто не тим. Ні код повернення, ні довжина
-/// (вона одинична за будь-якої перестановки) цього не покажуть — лише
-/// покомпонентна звірка з C.
+/// The easiest mistake here is a convention, not arithmetic: half the world
+/// writes a quaternion as `(x, y, z, w)`, and a misplaced `w` is still a
+/// perfectly valid rotation, merely the wrong one. Neither the return code nor
+/// the length (unit under any permutation) shows it -- only a per-component
+/// comparison against C.
 ///
-/// Друге, що тут закріплюється: тіло без моделі обертання віддає **одиничний**
-/// кватерніон і `CORE_OK`. «Не змодельовано» не має права з часом перетворитися
-/// на «не вдалося»: у фікстурі таких тіл вісім із десяти.
+/// The second thing pinned here: a body with no rotation model returns the
+/// **identity** and `CORE_OK`. "Not modelled" must not drift into "failed":
+/// eight of the fixture's ten bodies are like that.
 #[test]
 fn orientations_match_the_c_oracle_bit_for_bit() {
     let records = oracle_records();
     let quats = tagged(&records, "quat");
-    assert!(!quats.is_empty(), "оракул не дав жодного рядка quat");
+    assert!(!quats.is_empty(), "the oracle gave no quat line");
 
     unsafe {
         let ctx = load_fixture();
@@ -217,7 +217,7 @@ fn orientations_match_the_c_oracle_bit_for_bit() {
 
             let mut got = Quat::default();
             let result = eph_body_orientation(ctx, body, t, &mut got);
-            assert_eq!(result, CORE_OK, "тіло {body} у момент {t}");
+            assert_eq!(result, CORE_OK, "body {body} at time {t}");
 
             for (k, (name, expected)) in [
                 ("w", record.values[2]),
@@ -232,13 +232,13 @@ fn orientations_match_the_c_oracle_bit_for_bit() {
                 assert_eq!(
                     component.to_bits(),
                     expected.to_bits(),
-                    "тіло {body}, момент {t}, компонента {name}: C дав \
-                     {expected}, а межа {component}"
+                    "body {body}, time {t}, component {name}: C gave \
+                     {expected}, the boundary {component}"
                 );
             }
 
-            // Одиничний кватерніон — це «не обертається»; звірка самих
-            // одиничних пройшла б і на функції, яка нічого не читає.
+            // The identity quaternion means "does not rotate"; comparing only
+            // identities would pass even for a function that reads nothing.
             if got != Quat::default() {
                 turning += 1;
             }
@@ -246,25 +246,26 @@ fn orientations_match_the_c_oracle_bit_for_bit() {
 
         assert!(
             turning > 0,
-            "усі кватерніони одиничні — звірка нічого не перевірила"
+            "every quaternion is the identity -- the comparison checked nothing"
         );
 
         eph_free(ctx);
     }
 }
 
-/// Радіуси теж звіряються бітово (ROADMAP U2a).
+/// Radii are compared bitwise too (ROADMAP U2a).
 ///
-/// Функція повертає `double` замість коду — отже єдиний спосіб помітити, що
-/// декларація розійшлася з C, це порівняти саме число. І порівнювати треба
-/// **всі** тіла оракула разом із неіснуючим: розмір Землі й розмір Місяця
-/// відрізняються втричі, тож зсув на одне тіло в масиві контексту дав би
-/// цілком правдоподібний радіус — і невидиму помилку.
+/// The function returns a `double` rather than a code, so the only way to
+/// notice a declaration diverging from C is to compare the number itself. And
+/// **every** oracle body must be compared, together with a non-existent one:
+/// Earth's and the Moon's radii differ by a factor of three, so an off-by-one
+/// body in the context array would give a perfectly plausible radius -- and an
+/// invisible bug.
 #[test]
 fn radii_match_the_c_oracle_bit_for_bit() {
     let records = oracle_records();
     let radii = tagged(&records, "rad");
-    assert!(!radii.is_empty(), "оракул не дав жодного рядка rad");
+    assert!(!radii.is_empty(), "the oracle gave no rad line");
 
     unsafe {
         let ctx = load_fixture();
@@ -278,7 +279,7 @@ fn radii_match_the_c_oracle_bit_for_bit() {
             assert_eq!(
                 got.to_bits(),
                 expected.to_bits(),
-                "тіло {body}: C дав {expected}, а межа {got}"
+                "body {body}: C gave {expected}, the boundary {got}"
             );
 
             if got != 0.0 {
@@ -286,60 +287,60 @@ fn radii_match_the_c_oracle_bit_for_bit() {
             }
         }
 
-        // Звірка нулів із нулями пройшла б і на функції, яка завжди повертає
-        // нуль. Тіла з розміром у фікстурі є, і хоч одне з них має тут бути.
+        // Comparing zeros against zeros would pass for a function that always
+        // returns zero. The fixture does hold sized bodies; at least one must
+        // appear here.
         assert!(
             nonzero > 0,
-            "усі радіуси нульові — звірка нічого не перевірила"
+            "every radius is zero -- the comparison checked nothing"
         );
 
         eph_free(ctx);
     }
 }
 
-/// Помилки мусять доходити як помилки, а не як нулі.
+/// Errors must arrive as errors, not as zeros.
 ///
-/// Це друга половина контракту: якщо код повернення читається неправильно,
-/// виклик поза проміжком ассета виглядатиме як успіх зі станом, набитим
-/// сміттям, — і це найгірший можливий результат, бо траєкторія вийде
-/// правдоподібна.
+/// The other half of the contract: if the return code is read wrongly, a call
+/// outside the asset's span looks like success with a state full of garbage --
+/// the worst possible outcome, because the trajectory comes out plausible.
 #[test]
 fn out_of_range_is_reported_not_extrapolated() {
     unsafe {
         let ctx = load_fixture();
         let mut state = State::default();
 
-        // Фікстура покриває 120 діб від J2000 (data/fixture/README.md).
+        // The fixture covers 120 days from J2000 (data/fixture/README.md).
         for (label, body, t) in [
-            ("час до початку", 0, -DAY),
-            ("час після кінця", 0, 200.0 * DAY),
-            ("від'ємний індекс тіла", -1, 0.0),
-            ("індекс поза списком", 999, 0.0),
+            ("time before the start", 0, -DAY),
+            ("time after the end", 0, 200.0 * DAY),
+            ("negative body index", -1, 0.0),
+            ("index past the list", 999, 0.0),
         ] {
             let result = eph_body_state(ctx, body, t, &mut state);
             assert_eq!(
                 result, CORE_ERR_INVALID_ARG,
-                "{label}: очікували CORE_ERR_INVALID_ARG, отримали {result}"
+                "{label}: expected CORE_ERR_INVALID_ARG, got {result}"
             );
         }
 
-        // А те, що всередині проміжку, має проходити — інакше попередня
-        // перевірка «проходила б» і на зламаному коді повернення.
+        // And what is inside the span must pass -- otherwise the check above
+        // would "pass" even with a broken return code.
         assert_eq!(
             eph_body_state(ctx, 0, 0.0, &mut state),
             CORE_OK,
-            "початок проміжку мав прочитатися"
+            "the start of the span should have read"
         );
 
         eph_free(ctx);
     }
 }
 
-/// `eph_free(NULL)` дозволений — так каже `core/ephemeris.h`.
+/// `eph_free(NULL)` is allowed -- `core/ephemeris.h` says so.
 ///
-/// Дрібниця, але D3 буде на неї спиратися: RAII-обгортка звільняє в `Drop`
-/// беззастережно, і якщо ця обіцянка неправдива, воно впаде не тут, а десь
-/// у грі при вивантаженні сцени.
+/// A small thing, but D3 will rest on it: the RAII wrapper frees in `Drop`
+/// unconditionally, and if that promise is false it will crash not here but
+/// somewhere in the game while unloading a scene.
 #[test]
 fn freeing_null_is_allowed() {
     unsafe {
@@ -347,27 +348,29 @@ fn freeing_null_is_allowed() {
     }
 }
 
-/// Пропагація через межу дає ті самі біти, що прямий виклик у C (ROADMAP H3).
+/// Propagation across the boundary gives the same bits as a direct C call (H3).
 ///
-/// Тут перевіряється більше, ніж одна функція. `prop_run` бере одинадцять
-/// аргументів, серед них дві структури (`PropConfig` з `enum`, двома `double`
-/// і `long`; `CoreEvent` з `enum`, `int` і `double`), три вихідні вказівники
-/// й буфер, який дає Rust. Кожне з цього — окремий спосіб мовчки розійтися:
-/// зсунуте поле, не той цілий тип, переплутаний порядок `out_cap`/`out_count`.
-/// Жоден із них не падає — усі повертають числа, схожі на траєкторію.
+/// More than one function is checked here. `prop_run` takes eleven arguments,
+/// among them two structs (`PropConfig` with an `enum`, two `double` and a
+/// `long`; `CoreEvent` with an `enum`, an `int` and a `double`), three output
+/// pointers and a buffer supplied by Rust. Each is its own way to diverge
+/// silently: a shifted field, the wrong integer type, swapped
+/// `out_cap`/`out_count`. None of them fails -- all return numbers resembling
+/// a trajectory.
 ///
-/// Оракул проганяє два прогони: один до заданого часу з семплами, другий до
-/// перицентра. Другий проходить саме через `CoreEvent` і через код зупинки.
+/// The oracle performs two runs: one to a given time with samples, one to
+/// periapsis. The second goes through `CoreEvent` and through the stop code.
 #[test]
 fn propagation_matches_the_c_oracle_bit_for_bit() {
-    // Ті самі літерали, що в core-sys/oracle.c. Апарат заданий числами, а не
-    // порахований: оракул лінкується без libm, тож sqrt там немає.
+    // The same literals as in core-sys/oracle.c. The vessel is given as
+    // numbers rather than computed: the oracle links without libm, so there is
+    // no sqrt there.
     const VESSEL_T0: f64 = DAY;
     const VESSEL_DX: f64 = 42_164.0e3;
     const VESSEL_VY: f64 = 1967.84;
     const VESSEL_VZ: f64 = 1475.88;
-    // Низька орбіта для перевірки опору (ROADMAP K7b); дзеркало
-    // core-sys/oracle.c, де пояснено, чому потрібна друга.
+    // A low orbit for the drag check (ROADMAP K7b); mirrors core-sys/oracle.c,
+    // which explains why a second one is needed.
     const LEO_DX: f64 = 6_698_137.0;
     const LEO_VY: f64 = 6680.0;
     const LEO_VZ: f64 = 3860.0;
@@ -378,8 +381,8 @@ fn propagation_matches_the_c_oracle_bit_for_bit() {
     let oracle_runs = tagged(&records, "run");
     let oracle_ends = tagged(&records, "end");
 
-    assert!(!oracle_samples.is_empty(), "оракул не дав жодного семпла");
-    assert_eq!(oracle_runs.len(), 2, "оракул мав дати два прогони");
+    assert!(!oracle_samples.is_empty(), "the oracle gave no sample");
+    assert_eq!(oracle_runs.len(), 2, "the oracle should have given two runs");
     assert_eq!(oracle_ends.len(), 2);
 
     unsafe {
@@ -397,8 +400,8 @@ fn propagation_matches_the_c_oracle_bit_for_bit() {
         vessel.v.y += VESSEL_VY;
         vessel.v.z += VESSEL_VZ;
 
-        // density_scale = 1 дзеркалить оракул: він теж будує конфігурацію з
-        // одиницею, і саме тому ці два прогони можна порівнювати бітово.
+        // density_scale = 1 mirrors the oracle: it also builds its config with
+        // one, which is why these two runs can be compared bitwise.
         let cfg = PropConfig {
             integrator: CORE_INTEG_DOP853,
             tol_m: 1e-2,
@@ -409,9 +412,9 @@ fn propagation_matches_the_c_oracle_bit_for_bit() {
 
         let mut p: *mut PropagatorCtx = std::ptr::null_mut();
         assert_eq!(prop_create(ctx, &cfg, &mut p), CORE_OK);
-        assert!(!p.is_null(), "prop_create повернув CORE_OK і NULL");
+        assert!(!p.is_null(), "prop_create returned CORE_OK and NULL");
 
-        // ---- Прогін перший: семпли до заданого часу.
+        // ---- First run: samples up to a given time.
         let mut samples = vec![State::default(); CAP];
         let mut count: usize = 0;
         let mut final_state = State::default();
@@ -439,28 +442,28 @@ fn propagation_matches_the_c_oracle_bit_for_bit() {
         assert_eq!(
             count,
             oracle_samples.len(),
-            "кількість семплів розійшлася: буфер із Rust наповнюється не так, \
-             як у C"
+            "sample count diverged: the Rust-supplied buffer fills differently \
+             than in C"
         );
         for (k, from_c) in oracle_samples.iter().enumerate() {
-            assert_eq!(from_c.values[0] as usize, k, "порядок семплів оракула");
-            same_bits(&from_c.state(1), &samples[k], &format!("семпл {k}"));
+            assert_eq!(from_c.values[0] as usize, k, "oracle sample order");
+            same_bits(&from_c.state(1), &samples[k], &format!("sample {k}"));
         }
 
         let run = &oracle_runs[0];
         assert_eq!(run.values[0] as usize, count, "out_count");
-        assert_eq!(run.values[1] as i32, stop, "код зупинки");
-        assert_eq!(run.values[2] as i32, event, "індекс події");
+        assert_eq!(run.values[1] as i32, stop, "stop code");
+        assert_eq!(run.values[2] as i32, event, "event index");
         assert_eq!(
             run.values[3].to_bits(),
             step.to_bits(),
-            "перенесений крок: {} проти {}",
+            "carried step: {} against {}",
             run.values[3],
             step
         );
-        same_bits(&oracle_ends[0].state(0), &final_state, "кінцевий стан");
+        same_bits(&oracle_ends[0].state(0), &final_state, "final state");
 
-        // ---- Прогін другий: зупинка на події.
+        // ---- Second run: stopping on an event.
         let ev = CoreEvent {
             kind: CORE_EVENT_PERIAPSIS,
             body_id: 3,
@@ -485,30 +488,31 @@ fn propagation_matches_the_c_oracle_bit_for_bit() {
         );
         assert_eq!(result, CORE_OK);
 
-        // Не лише «збіглося з оракулом», а й «сталося те, про що просили»:
-        // якби подія не спрацювала, обидва боки однаково дійшли б до t_end і
-        // звірка мовчки пройшла б.
-        assert_eq!(stop, CORE_STOP_EVENT, "подія мала зупинити прогін");
+        // Not only "matched the oracle" but "the thing asked for happened":
+        // had the event not fired, both sides would equally have reached t_end
+        // and the comparison would have passed silently.
+        assert_eq!(stop, CORE_STOP_EVENT, "the event should have stopped the run");
         assert_eq!(event, 0);
 
         let run = &oracle_runs[1];
         assert_eq!(run.values[1] as i32, stop);
         assert_eq!(run.values[2] as i32, event);
-        assert_eq!(run.values[3].to_bits(), step.to_bits(), "крок після події");
-        same_bits(&oracle_ends[1].state(0), &final_state, "стан на події");
+        assert_eq!(run.values[3].to_bits(), step.to_bits(), "step after the event");
+        same_bits(&oracle_ends[1].state(0), &final_state, "state at the event");
 
         // --- prop_run_stm (ROADMAP K8) --------------------------------
         //
-        // Дві різні заяви, і друга не випливає з першої: що межа доносить
-        // 36 чисел матриці без перестановок, і що траєкторія при цьому
-        // бітово та сама, що дав би prop_run.
+        // Two distinct claims, and the second does not follow from the first:
+        // that the boundary carries the matrix's 36 numbers without
+        // permutation, and that the trajectory is meanwhile bit-identical to
+        // what prop_run would give.
         let oracle_stm_run = tagged(&records, "stmrun");
         let oracle_stm_end = tagged(&records, "stmend");
         let oracle_stm = tagged(&records, "stm");
 
         assert_eq!(oracle_stm_run.len(), 1);
         assert_eq!(oracle_stm_end.len(), 1);
-        assert_eq!(oracle_stm.len(), 36, "матриця мусить бути 6x6");
+        assert_eq!(oracle_stm.len(), 36, "the matrix must be 6x6");
 
         let mut stm_final = State::default();
         let mut phi = [0.0f64; 36];
@@ -528,28 +532,29 @@ fn propagation_matches_the_c_oracle_bit_for_bit() {
         assert_eq!(
             oracle_stm_run[0].values[0].to_bits(),
             stm_step.to_bits(),
-            "крок після прогону з матрицею"
+            "step after the run with the matrix"
         );
-        same_bits(&oracle_stm_end[0].state(0), &stm_final, "кінцевий стан STM");
+        same_bits(&oracle_stm_end[0].state(0), &stm_final, "final STM state");
 
-        // Порядок елементів — рядково-мажорний, і оракул несе індекс у
-        // кожному рядку, тож перестановка рядків з стовпцями впала б тут,
-        // а не проявилась як дивна корекція через півроку.
+        // Element order is row-major, and the oracle carries the index on each
+        // line, so transposing rows and columns fails here rather than
+        // surfacing as a strange correction six months later.
         for (k, record) in oracle_stm.iter().enumerate() {
-            assert_eq!(record.values[0] as usize, k, "порядок елементів STM");
+            assert_eq!(record.values[0] as usize, k, "STM element order");
             assert_eq!(
                 record.values[1].to_bits(),
                 phi[k].to_bits(),
-                "елемент STM {k}"
+                "STM element {k}"
             );
         }
 
-        // --- Апарат, що відчуває тиск світла (ROADMAP K6b) -------------
+        // --- A vessel feeling radiation pressure (ROADMAP K6b) ----------
         //
-        // Тут перевіряється не фізика — її міряє core/test/test_srp.c, —
-        // а оголошення `VesselParams`: переставлені місцями `area_m2` і
-        // `cr` дали б цілком правдоподібну траєкторію, лише не ту.
-        // Оракул рахує ту саму ланку в C і друкує, що вийшло.
+        // What is checked here is not the physics -- core/test/test_srp.c
+        // measures that -- but the `VesselParams` declaration: swapping
+        // `area_m2` and `cr` would give a perfectly plausible trajectory,
+        // merely the wrong one. The oracle computes the same leg in C and
+        // prints the result.
         let oracle_srp_run = tagged(&records, "srprun");
         let oracle_srp_end = tagged(&records, "srpend");
         assert_eq!(oracle_srp_run.len(), 1);
@@ -582,41 +587,41 @@ fn propagation_matches_the_c_oracle_bit_for_bit() {
         assert_eq!(result, CORE_OK);
 
         let run = &oracle_srp_run[0];
-        assert_eq!(run.values[0] as usize, count, "кількість семплів під SRP");
-        assert_eq!(run.values[3].to_bits(), step.to_bits(), "крок під SRP");
+        assert_eq!(run.values[0] as usize, count, "sample count under SRP");
+        assert_eq!(run.values[3].to_bits(), step.to_bits(), "step under SRP");
         same_bits(
             &oracle_srp_end[0].state(0),
             &srp_final,
-            "кінцевий стан під SRP",
+            "final state under SRP",
         );
 
-        // І він таки інший: якби вказівник на апарат нікуди не доходив,
-        // усе вище збіглося б з оракулом, який теж нічого не відчув.
+        // And it really is different: if the vessel pointer went nowhere,
+        // everything above would match an oracle that felt nothing either.
         let moved = ((srp_final.r.x - final_state.r.x).powi(2)
             + (srp_final.r.y - final_state.r.y).powi(2)
             + (srp_final.r.z - final_state.r.z).powi(2))
         .sqrt();
         assert!(
             moved > 1.0,
-            "апарат з площею мав полетіти інакше, а зрушив на {moved} м"
+            "a vessel with area should have flown differently, but moved {moved} m"
         );
 
-        // Матриця не одинична й не порожня — інакше все вище звірялося б із
-        // нулями й проходило б на будь-якій помилці.
+        // The matrix is neither identity nor empty -- otherwise everything
+        // above would compare zeros and pass on any error.
         let off_diagonal: f64 = (0..36)
             .filter(|k| k / 6 != k % 6)
             .map(|k| phi[k].abs())
             .sum();
-        assert!(off_diagonal > 1.0, "STM виглядає одиничною: {phi:?}");
+        assert!(off_diagonal > 1.0, "the STM looks like the identity: {phi:?}");
 
-        // --- Апарат, що відчуває повітря (ROADMAP K7b) -----------------
+        // --- A vessel feeling air (ROADMAP K7b) -------------------------
         //
-        // Та сама причина, що й для SRP вище, і на одне поле гостріша:
-        // `cr` і `cd` стоять поруч, мають однаковий тип і правдоподібні
-        // значення один для одного, тож переставлені місцями вони дали б
-        // траєкторію, яка виглядає бездоганно. Ланка низька навмисно — на
-        // геостаціонарі, де летить апарат вище, повітря немає взагалі, і
-        // прогін з `cd` надрукував би те саме, що без нього.
+        // The same reason as SRP above, sharper by one field: `cr` and `cd`
+        // sit next to each other, share a type and hold plausible values for
+        // one another, so swapping them would give a trajectory that looks
+        // flawless. The leg is low on purpose -- at geostationary altitude,
+        // where the vessel above flies, there is no air at all, and a run with
+        // `cd` would print what it prints without it.
         let oracle_drag_run = tagged(&records, "dragrun");
         let oracle_drag_end = tagged(&records, "dragend");
         assert_eq!(oracle_drag_run.len(), 1);
@@ -659,18 +664,18 @@ fn propagation_matches_the_c_oracle_bit_for_bit() {
         let run = &oracle_drag_run[0];
         assert_eq!(
             run.values[0] as usize, count,
-            "кількість семплів під опором"
+            "sample count under drag"
         );
-        assert_eq!(run.values[3].to_bits(), step.to_bits(), "крок під опором");
+        assert_eq!(run.values[3].to_bits(), step.to_bits(), "step under drag");
         same_bits(
             &oracle_drag_end[0].state(0),
             &drag_final,
-            "кінцевий стан під опором",
+            "final state under drag",
         );
 
-        // І опір таки щось зробив: та сама ланка без `cd` мусить прийти
-        // в інше місце. Без цього все вище звірялося б із оракулом, який
-        // теж пролетів крізь вакуум.
+        // And drag really did something: the same leg without `cd` must land
+        // elsewhere. Without this, everything above would compare against an
+        // oracle that also flew through vacuum.
         let dry = core_sys::VesselParams { cd: 0.0, ..blunt };
         let mut dry_final = State::default();
         step = 0.0;
@@ -697,7 +702,7 @@ fn propagation_matches_the_c_oracle_bit_for_bit() {
         .sqrt();
         assert!(
             moved > 1e-3,
-            "апарат з cd мав загальмувати, а розійшовся на {moved} м"
+            "a vessel with cd should have slowed, but diverged by {moved} m"
         );
 
         prop_free(p);
@@ -705,7 +710,7 @@ fn propagation_matches_the_c_oracle_bit_for_bit() {
     }
 }
 
-/// `prop_free(NULL)` дозволений — так каже `core/prop.h`, і H4 на це спирається.
+/// `prop_free(NULL)` is allowed -- `core/prop.h` says so, and H4 relies on it.
 #[test]
 fn freeing_a_null_propagator_is_allowed() {
     unsafe {
@@ -713,15 +718,15 @@ fn freeing_a_null_propagator_is_allowed() {
     }
 }
 
-/// Ламберт через межу дає ті самі біти, що з C (ROADMAP L3, борг D1).
+/// Lambert across the boundary gives the same bits as C (L3, debt D1).
 ///
-/// **Найтонше місце — структура за значенням.** `lambert_solve` перша на межі
-/// бере `Vec3d` не вказівником: 24 байти, тобто в регістри жодного нашого ABI
-/// вона не влазить і їде через пам'ять. Якби Rust і C розійшлися в тому, як
-/// саме, тест не впав би з помилкою — він повернув би правдоподібні швидкості
-/// для іншої геометрії. Тому звірка бітова, і тому оракул задає точку `r2` з
-/// ненульовим z: помилка, яка плутає порядок полів, на площині xy має шанс
-/// сховатися.
+/// **The subtlest point is the struct by value.** `lambert_solve` is the first
+/// on the boundary to take `Vec3d` other than by pointer: 24 bytes, fitting in
+/// no register set under any of our ABIs, so it travels through memory. Had
+/// Rust and C disagreed on how, the test would not fail with an error -- it
+/// would return plausible velocities for a different geometry. Hence the
+/// bitwise comparison, and hence the oracle's `r2` with a non-zero z: an error
+/// that confuses field order has a chance to hide in the xy plane.
 #[test]
 fn lambert_matches_the_c_oracle_bit_for_bit() {
     let records = records_from(ORACLE_PLANNING);
@@ -729,12 +734,14 @@ fn lambert_matches_the_c_oracle_bit_for_bit() {
     assert_eq!(
         solved.len(),
         2,
-        "оракул планування мав дати дві розв'язані задачі (пряму й зворотну)"
+        "the planning oracle should have given two solved problems (prograde \
+         and retrograde)"
     );
 
-    // Ті самі числа, що в core-sys/oracle_planning.c. Дублювання свідоме:
-    // тест, який брав би аргументи з виводу оракула, звіряв би оракул сам із
-    // собою і пройшов би навіть тоді, коли Rust передав у C зовсім інше.
+    // The same numbers as in core-sys/oracle_planning.c. The duplication is
+    // deliberate: a test taking its arguments from the oracle's output would
+    // compare the oracle against itself and pass even when Rust passed C
+    // something else entirely.
     let r1 = core_sys::Vec3d {
         x: 1.4959787e11,
         y: 0.0,
@@ -763,25 +770,26 @@ fn lambert_matches_the_c_oracle_bit_for_bit() {
             assert_eq!(
                 c.to_bits(),
                 rust.to_bits(),
-                "prograde = {prograde}, компонента {k}: C дало {c:.17e}, \
+                "prograde = {prograde}, component {k}: C gave {c:.17e}, \
                  Rust {rust:.17e}.\n\
-                 Це передача структури за значенням або порядок аргументів, \
-                 а не фізика."
+                 This is struct-by-value passing or argument order, not \
+                 physics."
             );
         }
     }
 }
 
-/// Відмови Ламберта теж перетинають межу як відмови.
+/// Lambert's rejections cross the boundary as rejections too.
 ///
-/// Дзеркало до попереднього тесту й окремий сенс: `CoreResult` оголошений як
-/// `c_int` з константами саме тому, що Rust-енум зі значенням поза переліком
-/// був би UB. Це має вартість лише тоді, коли значення справді звіряють.
+/// The mirror of the previous test, with its own point: `CoreResult` is
+/// declared as a `c_int` with constants precisely because a Rust enum holding
+/// an out-of-range value would be UB. That is worth something only if the
+/// values are actually compared.
 #[test]
 fn lambert_refusals_cross_the_boundary() {
     let records = records_from(ORACLE_PLANNING);
     let refused = tagged(&records, "lerr");
-    assert_eq!(refused.len(), 2, "оракул мав дати дві відмови");
+    assert_eq!(refused.len(), 2, "the oracle should have given two rejections");
 
     let r1 = core_sys::Vec3d {
         x: 1.4959787e11,
@@ -804,36 +812,37 @@ fn lambert_refusals_cross_the_boundary() {
     let mut v1 = core_sys::Vec3d::default();
     let mut v2 = core_sys::Vec3d::default();
 
-    // Багатообертовий випадок: lambert.h каже, що n_revs мусить бути 0.
+    // The multi-revolution case: lambert.h says n_revs must be 0.
     let many_revs = unsafe { core_sys::lambert_solve(r1, r2, dt, mu, 1, 1, &mut v1, &mut v2) };
-    // Вироджена геометрія: r1 і r2 на одній прямій через початок.
+    // Degenerate geometry: r1 and r2 on one line through the origin.
     let collinear =
         unsafe { core_sys::lambert_solve(r1, opposite, dt, mu, 1, 0, &mut v1, &mut v2) };
 
     for (label, got, expected) in [
         ("n_revs = 1", many_revs, refused[0].values[0] as i32),
-        ("колінеарні r1 і r2", collinear, refused[1].values[0] as i32),
+        ("collinear r1 and r2", collinear, refused[1].values[0] as i32),
     ] {
         assert_eq!(
             got, expected,
-            "{label}: C повернуло {expected}, Rust побачив {got}"
+            "{label}: C returned {expected}, Rust saw {got}"
         );
         assert_eq!(
             got, CORE_ERR_INVALID_ARG,
-            "{label}: і це мав бути саме CORE_ERR_INVALID_ARG"
+            "{label}: and it should have been CORE_ERR_INVALID_ARG specifically"
         );
     }
 }
 
-/// `mu` теж звіряється бітово — на тих самих тілах, що й радіуси.
+/// `mu` is compared bitwise too -- over the same bodies as the radii.
 ///
-/// Окремим тестом, а не рядком у попередньому: це різні поля контексту, і
-/// зсув на одне тіло в масиві `mu` виглядав би як цілком розумна гравітація.
+/// Its own test rather than a line in the previous one: these are different
+/// context fields, and an off-by-one body in the `mu` array would look like
+/// perfectly reasonable gravity.
 #[test]
 fn gravitational_parameters_match_the_c_oracle_bit_for_bit() {
     let records = oracle_records();
     let mus = tagged(&records, "mu");
-    assert!(!mus.is_empty(), "оракул не дав жодного рядка mu");
+    assert!(!mus.is_empty(), "the oracle gave no mu line");
 
     unsafe {
         let ctx = load_fixture();
@@ -846,32 +855,32 @@ fn gravitational_parameters_match_the_c_oracle_bit_for_bit() {
             assert_eq!(
                 got.to_bits(),
                 expected.to_bits(),
-                "тіло {body}: C дав {expected:e}, а межа {got:e}"
+                "body {body}: C gave {expected:e}, the boundary {got:e}"
             );
-            assert!(got > 0.0, "тіло {body} у фікстурі мусить мати масу");
+            assert!(got > 0.0, "body {body} in the fixture must have mass");
         }
 
         assert_eq!(
             eph_body_mu(ctx, 999),
             0.0,
-            "невідоме тіло — нуль, як і радіус"
+            "an unknown body gives zero, like the radius"
         );
 
         eph_free(ctx);
     }
 }
 
-/// Сітка porkchop перетинає межу бітово (ROADMAP-UI.md, U5a).
+/// The porkchop grid crosses the boundary bitwise (ROADMAP-UI.md, U5a).
 ///
-/// Функція повертає **масив структур**, і це нове на межі: досі туди їздили
-/// або скаляри, або `State`. Переставлені `t1` і `tof` дали б цілком
-/// правдоподібний плот — обидва додатні, обидва в секундах, — тож звіряються
-/// всі чотири поля кожної клітинки.
+/// The function returns an **array of structs**, which is new on the boundary:
+/// until now only scalars or `State` travelled across. Swapped `t1` and `tof`
+/// would give a perfectly plausible plot -- both positive, both in seconds --
+/// so all four fields of every cell are compared.
 #[test]
 fn the_porkchop_grid_matches_the_c_oracle_bit_for_bit() {
     let records = records_from(ORACLE_PLANNING);
     let cells = tagged(&records, "pork");
-    assert!(!cells.is_empty(), "оракул не дав жодного рядка pork");
+    assert!(!cells.is_empty(), "the oracle gave no pork line");
 
     unsafe {
         let ctx = load_fixture();
@@ -900,7 +909,7 @@ fn the_porkchop_grid_matches_the_c_oracle_bit_for_bit() {
         );
 
         assert_eq!(result, CORE_OK);
-        assert_eq!(count, cells.len(), "кількість клітинок розійшлася");
+        assert_eq!(count, cells.len(), "cell count diverged");
 
         for (k, cell) in cells.iter().enumerate() {
             let got = grid[k];
@@ -913,14 +922,14 @@ fn the_porkchop_grid_matches_the_c_oracle_bit_for_bit() {
                 assert_eq!(
                     from_c.to_bits(),
                     from_rust.to_bits(),
-                    "клітинка {k}, {name}: C дав {from_c:e}, межа {from_rust:e}"
+                    "cell {k}, {name}: C gave {from_c:e}, boundary {from_rust:e}"
                 );
             }
         }
 
-        // Замалий буфер — це відмова з кількістю, а не тиша: та сама угода,
-        // що в `prop_run`, і перевіряти її треба тут, бо саме нею викликач
-        // дізнається, скільки місця просити.
+        // Too small a buffer is a rejection carrying a count, not silence:
+        // the same convention as `prop_run`, and it must be checked here,
+        // because that is how the caller learns how much room to ask for.
         let mut one = [PorkchopPoint::default(); 1];
         let mut written: usize = 0;
         let squeezed = porkchop_compute_eph(
@@ -938,23 +947,23 @@ fn the_porkchop_grid_matches_the_c_oracle_bit_for_bit() {
             &mut written,
         );
         assert_eq!(squeezed, CORE_ERR_BUFFER_TOO_SMALL);
-        assert_eq!(written, 1, "кількість написаного мала дійти й при відмові");
+        assert_eq!(written, 1, "the written count must arrive on rejection too");
 
         eph_free(ctx);
     }
 }
 
-/// CR3BP через межу дає біт у біт те саме, що C (ROADMAP-UI.md, U6b2).
+/// CR3BP across the boundary is bit-for-bit what C gives (U6b2).
 ///
-/// Ці чотири функції відрізняються від решти межі тим, що працюють у
-/// **безрозмірній** нормалізації, а не в метрах. Помилка тут не падає й навіть
-/// не виглядає дивно: константа Якобі 3.11 і константа Якобі 3.14 однаково
-/// схожі на правду. Тому звірка бітова, а зміст перевіряється окремо, числами
-/// ззовні (`core-rs/tests/cr3bp.rs`).
+/// These four functions differ from the rest of the boundary in working in the
+/// **dimensionless** normalisation rather than in metres. An error here
+/// neither fails nor even looks odd: a Jacobi constant of 3.11 and one of 3.14
+/// are equally plausible. Hence the bitwise comparison, while the meaning is
+/// checked separately against external numbers (`core-rs/tests/cr3bp.rs`).
 ///
-/// Дві з них беруть `Vec3d` **за значенням** — те саме, на чому наполягає
-/// `lambert_solve`: 24 байти йдуть через пам'ять на всіх наших ABI, і
-/// переплутаний порядок аргументів `(r, v, mu)` дав би правдоподібне число.
+/// Two of them take `Vec3d` **by value** -- the same point `lambert_solve`
+/// insists on: 24 bytes travel through memory under all our ABIs, and a
+/// swapped `(r, v, mu)` argument order would give a plausible number.
 #[test]
 fn cr3bp_crosses_the_boundary_unchanged() {
     let records = oracle_records();
@@ -963,7 +972,7 @@ fn cr3bp_crosses_the_boundary_unchanged() {
     assert_eq!(
         cmu.len(),
         1,
-        "оракул мав надрукувати рівно одну частку маси"
+        "the oracle should have printed exactly one mass fraction"
     );
     let (gm1, gm2, mu_c) = (cmu[0].values[0], cmu[0].values[1], cmu[0].values[2]);
 
@@ -971,7 +980,7 @@ fn cr3bp_crosses_the_boundary_unchanged() {
     assert_eq!(
         mu.to_bits(),
         mu_c.to_bits(),
-        "mu: C дав {mu_c:e}, межа {mu:e}"
+        "mu: C gave {mu_c:e}, boundary {mu:e}"
     );
 
     let jac = tagged(&records, "jac");
@@ -997,7 +1006,7 @@ fn cr3bp_crosses_the_boundary_unchanged() {
     assert_eq!(
         c.to_bits(),
         c_from_c.to_bits(),
-        "константа Якобі: C дала {c_from_c:e}, межа {c:e}"
+        "Jacobi constant: C gave {c_from_c:e}, boundary {c:e}"
     );
 
     for row in tagged(&records, "lag") {
@@ -1008,7 +1017,7 @@ fn cr3bp_crosses_the_boundary_unchanged() {
             z: 0.0,
         };
         let result = unsafe { core_sys::cr3bp_lagrange(mu, point, &mut out) };
-        assert_eq!(result, CORE_OK, "L{point} не порахувалася");
+        assert_eq!(result, CORE_OK, "L{point} did not compute");
         for (name, from_c, from_rust) in [
             ("x", row.values[1], out.x),
             ("y", row.values[2], out.y),
@@ -1017,16 +1026,16 @@ fn cr3bp_crosses_the_boundary_unchanged() {
             assert_eq!(
                 from_c.to_bits(),
                 from_rust.to_bits(),
-                "L{point}.{name}: C дав {from_c:e}, межа {from_rust:e}"
+                "L{point}.{name}: C gave {from_c:e}, boundary {from_rust:e}"
             );
         }
     }
 
-    // Обидва боки воріт біля L1: перетин є і перетину немає. Другий рядок —
-    // саме той випадок, який легко списати на збій, тому він і в оракулі, і
-    // тут.
+    // Both sides of the gate near L1: a crossing, and no crossing. The second
+    // line is precisely the case easily mistaken for a failure, which is why
+    // it is in the oracle and here.
     let zvc = tagged(&records, "zvc");
-    assert_eq!(zvc.len(), 2, "оракул мав дати обидва боки воріт");
+    assert_eq!(zvc.len(), 2, "the oracle should have given both sides of the gate");
     for row in zvc {
         let (c, result_c, r_c) = (row.values[0], row.values[1] as i32, row.values[2]);
         let mut r = 0.0;
@@ -1048,24 +1057,25 @@ fn cr3bp_crosses_the_boundary_unchanged() {
                 &mut r,
             )
         };
-        assert_eq!(result, result_c, "код відповіді при C = {c}");
+        assert_eq!(result, result_c, "answer code at C = {c}");
         if result == CORE_OK {
             assert_eq!(
                 r.to_bits(),
                 r_c.to_bits(),
-                "радіус при C = {c}: C дав {r_c:e}, межа {r:e}"
+                "radius at C = {c}: C gave {r_c:e}, boundary {r:e}"
             );
         }
     }
 }
 
-/// Синодичний фрейм перетинає межу цілим (ROADMAP-UI.md, U6b1).
+/// The synodic frame crosses the boundary whole (ROADMAP-UI.md, U6b1).
 ///
-/// `SynodicFrame` — найбільша структура межі: шість `Vec3d` і п'ять `double`,
-/// які **C заповнює сам**. Тобто помилка в розкладці тут не дає дивного
-/// числа — вона дає запис за межі структури. Тому звірка не лише бітова: поруч
-/// стоїть твердження, яке ловить саме зсув полів — Місяць у власному фреймі
-/// зобов'язаний стояти в `(1 − μ, 0, 0)`.
+/// `SynodicFrame` is the boundary's largest struct: six `Vec3d` and five
+/// `double`, which **C fills itself**. So a layout error here does not give a
+/// strange number, it gives a write past the end of the struct. Hence the
+/// comparison is not only bitwise: alongside it stands a claim that catches
+/// field shift specifically -- the Moon in its own frame must sit at
+/// `(1 - mu, 0, 0)`.
 #[test]
 fn the_synodic_frame_crosses_the_boundary_whole() {
     const EARTH: i32 = 3;
@@ -1074,7 +1084,7 @@ fn the_synodic_frame_crosses_the_boundary_whole() {
     let records = oracle_records();
     let syn = tagged(&records, "syn");
     let fri = tagged(&records, "fri");
-    assert_eq!(syn.len(), fri.len(), "оракул мав дати пару на кожен момент");
+    assert_eq!(syn.len(), fri.len(), "the oracle should have given a pair per instant");
     assert!(!syn.is_empty());
 
     unsafe {
@@ -1085,7 +1095,7 @@ fn the_synodic_frame_crosses_the_boundary_whole() {
 
             let mut frame = core_sys::SynodicFrame::default();
             let code = core_sys::frame_synodic(ctx, EARTH, MOON, t, &mut frame);
-            assert_eq!(code, CORE_OK, "фрейм на t = {t} не побудувався");
+            assert_eq!(code, CORE_OK, "the frame at t = {t} did not build");
 
             for (name, from_c, from_rust) in [
                 ("length", frame_row.values[1], frame.length),
@@ -1096,7 +1106,7 @@ fn the_synodic_frame_crosses_the_boundary_whole() {
                 assert_eq!(
                     from_c.to_bits(),
                     from_rust.to_bits(),
-                    "{name} на t = {t}: C дав {from_c:e}, межа {from_rust:e}"
+                    "{name} at t = {t}: C gave {from_c:e}, boundary {from_rust:e}"
                 );
             }
 
@@ -1105,9 +1115,10 @@ fn the_synodic_frame_crosses_the_boundary_whole() {
             let mut moon_syn = State::default();
             core_sys::frame_from_inertial(&frame, &moon, &mut moon_syn);
 
-            // Порівнюються шість чисел, а не `State` цілком: перше поле
-            // рядка оракула — момент запиту, а не `t` результату
-            // (`frame_from_inertial` кладе туди безрозмірний час фрейму).
+            // Six numbers are compared rather than the whole `State`: the
+            // first field of the oracle line is the requested instant, not the
+            // result's `t` (`frame_from_inertial` puts the frame's
+            // dimensionless time there).
             for (k, (name, from_rust)) in [
                 ("x", moon_syn.r.x),
                 ("y", moon_syn.r.y),
@@ -1123,22 +1134,23 @@ fn the_synodic_frame_crosses_the_boundary_whole() {
                 assert_eq!(
                     from_c.to_bits(),
                     from_rust.to_bits(),
-                    "Місяць у власному фреймі, {name} на t = {t}: \
-                     C дав {from_c:e}, межа {from_rust:e}"
+                    "Moon in its own frame, {name} at t = {t}: \
+                     C gave {from_c:e}, boundary {from_rust:e}"
                 );
             }
 
-            // І зміст, а не лише біти: за побудовою фрейму Місяць стоїть саме
-            // тут. Зсунуте поле структури зіпсувало б базис, і це побачить
-            // рівно ця нерівність, а не бітова звірка вище.
+            // And the meaning, not only the bits: by the frame's construction
+            // the Moon sits exactly here. A shifted struct field would spoil
+            // the basis, and this inequality is what sees that, not the
+            // bitwise comparison above.
             assert!(
                 (moon_syn.r.x - (1.0 - frame.mu)).abs() < 1e-12,
-                "Місяць у власному фреймі опинився в x = {}",
+                "the Moon in its own frame ended up at x = {}",
                 moon_syn.r.x
             );
             assert!(
                 moon_syn.r.y.abs() < 1e-12 && moon_syn.r.z.abs() < 1e-12,
-                "Місяць зійшов з осі свого ж фрейму: {:?}",
+                "the Moon left the axis of its own frame: {:?}",
                 (moon_syn.r.y, moon_syn.r.z)
             );
         }

@@ -8,8 +8,9 @@ publish = false
 [dependencies]
 core-sys = { path = "../core-sys" }
 
-# Той самий крейт ще й у dev: тести звіряють обгортку з сирим викликом бітово,
-# і без прямого доступу до core-sys не було б із чим звіряти.
+# The same crate again under dev: the tests compare the wrapper against the raw
+# call bitwise, and without direct access to core-sys there would be nothing to
+# compare against.
 [dev-dependencies]
 core-sys = { path = "../core-sys" }
 

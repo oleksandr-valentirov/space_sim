@@ -1,30 +1,30 @@
-/* Оракул для FFI-декларацій планування (ROADMAP L3, борг D1).
+/* Oracle for the planning FFI declarations (ROADMAP L3, debt D1).
  *
- * Другий оракул, а не ще кілька тегів у першому, і причина рівно одна:
- * ЦЕЙ ЛІНКУЄТЬСЯ З `-lm`. `core-sys/oracle.c` лінкується без неї навмисно —
- * лінкування там є перевіркою того, що в рантаймову зону не просочилася
- * тригонометрія. Дописати сюди `lambert_solve`, який кличе `acos`, `sinh` і
- * `cosh`, означало б зняти ту перевірку заради зручності.
+ * A second oracle rather than more tags in the first, for exactly one reason:
+ * THIS ONE LINKS WITH `-lm`. `core-sys/oracle.c` links without it on purpose
+ * -- linking there is the check that no trigonometry seeped into the runtime
+ * zone. Adding `lambert_solve`, which calls `acos`, `sinh` and `cosh`, would
+ * remove that check for convenience.
  *
- * Те саме твердження на рівні бібліотек: `libcore_planning.a` окремо від
- * `libcore.a` (core-sys/build.rs), бо межа детермінізму проходить по
- * пропагації, а не по плануванню (PROJECT.md §4).
+ * The same claim at library level: `libcore_planning.a` is separate from
+ * `libcore.a` (core-sys/build.rs), because the determinism boundary runs along
+ * propagation, not planning (PROJECT.md §4).
  *
- * Що саме перевіряється звіркою. `lambert_solve` — перша функція межі, яка
- * приймає структуру **за значенням**, а не вказівником. Vec3d з трьох double
- * не влазить у регістри жодного з наших ABI, тож вона їде через пам'ять, і
- * якби Rust і C розійшлися в цьому, результат був би не падінням, а
- * правдоподібними швидкостями. Тому звірка бітова.
+ * What the comparison checks: `lambert_solve` is the first boundary function
+ * taking a struct **by value** rather than by pointer. A Vec3d of three double
+ * fits in no register set under any of our ABIs, so it travels through memory,
+ * and if Rust and C disagreed about that the result would not be a crash but
+ * plausible velocities. Hence the bitwise comparison.
  *
- * Формат той самий, що в oracle.c: перше поле — тег, далі числа в %.17g.
+ * Same format as oracle.c: first field is a tag, then numbers in %.17g.
  *
- *   lam  <v1x> <v1y> <v1z> <v2x> <v2y> <v2z>   успішний розв'язок
- *   lerr <code>                                 код відмови
- *   pork <k> <t1> <tof> <v_inf_depart> <v_inf_arrive>   клітинка сітки
+ *   lam  <v1x> <v1y> <v1z> <v2x> <v2y> <v2z>   successful solution
+ *   lerr <code>                                 failure code
+ *   pork <k> <t1> <tof> <v_inf_depart> <v_inf_arrive>   grid cell
  *
- * `pork` з'явився з U5a: `porkchop_compute_eph` читає ефемериду, тож оракул
- * тепер таки читає ассет — і запуск з кореня репозиторію став обов'язковим,
- * а не косметичним. */
+ * `pork` arrived with U5a: `porkchop_compute_eph` reads the ephemeris, so the
+ * oracle now does read the asset -- and running from the repository root
+ * became mandatory rather than cosmetic. */
 
 #include "ephemeris.h"
 #include "lambert.h"
@@ -32,33 +32,33 @@
 
 #include <stdio.h>
 
-/* Геліоцентричний переліт, бо саме для нього Lambert і існує в цій грі
- * (PROJECT.md §8, porkchop). mu Сонця з data/horizons; радіуси й час
- * перельоту — круглі числа порядку земної та марсіанської орбіт, не
- * ефемеридні: оракул перевіряє межу, а не астрономію, і прив'язка до ассета
- * зробила б його чутливим до `make cook`.
+/* A heliocentric transfer, because that is what Lambert exists for in this
+ * game (PROJECT.md §8, porkchop). The Sun's mu comes from data/horizons; the
+ * radii and flight time are round numbers of the order of Earth's and Mars's
+ * orbits rather than ephemeris values: the oracle checks the boundary, not
+ * astronomy, and tying it to the asset would make it sensitive to `make cook`.
  *
- * Площина не збігається з xy: третя компонента ненульова в обох точках. Це
- * той самий урок, що K7b виніс із градієнта опору — перевірка, поставлена
- * там, де компонента тотожно нульова, мовчить про цілий стовпець. */
+ * The plane does not coincide with xy: the third component is non-zero at both
+ * points. Same lesson K7b drew from the drag gradient -- a check placed where
+ * a component is identically zero says nothing about a whole column. */
 #define MU_SUN 1.32712440018e20
 
 static const Vec3d R1 = { 1.4959787e11, 0.0, 0.0 };
 static const Vec3d R2 = { -1.9e11, 1.1e11, 8.0e9 };
 
-#define TOF_S (2.5e7) /* ~289 діб, порядок реального вікна до Марса */
+#define TOF_S (2.5e7) /* ~289 days, the order of a real Mars window */
 
 #define ASSET "data/fixture/earth_moon.eph"
 #define DAY 86400.0
 
-/* Сітка Земля → Місяць: три дати відходу, два часи перельоту. Дрібна
- * навмисно — оракул перевіряє розкладку й порядок полів, а не астрономію. */
+/* An Earth-to-Moon grid: three departure dates, two flight times. Small on
+ * purpose -- the oracle checks layout and field order, not astronomy. */
 static void porkchop(void)
 {
     EphemerisCtx *eph = NULL;
     if (eph_load(ASSET, &eph) != CORE_OK) {
-        fprintf(stderr, "oracle_planning: не читається %s\n", ASSET);
-        fprintf(stderr, "  запускати з кореня репозиторію\n");
+        fprintf(stderr, "oracle_planning: cannot read %s\n", ASSET);
+        fprintf(stderr, "  run from the repository root\n");
         return;
     }
 
@@ -70,7 +70,7 @@ static void porkchop(void)
     size_t n = 0;
     if (porkchop_compute_eph(eph, EARTH, MOON, eph_body_mu(eph, EARTH), 1,
                              t1s, 3, tofs, 2, grid, 6, &n) != CORE_OK) {
-        fprintf(stderr, "oracle_planning: сітка не порахувалась\n");
+        fprintf(stderr, "oracle_planning: the grid did not compute\n");
         eph_free(eph);
         return;
     }
@@ -94,29 +94,31 @@ int main(void)
 {
     Vec3d v1, v2;
 
-    /* Пряма гілка й зворотна. Обидві, бо `prograde` — це знак z-компоненти
-     * моменту імпульсу, а не «коротка чи довга дуга» (ROADMAP, «Фізика й
-     * пропагація»), і переплутаний int тут дав би цілком правдоподібний
-     * розв'язок іншої задачі. */
+    /* Prograde branch and retrograde. Both, because `prograde` is the sign of
+     * the z component of angular momentum, not "short or long arc" (ROADMAP,
+     * "Фізика й пропагація"), and a swapped int here would give a perfectly
+     * plausible solution to a different problem. */
     if (lambert_solve(R1, R2, TOF_S, MU_SUN, 1, 0, &v1, &v2) != CORE_OK) {
-        fprintf(stderr, "oracle_planning: прямий переліт не зійшовся\n");
+        fprintf(stderr, "oracle_planning: prograde transfer did not converge\n");
         return 1;
     }
     print_pair("lam", v1, v2);
 
     if (lambert_solve(R1, R2, TOF_S, MU_SUN, 0, 0, &v1, &v2) != CORE_OK) {
-        fprintf(stderr, "oracle_planning: зворотний переліт не зійшовся\n");
+        fprintf(stderr, "oracle_planning: retrograde transfer did not converge\n");
         return 1;
     }
     print_pair("lam", v1, v2);
 
-    /* І відмова. Код повернення теж перетинає межу, і `CoreResult` як `c_int`
-     * з константами (а не Rust-енум) має сенс лише тоді, коли хтось справді
-     * звіряє значення. n_revs != 0 — задокументована відмова lambert.h. */
+    /* And a rejection. The return code crosses the boundary too, and
+     * `CoreResult` as a `c_int` with constants (rather than a Rust enum) only
+     * makes sense if someone actually compares the values. n_revs != 0 is a
+     * documented rejection in lambert.h. */
     printf("lerr %d\n", (int)lambert_solve(R1, R2, TOF_S, MU_SUN, 1, 1, &v1, &v2));
 
-    /* Друга відмова, іншого походження: вироджена геометрія. r1 і r2 на одній
-     * прямій через початок — площина перельоту невизначена. */
+    /* A second rejection of a different origin: degenerate geometry. With r1
+     * and r2 on one line through the origin the transfer plane is
+     * undefined. */
     Vec3d opposite = { -R1.x, -R1.y, -R1.z };
     printf("lerr %d\n",
            (int)lambert_solve(R1, opposite, TOF_S, MU_SUN, 1, 0, &v1, &v2));

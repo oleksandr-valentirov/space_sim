@@ -5,9 +5,9 @@ edition = "2021"
 rust-version.workspace = true
 publish = false
 
-# Оголошує нативну бібліотеку, яку збирає build.rs. Дає дві речі: cargo не
-# дозволить двом крейтам злінкувати її двічі, і build.rs може передавати
-# метадані далі по графу (DEP_CORE_*).
+# Declares the native library build.rs produces. Two effects: cargo will not
+# let two crates link it twice, and build.rs can pass metadata further down the
+# graph (DEP_CORE_*).
 links = "core"
 
 [build-dependencies]
