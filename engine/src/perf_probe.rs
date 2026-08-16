@@ -257,6 +257,43 @@ pub fn air_cost(
     measure_scene(gpu, width, height, frames, Overlay::None, &scene)
 }
 
+/// Скільки коштує кадр із кораблем і без нього (етап V, крок V6).
+///
+/// Та сама сцена зондів рушія, з єдиною відмінністю — чи стоїть перед камерою
+/// корабель і на якій відстані. Обидва числа з одного прогону: з різних вони
+/// не порівнянні.
+///
+/// ⚠ **Різниця тут — не ціна півтори тисячі вершин.** Корабель за метри від
+/// камери тягне за собою `near` (V2), а `near` разом із розмахом сцени
+/// вирішує, скільки буде проходів глибини (V3). Тобто на низькій орбіті
+/// кадр із кораблем малює планету **двічі**, і саме це в різниці головне.
+/// Число без цього пояснення читалося б як «корабель дорогий».
+pub fn ship_cost(
+    gpu: &Gpu,
+    width: u32,
+    height: u32,
+    frames: u32,
+    altitude_m: f64,
+    range_m: Option<f64>,
+) -> Result<Stats, String> {
+    let distance = crate::sphere::EARTH_RADIUS_M + altitude_m;
+    let eye = [distance, 0.0, 0.0];
+    let camera = crate::camera::Camera::look_at(eye, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
+    let mut scene = frame::default_scene(camera);
+    if let Some(range) = range_m {
+        // Перед камерою, тобто між нею й планетою — там, де він і буває у
+        // вигляді від третьої особи.
+        scene.ships.push(crate::scene::Ship {
+            centre: [eye[0] - range, 0.0, 0.0],
+            orientation: [1.0, 0.0, 0.0, 0.0],
+            height_m: crate::ship::DEFAULT_HEIGHT_M,
+            extent_m: 0.5 * crate::ship::DEFAULT_HEIGHT_M,
+            colour: [0.72, 0.74, 0.78, 1.0],
+        });
+    }
+    measure_scene(gpu, width, height, frames, Overlay::None, &scene)
+}
+
 /// Те саме для сцени, яку зібрав хтось інший.
 pub fn measure_scene(
     gpu: &Gpu,
