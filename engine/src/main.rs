@@ -17,6 +17,7 @@ use engine::shot;
 fn main() {
     let mut options = app::Options::default();
     let mut shot_path: Option<PathBuf> = None;
+    let mut ship_demo: Option<PathBuf> = None;
     let mut demo_dir: Option<PathBuf> = None;
     let mut vsync_asked = false;
     let mut depth_probe = false;
@@ -35,6 +36,7 @@ fn main() {
 
         match arg.as_str() {
             "--shot" => shot_path = Some(PathBuf::from(value("--shot"))),
+            "--ship-demo" => ship_demo = Some(PathBuf::from(value("--ship-demo"))),
             "--demo" => demo_dir = Some(PathBuf::from(value("--demo"))),
             "--frames" => options.frames = Some(parse(&value("--frames"), "--frames")),
             "--vsync" => {
@@ -82,6 +84,8 @@ fn main() {
     } else if rotating_probe {
         engine::rotating_probe::report();
         Ok(())
+    } else if let Some(path) = ship_demo {
+        run_ship_demo(&path, options.width, options.height, options.frames)
     } else {
         match shot_path {
             Some(path) => take_shot(&path, options.width, options.height),
@@ -97,6 +101,7 @@ fn main() {
 const HELP: &str = "\
   --demo <каталог>  серія знімків поточного стану рендера, з підписами
   --shot <файл>     намалювати один кадр у PNG, без вікна
+  --ship-demo <файл> анімація корабля на орбіті в APNG, 60 fps
   --frames <N>      намалювати N кадрів і вийти (вимикає vsync)
   --vsync           чекати на вертикальну синхронізацію
   --no-vsync        не чекати
@@ -128,6 +133,38 @@ fn run_demo(dir: &std::path::Path) -> Result<(), String> {
     }
     std::fs::write(dir.join("manifest.txt"), manifest).map_err(|e| e.to_string())?;
     println!("{} кадрів у {}", frames.len(), dir.display());
+    Ok(())
+}
+
+/// Анімація корабля на орбіті (етап V, V2). Кількість кадрів бере `--frames`,
+/// типово [`engine::ship_demo::FRAMES`] — чотири секунди при 60 fps.
+fn run_ship_demo(
+    path: &std::path::Path,
+    width: u32,
+    height: u32,
+    frames: Option<u32>,
+) -> Result<(), String> {
+    let gpu = Gpu::new(wgpu::Instance::default(), None)?;
+    println!("адаптер: {}", gpu.describe());
+    let frames = frames.unwrap_or(engine::ship_demo::FRAMES);
+
+    let started = std::time::Instant::now();
+    engine::ship_demo::render(&gpu, width, height, frames, path)?;
+    let seconds = started.elapsed().as_secs_f64();
+
+    println!(
+        "анімація: {} ({}×{}, {} кадрів, {} fps — {:.1} с відео)",
+        path.display(),
+        width,
+        height,
+        frames,
+        engine::ship_demo::FPS,
+        f64::from(frames) / f64::from(engine::ship_demo::FPS)
+    );
+    println!(
+        "малювання: {seconds:.1} с, {:.1} мс на кадр",
+        seconds * 1000.0 / f64::from(frames)
+    );
     Ok(())
 }
 

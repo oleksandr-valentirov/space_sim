@@ -52,6 +52,7 @@ pub mod perf_probe;
 pub mod rotating_probe;
 pub mod scene;
 pub mod ship;
+pub mod ship_demo;
 pub mod shot;
 pub mod sky;
 pub mod sphere;
