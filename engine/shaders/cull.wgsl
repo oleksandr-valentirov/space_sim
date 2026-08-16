@@ -33,7 +33,10 @@ struct PatchData_std430_0
     @align(4) tile_0 : u32,
     @align(16) window_origin_0 : vec2<f32>,
     @align(8) window_step_0 : f32,
-    @align(4) _pad_0 : f32,
+    @align(4) window_delta_0 : f32,
+    @align(16) colour_tile_0 : u32,
+    @align(4) colour_step_0 : f32,
+    @align(8) colour_origin_0 : vec2<f32>,
 };
 
 @binding(3) @group(0) var<storage, read> origins_0 : array<PatchData_std430_0>;

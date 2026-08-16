@@ -37,7 +37,9 @@ struct Uniforms
     float4 light_dir;     // напрямок ДО джерела світла, світовий простір
     float4 colour;
     // x — скільки одиниць одиничної сфери в одній одиниці зберігання висоти,
-    // тобто `scale_m / radius_m`. Решта — запас, свідомо нульовий.
+    // тобто `scale_m / radius_m`. y — множник «одиниця зберігання кольору →
+    // сірий на екрані»; **нуль у ньому означає, що кольору немає**, і тоді
+    // фрагмент лишається на `colour`. Решта — запас, свідомо нульовий.
     float4 terrain;
     // Процедурний детайл (R7c): x — радіус тіла в метрах, y — множник
     // «різниця в одиницях зберігання → нахил» (`Terrain::slope_rise`),
@@ -73,6 +75,22 @@ struct PatchData
     // Крок центральної різниці у вузлах цього ж тайла (R7c). Один для патчів
     // глибше за піраміду, частка вузла для грубших — `Terrain::delta_nodes`.
     float window_delta;
+    // Те саме, але в **колірній** піраміді (T3b): номер тайла, зсув у вузлах
+    // і крок.
+    //
+    // ⚠ Друге вікно, а не спільне з висотою, і це не дублювання: піраміди
+    // різної глибини (5 рівнів висоти проти 6 кольору), тож той самий патч
+    // цілком законно читає висоту в предка й колір — у власному тайлі.
+    // Спільне вікно означало б, що глибини мусять збігтися.
+    // ⚠ Порядок саме такий — `float2` **після** двох скалярів, — і це не смак.
+    // У std430 `vec2<f32>` вимагає восьмибайтового вирівнювання, тож пара
+    // «uint, float2, float» лягла б із діркою на четвертому слові, і структура
+    // виросла б з 48 байтів до 64. Перевіряється це не міркуванням, а
+    // згенерованим WGSL: `@align` кожного поля мусить збігатися з тим, як його
+    // пакує `frame.rs`.
+    uint colour_tile;
+    float colour_step;
+    float2 colour_origin;
 };
 
 StructuredBuffer<PatchData> patches;
@@ -80,8 +98,7 @@ StructuredBuffer<PatchData> patches;
 // Висоти тайлів — **bindless-масив текстур**, з першої ж текстури в рушії
 // (правило 6 етапу R). Семплера поруч немає, і це не пропуск: тайл лежить
 // вузол у вузол із сіткою патча, тож вибірка тут — точний `Load` за цілим
-// індексом, а не фільтрація. Масив семплерів з'явиться разом із кольором,
-// якому фільтрація справді потрібна.
+// індексом, а не фільтрація.
 //
 // ⚠ Окрема група прив'язки (set 1), і це вимога wgpu, а не смак: «bind groups
 // may not contain both a binding array and a dynamically offset buffer». А
@@ -89,6 +106,17 @@ StructuredBuffer<PatchData> patches;
 // нікуди не подінеться. Отже масив живе окремо.
 [[vk::binding(0, 1)]]
 Texture2D<int> tiles[];
+
+// Колір тієї самої поверхні — другий масив у тій самій групі (T3b).
+//
+// Семплера немає й тут, хоч кольору фільтрація потрібна: вибірка робиться
+// вручну, чотирма `Load`, рівно як у `sample_height`. Причина не в економії —
+// **фільтрація семплером не знає про вікно**. Патч, глибший за колірну
+// піраміду, читає підпрямокутник тайла предка, і координати текселя для нього
+// рахує `colour_origin`/`colour_step`; UV для семплера довелося б виводити з
+// тих самих чисел, тобто писати ту саму арифметику двічі.
+[[vk::binding(1, 1)]]
+Texture2D<float> colours[];
 
 // Геометрія патча: зсув вершини й нормаль, обидва на ОДИНИЧНІЙ сфері.
 //
@@ -190,15 +218,29 @@ struct VertexOutput
     // Позиція в світових осях відносно камери — потрібна рельєфу, щоб
     // фрагмент узяв із неї геометричну нормаль.
     float3 world : WORLD;
+    // Де цей піксель лежить у колірному тайлі: номер тайла й координата в
+    // його текселях (T3b).
+    //
+    // Тайл — `nointerpolation`: він цілий і той самий на весь патч, а
+    // інтерполяція цілого між вершинами дала б номер чужого тайла на
+    // більшості пікселів. Координата, навпаки, інтерполюється — саме вона й
+    // робить колір неперервним усередині клітинки.
+    nointerpolation uint colour_tile : COLOURTILE;
+    float2 colour_node : COLOURNODE;
 };
 
 // Спільна частина: зсув вершини всередині патча, вже повернутий і масштабований.
-VertexOutput place(uint slot, PatchVertex vertex, float3 offset)
+VertexOutput place(uint slot, PatchVertex vertex, uint2 grid, float3 offset)
 {
-    float3 origin = patches[slot].origin;
+    PatchData patch = patches[slot];
+    float3 origin = patch.origin;
     float3 world = origin + mul(uniforms.model, float4(offset, 0.0)).xyz;
 
     VertexOutput output;
+    output.colour_tile = patch.colour_tile;
+    // Вузол патча → тексель колірного тайла, тим самим вікном, що й у висоти,
+    // але **своїм**. Ореол додається тут, як і в `sample_height`.
+    output.colour_node = patch.colour_origin + float2(grid) * patch.colour_step + float(HALO);
     output.position = mul(uniforms.projection, float4(world, 1.0));
     // Той самий поворот, що й для зсуву: нормаль, повернута інакше, ніж
     // геометрія, дає освітлення чужого тіла. Радіус у матриці нормаль лише
@@ -214,7 +256,7 @@ VertexOutput vertex_smooth(VertexInput input)
     PatchDraw draw = draws[input.instance];
     Node node = node_of(input.vertex, draw.slot, draw.mask);
     PatchVertex vertex = vertices[node.index];
-    return place(draw.slot, vertex, vertex.offset);
+    return place(draw.slot, vertex, node.grid, vertex.offset);
 }
 
 // Висота у вузлі патча, в одиницях зберігання (R7a).
@@ -417,20 +459,71 @@ VertexOutput vertex_terrain(VertexInput input)
     // одразу в метрах, тож ділиться на радіус.
     float lift = height * uniforms.terrain.x + detail / uniforms.detail.x;
     float3 offset = vertex.offset + vertex.normal * lift;
-    return place(draw.slot, vertex, offset);
+    return place(draw.slot, vertex, node.grid, offset);
 }
 
-float3 shade(float3 normal)
+float3 shade(float3 normal, float3 albedo)
 {
     float3 n = normalize(normal);
     float diffuse = max(dot(n, uniforms.light_dir.xyz), 0.0);
-    return uniforms.colour.rgb * (0.05 + 0.95 * diffuse);
+    return albedo * (0.05 + 0.95 * diffuse);
+}
+
+// Колір у точці колірного тайла, білінійно між чотирма текселями (T3b).
+//
+// Та сама форма, що `sample_height`, і та сама причина: вікно вже перевело
+// вузол патча в тексель **цього** тайла, а між текселями треба інтерполювати
+// самим — семплер про вікно не знає.
+//
+// Затискання по обох осях до `[0, NODES + 2*HALO − 1]`: у вузлі на самому краю
+// ореолу правий сусід уже поза текстурою, а вага його там нульова.
+float sample_colour(uint tile, float2 node)
+{
+    float top = float(NODES + 2u * uint(HALO) - 1u);
+    float x = clamp(node.x, 0.0, top);
+    float y = clamp(node.y, 0.0, top);
+
+    int xi = int(floor(x));
+    int yi = int(floor(y));
+    float tx = x - float(xi);
+    float ty = y - float(yi);
+    int xi1 = min(xi + 1, int(top));
+    int yi1 = min(yi + 1, int(top));
+
+    // `a` — рядок тайла, тобто `y` текстури: той самий порядок, що в
+    // `sample_height`, і переставити його тут означало б транспонувати колір
+    // відносно рельєфу.
+    float c00 = colours[tile].Load(int3(yi, xi, 0)).x;
+    float c01 = colours[tile].Load(int3(yi1, xi, 0)).x;
+    float c10 = colours[tile].Load(int3(yi, xi1, 0)).x;
+    float c11 = colours[tile].Load(int3(yi1, xi1, 0)).x;
+
+    float left = c00 * (1.0 - ty) + c01 * ty;
+    float right = c10 * (1.0 - ty) + c11 * ty;
+    return left * (1.0 - tx) + right * tx;
+}
+
+// Колір поверхні в цьому пікселі: тайл, якщо він є, інакше колір тіла.
+//
+// Гілка за uniform, і саме у **фрагментній** стадії, де вона безпечна: пастка
+// ACO з F6 стосувалася вершинної (той самий uniform там читався неправильно),
+// а фрагментна читала його коректно — це перевірялося виводом значення в
+// колір. Друга точка входу тут не потрібна: гладке тіло малюється своїм
+// пайплайном і в цю функцію не заходить.
+float3 surface_albedo(VertexOutput input)
+{
+    if (uniforms.terrain.y <= 0.0)
+    {
+        return uniforms.colour.rgb;
+    }
+    float unit = sample_colour(input.colour_tile, input.colour_node);
+    return float3(unit * uniforms.terrain.y);
 }
 
 [shader("fragment")]
 float4 fragment_smooth(VertexOutput input) : SV_Target
 {
-    return float4(shade(input.normal), 1.0);
+    return float4(shade(input.normal, uniforms.colour.rgb), 1.0);
 }
 
 [shader("fragment")]
@@ -445,5 +538,5 @@ float4 fragment_terrain(VertexOutput input) : SV_Target
     {
         facet = -facet;
     }
-    return float4(shade(facet), 1.0);
+    return float4(shade(facet, surface_albedo(input)), 1.0);
 }

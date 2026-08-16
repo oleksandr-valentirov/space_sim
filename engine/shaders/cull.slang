@@ -75,7 +75,13 @@ struct PatchData
     uint tile;
     float2 window_origin;
     float window_step;
-    float _pad;
+    float window_delta;
+    // Колірне вікно (T3b). Відбір його не читає — воно тут рівно заради
+    // **кроку** буфера, і саме тому порядок полів мусить бути той самий, що
+    // в `patch.slang`: `float2` після скалярів, інакше std430 додасть дірку.
+    uint colour_tile;
+    float colour_step;
+    float2 colour_origin;
 };
 
 StructuredBuffer<PatchData> origins;

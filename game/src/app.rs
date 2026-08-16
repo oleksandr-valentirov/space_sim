@@ -165,6 +165,10 @@ struct State {
 /// бере з неї константу, зав'язалась би на його налагоджувальний інструмент.
 pub const MOON_TERRAIN_ASSET: &str = "assets/moon.dem";
 
+/// Скукований колір Місяця (етап T, T2d). Окремий файл від рельєфу — з тієї
+/// самої причини, з якої окремий і формат: піраміди різної глибини (T2c).
+pub const MOON_COLOUR_ASSET: &str = "assets/moon.col";
+
 /// Читає рельєф Місяця в кадр (D12).
 ///
 /// **Гучно каже, коли не вийшло, і йде далі.** Три причини не мати рельєфу
@@ -191,14 +195,36 @@ pub fn load_moon_terrain(gpu: &Gpu, frame: &mut Frame) -> Option<engine::scene::
         }
     };
 
+    // Колір — окремий асет і окрема відсутність (T2c). Немає його — Місяць
+    // лишається сірим за `Body::colour`, тобто рівно таким, як до етапу T;
+    // гори при цьому нікуди не діваються.
+    let colour = match std::fs::read(MOON_COLOUR_ASSET) {
+        Ok(bytes) => match engine::tiles::Colour::from_bytes(&bytes) {
+            Ok(colour) => Some(colour),
+            Err(e) => {
+                eprintln!("колір {MOON_COLOUR_ASSET} не читається ({e}) — малюємо сірий.");
+                None
+            }
+        },
+        Err(e) => {
+            eprintln!("кольору Місяця немає ({MOON_COLOUR_ASSET}: {e}) — малюємо сірий.");
+            eprintln!("полікувати: make cook-colour");
+            None
+        }
+    };
+
     let levels = terrain.levels;
-    match frame.load_terrain(gpu, &terrain) {
+    let colour_levels = colour.as_ref().map(|c| c.levels);
+    match frame.load_surface(gpu, &terrain, colour.as_ref()) {
         Ok(id) => {
             println!("рельєф Місяця: {MOON_TERRAIN_ASSET}, {levels} рівнів піраміди");
+            if let Some(levels) = colour_levels {
+                println!("колір Місяця: {MOON_COLOUR_ASSET}, {levels} рівнів піраміди");
+            }
             Some(id)
         }
         Err(e) => {
-            eprintln!("рельєф не завантажився в кадр ({e}) — малюємо гладкий.");
+            eprintln!("поверхня не завантажилася в кадр ({e}) — малюємо гладкий.");
             None
         }
     }

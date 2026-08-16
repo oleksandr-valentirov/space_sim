@@ -49,6 +49,10 @@ const MOON_RADIUS_M: f64 = 1_737_400.0;
 /// Скукований рельєф Місяця, від кореня репозиторію.
 pub const TERRAIN_ASSET: &str = "assets/moon.dem";
 
+/// Скукований колір Місяця (етап T, T2d). Окремий асет, і бракувати може
+/// незалежно від рельєфу — тоді демо малює сірий Місяць із горами.
+pub const COLOUR_ASSET: &str = "assets/moon.col";
+
 /// Один кадр демки: ім'я файлу й підпис, що саме на ньому видно.
 pub struct Picture {
     pub name: &'static str,
@@ -250,7 +254,19 @@ pub fn render(gpu: &Gpu, out: &Path) -> Result<Vec<Picture>, String> {
         Ok(bytes) => {
             let data = Terrain::from_bytes(&bytes)?;
             let levels = data.levels;
-            let id = frame.load_terrain(gpu, &data)?;
+            let colour = match std::fs::read(COLOUR_ASSET) {
+                Ok(bytes) => {
+                    let colour = crate::tiles::Colour::from_bytes(&bytes)?;
+                    println!("колір: {COLOUR_ASSET}, {} рівнів піраміди", colour.levels);
+                    Some(colour)
+                }
+                Err(e) => {
+                    println!("кольору немає ({COLOUR_ASSET}: {e}) — Місяць сірий.");
+                    println!("полікувати: make cook-colour");
+                    None
+                }
+            };
+            let id = frame.load_surface(gpu, &data, colour.as_ref())?;
             println!("рельєф: {TERRAIN_ASSET}, {levels} рівнів піраміди");
             Some(id)
         }

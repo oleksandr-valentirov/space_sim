@@ -219,13 +219,17 @@ pub const MAX_PASSES: usize = 4;
 /// коли заводити другий діапазон.
 const DECADES_PER_PASS: f64 = 7.0;
 
-/// Скільки байтів займає `PatchData` у шейдері (R7a).
+/// Скільки байтів займає `PatchData` у шейдері (R7a; етап T, T3b).
 ///
-/// Вісім слів: початок (три), номер тайла, вікно в тайлі (зсув-два й крок) і
-/// одне слово запасу. Сім із них читаються; восьме існує тому, що `float3` у
-/// Slang вимагає 16-байтового вирівнювання, і структура з семи слів однаково
-/// займала б вісім.
-const PATCH_DATA_BYTES: usize = 32;
+/// Дванадцять слів, і всі дванадцять читаються: початок (три), номер тайла
+/// висот, вікно в ньому (зсув-два й крок), крок центральної різниці, номер
+/// колірного тайла, вікно в **ньому** (зсув-два й крок).
+///
+/// ⚠ **Вікон два, а не одне, і це не дублювання.** Піраміди різної глибини
+/// (5 рівнів висоти проти 6 кольору, T2a), тож той самий патч дивиться в
+/// тайл предка для однієї й у власний — для другої. Спільне вікно означало б,
+/// що глибини мусять збігтися, тобто рівно те, від чого T2c відмовився.
+const PATCH_DATA_BYTES: usize = 48;
 
 /// Назви проходів за зростанням відстані. Нульовий — найближчий.
 const PASS_LABELS: [&str; MAX_PASSES] = [
@@ -420,6 +424,21 @@ impl Frame {
         gpu: &Gpu,
         terrain: &tiles::Terrain,
     ) -> Result<scene::TerrainId, String> {
+        self.load_surface(gpu, terrain, None)
+    }
+
+    /// Рельєф **і колір** одним хендлом (етап T, T3b).
+    ///
+    /// Одна поверхня — один слот, і не тому, що так менше коду: група
+    /// прив'язки в кадру одна, і два незалежні хендли дозволяли б стан «колір
+    /// цього тіла з чужим рельєфом». Колір необов'язковий: асета може не бути
+    /// на диску (Q5), і тоді тіло малюється своїм `Body::colour`, як до кроку.
+    pub fn load_surface(
+        &mut self,
+        gpu: &Gpu,
+        terrain: &tiles::Terrain,
+        colour: Option<&tiles::Colour>,
+    ) -> Result<scene::TerrainId, String> {
         if self.planet.terrain.is_none() {
             return Err(format!(
                 "рельєф вимагає bindless-масиву текстур, а адаптер його не має: {}",
@@ -427,49 +446,82 @@ impl Frame {
             ));
         }
         let count = tiles::Terrain::count(terrain.levels);
-        if count > MAX_TILES as usize {
-            return Err(format!(
-                "{count} тайлів проти стелі масиву {MAX_TILES} — підніміть MAX_TILES"
-            ));
+        let colour_count = colour.map(|c| tiles::count(c.levels)).unwrap_or(0);
+        for (what, n) in [("рельєфу", count), ("кольору", colour_count)] {
+            if n > MAX_TILES as usize {
+                return Err(format!(
+                    "{n} тайлів {what} проти стелі масиву {MAX_TILES} — підніміть MAX_TILES"
+                ));
+            }
+        }
+        if let Some(c) = colour {
+            if c.channels != 1 {
+                return Err(format!(
+                    "{} каналів кольору: кадр читає одноканальні тайли (T3b)",
+                    c.channels
+                ));
+            }
         }
 
         let side = tiles::STORED as u32;
-        let mut views = Vec::with_capacity(count);
-        for index in 0..count {
-            let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("terrain tile"),
-                size: wgpu::Extent3d {
-                    width: side,
-                    height: side,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                // Цілі зі знаком, як у самому тайлі: жодного перетворення між
-                // асетом і текстурою, отже й жодного місця, де воно поїде.
-                format: wgpu::TextureFormat::R16Sint,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
-            gpu.queue.write_texture(
-                texture.as_image_copy(),
-                terrain.tile_bytes(index),
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(side * 2),
-                    rows_per_image: Some(side),
-                },
-                wgpu::Extent3d {
-                    width: side,
-                    height: side,
-                    depth_or_array_layers: 1,
-                },
-            );
-            views.push(texture.create_view(&wgpu::TextureViewDescriptor::default()));
-        }
+        let upload = |label, format, bytes_per_texel: u32, payload: &[&[u8]]| {
+            let mut views = Vec::with_capacity(payload.len());
+            for bytes in payload {
+                let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d {
+                        width: side,
+                        height: side,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+                gpu.queue.write_texture(
+                    texture.as_image_copy(),
+                    bytes,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(side * bytes_per_texel),
+                        rows_per_image: Some(side),
+                    },
+                    wgpu::Extent3d {
+                        width: side,
+                        height: side,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                views.push(texture.create_view(&wgpu::TextureViewDescriptor::default()));
+            }
+            views
+        };
 
-        let borrowed: Vec<&wgpu::TextureView> = views.iter().collect();
+        // Цілі зі знаком у висот і байт у кольору — рівно те, що лежить у
+        // тайлі: жодного перетворення між асетом і текстурою, отже й жодного
+        // місця, де воно поїде.
+        let height_tiles: Vec<&[u8]> = (0..count).map(|i| terrain.tile_bytes(i)).collect();
+        let heights = upload(
+            "terrain tile",
+            wgpu::TextureFormat::R16Sint,
+            2,
+            &height_tiles,
+        );
+        // Порожній масив прив'язати не можна, тож тіло без кольору дістає одну
+        // текстуру-заглушку — той самий прийом, що й `no_tiles`. Читати її
+        // ніхто не буде: `terrain.y` в уніформах лишиться нулем.
+        let blank = vec![0u8; tiles::STORED * tiles::STORED];
+        let colour_tiles: Vec<&[u8]> = match colour {
+            Some(c) => (0..colour_count).map(|i| c.tile_bytes(i)).collect(),
+            None => vec![blank.as_slice()],
+        };
+        let colours = upload("colour tile", COLOUR_FORMAT, 1, &colour_tiles);
+
+        let height_views: Vec<&wgpu::TextureView> = heights.iter().collect();
+        let colour_views: Vec<&wgpu::TextureView> = colours.iter().collect();
         let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("terrain tiles"),
             layout: self
@@ -477,14 +529,21 @@ impl Frame {
                 .tile_layout
                 .as_ref()
                 .expect("макет масиву є рівно тоді, коли є пайплайн рельєфу"),
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureViewArray(&borrowed),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureViewArray(&height_views),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureViewArray(&colour_views),
+                },
+            ],
         });
 
         self.planet.terrains.push(TerrainSlot {
             data: terrain.clone(),
+            colour: colour.cloned(),
             bind_group,
             scale_m: terrain.scale_m,
         });
@@ -1075,6 +1134,8 @@ struct Planet {
 /// (PROJECT.md §7, розвідка P0: 10⁶ елементів на цій машині).
 struct TerrainSlot {
     data: tiles::Terrain,
+    /// Колір тієї самої поверхні, якщо асет був (етап T, T3b).
+    colour: Option<tiles::Colour>,
     bind_group: wgpu::BindGroup,
     /// Метрів на одиницю зберігання — множник для вершинного зсуву.
     scale_m: f32,
@@ -1143,6 +1204,13 @@ const MIN_PATCHES: usize = 64;
 /// Ціна самого оголошення при цьому не нульова: дескрипторний набір росте
 /// пропорційно, тож стеля «про запас» коштувала б пам'яті на кожен тайлсет.
 const MAX_TILES: u32 = 8192;
+
+/// Формат колірного тайла в пам'яті GPU (етап T, T3b).
+///
+/// Один канал, як у самому асеті: мозаїка LROC WAC монохромна, і три канали
+/// зберігали б той самий байт тричі. Виміряна ціна цього — 12–16 КіБ на тайл
+/// проти 4 (T2a).
+const COLOUR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 
 /// Кеш геометрії патчів: слот на патч, спільний для всіх тіл.
 ///
@@ -1347,16 +1415,34 @@ impl Planet {
             gpu.device
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     label: Some("patch tiles"),
-                    entries: &[wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Sint,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::VERTEX,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Sint,
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: std::num::NonZeroU32::new(MAX_TILES),
                         },
-                        count: std::num::NonZeroU32::new(MAX_TILES),
-                    }],
+                        // Колір — другий масив у **тій самій** групі, і
+                        // видимість у нього фрагментна: висота зсуває вершину,
+                        // а колір фарбує піксель. Окремої групи він не дістав
+                        // навмисно: поверхня тіла — одна річ, і два хендли на
+                        // неї означали б стан, у якому колір є, а рельєфу вже
+                        // немає.
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: std::num::NonZeroU32::new(MAX_TILES),
+                        },
+                    ],
                 })
         });
 
@@ -1470,28 +1556,39 @@ impl Planet {
             });
 
         let no_tiles = tile_layout.as_ref().map(|layout| {
-            let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("no terrain"),
-                size: wgpu::Extent3d {
-                    width: 1,
-                    height: 1,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::R16Sint,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let one = |label, format| {
+                gpu.device
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some(label),
+                        size: wgpu::Extent3d {
+                            width: 1,
+                            height: 1,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                        view_formats: &[],
+                    })
+                    .create_view(&wgpu::TextureViewDescriptor::default())
+            };
+            let height = one("no terrain", wgpu::TextureFormat::R16Sint);
+            let colour = one("no colour", COLOUR_FORMAT);
             gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("no terrain"),
                 layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureViewArray(&[&view]),
-                }],
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureViewArray(&[&height]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureViewArray(&[&colour]),
+                    },
+                ],
             })
         });
 
@@ -1833,6 +1930,10 @@ impl Planet {
             let height_scale = terrain
                 .map(|t| t.scale_m / body.radius_m as f32)
                 .unwrap_or(0.0);
+            // Глибина колірної піраміди — своя, і саме вона вирішує, у який
+            // тайл дивиться патч. `None` означає «кольору немає», і тоді
+            // фрагмент лишається на `Body::colour`.
+            let colour_levels = terrain.and_then(|t| t.colour.as_ref()).map(|c| c.levels);
 
             // Початки — на **слот**, а не на позицію в наборі: так номер
             // патча живе у вершинному буфері й не переписується щокадру.
@@ -1872,6 +1973,24 @@ impl Planet {
                 // тайла (R7c). Було вирівнювальним нулем; місце під нього тут
                 // і трималося.
                 origin_bytes.extend_from_slice(&(delta as f32).to_le_bytes());
+
+                // Друге вікно — у колірній піраміді, і рахується воно **її**
+                // глибиною (T3b). Той самий патч цілком законно має власний
+                // колірний тайл і водночас читає висоту в предка.
+                let (colour_tile, colour_uv, colour_step) =
+                    match (colour_levels, self.cache.resident[slot]) {
+                        (Some(levels), Some(patch)) => tiles::window(levels, &patch),
+                        _ => (0, [0.0, 0.0], 1.0),
+                    };
+                //
+                // ⚠ Крок **перед** зсувом, і порядок цей диктує std430:
+                // `vec2<f32>` вимагає восьмибайтового вирівнювання, тож пара
+                // «uint, vec2, float» лягла б із діркою і структура виросла б
+                // до 64 байтів. Звірка — у згенерованому `patch.wgsl`.
+                origin_bytes.extend_from_slice(&(colour_tile as u32).to_le_bytes());
+                origin_bytes.extend_from_slice(&(colour_step as f32).to_le_bytes());
+                origin_bytes.extend_from_slice(&(colour_uv[0] as f32).to_le_bytes());
+                origin_bytes.extend_from_slice(&(colour_uv[1] as f32).to_le_bytes());
             }
             let slot = &self.bodies[index];
             gpu.queue
@@ -1884,7 +2003,20 @@ impl Planet {
                     model,
                     light_dir: sun,
                     colour: body.colour,
-                    terrain: [height_scale, 0.0, 0.0, 0.0],
+                    // `y` — множник «одиниця зберігання кольору → сірий на
+                    // екрані», і нуль у ньому означає «кольору немає», тобто
+                    // фрагмент лишається на `Body::colour`.
+                    //
+                    // ⚠ Одиниця тут — **свідома заглушка з названою ціною**, а
+                    // не фізика. Фізична відбивна здатність — це `unit ×
+                    // Colour::scale`, тобто 0.02…0.18 у Місяця; намалювати її
+                    // як є означало б майже чорний диск, бо експозиції в кадрі
+                    // немає взагалі. Ділення на `scale` (тобто множник 1)
+                    // розтягує той самий діапазон у 0.08…0.72 і зберігає
+                    // **контраст**, який і є тим, що крок додає. Справжня
+                    // експозиція приходить із матеріалами (T5), і забрати
+                    // заглушку треба саме там.
+                    terrain: [height_scale, f32::from(colour_levels.is_some()), 0.0, 0.0],
                     // Процедурний детайл (R7c). Гладке тіло дістає нулі: без
                     // тайлів нахилу нема звідки взяти, а деталь без нахилу —
                     // це рівний килим, тобто рівно те, чого крок не робить.

@@ -23,6 +23,7 @@
 #   make flags            показати фактичні прапорці (звірка з build.rs на M1)
 #   make cook             перегенерувати ассет-фікстуру (робити свідомо!)
 #   make cook-dem         скукувати тайли рельєфу з data/lola у /assets/
+#   make cook-colour      скукувати колірні тайли з data/wac у /assets/
 #   make cook ANCHOR_BARYCENTRE=0   те саме, без закріплення баріцентру —
 #                         лише щоб зміряти ефект, у гру їде анкерований ассет
 #   make csv              вивести результати ядра у build/csv/*.csv
@@ -202,7 +203,7 @@ DEP := $(CORE_OBJ:.o=.d) $(OFFLINE_OBJ:.o=.d) $(PLANNING_OBJ:.o=.d) \
 -include $(DEP)
 
 .PHONY: all test unit asan valgrind check-libm determinism determinism-bless \
-        hashes cook cook-dem csv plots bench flags clean
+        hashes cook cook-dem cook-colour csv plots bench flags clean
 
 all: $(LIB) $(LIB_OFFLINE) $(LIB_PLANNING)
 
@@ -419,6 +420,15 @@ cook: $(COOK_BIN)
 .PHONY: cook-dem
 cook-dem:
 	cargo run --release -p dem-cook
+
+# Колір Місяця з мозаїки LROC WAC (етап T, T2d).
+#
+# Окремою ціллю від `cook-dem`, бо джерело інше, глибина піраміди інша (6
+# проти 5) і бракувати може незалежно: сирі дані контенту живуть поза git
+# (Q5), і як покласти мозаїку на диск, каже `data/wac/README.md`.
+.PHONY: cook-colour
+cook-colour:
+	cargo run --release -p dem-cook -- --colour
 
 # --- Поставка M0: подивитися очима ----------------------------------------
 #
