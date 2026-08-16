@@ -1,70 +1,75 @@
-//! Фрейм, у якому будується сцена: інерціальний чи обертовий (ROADMAP-UI.md,
+//! The frame the scene is built in: inertial or rotating (ROADMAP-UI.md,
 //! U6a).
 //!
-//! ## Чому перетворення тут, а не у вертексному шейдері
+//! ## Why the transform is here and not in the vertex shader
 //!
-//! PROJECT.md §7 довго обіцяв протилежне — «ключовий трюк: перетворення в
-//! обертову систему робимо у vertex shader». U6a1 це виміряв, і §7 змінено:
-//! шейдерний шлях вимагає світових координат у вершині (`f32`, до 4·10⁸ м),
-//! що дає **132 м** найгіршої помилки — 17 пікселів при кадрі завширшки
-//! 10 км, і не сталим зсувом, а шумом. Перетворення на CPU у `f64` коштує
-//! 2.69 → 10.56 нс на точку, тобто не додає проходу: `Lines::upload` і так
-//! проходить кожну точку щокадру.
+//! PROJECT.md §7 long promised the opposite -- "the key trick: we do the
+//! transform into the rotating frame in the vertex shader". U6a1 measured
+//! that, and §7 changed: the shader path needs world coordinates in the vertex
+//! (`f32`, up to 4e8 m), which gives **132 m** of worst-case error -- 17 pixels
+//! with a 10 km wide frame, and as noise rather than a constant offset. The
+//! CPU transform in `f64` costs 2.69 -> 10.56 ns per point, i.e. adds no pass:
+//! `Lines::upload` already walks every point every frame.
 //!
-//! ## Що саме перетворюється
+//! ## What exactly is transformed
 //!
-//! **Сцена цілком, а не сама лише ламана.** У синодичному фреймі Земля й
-//! Місяць нерухомі — тобто їхні центри проходять те саме перетворення, що й
-//! точки траєкторії, інакше куля висіла б окремо від траєкторії навколо неї.
+//! **The whole scene, not the polyline alone.** In the synodic frame Earth and
+//! the Moon are stationary -- that is, their centres go through the same
+//! transform as the trajectory's points, or the sphere would hang apart from
+//! the trajectory around it.
 //!
-//! Кожна точка траєкторії бере базис **своєї миті** (тому в семплі й лежать
-//! позиції Землі й Місяця), а тіла й маркери — базис «зараз». Масштаб один на
-//! весь кадр: синодичні одиниці безрозмірні, і множаться вони на теперішню
-//! відстань Земля-Місяць. Через це Місяць кожного семпла лягає рівно туди, де
-//! Місяць зараз, — саме це й робить точки Лагранжа нерухомими.
+//! Every trajectory point takes the basis of **its own instant** (which is why
+//! the sample carries Earth's and the Moon's positions), while bodies and
+//! markers take the "now" basis. The scale is one for the whole frame: synodic
+//! units are dimensionless and are multiplied by the current Earth-Moon
+//! distance. Because of that every sample's Moon lands exactly where the Moon
+//! is now -- and that is what makes the Lagrange points stationary.
 
-/// Скільки метрів в одиниці синодичної відстані на екрані.
+/// How many metres one synodic distance unit is on screen.
 ///
-/// **Стала, а не теперішня відстань Земля-Місяць** — і це не деталь. Синодичні
-/// координати безрозмірні: Місяць у них завжди рівно на `1 − μ`. Помножити їх
-/// на теперішню відстань означало б повернути в картинку саме те, що фрейм
-/// щойно прибрав: `L` гуляє між 3.63 і 4.06·10⁸ м, тож Місяць знову поїхав би —
-/// повільніше, ніж інерціально, але поїхав. Виміряно на U6a3: за три доби це
-/// зсуває диск Місяця на цілий його розмір.
+/// **A constant, not the current Earth-Moon distance** -- and that is not a
+/// detail. Synodic coordinates are dimensionless: in them the Moon always sits
+/// at exactly `1 - mu`. Multiplying them by the current distance would put
+/// back into the picture exactly what the frame just removed: `L` wanders
+/// between 3.63 and 4.06e8 m, so the Moon would move again -- slower than
+/// inertially, but move. Measured at U6a3: over three days that shifts the
+/// Moon's disc by its own diameter.
 ///
-/// Значення — середня відстань Земля-Місяць. Будь-яке інше лише змінило б
-/// масштаб картинки: це вибір вигляду, а не фізики.
+/// The value is the mean Earth-Moon distance. Any other would merely change
+/// the picture's scale: this is a choice of appearance, not of physics.
 pub const SYNODIC_SCALE_M: f64 = 3.844e8;
 
-/// У якому фреймі гра просить намалювати сцену.
+/// Which frame the game asks the scene to be drawn in.
 ///
-/// Це стан **вигляду**, не стан світу: жодне число снапшоту від нього не
-/// змінюється (правило 1 етапу U).
+/// This is **view** state, not world state: no number in the snapshot changes
+/// because of it (rule 1 of stage U).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ViewFrame {
-    /// Геоцентричний інерціальний — те, що кадр малював до U6a.
+    /// Geocentric inertial -- what the frame drew before U6a.
     #[default]
     Inertial,
-    /// Обертовий (синодичний) Земля-Місяць: обидва тіла стоять на місці.
+    /// Rotating (synodic) Earth-Moon: both bodies stand still.
     Rotating,
 }
 
-/// Синодичний базис однієї миті.
+/// The synodic basis of one instant.
 ///
-/// Ортонормований за побудовою: `x` уздовж Земля-Місяць, `z` — нормаль
-/// миттєвої площини, `y = z × x`.
+/// Orthonormal by construction: `x` along Earth-Moon, `z` the normal of the
+/// instantaneous plane, `y = z x x`.
 #[derive(Clone, Copy, Debug)]
 pub struct Synodic {
     x: [f64; 3],
     y: [f64; 3],
     z: [f64; 3],
-    /// Відстань Земля-Місяць у цю мить, метри — нею діляться координати.
+    /// The Earth-Moon distance at that instant, metres -- coordinates are
+    /// divided by it.
     length: f64,
-    /// Скільки метрів в одиниці синодичної відстані на цьому кадрі: та сама
-    /// відстань, але **теперішня**. Один на весь кадр, звідси й нерухомий
-    /// Місяць.
+    /// How many metres one synodic distance unit is in this frame: the same
+    /// distance, but the **current** one. One for the whole frame, hence the
+    /// stationary Moon.
     scale: f64,
-    /// Частка маси Місяця, `μ`: барицентр стоїть за `μ·L` від Землі.
+    /// The Moon's mass fraction, `mu`: the barycentre sits `mu*L` from
+    /// Earth.
     mass_ratio: f64,
 }
 
@@ -86,9 +91,9 @@ fn length(v: [f64; 3]) -> f64 {
 
 fn unit(v: [f64; 3]) -> Option<[f64; 3]> {
     let n = length(v);
-    // Нуль довжини — це не «майже нуль», а відсутній базис: тіла в одній
-    // точці або нерухомий Місяць. Мовчазне ділення дало б NaN у кожній
-    // вершині кадру.
+    // A zero length is not "almost zero" but a missing basis: bodies at one
+    // point, or a motionless Moon. A silent division would give NaN at every
+    // vertex of the frame.
     if n > 0.0 {
         Some([v[0] / n, v[1] / n, v[2] / n])
     } else {
@@ -97,12 +102,12 @@ fn unit(v: [f64; 3]) -> Option<[f64; 3]> {
 }
 
 impl Synodic {
-    /// Базис із вектора Земля→Місяць і нормалі площини.
+    /// A basis from the Earth-to-Moon vector and the plane's normal.
     ///
-    /// `normal` не мусить бути ні одиничним, ні строго перпендикулярним до
-    /// `d`: він ортогоналізується тут же. Причина практична — нормаль
-    /// приходить із центральної різниці по семплах, і вимагати від неї
-    /// точності означало б перекласти цю роботу на кожного викликача.
+    /// `normal` need be neither unit nor strictly perpendicular to `d`: it is
+    /// orthogonalised right here. The reason is practical -- the normal comes
+    /// from a central difference over samples, and demanding precision from it
+    /// would push that work onto every caller.
     pub fn new(d: [f64; 3], normal: [f64; 3], scale: f64, mass_ratio: f64) -> Option<Synodic> {
         let length = length(d);
         let x = unit(d)?;
@@ -119,20 +124,21 @@ impl Synodic {
         })
     }
 
-    /// Той самий кадр, але базис іншої миті: своя лінія Земля-Місяць і своя
-    /// нормаль, а масштаб і `μ` — теперішні.
+    /// The same frame, but another instant's basis: its own Earth-Moon line
+    /// and its own normal, with the current scale and `mu`.
     ///
-    /// Саме цим базис семпла відрізняється від базису «зараз»: масштаб один на
-    /// весь кадр, інакше траєкторія дихала б разом із відстанню до Місяця.
+    /// That is exactly how a sample's basis differs from the "now" basis: one
+    /// scale for the whole frame, otherwise the trajectory would breathe along
+    /// with the distance to the Moon.
     pub fn with_line(&self, d: [f64; 3], normal: [f64; 3]) -> Option<Synodic> {
         Synodic::new(d, normal, self.scale, self.mass_ratio)
     }
 
-    /// Геоцентрична точка → синодична, у метрах теперішнього масштабу.
+    /// A geocentric point to a synodic one, in metres of the current scale.
     pub fn apply(&self, geocentric: [f64; 3], d: [f64; 3]) -> [f64; 3] {
-        // Початок — барицентр пари, а не Земля: саме в ньому CR3BP тримає
-        // свої точки Лагранжа, і крива нульової швидкості (U6b) буде рахуватись
-        // від нього ж.
+        // The origin is the pair's barycentre rather than Earth: that is where
+        // CR3BP keeps its Lagrange points, and the zero-velocity curve (U6b)
+        // will be computed from it too.
         let rel = [
             geocentric[0] - self.mass_ratio * d[0],
             geocentric[1] - self.mass_ratio * d[1],
@@ -146,34 +152,37 @@ impl Synodic {
         ]
     }
 
-    /// Напрямок зі світу в цей базис — сам поворот, без початку й масштабу.
+    /// A world direction into this basis -- the rotation alone, without origin
+    /// or scale.
     ///
-    /// Окремо від [`Synodic::apply`] тому, що напрямок не точка: зсув до
-    /// барицентра й ділення на відстань Земля-Місяць зробили б із одиничного
-    /// вектора щось інше за напрямок. Читає його світло сцени (V5).
+    /// Separate from [`Synodic::apply`] because a direction is not a point:
+    /// the shift to the barycentre and the division by the Earth-Moon distance
+    /// would turn a unit vector into something other than a direction. The
+    /// scene's light reads it (V5).
     pub fn direction(&self, v: [f64; 3]) -> [f64; 3] {
         [dot(v, self.x), dot(v, self.y), dot(v, self.z)]
     }
 
-    /// Поворот зі світу в цей базис, кватерніоном `[w, x, y, z]`.
+    /// The rotation from world into this basis, as a quaternion `[w, x, y, z]`.
     ///
-    /// Потрібен тілам: їхня орієнтація приїжджає в сцену як поворот із системи
-    /// тіла у світ, а в обертовому фреймі «світ» уже інший. Для гладкої сфери
-    /// це невидимо (R1e виміряв, що поворот сфери не міняє жодного пікселя),
-    /// але з R5 у тіла з'явиться поверхня — і тоді неповернута Земля стане
-    /// помилкою, яку доведеться шукати заднім числом.
+    /// The bodies need it: their orientation arrives in the scene as a
+    /// rotation from body frame into world, and in a rotating frame "world" is
+    /// already different. For a smooth sphere that is invisible (R1e measured
+    /// that rotating a sphere changes no pixel), but from R5 the bodies gain a
+    /// surface -- and then an unrotated Earth becomes a bug to be hunted after
+    /// the fact.
     pub fn rotation(&self) -> [f64; 4] {
-        // Рядки матриці — це базис: `Bᵀ·v = (v·x, v·y, v·z)`.
+        // The matrix's rows are the basis: `B^T * v = (v.x, v.y, v.z)`.
         let m = [self.x, self.y, self.z];
         quat_from_rows(m)
     }
 }
 
-/// Кватерніон `[w, x, y, z]` з матриці повороту, заданої рядками.
+/// A quaternion `[w, x, y, z]` from a rotation matrix given by rows.
 ///
-/// Гілка за найбільшим елементом, а не одна формула: у формули через `w`
-/// знаменник прямує до нуля на повороті в 180°, і кватерніон розлітається
-/// саме там, де матриця цілком здорова.
+/// Branching on the largest element rather than one formula: in the formula
+/// through `w` the denominator tends to zero at a 180-degree rotation, and the
+/// quaternion falls apart exactly where the matrix is perfectly healthy.
 pub fn quat_from_rows(m: [[f64; 3]; 3]) -> [f64; 4] {
     let trace = m[0][0] + m[1][1] + m[2][2];
 
@@ -213,7 +222,7 @@ pub fn quat_from_rows(m: [[f64; 3]; 3]) -> [f64; 4] {
     ]
 }
 
-/// Добуток кватерніонів `[w, x, y, z]`: спершу `b`, потім `a`.
+/// Quaternion product `[w, x, y, z]`: `b` first, then `a`.
 pub fn compose(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
     let [aw, ax, ay, az] = a;
     let [bw, bx, by, bz] = b;
@@ -255,18 +264,19 @@ mod tests {
         ]
     }
 
-    /// Кватерніон базису робить із вектором те саме, що сам базис.
+    /// The basis's quaternion does to a vector what the basis itself does.
     ///
-    /// Оракул — не «схожі числа», а рівність двох незалежних шляхів: три
-    /// скалярні добутки проти повороту кватерніоном. Саме розбіжність між ними
-    /// дала б тіло, повернуте не так, як траєкторія навколо нього.
+    /// The oracle is not "similar numbers" but the equality of two independent
+    /// paths: three dot products against a quaternion rotation. A divergence
+    /// between them is exactly what would give a body rotated differently from
+    /// the trajectory around it.
     #[test]
     fn the_quaternion_of_a_basis_turns_vectors_the_way_the_basis_does() {
-        // Базис навмисно косий: осьовий випадок пройшов би й з переставленими
-        // компонентами.
+        // The basis is deliberately skewed: an axis-aligned case would pass
+        // even with the components swapped.
         let d = [3.4e8, -1.7e8, 0.9e8];
         let normal = [0.1, 0.3, 1.0];
-        let s = Synodic::new(d, normal, 1.0, 0.0).expect("базис існує");
+        let s = Synodic::new(d, normal, 1.0, 0.0).expect("the basis exists");
         let q = s.rotation();
 
         for v in [
@@ -280,7 +290,7 @@ mod tests {
             for k in 0..3 {
                 assert!(
                     (by_basis[k] - by_quat[k]).abs() < 1e-6 * (1.0 + by_basis[k].abs()),
-                    "компонента {k}: {:?} проти {:?}",
+                    "component {k}: {:?} against {:?}",
                     by_basis,
                     by_quat
                 );
@@ -288,37 +298,40 @@ mod tests {
         }
     }
 
-    /// Місяць у синодичному фреймі стоїть за `(1 − μ)` від барицентра, на осі x.
+    /// In the synodic frame the Moon sits at `(1 - mu)` from the barycentre,
+    /// on the x axis.
     ///
-    /// Це визначення фрейму, записане числом: якщо десь переплутано знак `μ`
-    /// або порядок множення на масштаб, Місяць поїде з осі.
+    /// The frame's definition written as a number: if the sign of `mu` or the
+    /// order of multiplication by the scale is confused anywhere, the Moon
+    /// leaves the axis.
     #[test]
     fn the_moon_sits_on_the_x_axis_at_one_minus_mu() {
         let d = [3.4e8, -1.7e8, 0.9e8];
         let l = length(d);
         let mu = 0.012_150_585_609_624_04;
-        let s = Synodic::new(d, [0.1, 0.3, 1.0], l, mu).expect("базис існує");
+        let s = Synodic::new(d, [0.1, 0.3, 1.0], l, mu).expect("the basis exists");
 
         let moon = s.apply(d, d);
-        assert!((moon[0] - (1.0 - mu) * l).abs() < 1.0, "Місяць у {moon:?}");
+        assert!((moon[0] - (1.0 - mu) * l).abs() < 1.0, "the Moon is at {moon:?}");
         assert!(
             moon[1].abs() < 1.0 && moon[2].abs() < 1.0,
-            "Місяць у {moon:?}"
+            "the Moon is at {moon:?}"
         );
 
         let earth = s.apply([0.0, 0.0, 0.0], d);
-        assert!((earth[0] + mu * l).abs() < 1.0, "Земля у {earth:?}");
+        assert!((earth[0] + mu * l).abs() < 1.0, "Earth is at {earth:?}");
         assert!(
             earth[1].abs() < 1.0 && earth[2].abs() < 1.0,
-            "Земля у {earth:?}"
+            "Earth is at {earth:?}"
         );
     }
 
-    /// Масштаб «зараз» робить Місяць нерухомим, хоч відстань до нього гуляє.
+    /// The "now" scale makes the Moon stationary though the distance to it
+    /// wanders.
     ///
-    /// Два різні `d` з різною довжиною, той самий `scale` — і Місяць в обох
-    /// випадках в одній точці. Без цього діапазон 3.63–4.06·10⁸ м гойдав би
-    /// картинку на 10%.
+    /// Two different `d` of different lengths, the same `scale` -- and the Moon
+    /// is at one point in both cases. Without this the 3.63-4.06e8 m range
+    /// would rock the picture by 10%.
     #[test]
     fn the_moon_stands_still_although_its_distance_does_not() {
         let mu = 0.012_150_585_609_624_04;
@@ -326,24 +339,24 @@ mod tests {
         let near = [3.63e8, 0.0, 0.0];
         let far = [0.0, 4.06e8, 0.0];
 
-        let a = Synodic::new(near, [0.0, 0.0, 1.0], scale, mu).expect("базис");
-        let b = Synodic::new(far, [0.0, 0.0, 1.0], scale, mu).expect("базис");
+        let a = Synodic::new(near, [0.0, 0.0, 1.0], scale, mu).expect("basis");
+        let b = Synodic::new(far, [0.0, 0.0, 1.0], scale, mu).expect("basis");
 
         let moon_a = a.apply(near, near);
         let moon_b = b.apply(far, far);
         for k in 0..3 {
             assert!(
                 (moon_a[k] - moon_b[k]).abs() < 1.0,
-                "Місяць поїхав: {moon_a:?} проти {moon_b:?}"
+                "the Moon moved: {moon_a:?} against {moon_b:?}"
             );
         }
     }
 
-    /// Виродженого базису не буває мовчки.
+    /// A degenerate basis never happens silently.
     #[test]
     fn a_basis_that_cannot_exist_says_so() {
         assert!(Synodic::new([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 1.0, 0.0).is_none());
-        // Нормаль уздовж самої лінії тіл площини не задає.
+        // A normal along the line of bodies itself defines no plane.
         assert!(Synodic::new([1.0, 0.0, 0.0], [2.0, 0.0, 0.0], 1.0, 0.0).is_none());
     }
 }

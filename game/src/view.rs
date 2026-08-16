@@ -1,25 +1,28 @@
-//! Снапшот → сцена (ROADMAP J1, J2).
+//! Snapshot to scene (ROADMAP J1, J2).
 //!
-//! Уся межа між грою й рушієм в одному напрямку: тут із того, що гра знає про
-//! світ, лишається те, що рушію треба намалювати. Назад не йде нічого.
+//! The whole boundary between game and engine, in one direction: what the game
+//! knows about the world is reduced here to what the engine must draw. Nothing
+//! travels back.
 //!
-//! ## Чому геоцентрично
+//! ## Why geocentric
 //!
-//! Сфера в кадрі — в початку координат і радіуса Землі (`engine::frame`), тож
-//! ламана мусить приїхати в тій самій системі: `апарат − Земля` в момент
-//! кожного семпла. Це не спрощення й не тимчасовий фрейм — це та сама
-//! прив'язка, що в `trajectory_render` з F6, тільки віднімання робиться тут, у
-//! `double`, а не в шейдері.
+//! The sphere in the frame sits at the origin with Earth's radius
+//! (`engine::frame`), so the polyline must arrive in the same frame:
+//! `vessel - Earth` at each sample's instant. Not a simplification and not a
+//! temporary frame -- the same anchoring as in `trajectory_render` from F6,
+//! only the subtraction happens here in `double` rather than in a shader.
 //!
-//! Обертовий фрейм (PROJECT.md §7 вимагає його дефолтом для карти) приїде
-//! разом із сервісом фреймів; семпли для нього вже несуть позицію Місяця.
+//! The rotating frame (PROJECT.md §7 requires it as the map's default) arrives
+//! with the frame service; the samples already carry the Moon's position for
+//! it.
 //!
-//! ## Історія й прогноз — одні й ті самі ланки
+//! ## History and prediction are the same legs
 //!
-//! Курсор ділить їх кольором, і більше нічим: перерахунку немає, копіювання
-//! немає, у сторі нічого не рухається. Саме це й означає правило 5 з
-//! PROJECT.md §4 — «пораховану ділянку прогнозу час перетворює на історію».
-//! Тут це видно буквально: змінюється лише те, з чим порівнюють `sample.t`.
+//! The cursor divides them by colour and by nothing else: no recomputation, no
+//! copying, nothing moving in storage. That is exactly what rule 5 of
+//! PROJECT.md §4 means -- "time turns a computed stretch of prediction into
+//! history". Here it is literally visible: only what `sample.t` is compared
+//! against changes.
 
 use engine::camera::Camera;
 use engine::scene::{Body, Polyline, Scene, TerrainId, TileSet};
@@ -28,26 +31,30 @@ use crate::frame_view::{self, Synodic, ViewFrame};
 use crate::snapshot::WorldSnapshot;
 use crate::world::{EARTH, MOON};
 
-// Кольори ліній переїхали в `palette` (U7c) — не заради порядку, а тому що
-// саме вони й задають палітру інтерфейсу: акцент панелі зобов'язаний бути
-// кольором прогнозу, і живучи в двох місцях, ці двоє тихо розійшлися б.
+// The line colours moved into `palette` (U7c) -- not for tidiness but because
+// they are what defines the interface's palette: the panel's accent must be
+// the prediction's colour, and living in two places the two would quietly
+// diverge.
 //
-// Числа при переїзді не змінились: [0.9, 0.6, 0.2] — це (229, 153, 51) у тих
-// самих одиницях, бо ціль кадру не sRGB і байт ділиться на 255 без гамми.
-// Перевіряють це тести `palette`, а не коментар.
+// The numbers did not change in the move: [0.9, 0.6, 0.2] is (229, 153, 51) in
+// the same units, because the frame's target is not sRGB and a byte divides by
+// 255 without gamma. The `palette` tests check that, not this comment.
 use crate::palette;
 
-/// Півдовжина хреста-маркера як частка відстані до камери.
+/// Half-length of the cross marker as a fraction of the distance to the
+/// camera.
 ///
-/// Частка, а не метри: апарат розглядають і з мільярда метрів, і зблизька, а
-/// маркер має лишатися маркером — того самого розміру на екрані.
+/// A fraction rather than metres: a vessel is viewed both from a billion
+/// metres and from close by, and the marker must stay a marker -- the same size
+/// on screen.
 const MARKER_FRACTION: f64 = 0.01;
 
-/// Що проріджуванню треба знати про вікно й що воно вже знає.
+/// What thinning needs to know about the window, and what it already knows.
 ///
-/// Висота кадру, і тільки вона: `fov_y` вертикальне, і `engine::lod::focal_px`
-/// виводить пікселі на радіан саме з неї. Ширина сюди не входить, бо допуск
-/// тепер у метрах (`crate::trail`), а не в пікселях екрана.
+/// The frame's height, and only it: `fov_y` is vertical, and
+/// `engine::lod::focal_px` derives pixels per radian from exactly that. The
+/// width does not enter, because the tolerance is now in metres
+/// (`crate::trail`) rather than in screen pixels.
 pub struct Thinning<'a> {
     pub cache: &'a mut crate::trail::Cache,
     pub height_px: u32,
@@ -57,16 +64,17 @@ pub fn build(snapshot: &WorldSnapshot, camera: Camera) -> Scene {
     build_with_preview(snapshot, camera, &[], ViewFrame::Inertial)
 }
 
-/// Те саме в заданому фреймі (ROADMAP-UI.md, U6a2).
+/// The same in a given frame (ROADMAP-UI.md, U6a2).
 pub fn build_in(snapshot: &WorldSnapshot, camera: Camera, frame: ViewFrame) -> Scene {
     build_with_preview(snapshot, camera, &[], frame)
 }
 
-/// Те саме, але сліди проріджені за екранним критерієм (N2a, N2b).
+/// The same, but with trails thinned by the screen criterion (N2a, N2b).
 ///
-/// Окремим входом, а не прапорцем у [`build_in`], і не заради сумісності:
-/// оракул кроку — це порівняння **двох** сцен, проріджена проти повної, тож
-/// обидві мусять будуватися однаково легко. Гра кличе цю, тести — обидві.
+/// Its own entry point rather than a flag on [`build_in`], and not for
+/// compatibility: the step's oracle is a comparison of **two** scenes, thinned
+/// against full, so both must be equally easy to build. The game calls this
+/// one, the tests call both.
 pub fn build_thinned(
     snapshot: &WorldSnapshot,
     camera: Camera,
@@ -80,11 +88,11 @@ pub fn build_thinned(
     scene
 }
 
-/// Те саме, плюс спекулятивна лінія з планувальника (ROADMAP J5).
+/// The same, plus the planner's speculative line (ROADMAP J5).
 ///
-/// Прев'ю малюється окремим кольором і **поверх** прогнозу, а не замість
-/// нього: гравець має бачити обидві лінії одночасно — ту, якою полетить зараз,
-/// і ту, якою полетів би за новим планом.
+/// The preview is drawn in its own colour and **over** the prediction rather
+/// than instead of it: the player must see both lines at once -- the one they
+/// will fly now, and the one they would fly under the new plan.
 pub fn build_with_preview(
     snapshot: &WorldSnapshot,
     camera: Camera,
@@ -94,11 +102,12 @@ pub fn build_with_preview(
     build_all(snapshot, camera, preview, frame, None)
 }
 
-/// Спільне тіло обох входів: `thin` вирішує, чи проріджувати сліди.
+/// The shared body of both entry points: `thin` decides whether trails are
+/// thinned.
 ///
-/// `None` означає «віддати кожен семпл», і саме таким сцену бачив увесь код до
-/// N2a — тобто це не «вимкнена оптимізація», а еталон, проти якого міряється
-/// проріджений.
+/// `None` means "hand back every sample", which is exactly how all the code
+/// before N2a saw the scene -- so this is not "an optimisation turned off" but
+/// the reference the thinned one is measured against.
 fn build_all(
     snapshot: &WorldSnapshot,
     camera: Camera,
@@ -108,27 +117,28 @@ fn build_all(
 ) -> Scene {
     let mut scene = Scene::new(camera);
 
-    // Базис «зараз» — для тіл і маркерів. Точки траєкторії беруть базис своєї
-    // миті, і саме тому він рахується не тут, а поруч із семплом.
+    // The "now" basis, for bodies and markers. Trajectory points take their
+    // own instant's basis, which is exactly why it is computed beside the
+    // sample rather than here.
     //
-    // Немає базису — немає й обертового фрейму: якщо в ассеті немає Місяця
-    // або він стоїть в одній точці із Землею, сцена лишається інерціальною.
-    // Це не тихе ігнорування вибору: інерціальний кадр — правильна відповідь
-    // на «пари тіл немає», а NaN у кожній вершині — ні.
+    // No basis means no rotating frame: if the asset has no Moon, or it stands
+    // at one point with Earth, the scene stays inertial. That is not silently
+    // ignoring the choice: an inertial frame is the correct answer to "there
+    // is no pair of bodies", while a NaN at every vertex is not.
     let now = match frame {
         ViewFrame::Inertial => None,
         ViewFrame::Rotating => synodic_now(snapshot),
     };
     let moon_now = moon_local(snapshot).unwrap_or([0.0; 3]);
 
-    // Тіла — те саме віднімання Землі, що й для ламаних, і з тієї ж причини:
-    // кадр геоцентричний (див. вступ модуля). Земля опиняється рівно в
-    // початку координат, Місяць — там, де він відносно неї в цю мить, а в
-    // обертовому фреймі обидва стоять нерухомо.
+    // The bodies get the same Earth subtraction as the polylines, for the same
+    // reason: the frame is geocentric (see the module intro). Earth ends up
+    // exactly at the origin, the Moon where it is relative to it at that
+    // instant, and in the rotating frame both stand still.
     if let Some(earth) = snapshot.bodies.iter().find(|b| b.body == EARTH) {
         for body in &snapshot.bodies {
-            // Тіло без розміру малювати нема як: радіус нуль — це «ассет не
-            // каже», а не «крапка».
+            // There is no way to draw a body without a size: a zero radius
+            // means "the asset does not say", not "a dot".
             if body.radius_m <= 0.0 {
                 continue;
             }
@@ -143,26 +153,27 @@ fn build_all(
                     None => centre,
                 },
                 radius_m: body.radius_m,
-                // Поворот тіла навколо власного центра від вибору початку
-                // координат не залежить — а от від вибору **осей** залежить,
-                // і в обертовому фреймі осі інші.
+                // A body's rotation about its own centre does not depend on
+                // the choice of origin -- but it does depend on the choice of
+                // **axes**, and in the rotating frame the axes differ.
                 orientation: match now {
                     Some(s) => frame_view::compose(s.rotation(), body.orientation),
                     None => body.orientation,
                 },
-                // Гладке за замовчуванням; рельєф вмикає `attach_terrain`
-                // після побудови, бо хендл тайлів видає кадр, а не снапшот
+                // Smooth by default; `attach_terrain` enables terrain after
+                // construction, because the frame issues the tile handle
+                // rather than the snapshot
                 // (D12).
                 tiles: TileSet::Smooth,
-                // Колір — теж властивість тіла (T1), і поки що плаский:
-                // колірні тайли приходять у T3. Вибір за індексом тіла —
-                // той самий шлях, що в повітря нижче, і з тієї ж причини:
-                // в ассеті кольору немає, а вигадувати його в рушії не можна
-                // було б узагалі.
+                // Colour is a property of the body too (T1), and flat for now:
+                // colour tiles arrive in T3. Choosing by body index is the same
+                // route as the air below, and for the same reason: the asset
+                // has no colour, and inventing it in the engine would not be
+                // allowed at all.
                 colour: body_colour(body.body),
-                // Повітря — властивість тіла (S1). Земля його має, решта
-                // ассета ні: у Місяця атмосфери немає, і `None` тут означає
-                // саме це, а не «ще не зробили».
+                // Air is a property of the body (S1). Earth has it, the rest
+                // of the asset does not: the Moon has no atmosphere, and `None`
+                // here means exactly that rather than "not done yet".
                 air: if body.body == EARTH {
                     Some(engine::scene::Atmosphere::EARTH.with_surface(body.radius_m))
                 } else {
@@ -171,12 +182,13 @@ fn build_all(
             });
         }
 
-        // Напрямок на світило — звідти ж, звідки все інше в кадрі: з
-        // ефемериди, у цю саму мить (борг D16, крок V5). Геоцентричний, бо
-        // геоцентрична вся сцена; в обертовому фреймі повертається тим самим
-        // базисом, що й тіла, — але **тільки повертається**: напрямок не має
-        // ні початку, ні масштабу, тож `apply` з його зсувом до барицентра й
-        // діленням на відстань Земля-Місяць був би тут неправильний.
+        // The direction to the light comes from where everything else in the
+        // frame comes from: the ephemeris, at that same instant (debt D16,
+        // step V5). Geocentric, because the whole scene is; in the rotating
+        // frame it is rotated by the same
+        // basis as the bodies -- but **only rotated**: a direction has neither
+        // origin nor scale, so `apply`, with its shift to the barycentre and
+        // division by the Earth-Moon distance, would be wrong here.
         if let Some(sun) = snapshot.sun {
             let d = [
                 sun[0] - earth.position[0],
@@ -194,10 +206,10 @@ fn build_all(
         }
     }
 
-    // Крива нульової швидкості — тільки в обертовому фреймі, і це не
-    // обмеження реалізації: вона живе в площині синодичної системи й в
-    // інерціальному кадрі оберталася б разом із парою, показуючи стіну там,
-    // де її щойно не було.
+    // The zero-velocity curve exists only in the rotating frame, and that is
+    // not an implementation limit: it lives in the synodic system's plane and
+    // in an inertial frame would rotate along with the pair, showing a wall
+    // where a moment ago there was none.
     if now.is_some() {
         if let (Some(mu), Some(c)) = (mass_ratio(snapshot), current_jacobi(snapshot)) {
             scene
@@ -210,18 +222,18 @@ fn build_all(
         let mut history: Vec<[f64; 3]> = Vec::new();
         let mut future: Vec<[f64; 3]> = Vec::new();
 
-        // Кожна точка бере базис **своєї миті** — у цьому вся суть обертового
-        // фрейму: базис «зараз» дав би просто повернуту інерціальну
-        // траєкторію. Розкладає точку по історії й прогнозу час семпла, і
-        // після проріджування він приходить разом із точкою — індексів там уже
-        // немає.
+        // Every point takes **its own instant's** basis -- that is the whole
+        // point of the rotating frame: the "now" basis would give a merely
+        // rotated inertial trajectory. The sample's time sorts the point into
+        // history or prediction, and after thinning it arrives with the point
+        // -- there are no indices there any more.
         let place = |t: f64, point: [f64; 3], history: &mut Vec<_>, future: &mut Vec<_>| {
             if t <= snapshot.t {
                 history.push(point);
             } else {
-                // Перша точка прогнозу повторює останню точку історії, інакше
-                // між двома ламаними був би розрив завширшки в крок
-                // інтегратора — тобто в години польоту.
+                // The prediction's first point repeats history's last,
+                // otherwise there would be a gap between the two polylines one
+                // integrator step wide -- i.e. hours of flight.
                 if future.is_empty() {
                     if let Some(&last) = history.last() {
                         future.push(last);
@@ -239,9 +251,9 @@ fn build_all(
                         let point = match now {
                             Some(s) => match sample_frame(sample, normals[index], &s) {
                                 Some(turned) => turned,
-                                // Виродженого базису на семплі бути не може,
-                                // якщо він є «зараз», — але мовчазний NaN
-                                // коштував би дорожче за цю гілку.
+                                // A sample's basis cannot be degenerate if the
+                                // "now" one exists -- but a silent NaN would
+                                // cost more than this branch.
                                 None => continue,
                             },
                             None => geocentric(sample),
@@ -254,8 +266,8 @@ fn build_all(
                 let focal =
                     engine::lod::focal_px(engine::frame::FOV_Y, f64::from(thinning.height_px));
                 for leg in &vessel.legs {
-                    // Точки приїжджають уже перетвореними й прорідженими: у
-                    // кадрі лишається тільки розкласти їх по двох ламаних.
+                    // The points arrive already transformed and thinned: all
+                    // the frame does is sort them into two polylines.
                     for &(t, point) in thinning.cache.points(
                         leg,
                         frame,
@@ -273,17 +285,18 @@ fn build_all(
         push_line(&mut scene, history, palette::HISTORY.scene());
         push_line(&mut scene, future, palette::PREDICTION.scene());
 
-        // Де апарат зараз. Позиція інтерпольована (снапшот), а Земля береться
-        // з найближчого семпла: за крок інтегратора вона зсувається на частки
-        // відсотка масштабу кадру, і шукати її точніше означало б четвертий
-        // виклик ефемериди на кадр заради невидимого.
+        // Where the vessel is now. The position is interpolated (from the
+        // snapshot) while Earth comes from the nearest sample: over one
+        // integrator step it moves by fractions of a percent of the frame's
+        // scale, and finding it more precisely would mean a fourth ephemeris
+        // call per frame for something invisible.
         if let Some(earth) = earth_near(vessel, snapshot.t) {
             let position = [
                 vessel.state.r.x - earth[0],
                 vessel.state.r.y - earth[1],
                 vessel.state.r.z - earth[2],
             ];
-            // Маркер — це «зараз», тож і базис у нього теперішній.
+            // A marker is "now", so its basis is the current one.
             let position = match now {
                 Some(s) => s.apply(position, moon_now),
                 None => position,
@@ -306,15 +319,15 @@ fn build_all(
             }
         }
     }
-    // Прев'ю не проріджується: планувальник перебудовує його щоразу, тож
-    // кеш на ланку тут не мав би на чому триматися (ROADMAP.md, N2b).
+    // The preview is not thinned: the planner rebuilds it every time, so a
+    // per-leg cache would have nothing to rest on here (ROADMAP.md, N2b).
     push_line(&mut scene, speculative, palette::PREVIEW.scene());
 
     scene
 }
 
-/// Позиція семпла відносно Землі **тієї самої миті** — те, з чого починається
-/// будь-який із двох фреймів.
+/// A sample's position relative to Earth **at that same instant** -- what
+/// either of the two frames starts from.
 pub fn geocentric(sample: &crate::leg::Sample) -> [f64; 3] {
     [
         sample.state.r.x - sample.earth[0],
@@ -323,7 +336,8 @@ pub fn geocentric(sample: &crate::leg::Sample) -> [f64; 3] {
     ]
 }
 
-/// Точка семпла в синодичному фреймі його власної миті, у масштабі `now`.
+/// A sample's point in the synodic frame of its own instant, at `now`'s
+/// scale.
 pub fn sample_frame(
     sample: &crate::leg::Sample,
     normal: [f64; 3],
@@ -338,17 +352,18 @@ pub fn sample_frame(
     Some(basis.apply(geocentric(sample), d))
 }
 
-/// Нормалі миттєвої площини Земля-Місяць по семплах однієї ланки.
+/// Normals of the instantaneous Earth-Moon plane over one leg's samples.
 ///
-/// Публічна заради тесту, який звіряє **перетворення** з формулою рушія
-/// (`engine::trajectory::rotating_position`, звіреною з C-оракулом): якби тест
-/// рахував нормалі по-своєму, він порівнював би дві різні площини й списував
-/// би розбіжність на них.
+/// Public for the sake of a test comparing the **transform** against the
+/// engine's formula (`engine::trajectory::rotating_position`, itself compared
+/// against the C oracle): if the test computed the normals its own way it
+/// would compare two different planes and blame the discrepancy on them.
 ///
-/// Центральна різниця, а не аналітична швидкість Місяця: у семплі її немає й
-/// не буде — 104 байти на семпл це вже борг D7, і додавати до них ще 24 заради
-/// вигляду не варто. F6 виміряв, що при кроці ~2.7 год центральна різниця дає
-/// розбіжність 3.5·10⁻⁷ проти C-оракула; на краях ланки різниця однобічна.
+/// A central difference rather than the Moon's analytic velocity: the sample
+/// does not have it and will not -- 104 bytes per sample is already debt D7,
+/// and adding 24 more for appearance is not worth it. F6 measured that at a
+/// step of about 2.7 h a central difference gives a 3.5e-7 discrepancy against
+/// the C oracle; at a leg's ends the difference is one-sided.
 pub fn plane_normals(samples: &[crate::leg::Sample]) -> Vec<[f64; 3]> {
     let line = |s: &crate::leg::Sample| {
         [
@@ -379,25 +394,27 @@ pub fn plane_normals(samples: &[crate::leg::Sample]) -> Vec<[f64; 3]> {
         .collect()
 }
 
-/// Частка маси пари з ассета — визначення системи, у якій живуть і крива, і
-/// точки Лагранжа. Рахує її `/core`, а не Rust (U6b2).
+/// The pair's mass fraction from the asset -- the definition of the system
+/// both the curve and the Lagrange points live in. `/core` computes it, not
+/// Rust (U6b2).
 fn mass_ratio(snapshot: &WorldSnapshot) -> Option<f64> {
     let earth = snapshot.bodies.iter().find(|b| b.body == EARTH)?;
     let moon = snapshot.bodies.iter().find(|b| b.body == MOON)?;
     Some(core_rs::cr3bp_mu(earth.mu, moon.mu))
 }
 
-/// `C` апарата, за яким малюється крива.
+/// The vessel's `C`, the one the curve is drawn for.
 ///
-/// Першого апарата, а не всіх: крива одна на кадр, і десять напівпрозорих
-/// кривих одна поверх одної не сказали б нічого нікому. Апаратів у грі поки
-/// один; коли їх стане більше, крива належатиме **обраному** — це вибір
-/// інтерфейсу, і робити його наперед тут нема з чого.
+/// The first vessel rather than all of them: there is one curve per frame, and
+/// ten translucent curves over each other would say nothing to anyone. The
+/// game has one vessel for now; when there are more, the curve will belong to
+/// the **selected** one -- that is an interface choice, and there is nothing
+/// here to make it from in advance.
 fn current_jacobi(snapshot: &WorldSnapshot) -> Option<f64> {
     snapshot.vessels.first()?.jacobi
 }
 
-/// Місяць відносно Землі в мить снапшоту.
+/// The Moon relative to Earth at the snapshot's instant.
 fn moon_local(snapshot: &WorldSnapshot) -> Option<[f64; 3]> {
     let earth = snapshot.bodies.iter().find(|b| b.body == EARTH)?;
     let moon = snapshot.bodies.iter().find(|b| b.body == MOON)?;
@@ -408,11 +425,13 @@ fn moon_local(snapshot: &WorldSnapshot) -> Option<[f64; 3]> {
     ])
 }
 
-/// Синодичний базис у мить снапшоту — той, у якому стоять тіла й маркери.
+/// The synodic basis at the snapshot's instant -- the one bodies and markers
+/// stand in.
 ///
-/// Тут нормаль береться з **швидкостей** (`d × ḋ`), а не з різниці семплів:
-/// снапшот їх має, а сусідньої миті в нього немає. Обидва шляхи дають ту саму
-/// площину — це те, що робить кадр цілим.
+/// Here the normal comes from **velocities** (`d x d_dot`) rather than from a
+/// difference of samples: the snapshot has them and has no neighbouring
+/// instant. Both routes give the same plane -- that is what makes the frame
+/// whole.
 fn synodic_now(snapshot: &WorldSnapshot) -> Option<Synodic> {
     let earth = snapshot.bodies.iter().find(|b| b.body == EARTH)?;
     let moon = snapshot.bodies.iter().find(|b| b.body == MOON)?;
@@ -437,21 +456,22 @@ fn synodic_now(snapshot: &WorldSnapshot) -> Option<Synodic> {
     if total <= 0.0 {
         return None;
     }
-    // Масштаб сталий (`SYNODIC_SCALE_M`), а не теперішня відстань: саме
-    // сталість тримає Місяць нерухомим між кадрами.
+    // The scale is constant (`SYNODIC_SCALE_M`) rather than the current
+    // distance: it is that constancy which holds the Moon still between
+    // frames.
     Synodic::new(d, normal, frame_view::SYNODIC_SCALE_M, moon.mu / total)
 }
 
 fn push_line(scene: &mut Scene, points: Vec<[f64; 3]>, colour: [f32; 4]) {
-    // Ламана з однієї вершини — не ламана. Рушій такий випадок і сам
-    // пропустить, але порожній `Polyline` у сцені змусив би читача
-    // здогадуватися, чому він там.
+    // A polyline of one vertex is not a polyline. The engine would skip such a
+    // case itself, but an empty `Polyline` in the scene would make a reader
+    // guess why it is there.
     if points.len() >= 2 {
         scene.polylines.push(Polyline { points, colour });
     }
 }
 
-/// Позиція Землі в семплі, найближчому до `t`.
+/// Earth's position in the sample nearest to `t`.
 fn earth_near(vessel: &crate::snapshot::VesselSnapshot, t: f64) -> Option<[f64; 3]> {
     let mut best: Option<(f64, [f64; 3])> = None;
 
@@ -467,15 +487,16 @@ fn earth_near(vessel: &crate::snapshot::VesselSnapshot, t: f64) -> Option<[f64; 
     best.map(|(_, earth)| earth)
 }
 
-/// Колір тіла, поки в ассеті його немає (T1).
+/// A body's colour while the asset has none (T1).
 ///
-/// Місяць сірий, Земля синя — рівно тому, що вони такі, і рівно на стільки,
-/// на скільки плаский колір може це сказати. Числа тут тимчасові за
-/// побудовою: у T3 колір приходить тайлами, і це поле лишиться кольором
-/// тіла **без** тайлів.
+/// The Moon grey, Earth blue -- precisely because they are, and precisely as
+/// far as a flat colour can say so. The numbers here are temporary by
+/// construction: in T3 colour arrives as tiles, and this field remains the
+/// colour of a body **without** tiles.
 ///
-/// Невідоме тіло дістає сірий, а не чорний: чорна планета в кадрі читається
-/// як діра в небі, тобто як помилка рендера, а не як «ассет не сказав».
+/// An unknown body gets grey rather than black: a black planet in frame reads
+/// as a hole in the sky, i.e. as a render bug rather than as "the asset did
+/// not say".
 fn body_colour(body: i32) -> [f32; 4] {
     match body {
         EARTH => [0.2, 0.6, 0.9, 1.0],
@@ -484,11 +505,11 @@ fn body_colour(body: i32) -> [f32; 4] {
     }
 }
 
-/// Хрест із трьох відрізків у точці.
+/// A cross of three segments at a point.
 ///
-/// Три ламані, а не точка: `PointList` дав би один піксель, який не видно, а
-/// власного примітиву для маркерів рушій не має й не мусить мати заради
-/// цього.
+/// Three polylines rather than a point: `PointList` would give one invisible
+/// pixel, and the engine has no marker primitive of its own and need not gain
+/// one for this.
 fn push_marker(scene: &mut Scene, position: [f64; 3]) {
     let camera = scene.camera.position();
     let distance = {
@@ -513,31 +534,33 @@ fn push_marker(scene: &mut Scene, position: [f64; 3]) {
     }
 }
 
-/// Вмикає рельєф тілу, для якого його завантажили (D12).
+/// Enables terrain on the body it was loaded for (D12).
 ///
-/// ## Чому окремим викликом, а не параметром `build`
+/// ## Why its own call rather than a `build` parameter
 ///
-/// `TerrainId` видає **кадр** (`Frame::load_terrain`, R5c), а `view::build`
-/// про кадр не знає нічого й не має знати: він перетворює снапшот на сцену, і
-/// це чиста функція від стану гри. Проносити крізь неї хендл, якого вона не
-/// розуміє, означало б зробити двадцять наявних викликів довшими заради того,
-/// що стосується двох.
+/// The **frame** issues a `TerrainId` (`Frame::load_terrain`, R5c), while
+/// `view::build` knows nothing of the frame and should not: it turns a
+/// snapshot into a scene, and that is a pure function of game state. Threading
+/// a handle it does not understand through it would make twenty existing calls
+/// longer for the sake of something that concerns two.
 ///
-/// Тому рельєф — це те, що **додається до готової сцени** тим, хто знає, що
-/// саме завантажено. Формулювання чесне й для майбутнього: тіло може мати
-/// рельєф на одній машині й не мати на іншій, якщо адаптер не дав bindless
-/// (`Frame::load_terrain` там відмовляє), а сцена від цього не стає іншою.
+/// So terrain is what is **added to a finished scene** by whoever knows what
+/// was loaded. The wording is honest about the future too: a body may have
+/// terrain on one machine and not on another if the adapter gave no bindless
+/// (`Frame::load_terrain` refuses there), and the scene does not become a
+/// different scene because of it.
 ///
-/// ## Як тіло знаходиться в сцені
+/// ## How the body is found in the scene
 ///
-/// `engine::scene::Body` не несе ідентифікатора — рушієві він не потрібен, і
-/// давати йому знати про `EARTH`/`MOON` означало б навчити рушій грі. Тому
-/// індекс рахується **тим самим правилом, яким `build` клав тіла**: порядок
-/// `snapshot.bodies`, пропускаючи ті, що без радіуса. Правило одне на дві
-/// функції, і саме тому воно тут написане, а не вгадане.
+/// `engine::scene::Body` carries no identifier -- the engine does not need one,
+/// and letting it know about `EARTH`/`MOON` would teach the engine the game.
+/// So the index is computed **by the same rule `build` placed the bodies
+/// with**: the order of `snapshot.bodies`, skipping those without a radius.
+/// One rule for two functions, which is exactly why it is written here rather
+/// than guessed.
 ///
-/// Мовчить, якщо тіла в сцені немає: снапшот без Місяця — законний стан, а не
-/// привід падати.
+/// Stays silent if the body is not in the scene: a snapshot without the Moon
+/// is a legitimate state, not grounds to panic.
 pub fn attach_terrain(scene: &mut Scene, snapshot: &WorldSnapshot, body: i32, terrain: TerrainId) {
     let mut index = 0;
     for candidate in &snapshot.bodies {
