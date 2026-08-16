@@ -72,8 +72,15 @@ pub const MAGIC: [u8; 8] = *b"SSDEM\0\0\0";
 /// мусить сказати про це, а не прочитати сміття.
 ///
 /// Версія 2 додала ореол (R7b): розкладка інша, тож тайлсет версії 1 читати
-/// не можна навіть «майже правильно».
-pub const VERSION: u32 = 2;
+/// не можна навіть «майже правильно». Версія 3 — рівень моря (T7f).
+pub const VERSION: u32 = 3;
+
+/// Рівень моря тіла, у якого моря немає.
+///
+/// Сентинел, а не `Option`: у файлі це одне слово, і жодна висота в `i16` не
+/// буває меншою за нього, тож «під водою» ніколи не справджується. Місяць несе
+/// саме його, і правило матеріалу працює на ньому так само, як до T7f.
+pub const NO_SEA: f32 = f32::MIN;
 
 /// Скільки вузлів на бік тайла — стільки ж, скільки в сітки патча.
 pub const NODES: usize = SIDE + 1;
@@ -88,8 +95,8 @@ pub const STORED: usize = NODES + 2 * HALO;
 /// Скільки байтів займає один тайл: дві межі плюс сітка з ореолом.
 const TILE_BYTES: usize = 4 + STORED * STORED * 2;
 
-/// Заголовок: підпис, версія, три числа й радіус.
-const HEADER_BYTES: usize = 8 + 4 + 4 + 4 + 8 + 4;
+/// Заголовок: підпис, версія, три числа, радіус, масштаб і рівень моря.
+const HEADER_BYTES: usize = 8 + 4 + 4 + 4 + 8 + 4 + 4;
 
 // ── Геометрія піраміди ───────────────────────────────────────────────────
 //
@@ -168,6 +175,19 @@ pub struct Terrain {
     pub reference_m: f64,
     /// Скільки метрів в одиниці зберігання.
     pub scale_m: f32,
+    /// Рівень моря в одиницях зберігання, або [`NO_SEA`] у сухого тіла (T7f).
+    ///
+    /// ⚠ Живе тут, а не в `Scene::Body`, і причина не в зручності: рівень моря
+    /// виражений у **датумі цього DEM**, тобто має сенс лише разом із
+    /// `reference_m` і `scale_m`. Поле сцени дозволило б станові, у якому гра
+    /// каже «нуль», а асет міряє висоти від іншого нуля, — і море стояло б на
+    /// кілометр вище чи нижче за берегову лінію мозаїки, мовчки.
+    ///
+    /// Чому воно взагалі потрібне: правило матеріалу підсвічує схил, а під
+    /// водою видно не схил дна, а поверхню моря. Виміряно на `assets/earth.dem`
+    /// — дно **крутіше** за сушу (медіана 0.0071 проти 0.0030, 90% 0.0333 проти
+    /// 0.0201), тож правило без цього поля малює серединні хребти на воді.
+    pub sea_units: f32,
     /// Тайли підряд у канонічному порядку — див. [`Terrain::index`].
     tiles: Vec<u8>,
 }
@@ -379,7 +399,13 @@ impl Terrain {
     /// стільки, скільки має бути, і рахує межі кожного.
     /// Тайли подаються **разом з ореолом** — [`STORED`]×[`STORED`] значень,
     /// рядок за рядком, від вузла `−HALO`.
-    pub fn build(levels: u32, reference_m: f64, scale_m: f32, grids: &[Vec<i16>]) -> Terrain {
+    pub fn build(
+        levels: u32,
+        reference_m: f64,
+        scale_m: f32,
+        sea_units: f32,
+        grids: &[Vec<i16>],
+    ) -> Terrain {
         assert_eq!(
             grids.len(),
             Terrain::count(levels),
@@ -408,6 +434,7 @@ impl Terrain {
             levels,
             reference_m,
             scale_m,
+            sea_units,
             tiles,
         }
     }
@@ -421,6 +448,7 @@ impl Terrain {
         out.extend_from_slice(&self.levels.to_le_bytes());
         out.extend_from_slice(&self.reference_m.to_le_bytes());
         out.extend_from_slice(&self.scale_m.to_le_bytes());
+        out.extend_from_slice(&self.sea_units.to_le_bytes());
         out.extend_from_slice(&self.tiles);
         out
     }
@@ -450,6 +478,7 @@ impl Terrain {
         let levels = word(16);
         let reference_m = f64::from_le_bytes(bytes[20..28].try_into().unwrap());
         let scale_m = f32::from_le_bytes(bytes[28..32].try_into().unwrap());
+        let sea_units = f32::from_le_bytes(bytes[32..36].try_into().unwrap());
 
         let tiles = bytes[HEADER_BYTES..].to_vec();
         let wanted = Terrain::count(levels) * TILE_BYTES;
@@ -464,6 +493,7 @@ impl Terrain {
             levels,
             reference_m,
             scale_m,
+            sea_units,
             tiles,
         })
     }
@@ -777,7 +807,7 @@ mod tests {
                 }
             }
         }
-        Terrain::build(levels, 1_000_000.0, 1.0, &grids)
+        Terrain::build(levels, 1_000_000.0, 1.0, NO_SEA, &grids)
     }
 
     /// Нахил рампи — рампа, і це число відоме наперед.

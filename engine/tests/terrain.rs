@@ -27,7 +27,7 @@ use engine::gpu::Gpu;
 use engine::lod;
 use engine::scene::{Body, Scene, TerrainId, TileSet};
 use engine::shot::{self, Shot};
-use engine::tiles::{Terrain, HALO, NODES, STORED};
+use engine::tiles::{self, Terrain, HALO, NODES, STORED};
 use std::path::Path;
 
 const SIZE: u32 = 256;
@@ -123,7 +123,7 @@ fn around_light(tilt: f64, turn: f64) -> [f64; 3] {
 /// Рельєф з самих нулів: поверхня — точнісінько сфера радіуса `reference_m`.
 fn flat_terrain() -> Terrain {
     let grids = vec![vec![0i16; STORED * STORED]; Terrain::count(LEVELS)];
-    Terrain::build(LEVELS, MOON_RADIUS_M, 1.0, &grids)
+    Terrain::build(LEVELS, MOON_RADIUS_M, 1.0, tiles::NO_SEA, &grids)
 }
 
 /// Скільки пікселів різні між двома знімками.
@@ -444,7 +444,7 @@ fn shallow_relief() -> Terrain {
             }
         }
     }
-    Terrain::build(SHALLOW, MOON_RADIUS_M, UNIT_M, &grids)
+    Terrain::build(SHALLOW, MOON_RADIUS_M, UNIT_M, tiles::NO_SEA, &grids)
 }
 
 /// Глибока піраміда **того самого поля**: кожен її тайл — це те, що
@@ -494,7 +494,7 @@ fn deep_relief(shallow: &Terrain) -> Terrain {
             }
         }
     }
-    Terrain::build(DEEP, MOON_RADIUS_M, UNIT_M, &grids)
+    Terrain::build(DEEP, MOON_RADIUS_M, UNIT_M, tiles::NO_SEA, &grids)
 }
 
 /// **Патч, глибший за піраміду, малює ту саму поверхню, що й патч із власним
@@ -667,7 +667,7 @@ fn a_patch_deeper_than_the_pyramid_draws_the_same_surface() {
 /// мільйонів вибірок у тесті, який жодної з них не читає.
 fn flat(levels: u32) -> Terrain {
     let grids = vec![vec![0i16; STORED * STORED]; Terrain::count(levels)];
-    Terrain::build(levels, MOON_RADIUS_M, 0.5, &grids)
+    Terrain::build(levels, MOON_RADIUS_M, 0.5, tiles::NO_SEA, &grids)
 }
 
 /// Найглибша піраміда, яка справді існує, у масив влазить.

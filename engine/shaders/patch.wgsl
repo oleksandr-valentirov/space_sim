@@ -401,8 +401,12 @@ fn detail_sample_0( unit_0 : vec3<f32>,  slope_0 : f32,  distance_1 : f32) -> ve
     return vec2<f32>(height_0, roughness_0);
 }
 
-fn material_tint_0( slope_1 : f32,  roughness_2 : f32) -> f32
+fn material_tint_0( slope_1 : f32,  roughness_2 : f32,  height_2 : f32) -> f32
 {
+    if(height_2 < (uniforms_0.terrain_0.w))
+    {
+        return 1.0f;
+    }
     return clamp(1.0f + clamp(slope_1 / 0.15000000596046448f, 0.0f, 1.0f) * (0.30000001192092896f + 0.44999998807907104f * roughness_2), 0.34999999403953552f, 1.79999995231628418f);
 }
 
@@ -419,7 +423,7 @@ fn vertex_terrain(@builtin(vertex_index) vertex_3 : u32, @builtin(instance_index
     var detail_1 : vec2<f32> = detail_sample_0(_S42.normal_0, _S45, distance_2);
     var _S46 : VertexOutput_0 = place_0(draw_1.slot_0, &(_S42), node_1.grid_0, _S42.offset_0 + _S42.normal_0 * vec3<f32>((_S44 * uniforms_0.terrain_0.x + detail_1.x / uniforms_0.detail_0.x)));
     var output_1 : VertexOutput_0 = _S46;
-    output_1.tint_0 = material_tint_0(_S45, detail_1.y);
+    output_1.tint_0 = material_tint_0(_S45, detail_1.y, _S44);
     return output_1;
 }
 

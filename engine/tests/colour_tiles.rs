@@ -49,7 +49,7 @@ fn gpu() -> Option<Gpu> {
 /// Плаский рельєф: питання тесту про колір, і гори лише заважали б.
 fn flat() -> Terrain {
     let grids = vec![vec![0i16; STORED * STORED]; Terrain::count(HEIGHT_LEVELS)];
-    Terrain::build(HEIGHT_LEVELS, MOON_RADIUS_M, 0.5, &grids)
+    Terrain::build(HEIGHT_LEVELS, MOON_RADIUS_M, 0.5, tiles::NO_SEA, &grids)
 }
 
 /// Ореол пофарбований у колір, якого немає в сітці — це **індикатор**.

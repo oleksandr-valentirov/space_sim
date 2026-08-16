@@ -105,6 +105,15 @@ fn gradient() -> f64 {
 /// 128 км — і процедурної деталі в кадрі не лишалось майже нічого. Помилка
 /// виглядала як «правило не працює».
 fn ramp(levels: u32) -> Terrain {
+    ramp_at_sea(levels, tiles::NO_SEA)
+}
+
+/// Та сама рампа з наперед заданим рівнем моря (T7f).
+///
+/// Два тайлсети з неї різняться **рівно одним словом заголовка**, тож усе, чим
+/// різняться їхні кадри, є множником матеріалу: геометрія, нахил і деталь у них
+/// бітово одні.
+fn ramp_at_sea(levels: u32, sea_units: f32) -> Terrain {
     let g = gradient();
     // Значення рампи у вузлі, над яким стоїть камера.
     let pedestal = g * (VIEW_X + 2.0 * VIEW_Y);
@@ -130,13 +139,13 @@ fn ramp(levels: u32) -> Terrain {
             }
         }
     }
-    Terrain::build(levels, MOON_RADIUS_M, SCALE_M, &grids)
+    Terrain::build(levels, MOON_RADIUS_M, SCALE_M, sea_units, &grids)
 }
 
 /// Пласкі нулі: нахил нуль, деталь нуль, множник рівно одиниця.
 fn flat() -> Terrain {
     let grids = vec![vec![0i16; STORED * STORED]; Terrain::count(LEVELS)];
-    Terrain::build(LEVELS, MOON_RADIUS_M, SCALE_M, &grids)
+    Terrain::build(LEVELS, MOON_RADIUS_M, SCALE_M, tiles::NO_SEA, &grids)
 }
 
 /// Колір — та сама стала скрізь, включно з ореолом.
@@ -312,7 +321,7 @@ fn the_frame_shows_the_multiplier_the_rule_predicts() {
         "на {ALTITUDE:.0} м деталь ще жива: вага {weight}"
     );
 
-    let tint = material::tint(SLOPE, 0.0);
+    let tint = material::tint(SLOPE, 0.0, false);
     // Дифузна домішка: рампа нахиляє фасетку на `atan(slope)`, і освітлення
     // в шейдері — `0.05 + 0.95·cos`.
     let cos = 1.0 / (1.0 + SLOPE * SLOPE).sqrt();
@@ -340,6 +349,57 @@ fn the_frame_shows_the_multiplier_the_rule_predicts() {
         (measured / predicted - 1.0).abs() < tolerance,
         "кадр дав {measured:.4} проти передбачених {predicted:.4} при допуску \
          {tolerance:.4} — правило в шейдері розійшлося з `engine::material`"
+    );
+}
+
+/// Під водою правило вимкнене — і вимкнене рівно, а не «майже» (T7f).
+///
+/// Та сама рампа, той самий кадр, різниця в заголовку тайлсета одна: рівень
+/// моря вище за будь-яку висоту, яку можна записати в `i16`. Отже нахил,
+/// геометрія й деталь лишились тими самими, і все, що могло змінитися, — це
+/// множник.
+///
+/// Навіщо: правило підсвічує схил, а під водою в кадрі видно поверхню моря, а
+/// не схил дна. На Землі це не дрібниця — виміряно (`--example
+/// slope_histogram assets/earth.dem`), що дно **крутіше** за сушу: медіана
+/// 0.0071 проти 0.0030, дев'яностий процентиль 0.0333 проти 0.0201. Без цієї
+/// гілки правило малювало б серединні хребти поверх рівної води, і яскравіше,
+/// ніж гори на суходолі.
+#[test]
+fn under_water_the_rule_does_nothing() {
+    let Some(gpu) = gpu() else { return };
+    const ALTITUDE: f64 = 3.0e5;
+
+    // Та сама дифузна домішка, що й у сусіднього тесту, але **без** множника:
+    // під водою він мусить бути рівно одиницею.
+    let cos = 1.0 / (1.0 + SLOPE * SLOPE).sqrt();
+    let predicted = (0.05 + 0.95 * cos) / (0.05 + 0.95);
+
+    let drowned = ramp_at_sea(LEVELS, f32::from(i16::MAX));
+    let (sunk, _) = window(&take(&gpu, &drowned, ALTITUDE), 32);
+    let (dry, _) = window(&take(&gpu, &ramp(LEVELS), ALTITUDE), 32);
+    let (level, _) = window(&take(&gpu, &flat(), ALTITUDE), 32);
+    let measured = sunk / level;
+    println!(
+        "  під водою {measured:.4} проти передбачених {predicted:.4}; \
+         над водою {:.4}",
+        dry / level
+    );
+
+    // Спершу — що фікстура взагалі щось міряє: сухий і затоплений кадри мусять
+    // розійтися. Інакше цей тест проходив би й тоді, коли правило вимкнене
+    // скрізь.
+    assert!(
+        (dry - sunk).abs() > byte_quantum(dry),
+        "сухий і затоплений кадри однакові ({dry:.1} проти {sunk:.1}): \
+         фікстура не розрізняє гілок"
+    );
+
+    let tolerance = (byte_quantum(sunk) / sunk + byte_quantum(level) / level) / 2.0;
+    assert!(
+        (measured / predicted - 1.0).abs() < tolerance,
+        "під водою кадр дав {measured:.4} проти {predicted:.4} при допуску \
+         {tolerance:.4} — правило не вимкнулось"
     );
 }
 

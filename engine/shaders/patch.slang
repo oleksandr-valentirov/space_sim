@@ -472,8 +472,16 @@ float2 detail_sample(float3 unit, float slope, float distance)
 // Жоден з двох аргументів не походить від ассета: нахил — величина в метрах
 // на метр, шорсткість — шум за позицією на тілі. Крокові піраміди сюди немає
 // куди зайти, і саме тому перекукування ассета не перефарбовує схили.
-float material_tint(float slope, float roughness)
+// Третій аргумент — висота вузла в одиницях зберігання. Нижче за рівень моря
+// правило віддає рівно одиницю: воно підсвічує схил, а під водою в кадрі видно
+// не схил дна, а поверхню моря. На Землі дно виміряно **крутішим** за сушу,
+// тож без цієї гілки правило малювало б серединні хребти поверх рівної води.
+float material_tint(float slope, float roughness, float height)
 {
+    if (height < uniforms.terrain.w)
+    {
+        return 1.0;
+    }
     float steep = clamp(slope / SLOPE_REF, 0.0, 1.0);
     return clamp(1.0 + steep * (SLOPE_GAIN + RELIEF_GAIN * roughness), MIN_TINT, MAX_TINT);
 }
@@ -511,7 +519,7 @@ VertexOutput vertex_terrain(VertexInput input)
     VertexOutput output = place(draw.slot, vertex, node.grid, offset);
     // Ті самі два числа, якими щойно зсунуто вершину, — інших правило не
     // читає. Тобто колір не може розійтися з формою: він виведений з неї.
-    output.tint = material_tint(slope, detail.y);
+    output.tint = material_tint(slope, detail.y, height);
     return output;
 }
 

@@ -105,7 +105,9 @@ pub fn build(grid: &Grid, levels: u32) -> Terrain {
         }
     }
 
-    Terrain::build(levels, grid.reference_m, scale, &grids)
+    // Місяць моря не має, і сентинел каже це прямо: правило матеріалу
+    // працює на ньому скрізь, як і до T7f.
+    Terrain::build(levels, grid.reference_m, scale, tiles::NO_SEA, &grids)
 }
 
 /// Скукувати тайлсет висот Землі з ETOPO.
@@ -168,7 +170,12 @@ pub fn build_earth(relief: &Relief, levels: u32) -> Terrain {
         }
     }
 
-    Terrain::build(levels, etopo::REFERENCE_M, 1.0, &grids)
+    // Рівень моря — рівно нуль, і це не домовленість: ETOPO міряє висоти від
+    // геоїда, а одиниця зберігання тут метр. Тобто «нижче нуля» в цьому
+    // тайлсеті означає «під водою» за побудовою джерела, а не за нашим
+    // вибором порога. Виміряно на скукованому ассеті: нижче нуля 72.0%
+    // вузлів, при справжній частці океану 71%.
+    Terrain::build(levels, etopo::REFERENCE_M, 1.0, 0.0, &grids)
 }
 
 /// Скукувати колірний тайлсет із мозаїки WAC.

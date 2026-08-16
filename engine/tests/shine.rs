@@ -119,7 +119,7 @@ fn smooth(colour: [f32; 4]) -> Body {
 /// Плаский рельєф: питання про колір, і гори лише додали б власних тіней.
 fn flat() -> Terrain {
     let grids = vec![vec![0i16; STORED * STORED]; Terrain::count(LEVELS)];
-    Terrain::build(LEVELS, MOON_RADIUS_M, 0.5, &grids)
+    Terrain::build(LEVELS, MOON_RADIUS_M, 0.5, tiles::NO_SEA, &grids)
 }
 
 /// Асет, у якому грань `+X` — море, а грань `−X` — материк.

@@ -47,10 +47,59 @@ fn main() -> Result<(), String> {
             "  {:>5.1}% : нахил {slope:.4} ({:.2}°), множник {:.3}",
             q * 100.0,
             slope.atan().to_degrees(),
-            material::tint(slope, 0.0)
+            material::tint(slope, 0.0, false)
         );
     }
     println!("SLOPE_REF зараз {:.3}", material::SLOPE_REF);
+
+    // ── Під водою нахил такий самий, а колір там уже правдивий ─────────────
+    //
+    // Питання T7f: чи має правило нахилу право працювати на морі. Мозаїка над
+    // океаном показує воду, а DEM під нею — хребти й жолоби; якщо їхній нахил
+    // не менший за суходільний, правило намалює батиметрію на поверхні моря.
+    let mut water = Vec::new();
+    let mut land = Vec::new();
+    let side = 1u32 << deepest;
+    for face in 0..FACES {
+        for i in (0..side).step_by(2) {
+            for j in (0..side).step_by(2) {
+                let patch = Patch {
+                    face,
+                    level: deepest,
+                    i,
+                    j,
+                };
+                for a in (0..=SIDE).step_by(4) {
+                    for b in (0..=SIDE).step_by(4) {
+                        let slope = terrain.slope_at(&patch, a, b);
+                        if terrain.height_m(&patch, a, b) < 0.0 {
+                            water.push(slope);
+                        } else {
+                            land.push(slope);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if !water.is_empty() && !land.is_empty() {
+        water.sort_by(|a, b| a.partial_cmp(b).expect("нахил не буває NaN"));
+        land.sort_by(|a, b| a.partial_cmp(b).expect("нахил не буває NaN"));
+        let share = water.len() as f64 / (water.len() + land.len()) as f64;
+        println!();
+        println!("нижче нуля {:.1}% вузлів:", 100.0 * share);
+        println!("        |  медіана |     90% |      99% | множник 90%");
+        for (name, values) in [("вода ", &water), ("суша ", &land)] {
+            let at = |q: f64| values[((values.len() - 1) as f64 * q) as usize];
+            println!(
+                "  {name} | {:>8.4} | {:>7.4} | {:>8.4} | {:.3}",
+                at(0.5),
+                at(0.9),
+                at(0.99),
+                material::tint(at(0.9), 0.0, false)
+            );
+        }
+    }
 
     // ── Чи однаковий нахил на всіх рівнях патча ────────────────────────────
     //
@@ -70,7 +119,7 @@ fn main() -> Result<(), String> {
             "  {level:>6} | {:>8.4} | {:>6.4} | {:.4}",
             at(0.5),
             at(0.9),
-            material::tint(at(0.5), 0.0)
+            material::tint(at(0.5), 0.0, false)
         );
     }
     Ok(())
