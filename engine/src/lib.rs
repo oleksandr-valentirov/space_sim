@@ -60,6 +60,7 @@ pub mod shot;
 pub mod sky;
 pub mod sphere;
 pub mod sphere_render;
+pub mod srgb;
 pub mod tile_probe;
 pub mod tiles;
 pub mod trajectory;
