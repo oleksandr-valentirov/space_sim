@@ -50,8 +50,9 @@ fn main() -> Result<(), String> {
     let dir = std::env::args().nth(1).unwrap_or_else(|| "build".into());
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
-    // Апогей, спуск, перигей, підйом — по кадру на кожну чверть.
-    for k in [0u32, 90, 180, 270] {
+    // Апогей, покриття Землі, спуск, перигей, підйом — п'ять моментів витка.
+    let quarter = flyby_demo::FRAMES / 4;
+    for k in [0, 180, quarter, 2 * quarter, 3 * quarter] {
         let scene = flyby_demo::scene_at(k, flyby_demo::FRAMES, TileSet::Loaded(id), extent);
         let mut commands = gpu
             .device
