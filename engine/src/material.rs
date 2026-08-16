@@ -55,9 +55,27 @@ pub const SLOPE_GAIN: f64 = 0.30;
 
 /// Нахил, на якому підсвітка схилу виходить на повну.
 ///
-/// 0.3 — це ~17°, приблизно кут природного укосу реголіту: крутіше за нього
-/// схил не тримається взагалі, тож насичення саме там і має бути.
-pub const SLOPE_REF: f64 = 0.30;
+/// **Виміряно на справжньому ассеті, а не взято з фізики.** Спокуса поставити
+/// сюди кут природного укосу реголіту (~0.3, тобто 17°) сильна й неправильна:
+/// той кут стосується **місцевого** схилу, а `slope_at` міряє нахил на базі
+/// найдрібнішого вузла піраміди — 5330 м на Місяці, — тобто згладжений.
+/// Розподіл по `assets/moon.dem` (31 104 вузли найглибшого рівня):
+///
+/// | частка | нахил | кут |
+/// |---|---|---|
+/// | 50% | 0.035 | 2.0° |
+/// | 90% | 0.128 | 7.3° |
+/// | 99% | 0.221 | 12.5° |
+/// | максимум | 0.410 | 22.3° |
+///
+/// Тобто при 0.3 правило вмикалося б на одній тисячній тіла й на решті не
+/// робило б нічого. 0.15 — це приблизно дев'яностий процентиль: половина
+/// поверхні дістає чверть діапазону, схили кратерів насичують його, а рівне
+/// дно моря лишається рівним.
+///
+/// ⚠ Число прив'язане до **бази виміру**, не до тіла. Земля з іншим DEM дасть
+/// інший розподіл, і тоді це стане параметром ассета, а не сталою рушія (T7).
+pub const SLOPE_REF: f64 = 0.15;
 
 /// Наскільки гребінь процедурного рельєфу світліший за сусідню западину.
 ///
@@ -102,6 +120,105 @@ pub fn tint(slope: f64, roughness: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cubesphere::{Patch, FACES, SIDE};
+    use crate::detail;
+    use crate::tiles::{Terrain, HALO, STORED};
+
+    const RADIUS: f64 = 1_737_400.0;
+
+    /// Рельєф зі сталим нахилом — лінійний за частками грані.
+    fn ramp(levels: u32) -> Terrain {
+        let mut grids = Vec::with_capacity(Terrain::count(levels));
+        for level in 0..levels {
+            let side = 1u32 << level;
+            for _face in 0..FACES {
+                for i in 0..side {
+                    for j in 0..side {
+                        let span = f64::from(SIDE as u32 * side);
+                        let mut grid = Vec::with_capacity(STORED * STORED);
+                        for a in 0..STORED {
+                            for b in 0..STORED {
+                                let a = a as isize - HALO as isize;
+                                let b = b as isize - HALO as isize;
+                                let x = (i as isize * SIDE as isize + a) as f64 / span;
+                                let y = (j as isize * SIDE as isize + b) as f64 / span;
+                                grid.push((2048.0 * x + 4096.0 * y) as i16);
+                            }
+                        }
+                        grids.push(grid);
+                    }
+                }
+            }
+        }
+        Terrain::build(levels, RADIUS, 1.0, &grids)
+    }
+
+    /// На межі рівнів колір один, і це не домовленість, а наслідок.
+    ///
+    /// Уся конструкція правила стоїть на тому, що воно рахується у **вершині**
+    /// з двох чисел, які на спільному вузлі двох патчів різних рівнів однакові.
+    /// Тут це перевіряється складеним: напрямок вузла (R2b), нахил (R7c),
+    /// шорсткість і сам множник — по черзі, тож коли колись зламається, буде
+    /// видно **що саме**, а не лише «шов з'явився».
+    ///
+    /// Патчі беруться глибші за піраміду навмисно: саме там працюють вікна
+    /// `Terrain::window`, і саме там два рівні читають той самий тайл різними
+    /// кроками.
+    #[test]
+    fn a_level_boundary_gets_one_colour_from_both_sides() {
+        let terrain = ramp(3);
+        let coarse = Patch {
+            face: 2,
+            level: 4,
+            i: 5,
+            j: 3,
+        };
+        // Дитина (0, 0) накриває вузли [0, SIDE/2] батька; її вузол (2a, 2b)
+        // збігається з батьковим (a, b).
+        let fine = coarse.children()[0];
+        let base = detail::base_m(RADIUS);
+        let (distance, focal) = (4.0e3, 623.5);
+
+        let mut checked = 0;
+        for a in [0usize, 1, 7, SIDE / 4, SIDE / 2] {
+            for b in [0usize, 3, SIDE / 4, SIDE / 2] {
+                let here = coarse.vertex(a, b, 1.0);
+                let there = fine.vertex(2 * a, 2 * b, 1.0);
+                assert_eq!(here, there, "вузол ({a}, {b}) роз'їхався геометрично");
+
+                let slope = (
+                    terrain.slope_at(&coarse, a, b),
+                    terrain.slope_at(&fine, 2 * a, 2 * b),
+                );
+                assert_eq!(
+                    slope.0.to_bits(),
+                    slope.1.to_bits(),
+                    "нахил у вузлі ({a}, {b}): {} проти {}",
+                    slope.0,
+                    slope.1
+                );
+
+                let rough = (
+                    detail::sample(here, RADIUS, slope.0, base, distance, focal).roughness,
+                    detail::sample(there, RADIUS, slope.1, base, distance, focal).roughness,
+                );
+                assert_eq!(
+                    rough.0.to_bits(),
+                    rough.1.to_bits(),
+                    "шорсткість у вузлі ({a}, {b})"
+                );
+
+                assert_eq!(
+                    tint(slope.0, rough.0).to_bits(),
+                    tint(slope.1, rough.1).to_bits(),
+                    "множник у вузлі ({a}, {b})"
+                );
+                checked += 1;
+            }
+        }
+        println!("  {checked} спільних вузлів межі рівнів дали один множник");
+        assert!(checked >= 20, "перевірено лише {checked} вузлів");
+    }
 
     /// На рівнині правило не робить **нічого** — і саме рівно нічого.
     ///
@@ -174,13 +291,23 @@ mod tests {
     #[test]
     fn the_relief_contrast_follows_the_slope() {
         let swing = |slope: f64| tint(slope, 0.5) - tint(slope, -0.5);
-        let gentle = swing(0.05);
-        let steep = swing(SLOPE_REF);
-        println!("  розмах: на 0.05 — {gentle:.4}, на {SLOPE_REF} — {steep:.4}");
-        assert!(
-            steep > 5.0 * gentle,
-            "розмах майже не залежить від нахилу: {gentle:.4} проти {steep:.4}"
-        );
+        assert_eq!(swing(0.0), 0.0, "на рівнині рельєф пофарбував порожнечу");
+
+        // Нижче насичення розмах пропорційний нахилу — не «росте», а саме
+        // пропорційний. Порівнюється відношення, тож перевірка не залежить від
+        // самого [`SLOPE_REF`], який виведений з розподілу в ассеті й може
+        // змінитися разом із ним.
+        let unit = swing(SLOPE_REF) / SLOPE_REF;
+        for slope in [0.01, 0.05, SLOPE_REF / 2.0, SLOPE_REF] {
+            let got = swing(slope) / slope;
+            assert!(
+                (got - unit).abs() < 1e-12,
+                "на нахилі {slope} розмах на одиницю нахилу {got:.6}, а не {unit:.6}"
+            );
+        }
+        println!("  розмах на одиницю нахилу {unit:.4}, насичення на {SLOPE_REF}");
+        // І вище насичення він більше не росте.
+        assert_eq!(swing(SLOPE_REF * 4.0), swing(SLOPE_REF));
     }
 
     /// Множник не виходить за межі й не стає NaN на жодному вході.

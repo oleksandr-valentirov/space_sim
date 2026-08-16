@@ -396,7 +396,7 @@ fn detail_sample_0( unit_0 : vec3<f32>,  slope_0 : f32,  distance_1 : f32) -> ve
 
 fn material_tint_0( slope_1 : f32,  roughness_2 : f32) -> f32
 {
-    return clamp(1.0f + clamp(slope_1 / 0.30000001192092896f, 0.0f, 1.0f) * (0.30000001192092896f + 0.44999998807907104f * roughness_2), 0.34999999403953552f, 1.79999995231628418f);
+    return clamp(1.0f + clamp(slope_1 / 0.15000000596046448f, 0.0f, 1.0f) * (0.30000001192092896f + 0.44999998807907104f * roughness_2), 0.34999999403953552f, 1.79999995231628418f);
 }
 
 @vertex

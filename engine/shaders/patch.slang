@@ -163,7 +163,7 @@ static const float FADE_HI_PX = 16.0;
 // Правило матеріалу (T4). Числа — дослівно `engine::material`; звіряє їх
 // `engine::tests::material`, бо константа тут і константа там — два місця.
 static const float SLOPE_GAIN = 0.30;
-static const float SLOPE_REF = 0.30;
+static const float SLOPE_REF = 0.15;
 static const float RELIEF_GAIN = 0.45;
 static const float MIN_TINT = 0.35;
 static const float MAX_TINT = 1.80;
