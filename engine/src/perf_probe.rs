@@ -379,7 +379,7 @@ pub fn two_body_cost(
     let mut scene = crate::scene::Scene::new(camera);
     scene.sun = [1.0, 0.0, 0.0];
 
-    let mut place = |frame: &mut Frame,
+    let place = |frame: &mut Frame,
                      scene: &mut crate::scene::Scene,
                      surface: (&crate::tiles::Terrain, Option<&crate::tiles::Colour>),
                      offset: f64|
