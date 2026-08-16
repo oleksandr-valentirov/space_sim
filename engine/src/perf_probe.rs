@@ -296,6 +296,59 @@ pub fn ship_cost(
     measure_scene(gpu, width, height, frames, Overlay::None, &scene)
 }
 
+/// Скільки коштує кадр із колірними тайлами й без них (етап T, крок T8).
+///
+/// Та сама сцена, та сама піраміда висот, єдина відмінність — чи
+/// завантажений колір. Два числа з одного прогону: з різних вони не
+/// порівнянні, і це головна причина, чому обидва міряються тут.
+///
+/// ⚠ **Тайли беруться справжні, а не синтетичні.** Ціна кольору — це
+/// друга bindless-вибірка на фрагмент **і** восьмі тисячі текстур у групі
+/// прив'язки; синтетична піраміда на два рівні не мала б ні того, ні того.
+pub fn tile_cost(
+    gpu: &Gpu,
+    width: u32,
+    height: u32,
+    frames: u32,
+    altitude_m: f64,
+    terrain: &crate::tiles::Terrain,
+    colour: Option<&crate::tiles::Colour>,
+) -> Result<Stats, String> {
+    let radius = terrain.reference_m;
+    let distance = radius + altitude_m;
+    // Камера навскіс, а не над центром грані куба: симетрична точка ховає
+    // помилки геометрії (D13, D14), а тут ще й дає інший набір патчів,
+    // тобто інший обсяг роботи.
+    let camera = crate::camera::Camera::look_at(
+        [distance * 0.82, distance * 0.42, distance * 0.39],
+        [0.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+    );
+    let mut frame = Frame::new(gpu, shot::FORMAT);
+    let id = frame.load_surface(gpu, terrain, colour)?;
+
+    let mut scene = crate::scene::Scene::new(camera);
+    scene.sun = [1.0, 0.0, 0.0];
+    scene.bodies.push(crate::scene::Body {
+        centre: [0.0, 0.0, 0.0],
+        radius_m: radius,
+        orientation: [1.0, 0.0, 0.0, 0.0],
+        tiles: crate::scene::TileSet::Loaded(id),
+        colour: frame::COLOUR,
+        air: None,
+    });
+
+    measure_with_frame(
+        gpu,
+        &mut frame,
+        width,
+        height,
+        frames,
+        Overlay::None,
+        &scene,
+    )
+}
+
 /// Те саме для сцени, яку зібрав хтось інший.
 pub fn measure_scene(
     gpu: &Gpu,
@@ -306,6 +359,19 @@ pub fn measure_scene(
     scene: &crate::scene::Scene,
 ) -> Result<Stats, String> {
     let mut frame = Frame::new(gpu, shot::FORMAT);
+    measure_with_frame(gpu, &mut frame, width, height, frames, overlay, scene)
+}
+
+/// Вимір кадром, який уже підготував викликач — з асетами, наприклад.
+pub fn measure_with_frame(
+    gpu: &Gpu,
+    frame: &mut Frame,
+    width: u32,
+    height: u32,
+    frames: u32,
+    overlay: Overlay,
+    scene: &crate::scene::Scene,
+) -> Result<Stats, String> {
     let mut interface = crate::ui::Ui::new(gpu, shot::FORMAT);
     // Сцена без ламаних: вимір лишається порівнюваним із числами I3, де їх
     // ще не було. Коли прогноз стане частиною сцени, це буде окремий рядок

@@ -439,6 +439,84 @@ fn run_perf_probe() -> Result<(), String> {
         );
     }
 
+    // Окремо — ціна колірних тайлів (етап T, T8). Асета може не бути на
+    // диску (`/assets/` не в git), і тоді рядка просто немає: вигадати його
+    // не можна, а синтетична піраміда міряла б не те.
+    match tile_assets() {
+        Some((terrain, colour)) => {
+            println!(
+                "\nКолірні тайли в кадрі (етап T). Різниця — друга bindless-вибірка\n\
+                 на фрагмент і вдвічі більший масив текстур у групі прив'язки.\n"
+            );
+            println!(
+                "{:>10} {:>10} {:>12} {:>10} {:>8}",
+                "висота", "без, мс", "з кольором", "різниця", "разів"
+            );
+            // Останній рядок — той, що розділяє два пояснення різниці. Якщо
+            // ціна кольору у вибірці, вона мусить упасти разом із кількістю
+            // накритих пікселів; якщо в прив'язці масиву текстур — лишиться.
+            for (altitude, label) in [
+                (1.0e5, "100 км"),
+                (1.0e6, "10⁶ м"),
+                (1.0e7, "10⁷ м"),
+                (1.0e9, "10⁹ м"),
+            ] {
+                let bare = engine::perf_probe::tile_cost(
+                    &gpu, 1280, 720, FRAMES, altitude, &terrain, None,
+                )?;
+                let with_colour = engine::perf_probe::tile_cost(
+                    &gpu,
+                    1280,
+                    720,
+                    FRAMES,
+                    altitude,
+                    &terrain,
+                    Some(&colour),
+                )?;
+                println!(
+                    "{:>10} {:>10.3} {:>12.3} {:>+10.3} {:>8.2}",
+                    label,
+                    bare.mean_ms,
+                    with_colour.mean_ms,
+                    with_colour.mean_ms - bare.mean_ms,
+                    with_colour.mean_ms / bare.mean_ms
+                );
+            }
+        }
+        None => println!(
+            "\nКолірні тайли: асетів немає на диску — рядок пропущено.\n               полікувати: make cook-dem && make cook-colour"
+        ),
+    }
+
+    // І окремо — від чого та ціна залежить. Піраміда обрізається по рівнях,
+    // тобто міняється **тільки кількість текстур у масиві**: сцена, камера,
+    // висота й кількість накритих пікселів лишаються ті самі.
+    if let Some((terrain, colour)) = tile_assets() {
+        println!(
+            "\nВід чого залежить ціна кольору: камера на 10⁹ м, тіло в кілька\n\
+             пікселів, міняється лише глибина піраміди.\n"
+        );
+        println!("{:>8} {:>10} {:>10}", "рівнів", "тайлів", "кадр, мс");
+        for levels in 1..=colour.levels {
+            let short = truncated(&colour, levels);
+            let stats = engine::perf_probe::tile_cost(
+                &gpu,
+                1280,
+                720,
+                FRAMES,
+                1.0e9,
+                &terrain,
+                Some(&short),
+            )?;
+            println!(
+                "{:>8} {:>10} {:>10.3}",
+                levels,
+                engine::tiles::count(levels),
+                stats.mean_ms
+            );
+        }
+    }
+
     // Окремо — CPU-прохід планети, до й після R1d. Два числа, бо одне без
     // другого не каже, чи виграш узагалі є.
     let was_ms = camera_pass_ms(200);
@@ -456,6 +534,30 @@ fn run_perf_probe() -> Result<(), String> {
     );
 
     Ok(())
+}
+
+/// Скуковані тайли Місяця, якщо вони є на диску.
+///
+/// Обидва разом або жодного: вимір порівнює кадр **з кольором і без**, і
+/// половина пари не дає ні того, ні того.
+fn tile_assets() -> Option<(engine::tiles::Terrain, engine::tiles::Colour)> {
+    let terrain =
+        engine::tiles::Terrain::from_bytes(&std::fs::read("assets/moon.dem").ok()?).ok()?;
+    let colour = engine::tiles::Colour::from_bytes(&std::fs::read("assets/moon.col").ok()?).ok()?;
+    Some((terrain, colour))
+}
+
+/// Та сама піраміда кольору, обрізана до `levels` рівнів.
+///
+/// Потрібна одному вимірові: скільки коштує **розмір масиву текстур** сам по
+/// собі. Обрізання по рівнях лишає геометрію піраміди правильною — тайли
+/// лежать рівень за рівнем (`tiles::index`), тож перші `count(levels)` з них
+/// і є повна піраміда меншої глибини.
+fn truncated(colour: &engine::tiles::Colour, levels: u32) -> engine::tiles::Colour {
+    let grids: Vec<Vec<u8>> = (0..engine::tiles::count(levels))
+        .map(|i| colour.tile_bytes(i).to_vec())
+        .collect();
+    engine::tiles::Colour::build(levels, colour.channels, colour.scale, &grids)
 }
 
 /// Проліт від поверхні до орбіти (ROADMAP F5).
