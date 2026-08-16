@@ -36,6 +36,7 @@ pub mod app;
 pub mod atmosphere;
 pub mod camera;
 pub mod camera_probe;
+pub mod chase;
 pub mod cubesphere;
 pub mod cull;
 pub mod demo;

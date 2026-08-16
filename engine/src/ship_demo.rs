@@ -22,7 +22,7 @@
 
 use std::path::Path;
 
-use crate::camera::Camera;
+use crate::chase::{self, Chase};
 use crate::frame::Frame;
 use crate::gpu::Gpu;
 use crate::scene::{Atmosphere, Body, Scene, Ship, TileSet};
@@ -43,41 +43,11 @@ pub const FPS: u16 = 60;
 /// би її між кадрами, перевіряв би свій кеш, а не кадр.
 pub fn scene_at(k: u32, frames: u32) -> Scene {
     let phase = 2.0 * std::f64::consts::PI * f64::from(k) / f64::from(frames);
-    // Камера починає збоку, а не спереду: з носа корабель читається гірше за
-    // все, а анімація має відкриватися впізнаваним силуетом.
-    let around = phase + std::f64::consts::FRAC_PI_2;
 
-    // Місцевий базис на орбіті: `up` — від центра планети, `along` — уздовж
-    // руху, `side` доповнює до правої трійки.
+    // Місцевий базис на орбіті: `up` — від центра планети.
     let radius = sphere::EARTH_RADIUS_M + ALTITUDE_M;
     let centre = [radius, 0.0, 0.0];
     let up = [1.0, 0.0, 0.0];
-    let along = [0.0, 1.0, 0.0];
-    let side = [0.0, 0.0, 1.0];
-
-    // Камера обходить корабель колом і трохи згори — так планета лишається
-    // під ним, а не за ним.
-    let eye = [
-        centre[0]
-            + 0.25 * RANGE_M * up[0]
-            + RANGE_M * (around.cos() * along[0] + around.sin() * side[0]),
-        centre[1]
-            + 0.25 * RANGE_M * up[1]
-            + RANGE_M * (around.cos() * along[1] + around.sin() * side[1]),
-        centre[2]
-            + 0.25 * RANGE_M * up[2]
-            + RANGE_M * (around.cos() * along[2] + around.sin() * side[2]),
-    ];
-    let camera = Camera::look_at(eye, centre, up);
-
-    let mut scene = Scene::new(camera);
-    scene.bodies.push(Body {
-        centre: [0.0, 0.0, 0.0],
-        radius_m: sphere::EARTH_RADIUS_M,
-        orientation: [1.0, 0.0, 0.0, 0.0],
-        tiles: TileSet::Smooth,
-        air: Some(Atmosphere::EARTH),
-    });
 
     // Ніс уздовж руху: чверть оберту навколо `+X` переводить корабельний `+Z`
     // у світовий `+Y`. Плюс один оберт навколо носа за всю анімацію — саме
@@ -90,13 +60,39 @@ pub fn scene_at(k: u32, frames: u32) -> Scene {
     ];
     let roll = [(phase / 2.0).cos(), 0.0, (phase / 2.0).sin(), 0.0];
 
-    scene.ships.push(Ship {
+    let ship = Ship {
         centre,
         orientation: multiply(roll, nose),
         height_m: ship::DEFAULT_HEIGHT_M,
         extent_m: 0.5 * ship::DEFAULT_HEIGHT_M,
         colour: [0.72, 0.74, 0.78, 1.0],
+    };
+
+    // Камера — та сама третя особа, що в грі (V4), і обходить корабель вона
+    // тим самим тягненням миші, яким її водить гравець. Повний оберт за
+    // анімацію — 2π/`RADIANS_PER_PIXEL` пікселів; зонд, який ставив би кути
+    // повз `drag`, показував би шлях, якого в грі немає.
+    //
+    // Чверть оберту назад від типового кута — щоб анімація відкривалася
+    // збоку, а не з носа: ніс корабля лежить уздовж світового `+Y`, тобто
+    // рівно там, куди дивиться `Chase` за замовчуванням, а з носа силует
+    // читається гірше за все.
+    let mut chase = Chase::at_ranges(RANGE_M / ship.extent_m);
+    chase.drag(
+        (phase - std::f64::consts::FRAC_PI_2) / chase::RADIANS_PER_PIXEL,
+        0.0,
+    );
+    let camera = chase.camera(&ship, up);
+
+    let mut scene = Scene::new(camera);
+    scene.bodies.push(Body {
+        centre: [0.0, 0.0, 0.0],
+        radius_m: sphere::EARTH_RADIUS_M,
+        orientation: [1.0, 0.0, 0.0, 0.0],
+        tiles: TileSet::Smooth,
+        air: Some(Atmosphere::EARTH),
     });
+    scene.ships.push(ship);
 
     scene
 }
