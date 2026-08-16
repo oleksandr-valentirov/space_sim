@@ -7,9 +7,20 @@
 //! | таблиця | від чого залежить | як часто |
 //! |---|---|---|
 //! | пропускання | лише параметри повітря | раз на набір параметрів |
+//! | багаторазове розсіювання | лише параметри повітря | раз на набір параметрів |
 //!
 //! Решта рядків з'явиться разом зі своїми кроками; заводити їх наперед
 //! CLAUDE.md прямо забороняє.
+//!
+//! ## Дві групи прив'язки: читане й писане
+//!
+//! Група 0 — те, що прохід читає, група 1 — те, що він пише. Поділ вимушений:
+//! таблицю пропускання пише один прохід і читають усі наступні, а одна
+//! bind-група, у якій та сама текстура стоїть і на запис, і на читання,
+//! заборонена — wgpu бачить у ній гонку незалежно від того, що робить шейдер.
+//! Тому проходу пропускання дістається **урізаний** макет групи 0, без самої
+//! таблиці, і це не хитрість: від макета вимагається накривати те, що точка
+//! входу читає, а не все, що є в модулі.
 //!
 //! ## Чому [`Sky::ensure`] подає роботу сам, а не в чужий encoder
 //!
@@ -39,12 +50,20 @@ const GROUP: u32 = 8;
 
 pub struct Sky {
     transmittance_pipeline: wgpu::ComputePipeline,
-    layout: wgpu::BindGroupLayout,
+    multiscatter_pipeline: wgpu::ComputePipeline,
+
+    /// Група 0 без самої таблиці пропускання — для проходу, який її пише.
+    read_min: wgpu::BindGroup,
+    /// Група 0 з таблицею пропускання — для всіх, хто її читає.
+    read_full: wgpu::BindGroup,
+    /// Група 1 кожного проходу: рівно те, що він пише.
+    write_transmittance: wgpu::BindGroup,
+    write_multiscatter: wgpu::BindGroup,
+
     air_buffer: wgpu::Buffer,
 
     transmittance: wgpu::Texture,
-    transmittance_view: wgpu::TextureView,
-    bind_group: wgpu::BindGroup,
+    multiscatter: wgpu::Texture,
 
     /// Параметри, під які таблиці вже пораховані: саме повітря і радіус
     /// поверхні тіла, якому воно належить.
@@ -53,6 +72,60 @@ pub struct Sky {
     /// Два тіла з однаковим повітрям і різними радіусами — різні атмосфери, і
     /// ключ мусить це бачити.
     current: Option<(Atmosphere, f64)>,
+}
+
+/// Опис одного запису макета — щоб чотири майже однакові макети не займали
+/// сторінку.
+fn storage_2d(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::StorageTexture {
+            access: wgpu::StorageTextureAccess::WriteOnly,
+            format: LUT_FORMAT,
+            view_dimension: wgpu::TextureViewDimension::D2,
+        },
+        count: None,
+    }
+}
+
+/// Таблиця на читання: `float4`, білінійна фільтрація.
+fn sampled_2d(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
+
+/// Текстура таблиці: пишеться compute, читається шейдерами, читається назад
+/// перевіркою.
+///
+/// `COPY_SRC` тут заради оракула, і це не приховується: перевірки етапу S —
+/// звірка таблиці з `engine::atmosphere`, а прочитати її можна лише звідси. Та
+/// сама причина, що в `indirect_buffer` (R6b).
+fn lut_texture(gpu: &Gpu, label: &str, width: u32, height: u32) -> wgpu::Texture {
+    gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: LUT_FORMAT,
+        usage: wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    })
 }
 
 impl Sky {
@@ -64,52 +137,81 @@ impl Sky {
                 source: wgpu::ShaderSource::Wgsl(SKY_WGSL.into()),
             });
 
-        let layout = gpu
-            .device
-            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("sky luts"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: std::num::NonZeroU64::new(AIR_BYTES),
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::StorageTexture {
-                            access: wgpu::StorageTextureAccess::WriteOnly,
-                            format: LUT_FORMAT,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                        },
-                        count: None,
-                    },
-                ],
-            });
+        let air_entry = wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: std::num::NonZeroU64::new(AIR_BYTES),
+            },
+            count: None,
+        };
+        let sampler_entry = wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        };
 
-        let pipeline_layout = gpu
-            .device
-            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("sky"),
-                bind_group_layouts: &[Some(&layout)],
-                immediate_size: 0,
-            });
+        let read_min_layout =
+            gpu.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("sky read (no luts)"),
+                    entries: &[air_entry, sampler_entry],
+                });
+        let read_full_layout =
+            gpu.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("sky read"),
+                    entries: &[air_entry, sampler_entry, sampled_2d(2)],
+                });
+        let write_transmittance_layout =
+            gpu.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("sky write transmittance"),
+                    entries: &[storage_2d(0)],
+                });
+        let write_multiscatter_layout =
+            gpu.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("sky write multiscatter"),
+                    entries: &[storage_2d(1)],
+                });
 
-        let transmittance_pipeline =
+        let compute = |label: &str,
+                       read: &wgpu::BindGroupLayout,
+                       write: &wgpu::BindGroupLayout,
+                       entry: &str| {
+            let layout = gpu
+                .device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some(label),
+                    bind_group_layouts: &[Some(read), Some(write)],
+                    immediate_size: 0,
+                });
             gpu.device
                 .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("transmittance"),
-                    layout: Some(&pipeline_layout),
+                    label: Some(label),
+                    layout: Some(&layout),
                     module: &module,
-                    entry_point: Some("transmittance_main"),
+                    entry_point: Some(entry),
                     compilation_options: Default::default(),
                     cache: None,
-                });
+                })
+        };
+        let transmittance_pipeline = compute(
+            "transmittance",
+            &read_min_layout,
+            &write_transmittance_layout,
+            "transmittance_main",
+        );
+        let multiscatter_pipeline = compute(
+            "multiscatter",
+            &read_full_layout,
+            &write_multiscatter_layout,
+            "multiscatter_main",
+        );
 
         let air_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("air params"),
@@ -118,30 +220,38 @@ impl Sky {
             mapped_at_creation: false,
         });
 
-        // `COPY_SRC` тут заради перевірки, і це не приховується: оракул S2 —
-        // звірка таблиці з `engine::atmosphere`, і прочитати її можна лише
-        // звідси. Та сама причина, що в `indirect_buffer` (R6b).
-        let transmittance = gpu.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("transmittance lut"),
-            size: wgpu::Extent3d {
-                width: atmosphere::TRANSMITTANCE_WIDTH,
-                height: atmosphere::TRANSMITTANCE_HEIGHT,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: LUT_FORMAT,
-            usage: wgpu::TextureUsages::STORAGE_BINDING
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let transmittance_view = transmittance.create_view(&wgpu::TextureViewDescriptor::default());
-
-        let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        // Затискання по краях, а не повтор: таблиця — це функція, визначена на
+        // відрізку, і за його межами продовжувати її колом означало б читати
+        // зеніт замість горизонту.
+        let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("sky luts"),
-            layout: &layout,
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+
+        let transmittance = lut_texture(
+            gpu,
+            "transmittance lut",
+            atmosphere::TRANSMITTANCE_WIDTH,
+            atmosphere::TRANSMITTANCE_HEIGHT,
+        );
+        let multiscatter = lut_texture(
+            gpu,
+            "multiscatter lut",
+            atmosphere::MULTISCATTER_SIZE,
+            atmosphere::MULTISCATTER_SIZE,
+        );
+        let transmittance_view = transmittance.create_view(&wgpu::TextureViewDescriptor::default());
+        let multiscatter_view = multiscatter.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let read_min = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("sky read (no luts)"),
+            layout: &read_min_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -149,18 +259,55 @@ impl Sky {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+        let read_full = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("sky read"),
+            layout: &read_full_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: air_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
                     resource: wgpu::BindingResource::TextureView(&transmittance_view),
                 },
             ],
         });
+        let write_transmittance = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("sky write transmittance"),
+            layout: &write_transmittance_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&transmittance_view),
+            }],
+        });
+        let write_multiscatter = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("sky write multiscatter"),
+            layout: &write_multiscatter_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&multiscatter_view),
+            }],
+        });
 
         Sky {
             transmittance_pipeline,
-            layout,
+            multiscatter_pipeline,
+            read_min,
+            read_full,
+            write_transmittance,
+            write_multiscatter,
             air_buffer,
             transmittance,
-            transmittance_view,
-            bind_group,
+            multiscatter,
             current: None,
         }
     }
@@ -168,8 +315,13 @@ impl Sky {
     /// Таблиці під це повітря — порахувати, якщо вони ще не під нього.
     ///
     /// Повертає `true`, якщо рахувати таки довелося. Значення потрібне не
-    /// кадру, а перевірці: «таблиця не перераховується щокадру» — твердження,
+    /// кадру, а перевірці: «таблиці не перераховуються щокадру» — твердження,
     /// яке треба вміти перевірити, а не лише написати в коментарі.
+    ///
+    /// Порядок проходів тут — залежність за даними: розсіювання читає
+    /// пропускання. Бар'єр між ними ставить wgpu сам, за використанням
+    /// ресурсів; окремі проходи потрібні лише тому, що всередині одного
+    /// проходу порядок груп не гарантований.
     pub fn ensure(&mut self, gpu: &Gpu, air: &Atmosphere, bottom_m: f64) -> bool {
         if self.current == Some((*air, bottom_m)) {
             return false;
@@ -189,12 +341,24 @@ impl Sky {
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.transmittance_pipeline);
-            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.set_bind_group(0, &self.read_min, &[]);
+            pass.set_bind_group(1, &self.write_transmittance, &[]);
             pass.dispatch_workgroups(
                 atmosphere::TRANSMITTANCE_WIDTH.div_ceil(GROUP),
                 atmosphere::TRANSMITTANCE_HEIGHT.div_ceil(GROUP),
                 1,
             );
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("multiscatter"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.multiscatter_pipeline);
+            pass.set_bind_group(0, &self.read_full, &[]);
+            pass.set_bind_group(1, &self.write_multiscatter, &[]);
+            let groups = atmosphere::MULTISCATTER_SIZE.div_ceil(GROUP);
+            pass.dispatch_workgroups(groups, groups, 1);
         }
         gpu.queue.submit([encoder.finish()]);
 
@@ -202,86 +366,107 @@ impl Sky {
         true
     }
 
-    /// Вигляд таблиці пропускання — для тих, хто її читатиме в шейдері.
-    pub fn transmittance_view(&self) -> &wgpu::TextureView {
-        &self.transmittance_view
-    }
-
-    /// Макет групи прив'язки таблиць. Публічний рівно тому, що на нього
-    /// спиратимуться наступні кроки етапу.
-    pub fn layout(&self) -> &wgpu::BindGroupLayout {
-        &self.layout
-    }
-
     /// Таблиця пропускання назад у пам'ять — оракул S2.
-    ///
-    /// Читати це в кадрі не можна: тут `poll(Wait)`, тобто повна зупинка
-    /// конвеєра. Існує рівно заради перевірки, як і [`crate::frame::Frame::drawn_patches`].
-    ///
-    /// Рядок-major, `[r, g, b, a]` на тексель, уже розпакований із half-float.
     pub fn read_transmittance(&self, gpu: &Gpu) -> Result<Vec<[f32; 4]>, String> {
-        let width = atmosphere::TRANSMITTANCE_WIDTH;
-        let height = atmosphere::TRANSMITTANCE_HEIGHT;
-        // Вісім байтів на тексель; 256 текселів у рядку дають 2048 — кратне
-        // 256, тобто вирівнювання `copy_texture_to_buffer` виконується саме
-        // собою й окремого доповнення не треба.
-        let bytes_per_row = width * 8;
-        assert_eq!(bytes_per_row % 256, 0, "рядок таблиці не вирівняний");
-
-        let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("transmittance readback"),
-            size: u64::from(bytes_per_row * height),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-
-        let mut encoder = gpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("transmittance readback"),
-            });
-        encoder.copy_texture_to_buffer(
-            self.transmittance.as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &staging,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(bytes_per_row),
-                    rows_per_image: Some(height),
-                },
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
-        gpu.queue.submit([encoder.finish()]);
-
-        let slice = staging.slice(..);
-        slice.map_async(wgpu::MapMode::Read, |_| {});
-        gpu.device
-            .poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            })
-            .map_err(|e| format!("не дочекалися GPU: {e}"))?;
-        let data = slice
-            .get_mapped_range()
-            .map_err(|e| format!("буфер не відобразився: {e}"))?;
-
-        let mut out = Vec::with_capacity((width * height) as usize);
-        for texel in data.chunks_exact(8) {
-            let mut rgba = [0.0f32; 4];
-            for (channel, half) in rgba.iter_mut().zip(texel.chunks_exact(2)) {
-                *channel = from_half(u16::from_le_bytes([half[0], half[1]]));
-            }
-            out.push(rgba);
-        }
-        drop(data);
-        staging.unmap();
-        Ok(out)
+        read_lut(
+            gpu,
+            &self.transmittance,
+            atmosphere::TRANSMITTANCE_WIDTH,
+            atmosphere::TRANSMITTANCE_HEIGHT,
+        )
     }
+
+    /// Таблиця багаторазового розсіювання назад у пам'ять — оракул S3.
+    ///
+    /// RGB — `ψ`, альфа — найбільший канал `f`, тобто те число, від якого
+    /// залежить збіжність ряду.
+    pub fn read_multiscatter(&self, gpu: &Gpu) -> Result<Vec<[f32; 4]>, String> {
+        read_lut(
+            gpu,
+            &self.multiscatter,
+            atmosphere::MULTISCATTER_SIZE,
+            atmosphere::MULTISCATTER_SIZE,
+        )
+    }
+}
+
+/// Таблиця з GPU назад у пам'ять.
+///
+/// Читати це в кадрі не можна: тут `poll(Wait)`, тобто повна зупинка
+/// конвеєра. Існує рівно заради перевірки, як і
+/// [`crate::frame::Frame::drawn_patches`].
+///
+/// Рядок-major, `[r, g, b, a]` на тексель, уже розпакований із half-float.
+fn read_lut(
+    gpu: &Gpu,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+) -> Result<Vec<[f32; 4]>, String> {
+    // Вісім байтів на тексель; і 256, і 32 текселі в рядку дають кратне 256,
+    // тобто вирівнювання `copy_texture_to_buffer` виконується саме собою й
+    // окремого доповнення не треба. Перевіряється, а не мається на увазі:
+    // наступна таблиця може виявитися іншої ширини.
+    let bytes_per_row = width * 8;
+    assert_eq!(
+        bytes_per_row % 256,
+        0,
+        "рядок таблиці {width}×{height} не вирівняний на 256 байтів"
+    );
+
+    let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("lut readback"),
+        size: u64::from(bytes_per_row * height),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+
+    let mut encoder = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("lut readback"),
+        });
+    encoder.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &staging,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    gpu.queue.submit([encoder.finish()]);
+
+    let slice = staging.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    gpu.device
+        .poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        })
+        .map_err(|e| format!("не дочекалися GPU: {e}"))?;
+    let data = slice
+        .get_mapped_range()
+        .map_err(|e| format!("буфер не відобразився: {e}"))?;
+
+    let mut out = Vec::with_capacity((width * height) as usize);
+    for texel in data.chunks_exact(8) {
+        let mut rgba = [0.0f32; 4];
+        for (channel, half) in rgba.iter_mut().zip(texel.chunks_exact(2)) {
+            *channel = from_half(u16::from_le_bytes([half[0], half[1]]));
+        }
+        out.push(rgba);
+    }
+    drop(data);
+    staging.unmap();
+    Ok(out)
 }
 
 /// Параметри повітря в розкладці `AirParams` із `sky.slang`.

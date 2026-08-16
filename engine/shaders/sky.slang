@@ -25,7 +25,27 @@ struct AirParams
     float4 shape;
 };
 
+// ## Групи прив'язки, і чому їх дві
+//
+// Група 0 — те, що прохід **читає**; група 1 — те, що він **пише**. Поділ не
+// косметичний: таблицю пропускання пише один прохід і читають усі наступні, а
+// одна bind-група, у якій та сама текстура стоїть і на запис, і на читання,
+// заборонена — wgpu бачить у ній гонку незалежно від того, що робить шейдер.
+// Тому прохід пропускання дістає групу 0 без самої таблиці (макет, у якому цих
+// прив'язок просто немає), а решта — повну.
+//
+// Слоти групи 1 не перетинаються: у кожного проходу свій. Макет кожного
+// пайплайна оголошує рівно свій слот, і це дозволено — від макета вимагається
+// накривати те, що точка входу читає, а не все, що є в модулі.
+[[vk::binding(0, 0)]]
 ConstantBuffer<AirParams> air;
+
+// Один семплер на всі таблиці: білінійна фільтрація з затисканням по краях.
+// Затискання, а не повтор, — і саме тому кінці одиничного діапазону сидять у
+// центрах крайніх текселів: інакше половина крайнього текселя читалася б з
+// затиснутого краю, а не з таблиці.
+[[vk::binding(1, 0)]]
+SamplerState lut_sampler;
 
 // Таблиця пропускання: 256×64, rgba16float (S2).
 //
@@ -46,12 +66,28 @@ static const uint TRANSMITTANCE_HEIGHT = 64u;
 // раз на кадр, тож дешевше було б лише неправильно.
 static const uint TRANSMITTANCE_STEPS = 500u;
 
+// Таблиця багаторазового розсіювання: 32×32 (S3).
+static const uint MULTISCATTER_SIZE = 32u;
+// Скільки напрямків обходить інтегрування по сфері — сітка 8×8.
+static const uint MULTISCATTER_DIRECTIONS = 64u;
+// Скільки кроків робить промінь усередині одного напрямку.
+static const uint MULTISCATTER_STEPS = 20u;
+
+// Таблиця пропускання на читання — для всіх проходів, крім того, що її пише.
+[[vk::binding(2, 0)]]
+Texture2D<float4> transmittance_lut;
+
 // `WTexture2D` (лише запис), а не `RWTexture2D`: останній компілюється у
 // `texture_storage_2d<..., read_write>`, а WebGPU дозволяє читання-запис лише
 // для одноканальних 32-бітних форматів. Формат оголошений тут же, бо WGSL
 // вимагає його в типі — вивести його з боку Rust неможливо.
+[[vk::binding(0, 1)]]
 [format("rgba16f")]
 WTexture2D<float4> transmittance_out;
+
+[[vk::binding(1, 1)]]
+[format("rgba16f")]
+WTexture2D<float4> multiscatter_out;
 
 // Густина трьох компонент на висоті `h` над поверхнею — двійник
 // `atmosphere::density`.
@@ -63,6 +99,11 @@ WTexture2D<float4> transmittance_out;
 // в стратосфері, де озон і працює; у зеніті різниця тоне у похибці.
 float3 density(float h)
 {
+    // Під поверхнею повітря немає, і затискання тут не косметика: промінь, що
+    // пірнув під землю на 6371 км, дав би `exp(+796)`, тобто нескінченність, а
+    // нескінченність, помножена на нульовий крок, дає NaN — і вся таблиця
+    // виходить із нього. Спіймано на S3, на текселях рівня поверхні.
+    h = max(h, 0.0);
     float rayleigh = exp(-h / air.rayleigh.w);
     float mie = exp(-h / air.mie.z);
     float ozone = max(0.0, 1.0 - abs(h - air.shape.x) / air.shape.y);
@@ -77,20 +118,34 @@ float3 extinction(float h)
     return air.rayleigh.rgb * d.x + float3(mie, mie, mie) * d.y + air.ozone.rgb * d.z;
 }
 
+// ⚠ **Змінна тут — `rho² = r² − bottom²`, а не радіус**, і етап S спіткнувся
+// про це двічі. Обидві відстані виражаються через нього без жодного віднімання
+// великих чисел; хто знає його точніше (параметризація таблиці, висота над
+// поверхнею), той і мусить його передати. У `f32` при `r ≈ 6.4·10⁶` одиниця
+// останнього розряду квадрата — 4·10⁶, тобто біля поверхні й біля дотику знак
+// різниці дає округлення, а не геометрія.
+//
+// `rho2` — це `r² − bottom²` точки, `shell2` — `top² − bottom²` атмосфери.
+
 // Скільки метрів до верхньої межі — двійник `atmosphere::distance_to_top`.
-float distance_to_top(float r, float mu, float top)
+float distance_to_top(float r, float mu, float rho2, float shell2)
 {
-    float discriminant = r * r * (mu * mu - 1.0) + top * top;
+    float discriminant = r * r * mu * mu + (shell2 - rho2);
     return max(0.0, -r * mu + sqrt(max(0.0, discriminant)));
 }
 
 // Скільки метрів до поверхні; від'ємне — поверхні попереду немає. Двійник
 // `atmosphere::distance_to_ground`, який там повертає `Option`.
-float distance_to_ground(float r, float mu, float bottom)
+float distance_to_ground(float r, float mu, float rho2)
 {
-    float discriminant = r * r * (mu * mu - 1.0) + bottom * bottom;
+    float discriminant = r * r * mu * mu - rho2;
     if (mu >= 0.0 || discriminant < 0.0) { return -1.0; }
-    return -r * mu - sqrt(discriminant);
+    // `max(0)` — не косметика. Промінь, що йде вниз із самої поверхні, має
+    // `rho² = 0`, і різниця `−r·mu − √(r²mu²)` у `f32` виходить то трохи
+    // додатною, то трохи від'ємною. Від'ємну викликач читає як «поверхні
+    // попереду немає» й веде промінь крізь планету — з тінню, порахованою
+    // зсередини неї. Спіймано на S3: рядок 0 таблиці виходив утричі яскравішим.
+    return max(0.0, -r * mu - sqrt(discriminant));
 }
 
 // Оптична товща на відрізку `span` уздовж `(r, mu)` — двійник
@@ -170,4 +225,167 @@ void transmittance_main(uint3 id : SV_DispatchThreadID)
 
     float3 depth = optical_depth(r, mu, span, TRANSMITTANCE_STEPS);
     transmittance_out.Store(id.xy, float4(exp(-depth), 1.0));
+}
+
+// ---------------------------------------------------------------------------
+// Багаторазове розсіювання (S3)
+// ---------------------------------------------------------------------------
+
+// Координата текстури, у якій лежить одиничне значення `u` — двійник
+// `atmosphere::unit_to_texture`. Кінці діапазону сідають у центри крайніх
+// текселів; без цього білінійна вибірка на краю читала б затиснений тексель
+// замість таблиці.
+float unit_to_texture(float u, uint size)
+{
+    float n = float(size);
+    return 0.5 / n + u * (1.0 - 1.0 / n);
+}
+
+// Одиничні координати таблиці пропускання за `(r, mu)` — двійник
+// `atmosphere::r_mu_to_uv`.
+float2 r_mu_to_uv(float r, float mu)
+{
+    float bottom = air.shape.z;
+    float top = air.shape.w;
+
+    float h = sqrt(max(0.0, top * top - bottom * bottom));
+    float rho = sqrt(max(0.0, r * r - bottom * bottom));
+    float d = distance_to_top(r, mu, rho * rho, h * h);
+    float d_min = top - r;
+    float d_max = rho + h;
+    float u = d_max > d_min ? clamp((d - d_min) / (d_max - d_min), 0.0, 1.0) : 0.0;
+    return float2(u, clamp(rho / h, 0.0, 1.0));
+}
+
+// Пропускання від `(r, mu)` до верхньої межі — з таблиці, білінійно.
+float3 sample_transmittance(float r, float mu)
+{
+    float2 uv = r_mu_to_uv(r, mu);
+    float2 coord = float2(unit_to_texture(uv.x, TRANSMITTANCE_WIDTH),
+                          unit_to_texture(uv.y, TRANSMITTANCE_HEIGHT));
+    return transmittance_lut.SampleLevel(lut_sampler, coord, 0.0).rgb;
+}
+
+// Розсіювання (без поглинання) на висоті `h` — двійник `atmosphere::scattering`.
+//
+// Не те саме, що `extinction`: озон не розсіює зовсім, Мі розсіює менше, ніж
+// гасить. У джерелі стоїть саме розсіювання — з'їдений фотон у небо не летить.
+float3 scattering(float h)
+{
+    float3 d = density(h);
+    float mie = air.mie.x * d.y;
+    return air.rayleigh.rgb * d.x + float3(mie, mie, mie);
+}
+
+// Напрямок номер `k` з рівномірної сітки 8×8 на сфері — двійник
+// `atmosphere::sphere_direction`.
+float3 sphere_direction(uint k)
+{
+    float i = 0.5 + float(k / 8u);
+    float j = 0.5 + float(k % 8u);
+    float theta = 2.0 * 3.14159265358979 * i / 8.0;
+    float phi = acos(1.0 - 2.0 * j / 8.0);
+    return float3(sin(phi) * cos(theta), sin(phi) * sin(theta), cos(phi));
+}
+
+// Таблиця багаторазового розсіювання: 32×32, вісь `u` — косинус зенітного кута
+// Сонця, вісь `v` — висота над поверхнею. Лінійно по обох, і це не лінощі:
+// нелінійність у таблиці пропускання існувала заради дотичного променя, тобто
+// заради різкого краю горизонту. Тут різкого краю немає — усе вже усереднене по
+// сфері напрямків.
+//
+// Рахується раз на набір параметрів повітря, як і пропускання: ні камери, ні
+// напрямку на Сонце в осях немає (правило 5 етапу S).
+//
+// RGB — `ψ`, внесок другого й наступних порядків. **Альфа — найбільший із трьох
+// каналів `f`**, частки, яку одне розсіювання повертає в ту саму точку. Живе
+// вона там заради перевірки й не приховується: `ψ = L₂/(1 − f)` збігається
+// лише при `f < 1`, і твердження «енергія не росте» перевіряється саме цим
+// числом. Альфа в цій текстурі однаково є, тож коштує воно нуль.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void multiscatter_main(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= MULTISCATTER_SIZE || id.y >= MULTISCATTER_SIZE) { return; }
+
+    float bottom = air.shape.z;
+    float top = air.shape.w;
+
+    float u = float(id.x) / float(MULTISCATTER_SIZE - 1u);
+    float v = float(id.y) / float(MULTISCATTER_SIZE - 1u);
+    float mu_s = clamp(u * 2.0 - 1.0, -1.0, 1.0);
+    float altitude = v * (top - bottom);
+    float r = bottom + altitude;
+
+    // Сонце в площині xz, точка на осі z.
+    float3 sun = float3(sqrt(max(0.0, 1.0 - mu_s * mu_s)), 0.0, mu_s);
+
+    // `rho²` початкової точки — **через висоту**, а не через різницю квадратів
+    // радіусів: на рівні поверхні друге дорівнює нулю, і в `f32` йому дає знак
+    // округлення. Промінь униз тоді не зупиняється на землі, а йде крізь
+    // планету — і рядок 0 таблиці розходився з двійником удвічі, тоді як решта
+    // сходилася на 0.05%. Те саме — `shell2` добутком, не різницею.
+    float rho2 = altitude * (2.0 * bottom + altitude);
+    float shell2 = (top - bottom) * (top + bottom);
+
+    float3 second = float3(0.0, 0.0, 0.0);
+    float3 fraction = float3(0.0, 0.0, 0.0);
+
+    for (uint k = 0u; k < MULTISCATTER_DIRECTIONS; ++k)
+    {
+        float3 w = sphere_direction(k);
+        float mu = w.z;
+
+        float span = distance_to_top(r, mu, rho2, shell2);
+        float ground = distance_to_ground(r, mu, rho2);
+        if (ground >= 0.0) { span = min(span, ground); }
+        float step = span / float(MULTISCATTER_STEPS);
+
+        float3 throughput = float3(1.0, 1.0, 1.0);
+        for (uint s = 0u; s < MULTISCATTER_STEPS; ++s)
+        {
+            float t = (float(s) + 0.5) * step;
+            float3 point = float3(t * w.x, t * w.y, r + t * w.z);
+            // `rho²` семпла — теж без різниці квадратів:
+            // `|p + t·w|² − bottom² = rho² + 2·t·r·mu + t²`.
+            float rho2_here = max(0.0, rho2 + 2.0 * t * r * mu + t * t);
+            float radius = sqrt(max(0.0, rho2_here + bottom * bottom));
+            // Висота з того самого `rho²`: сума великих чисел скорочення не має.
+            float h = rho2_here / (radius + bottom);
+            float mu_s_here = dot(point, sun) / max(radius, 1.0);
+
+            // Тінь планети: під горизонтом точки прямого світла немає взагалі.
+            // Звідси й нічний бік — його ніхто не малює окремо.
+            bool lit = distance_to_ground(radius, mu_s_here, rho2_here) < 0.0;
+            float3 to_sun = lit ? sample_transmittance(radius, mu_s_here)
+                                : float3(0.0, 0.0, 0.0);
+
+            float3 sigma_s = scattering(h);
+            float3 sigma_e = extinction(h);
+
+            for (uint c = 0u; c < 3u; ++c)
+            {
+                if (sigma_e[c] <= 0.0) { continue; }
+                float step_transmittance = exp(-sigma_e[c] * step);
+                float gain = (1.0 - step_transmittance) / sigma_e[c];
+
+                // Фазова функція рівномірна — це і є наближення статті.
+                float uniform_phase = 1.0 / (4.0 * 3.14159265358979);
+                second[c] += throughput[c] * sigma_s[c] * to_sun[c] * uniform_phase * gain;
+                // Частка: середовище світиться одиницею з усіх боків, тож
+                // джерело — просто `σ_s`.
+                fraction[c] += throughput[c] * sigma_s[c] * gain;
+
+                throughput[c] *= step_transmittance;
+            }
+        }
+    }
+
+    // Середнє по сфері: `4π/N` тілесного кута на напрямок, поділене на `4π`
+    // самого усереднення. Лишається `1/N`.
+    second /= float(MULTISCATTER_DIRECTIONS);
+    fraction /= float(MULTISCATTER_DIRECTIONS);
+
+    float3 psi = second / max(float3(1.0, 1.0, 1.0) - fraction, float3(1.0e-6));
+    multiscatter_out.Store(id.xy, float4(psi, max(fraction.r, max(fraction.g, fraction.b))));
 }

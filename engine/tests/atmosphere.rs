@@ -208,6 +208,12 @@ fn the_table_size_is_the_same_on_both_sides() {
     for (name, value) in [
         ("TRANSMITTANCE_WIDTH", atmosphere::TRANSMITTANCE_WIDTH),
         ("TRANSMITTANCE_HEIGHT", atmosphere::TRANSMITTANCE_HEIGHT),
+        ("MULTISCATTER_SIZE", atmosphere::MULTISCATTER_SIZE),
+        (
+            "MULTISCATTER_DIRECTIONS",
+            atmosphere::MULTISCATTER_DIRECTIONS,
+        ),
+        ("MULTISCATTER_STEPS", atmosphere::MULTISCATTER_STEPS),
     ] {
         let wanted = format!("static const uint {name} = {value}u;");
         assert!(
@@ -215,4 +221,196 @@ fn the_table_size_is_the_same_on_both_sides() {
             "у sky.slang немає рядка «{wanted}»"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// S3 — багаторазове розсіювання
+// ---------------------------------------------------------------------------
+
+/// Таблиця й CPU-двійник дають те саме `ψ`.
+///
+/// Двійник читає **свою** таблицю пропускання, побудовану в `f64`, а не ту, що
+/// на GPU. Тобто в порівняння входить і похибка самої таблиці, і це навмисно:
+/// у кадрі шейдер теж читатиме таблицю, а не інтеграл, і перевіряти треба той
+/// шлях, яким небо справді малюється.
+#[test]
+fn the_multiscatter_table_matches_the_oracle() {
+    let Some(gpu) = gpu() else { return };
+
+    let air = Atmosphere::EARTH.with_surface(BOTTOM);
+    let mut sky = Sky::new(&gpu);
+    sky.ensure(&gpu, &air, BOTTOM);
+    let table = sky
+        .read_multiscatter(&gpu)
+        .expect("таблиця мала прочитатися");
+    let size = atmosphere::MULTISCATTER_SIZE;
+    assert_eq!(table.len(), (size * size) as usize);
+
+    // Таблиця пропускання для двійника — тими самими 500 кроками, що й у
+    // шейдері: тут перевіряється розсіювання, а точність пропускання вже
+    // перевірена вище й окремо.
+    let transmittance = atmosphere::Table::transmittance(&air, BOTTOM, 500);
+
+    let mut worst = 0.0f64;
+    let mut worst_at = (0u32, 0u32);
+    let mut largest = 0.0f64;
+    for y in 0..size {
+        for x in 0..size {
+            let u = f64::from(x) / f64::from(size - 1);
+            let v = f64::from(y) / f64::from(size - 1);
+            let (r, mu_s) = atmosphere::multiscatter_uv(&air, BOTTOM, u, v);
+            let (psi, _) = atmosphere::multiple_scattering(&air, BOTTOM, &transmittance, r, mu_s);
+            let got = table[(y * size + x) as usize];
+            for channel in 0..3 {
+                largest = largest.max(psi[channel]);
+                let expected = psi[channel];
+                let difference = (f64::from(got[channel]) - expected).abs();
+                // Допуск має два доданки, бо джерел похибки два, і на різних
+                // кінцях таблиці головує різне.
+                //
+                // 10⁻⁷ — **зберігання**. Уночі `ψ` падає до 5·10⁻⁷, тобто в
+                // субнормальні half-float, де крок дорівнює 6·10⁻⁸ незалежно
+                // від значення; відносного допуску там не існує в принципі.
+                //
+                // 1% — **арифметика**: двійник читає власну таблицю пропускання
+                // в `f64`, шейдер — свою в half-float, і різниця вибірок
+                // проходить крізь усі 64 напрямки. Виміряно: удень розбіжність
+                // 0.1%, тобто вдесятеро менша за допуск.
+                let allowed = 1.0e-7 + 0.01 * expected.max(f64::from(got[channel]));
+                if difference - allowed > worst {
+                    worst = difference - allowed;
+                    worst_at = (x, y);
+                }
+            }
+        }
+    }
+
+    assert!(largest > 0.0, "таблиця порожня — усе нулі");
+    assert!(
+        worst <= 0.0,
+        "тексель {worst_at:?} виходить за допуск на {worst}"
+    );
+}
+
+/// Енергія не росте: ряд розсіювань збігається скрізь.
+///
+/// `ψ = L₂/(1 − f)` має сенс лише при `f < 1`; при `f ≥ 1` кожне наступне
+/// розсіювання додавало б не менше за попереднє, і сума розходилася б. Це і є
+/// оракул кроку, названий у ROADMAP-ATMOSPHERE.md, і саме заради нього `f`
+/// лежить в альфі таблиці.
+#[test]
+fn every_further_scattering_adds_less_than_the_one_before() {
+    let Some(gpu) = gpu() else { return };
+
+    let air = Atmosphere::EARTH.with_surface(BOTTOM);
+    let mut sky = Sky::new(&gpu);
+    sky.ensure(&gpu, &air, BOTTOM);
+    let table = sky
+        .read_multiscatter(&gpu)
+        .expect("таблиця мала прочитатися");
+
+    let mut largest_fraction = 0.0f32;
+    for (index, texel) in table.iter().enumerate() {
+        let fraction = texel[3];
+        assert!(
+            (0.0..1.0).contains(&fraction),
+            "тексель {index}: частка {fraction} — ряд не збігається"
+        );
+        largest_fraction = largest_fraction.max(fraction);
+        for (channel, value) in texel.iter().enumerate().take(3) {
+            assert!(
+                value.is_finite() && *value >= 0.0,
+                "тексель {index}, канал {channel}: {value}"
+            );
+        }
+    }
+    // Виміряно: найбільша частка помітно менша за одиницю, тобто до межі
+    // збіжності повітря Землі не підходить близько. Число тут — сторож на
+    // випадок, коли хтось підніме розсіювання й тихо наблизиться до неї.
+    assert!(
+        largest_fraction < 0.5,
+        "найбільша частка {largest_fraction} — підозріло близько до межі"
+    );
+}
+
+/// Більше сонця — не менше світла; вище за пік — менше розсіяного.
+///
+/// Дві властивості осей, які ловлять їх перестановку: після неї збіг із
+/// двійником зберігся б (обидва читають той самий неправильний тексель), а ці
+/// — ні.
+///
+/// **Друга властивість не «монотонно спадає», і це виміряно, а не спрощено.**
+/// Профіль по висоті має максимум на ~6 км: біля самої поверхні нижня півсфера
+/// не світить нічим (альбедо нуль, S3), тож розсіяного там менше, ніж на
+/// кілька кілометрів вище. Далі повітря кінчається, і `ψ` падає монотонно аж
+/// до верхньої межі. Записати сюди «спадає скрізь» означало б підганяти
+/// твердження під зручність.
+#[test]
+fn the_multiscatter_table_is_monotone_in_both_of_its_axes() {
+    let Some(gpu) = gpu() else { return };
+
+    let air = Atmosphere::EARTH.with_surface(BOTTOM);
+    let mut sky = Sky::new(&gpu);
+    sky.ensure(&gpu, &air, BOTTOM);
+    let table = sky
+        .read_multiscatter(&gpu)
+        .expect("таблиця мала прочитатися");
+    let size = atmosphere::MULTISCATTER_SIZE;
+    let at = |x: u32, y: u32| f64::from(table[(y * size + x) as usize][2]);
+
+    // Сонце вище над горизонтом — розсіяного світла не менше.
+    for y in 0..size {
+        for x in 1..size {
+            assert!(
+                at(x, y) >= at(x - 1, y) * 0.999,
+                "рядок {y}, стовпець {x}: {} проти {}",
+                at(x, y),
+                at(x - 1, y)
+            );
+        }
+    }
+
+    // Профіль по висоті на полудні. Він **не монотонний**, і це не шум — це
+    // озон, і саме тому твердження тут таке дрібне.
+    //
+    // Виміряно: максимум на 6.5 км (біля самої поверхні нижня півсфера не
+    // світить нічим — альбедо нуль, S3), далі спад, провал на 35 км — там
+    // озоновий шар з'їдає те, що мало б розсіятись, — тоді **другий підйом** до
+    // 58 км, уже над шаром, і врешті спад до верхньої межі, де розсіювати нема
+    // на чому. Написати сюди «спадає з висотою» було б простіше й неправдою.
+    let noon: Vec<f64> = (0..size).map(|y| at(size - 1, y)).collect();
+    let peak = noon
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.total_cmp(b.1))
+        .map(|(index, _)| index)
+        .expect("стовпець не порожній");
+    assert!(
+        peak < (size / 8) as usize,
+        "пік розсіювання на рядку {peak} з {size} — це вже не приземний шар"
+    );
+
+    // Провал в озоновому шарі: мінімум між 20 і 50 км нижчий і за те, що під
+    // ним, і за те, що над ним.
+    let layer = 6..16;
+    let dip = layer
+        .clone()
+        .min_by(|a, b| noon[*a].total_cmp(&noon[*b]))
+        .expect("діапазон не порожній");
+    assert!(
+        noon[dip] < noon[4] && noon[dip] < noon[18],
+        "провалу в озоновому шарі немає: {} проти {} знизу й {} згори",
+        noon[dip],
+        noon[4],
+        noon[18]
+    );
+
+    // Але повітря таки кінчається: на верхній межі розсіяного вдвічі менше, ніж
+    // у піку. Це і є те, що перестановка осей зламала б.
+    assert!(
+        noon[(size - 1) as usize] < noon[peak] * 0.5,
+        "на верхній межі {} проти піка {}",
+        noon[(size - 1) as usize],
+        noon[peak]
+    );
 }

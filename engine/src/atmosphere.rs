@@ -61,6 +61,10 @@ pub const ORACLE_STEPS: usize = 2048;
 /// статті: він не спадає з висотою взагалі, а має шар на ~25 км, і саме тому
 /// небо в зеніті синє, а не фіолетове.
 pub fn density(air: &Atmosphere, h: f64) -> [f64; 3] {
+    // Під поверхнею повітря немає. Затискання тут не косметика: промінь, що
+    // пірнув під землю, дав би `exp(+796)`, тобто нескінченність, а вона на
+    // нульовому кроці дає NaN. Спіймано на S3, у шейдері.
+    let h = h.max(0.0);
     let rayleigh = (-h / f64::from(air.rayleigh_height_m)).exp();
     let mie = (-h / f64::from(air.mie_height_m)).exp();
     let centre = f64::from(air.ozone_centre_m);
@@ -86,12 +90,35 @@ pub fn extinction(air: &Atmosphere, h: f64) -> [f64; 3] {
     out
 }
 
+/// `r² − bottom²` — квадрат відстані від точки до дотику з поверхнею.
+///
+/// **Це число, а не радіус, є природною змінною всієї геометрії тут**, і на цьому
+/// етап S спіткнувся двічі. Обидві відстані — до поверхні й до верхньої межі —
+/// виражаються через нього без жодного віднімання великих чисел, а сам радіус у
+/// них входить лише множником. Хто знає його точніше (параметризація таблиці,
+/// висота над поверхнею), той і мусить його передати: у `f32` при `r ≈ 6.4·10⁶`
+/// різниця квадратів має одиницю останнього розряду 4·10⁶, тобто біля дотику
+/// їй дає знак округлення.
+pub fn rho_squared(r: f64, bottom: f64) -> f64 {
+    (r * r - bottom * bottom).max(0.0)
+}
+
+/// Те саме для верхньої межі: `top² − bottom²`, у вигляді добутку.
+///
+/// Добутком, а не різницею квадратів: `(top − bottom)·(top + bottom)` — це сто
+/// кілометрів на тринадцять тисяч, тобто жодного скорочення.
+pub fn shell_squared(air: &Atmosphere, bottom: f64) -> f64 {
+    (air.top_m - bottom) * (air.top_m + bottom)
+}
+
 /// Скільки метрів від точки `(r, mu)` до верхньої межі повітря.
 ///
-/// Корінь квадратного рівняння `|r·zenith + d·dir|² = top²`. Другий корінь
-/// від'ємний завжди, коли точка всередині повітря, тож вибору тут немає.
-pub fn distance_to_top(r: f64, mu: f64, top: f64) -> f64 {
-    let discriminant = r * r * (mu * mu - 1.0) + top * top;
+/// `rho2` — [`rho_squared`] цієї точки, `shell2` — [`shell_squared`] атмосфери.
+/// Корінь квадратного рівняння `|r·zenith + d·dir|² = top²`, переписаний через
+/// них: `d = −r·mu + √(r²mu² + shell2 − rho2)`. Другий корінь від'ємний завжди,
+/// коли точка всередині повітря, тож вибору тут немає.
+pub fn distance_to_top(r: f64, mu: f64, rho2: f64, shell2: f64) -> f64 {
+    let discriminant = r * r * mu * mu + (shell2 - rho2);
     (-r * mu + discriminant.max(0.0).sqrt()).max(0.0)
 }
 
@@ -100,12 +127,17 @@ pub fn distance_to_top(r: f64, mu: f64, top: f64) -> f64 {
 /// Промінь, спрямований угору (`mu ≥ 0`), поверхні не бачить ніколи — і
 /// перевіряти це окремо треба, бо дискримінант там теж буває додатний: то
 /// друга, «задня» точка перетину, якої попереду немає.
-pub fn distance_to_ground(r: f64, mu: f64, bottom: f64) -> Option<f64> {
-    let discriminant = r * r * (mu * mu - 1.0) + bottom * bottom;
+pub fn distance_to_ground(r: f64, mu: f64, rho2: f64) -> Option<f64> {
+    let discriminant = r * r * mu * mu - rho2;
     if mu >= 0.0 || discriminant < 0.0 {
         return None;
     }
-    Some(-r * mu - discriminant.sqrt())
+    // `max(0)` — не косметика. Промінь, що йде вниз із самої поверхні, має
+    // `rho² = 0`, і різниця `−r·mu − √(r²mu²)` у `f32` виходить то трохи
+    // додатною, то трохи від'ємною. Від'ємну викликач читає як «поверхні
+    // попереду немає» й веде промінь крізь планету. Спіймано на S3: рядок 0
+    // таблиці розсіювання виходив утричі яскравішим за двійник.
+    Some((-r * mu - discriminant.sqrt()).max(0.0))
 }
 
 /// Скільки метрів промінь `(r, mu)` іде повітрям: до поверхні або до верхньої
@@ -114,8 +146,9 @@ pub fn distance_to_ground(r: f64, mu: f64, bottom: f64) -> Option<f64> {
 /// Для променів **таблиці пропускання** цією функцією користуватися не можна,
 /// і це не смак — див. [`optical_depth_to_top`].
 pub fn span_in_air(air: &Atmosphere, bottom: f64, r: f64, mu: f64) -> f64 {
-    let top = distance_to_top(r, mu, air.top_m);
-    match distance_to_ground(r, mu, bottom) {
+    let rho2 = rho_squared(r, bottom);
+    let top = distance_to_top(r, mu, rho2, shell_squared(air, bottom));
+    match distance_to_ground(r, mu, rho2) {
         Some(ground) => ground.min(top),
         None => top,
     }
@@ -166,7 +199,7 @@ pub fn optical_depth_to_top(
     mu: f64,
     steps: usize,
 ) -> [f64; 3] {
-    let span = distance_to_top(r, mu, air.top_m);
+    let span = distance_to_top(r, mu, rho_squared(r, bottom), shell_squared(air, bottom));
     optical_depth(air, bottom, r, mu, span, steps)
 }
 
@@ -271,8 +304,9 @@ pub fn unit_to_texture(u: f64, size: u32) -> f64 {
 pub fn r_mu_to_uv(air: &Atmosphere, bottom: f64, r: f64, mu: f64) -> (f64, f64) {
     let top = air.top_m;
     let h = (top * top - bottom * bottom).sqrt();
-    let rho = (r * r - bottom * bottom).max(0.0).sqrt();
-    let d = distance_to_top(r, mu, top);
+    let rho2 = rho_squared(r, bottom);
+    let rho = rho2.sqrt();
+    let d = distance_to_top(r, mu, rho2, h * h);
     let d_min = top - r;
     let d_max = rho + h;
     let u = if d_max > d_min {
@@ -281,6 +315,254 @@ pub fn r_mu_to_uv(air: &Atmosphere, bottom: f64, r: f64, mu: f64) -> (f64, f64) 
         0.0
     };
     (u, (rho / h).clamp(0.0, 1.0))
+}
+
+/// Сторона таблиці багаторазового розсіювання (S3).
+///
+/// Мусить збігатися з `MULTISCATTER_SIZE` у `shaders/sky.slang`.
+pub const MULTISCATTER_SIZE: u32 = 32;
+
+/// Скільки напрямків обходить інтегрування по сфері — 8×8.
+///
+/// Сітка, а не випадкові напрямки: таблиця, яку не можна відтворити, не може
+/// бути й оракулом. Той самий набір будує CPU-двійник, і саме тому їх узагалі
+/// можна покласти поруч.
+pub const MULTISCATTER_DIRECTIONS: u32 = 64;
+
+/// Скільки кроків робить промінь усередині одного напрямку.
+pub const MULTISCATTER_STEPS: u32 = 20;
+
+/// Точка `(r, mu_s)` за одиничними координатами таблиці розсіювання.
+///
+/// Параметризація тут проста — лінійна по обох осях, — і це не лінощі: у
+/// таблиці пропускання нелінійність існувала заради дотичного променя, тобто
+/// заради того, щоб різкий край горизонту не розмазався по текселю. Тут
+/// різкого краю немає взагалі: багаторазове розсіювання — це те, що лишилося
+/// після усереднення по всій сфері напрямків.
+pub fn multiscatter_uv(air: &Atmosphere, bottom: f64, u: f64, v: f64) -> (f64, f64) {
+    let mu_s = (u * 2.0 - 1.0).clamp(-1.0, 1.0);
+    let r = bottom + v * (air.top_m - bottom);
+    (r, mu_s)
+}
+
+/// Таблиця пропускання в пам'яті — дзеркало тієї, що лежить на GPU.
+///
+/// Потрібна тому, що двійник багаторазового розсіювання (S3) читає пропускання
+/// **мільйон разів**, і рахувати його щоразу інтегруванням означало б тест,
+/// який ніхто не запустить. Шейдер робить рівно те саме — читає таблицю
+/// білінійно, — тож двійник тут ще й ближчий до нього, а не далі.
+pub struct Table {
+    pub width: u32,
+    pub height: u32,
+    values: Vec<[f64; 3]>,
+}
+
+impl Table {
+    /// Побудувати таблицю пропускання так само, як це робить `sky.slang`.
+    pub fn transmittance(air: &Atmosphere, bottom: f64, steps: usize) -> Table {
+        let width = TRANSMITTANCE_WIDTH;
+        let height = TRANSMITTANCE_HEIGHT;
+        let mut values = Vec::with_capacity((width * height) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                let u = f64::from(x) / f64::from(width - 1);
+                let v = f64::from(y) / f64::from(height - 1);
+                let (r, mu) = uv_to_r_mu(air, bottom, u, v);
+                values.push(super::atmosphere::transmittance(air, bottom, r, mu, steps));
+            }
+        }
+        Table {
+            width,
+            height,
+            values,
+        }
+    }
+
+    /// Пропускання від `(r, mu)` до верхньої межі — білінійно, як `Sample` у
+    /// шейдері.
+    pub fn sample(&self, air: &Atmosphere, bottom: f64, r: f64, mu: f64) -> [f64; 3] {
+        let (u, v) = r_mu_to_uv(air, bottom, r, mu);
+        // З одиничного діапазону в координату текстури, звідти в індекс
+        // текселя. `− 0.5`, бо тексель `k` живе в координаті `(k + 0.5)/розмір`.
+        let x = unit_to_texture(u, self.width) * f64::from(self.width) - 0.5;
+        let y = unit_to_texture(v, self.height) * f64::from(self.height) - 0.5;
+        self.bilinear(x, y)
+    }
+
+    fn bilinear(&self, x: f64, y: f64) -> [f64; 3] {
+        let clamp_index = |value: f64, size: u32| -> (usize, usize, f64) {
+            let floor = value.floor();
+            let t = value - floor;
+            let lo = (floor as i64).clamp(0, i64::from(size) - 1) as usize;
+            let hi = (floor as i64 + 1).clamp(0, i64::from(size) - 1) as usize;
+            (lo, hi, t.clamp(0.0, 1.0))
+        };
+        let (x0, x1, tx) = clamp_index(x, self.width);
+        let (y0, y1, ty) = clamp_index(y, self.height);
+
+        let at = |x: usize, y: usize| self.values[y * self.width as usize + x];
+        let mut out = [0.0; 3];
+        for (channel, value) in out.iter_mut().enumerate() {
+            let top = at(x0, y0)[channel] * (1.0 - tx) + at(x1, y0)[channel] * tx;
+            let bottom = at(x0, y1)[channel] * (1.0 - tx) + at(x1, y1)[channel] * tx;
+            *value = top * (1.0 - ty) + bottom * ty;
+        }
+        out
+    }
+}
+
+/// Напрямок номер `k` з рівномірної сітки 8×8 на сфері.
+///
+/// Виписано так само, як у шейдері, включно з порядком: `k / 8` іде по азимуту,
+/// `k % 8` — по полярному куту. Порядок сам по собі на результат не впливає
+/// (сума комутативна), але двійник, який обходить сферу іншою сіткою, вже не
+/// двійник.
+pub fn sphere_direction(k: u32) -> [f64; 3] {
+    let i = 0.5 + f64::from(k / 8);
+    let j = 0.5 + f64::from(k % 8);
+    let theta = 2.0 * std::f64::consts::PI * i / 8.0;
+    let phi = (1.0 - 2.0 * j / 8.0).acos();
+    [phi.sin() * theta.cos(), phi.sin() * theta.sin(), phi.cos()]
+}
+
+/// Розсіювання (без поглинання) на висоті `h`, 1/м по RGB.
+///
+/// Відрізняється від [`extinction`] рівно тим, що не рахує з'їденого: озон не
+/// розсіює зовсім, Мі розсіює менше, ніж гасить. Саме це число стоїть у
+/// джерелі розсіювання — фотон, якого поглинули, у небо не летить.
+pub fn scattering(air: &Atmosphere, h: f64) -> [f64; 3] {
+    let [d_rayleigh, d_mie, _] = density(air, h);
+    let mie = f64::from(air.mie_scattering) * d_mie;
+    let mut out = [0.0; 3];
+    for (channel, value) in out.iter_mut().enumerate() {
+        *value = f64::from(air.rayleigh_scattering[channel]) * d_rayleigh + mie;
+    }
+    out
+}
+
+/// Багаторазове розсіювання в точці `(r, mu_s)` — двійник `multiscatter_main`.
+///
+/// Повертає пару: `ψ` (внесок другого й наступних порядків, усереднений по
+/// сфері напрямків, на одиницю освітленості Сонця) і `f` — частку, яку одне
+/// розсіювання повертає назад у ту саму точку.
+///
+/// ## Звідки береться `ψ = L₂ / (1 − f)`
+///
+/// Означення тут самоузгоджене, і його варто прочитати перед правкою.
+///
+/// `ψ` — **середня по сфері яскравість** у точці від порядків 2 і вище. Тоді
+/// джерело ізотропного розсіювання в точці дорівнює `σ_s · ψ`, бо
+/// `∫ L·(1/4π) dω` і є середнє.
+///
+/// `f` рахується так: покласти, що середовище світиться рівномірно з
+/// яскравістю 1, і подивитися, яка середня яскравість повернеться в точку
+/// після **одного** розсіювання. Це лінійний оператор, тож наступний порядок
+/// дає `f` від попереднього, а сума — геометрична прогресія. Звідси й
+/// `1 / (1 − f)`, і вимога `f < 1`, яку тест і перевіряє: якщо вона не
+/// виконується, ряд не збігається, а «енергія росте» перестає бути метафорою.
+///
+/// ## Чого тут свідомо немає
+///
+/// **Відбиття від поверхні.** У статті воно є, і воно справжнє: над снігом
+/// небо світліше. Але кольору поверхні в [`crate::scene`] немає взагалі, а
+/// вигаданий дав би небу відтінок, якого в грі нема звідки взяти. Отже
+/// альбедо нуль — і це рішення, а не пропуск.
+pub fn multiple_scattering(
+    air: &Atmosphere,
+    bottom: f64,
+    table: &Table,
+    r: f64,
+    mu_s: f64,
+) -> ([f64; 3], [f64; 3]) {
+    // Сонце в площині xz, точка на осі z: `up = (0, 0, 1)`.
+    let sun = [(1.0 - mu_s * mu_s).max(0.0).sqrt(), 0.0, mu_s];
+
+    let shell2 = shell_squared(air, bottom);
+    // `rho²` точки, з якої все починається. **Через висоту, а не через різницю
+    // квадратів радіусів**: на рівні поверхні друге дорівнює нулю, і в `f32`
+    // йому дає знак округлення — промінь униз тоді не зупиняється на землі, а
+    // йде крізь планету. Спіймано на S3: рядок 0 таблиці розходився з двійником
+    // удвічі, решта — на 0.05%.
+    let altitude = r - bottom;
+    let rho2 = altitude * (2.0 * bottom + altitude);
+
+    let mut second = [0.0; 3];
+    let mut fraction = [0.0; 3];
+
+    for k in 0..MULTISCATTER_DIRECTIONS {
+        let w = sphere_direction(k);
+        let mu = w[2];
+        let mut span = distance_to_top(r, mu, rho2, shell2);
+        if let Some(ground) = distance_to_ground(r, mu, rho2) {
+            span = span.min(ground);
+        }
+        let step = span / f64::from(MULTISCATTER_STEPS);
+
+        let mut throughput = [1.0; 3];
+        for s in 0..MULTISCATTER_STEPS {
+            let t = (f64::from(s) + 0.5) * step;
+            // Точка семпла: `p + t·w` при `p = (0, 0, r)`.
+            let point = [t * w[0], t * w[1], r + t * w[2]];
+            // `rho²` семпла — теж без різниці квадратів:
+            // `|p + t·w|² − bottom² = rho² + 2·t·r·mu + t²`.
+            let rho2_here = (rho2 + 2.0 * t * r * mu + t * t).max(0.0);
+            let radius = (rho2_here + bottom * bottom).max(0.0).sqrt();
+            // Висота — з того самого `rho²`: `rho² = (radius − bottom)(radius + bottom)`,
+            // а сума великих чисел скорочення не має.
+            let h = rho2_here / (radius + bottom);
+            let mu_s_here =
+                (point[0] * sun[0] + point[1] * sun[1] + point[2] * sun[2]) / radius.max(1.0);
+
+            // Тінь планети: Сонце під горизонтом цієї точки — світла немає
+            // взагалі, і саме звідси береться нічний бік.
+            let lit = distance_to_ground(radius, mu_s_here, rho2_here).is_none();
+            let to_sun = if lit {
+                table.sample(air, bottom, radius, mu_s_here)
+            } else {
+                [0.0; 3]
+            };
+
+            let sigma_s = scattering(air, h);
+            let sigma_e = extinction(air, h);
+
+            for channel in 0..3 {
+                // Порожнє повітря: і джерело, і ослаблення нулі, тобто внесок
+                // нульовий. Ділити тут не можна — 0/0.
+                if sigma_e[channel] <= 0.0 {
+                    continue;
+                }
+                let step_transmittance = (-sigma_e[channel] * step).exp();
+                // Точний інтеграл джерела на кроці, а не «значення в середині
+                // × довжину»: на верхніх кроках промінь гасне в межах одного
+                // кроку, і різниця там не косметична.
+                let integrate =
+                    |source: f64| source * (1.0 - step_transmittance) / sigma_e[channel];
+
+                // Друге розсіювання: у точку з напрямку `w` приходить те, що
+                // розсіялося з прямого сонячного світла. Фазова функція
+                // рівномірна — це і є наближення статті.
+                let uniform_phase = 1.0 / (4.0 * std::f64::consts::PI);
+                second[channel] += throughput[channel]
+                    * integrate(sigma_s[channel] * to_sun[channel] * uniform_phase);
+                // Частка: те саме, але середовище світиться одиницею з усіх
+                // боків, тож джерело — просто `σ_s` (інтеграл рівномірної
+                // яскравості по сфері з рівномірною фазою дає одиницю).
+                fraction[channel] += throughput[channel] * integrate(sigma_s[channel]);
+
+                throughput[channel] *= step_transmittance;
+            }
+        }
+    }
+
+    // Середнє по сфері: `(4π/N)` тілесного кута на напрямок, поділене на `4π`
+    // самого усереднення. Лишається `1/N`.
+    let mut psi = [0.0; 3];
+    for channel in 0..3 {
+        second[channel] /= f64::from(MULTISCATTER_DIRECTIONS);
+        fraction[channel] /= f64::from(MULTISCATTER_DIRECTIONS);
+        psi[channel] = second[channel] / (1.0 - fraction[channel]).max(1.0e-6);
+    }
+    (psi, fraction)
 }
 
 #[cfg(test)]
@@ -389,13 +671,51 @@ mod tests {
     #[test]
     fn only_a_ray_pointing_down_can_meet_the_ground() {
         let r = BOTTOM + 50_000.0;
-        assert!(distance_to_ground(r, 0.5, BOTTOM).is_none());
-        assert!(distance_to_ground(r, 0.0, BOTTOM).is_none());
+        let rho2 = rho_squared(r, BOTTOM);
+        assert!(distance_to_ground(r, 0.5, rho2).is_none());
+        assert!(distance_to_ground(r, 0.0, rho2).is_none());
         // Строго вниз: до поверхні рівно висота.
-        let down = distance_to_ground(r, -1.0, BOTTOM).expect("вниз поверхня є");
+        let down = distance_to_ground(r, -1.0, rho2).expect("вниз поверхня є");
         assert!((down - 50_000.0).abs() < 1.0e-6, "{down}");
         // Ковзний промінь трохи нижче дотичної поверхні таки досягає.
-        let grazing = -(r * r - BOTTOM * BOTTOM).sqrt() / r;
-        assert!(distance_to_ground(r, grazing - 1.0e-6, BOTTOM).is_some());
+        let grazing = -rho2.sqrt() / r;
+        assert!(distance_to_ground(r, grazing - 1.0e-6, rho2).is_some());
+    }
+
+    /// Промінь униз із самої поверхні нікуди не йде — і це нуль, а не «немає».
+    ///
+    /// Найдрібніше з тверджень цього модуля й найдорожче з них: у `f32` цей
+    /// самий вираз без затискання виходив від'ємним, викликач читав його як
+    /// «поверхні попереду немає», і промінь ішов крізь планету. Рядок 0
+    /// таблиці розсіювання виходив утричі яскравішим (S3).
+    #[test]
+    fn a_ray_leaving_the_surface_downwards_travels_nowhere() {
+        for mu in [-1.0, -0.5, -0.001] {
+            let d = distance_to_ground(BOTTOM, mu, 0.0).expect("поверхня прямо тут");
+            assert_eq!(d, 0.0, "mu = {mu}");
+        }
+    }
+
+    /// `rho²` через висоту й через різницю квадратів — те саме число.
+    ///
+    /// У `f64` різниця квадратів іще працює, тож тут перевіряється не точність,
+    /// а те, що обидві формули описують одну величину: саме на цьому стоїть
+    /// право шейдера рахувати її дешевшим способом.
+    #[test]
+    fn rho_squared_is_the_same_whether_it_comes_from_height_or_from_radii() {
+        for altitude in [0.0, 10.0, 1_000.0, 100_000.0] {
+            let r = BOTTOM + altitude;
+            let by_height = altitude * (2.0 * BOTTOM + altitude);
+            let by_radii = rho_squared(r, BOTTOM);
+            let scale = by_height.max(1.0);
+            assert!(
+                (by_height - by_radii).abs() / scale < 1.0e-9,
+                "висота {altitude}: {by_height} проти {by_radii}"
+            );
+        }
+        // Те саме для оболонки.
+        let air = air();
+        let shell = shell_squared(&air, BOTTOM);
+        assert!((shell - (air.top_m * air.top_m - BOTTOM * BOTTOM)).abs() / shell < 1.0e-9);
     }
 }
