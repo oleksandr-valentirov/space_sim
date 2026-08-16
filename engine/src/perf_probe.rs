@@ -380,9 +380,9 @@ pub fn two_body_cost(
     scene.sun = [1.0, 0.0, 0.0];
 
     let place = |frame: &mut Frame,
-                     scene: &mut crate::scene::Scene,
-                     surface: (&crate::tiles::Terrain, Option<&crate::tiles::Colour>),
-                     offset: f64|
+                 scene: &mut crate::scene::Scene,
+                 surface: (&crate::tiles::Terrain, Option<&crate::tiles::Colour>),
+                 offset: f64|
      -> Result<(), String> {
         let (terrain, colour) = surface;
         let id = frame.load_surface(gpu, terrain, colour)?;
