@@ -26,6 +26,7 @@ fn main() {
     let mut trajectory_probe = false;
     let mut live_probe = false;
     let mut rotating_probe = false;
+    let mut tile_probe = false;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -55,6 +56,7 @@ fn main() {
             "--trajectory-probe" => trajectory_probe = true,
             "--live-probe" => live_probe = true,
             "--rotating-probe" => rotating_probe = true,
+            "--tile-probe" => tile_probe = true,
             "--help" | "-h" => {
                 println!("{}", HELP);
                 return;
@@ -84,6 +86,8 @@ fn main() {
     } else if rotating_probe {
         engine::rotating_probe::report();
         Ok(())
+    } else if tile_probe {
+        engine::tile_probe::report()
     } else if let Some(path) = ship_demo {
         run_ship_demo(&path, options.width, options.height, options.frames)
     } else {
@@ -111,6 +115,7 @@ const HELP: &str = "\
   --trajectory-probe  halo-орбіта з фікстури, два фрейми (ROADMAP F6)
   --live-probe      та сама орбіта, порахована зараз через core-rs (ROADMAP H5)
   --rotating-probe  де рахувати обертовий фрейм: f32 на GPU чи f64 на CPU (U6a1)
+  --tile-probe      скільки тайлів витримує bindless-масив і чого це коштує (T2)
   --width <px>      ширина, типово 1280
   --height <px>     висота, типово 720";
 

@@ -58,6 +58,7 @@ pub mod shot;
 pub mod sky;
 pub mod sphere;
 pub mod sphere_render;
+pub mod tile_probe;
 pub mod tiles;
 pub mod trajectory;
 pub mod trajectory_render;
