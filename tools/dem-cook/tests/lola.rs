@@ -1,25 +1,26 @@
-//! Читач LOLA відтворює те, що надрукувала етикетка (R5a).
+//! The LOLA reader reproduces what the label printed (R5a).
 //!
-//! Оракул тут **не наш**: `MINIMUM` і `MAXIMUM` опублікував LOLA-team поруч
-//! із самими даними. Читач мусить дійти до тих самих чисел із сирих байтів —
-//! і це ловить порядок байтів, масштаб і розміри сітки одним твердженням.
+//! The oracle here is **not ours**: the LOLA team published `MINIMUM` and
+//! `MAXIMUM` beside the data itself. The reader must arrive at the same
+//! numbers from raw bytes -- and that catches byte order, scale and grid size
+//! in one claim.
 
 use dem_cook::Grid;
 use std::path::Path;
 
 fn moon() -> Grid {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/lola/ldem_4.img");
-    Grid::read(&path).expect("сітка LOLA мала прочитатися")
+    Grid::read(&path).expect("the LOLA grid should have read")
 }
 
-/// Межі, пораховані з даних, дорівнюють опублікованим — точно.
+/// Bounds computed from the data equal the published ones -- exactly.
 #[test]
 fn the_measured_extremes_are_the_published_ones() {
     let grid = moon();
     let (low, high) = grid.measured();
 
     println!(
-        "  {}×{} відліків, {:.2} м/піксель; межі {low} … {high} = {:.1} … {:.1} м",
+        "  {}x{} samples, {:.2} m/pixel; bounds {low} .. {high} = {:.1} .. {:.1} m",
         grid.samples,
         grid.lines,
         grid.metres_per_pixel,
@@ -27,51 +28,52 @@ fn the_measured_extremes_are_the_published_ones() {
         f64::from(high) * grid.scale_m
     );
 
-    // ⚠ Виміряне розходження, яке варто знати: максимум збігається **точно**
-    // (21008), мінімум — на **одну** одиницю (−17757 проти −17758), тобто на
-    // пів метра. Етикетка сама каже, що описує «binary resampling to pixel
-    // registration», тож опубліковані межі, найпевніше, порахували до
-    // передискретизації. Одна одиниця — це один квант зберігання, і саме
-    // тому допуск тут рівно такий: більший ховав би переплутаний порядок
-    // байтів (він дав би розбіжність у тисячі), менший — падав би на
-    // властивості самого продукту.
+    // A measured discrepancy worth knowing: the maximum matches **exactly**
+    // (21008), the minimum by **one** unit (-17757 against -17758), i.e. half
+    // a metre. The label itself says it describes "binary resampling to pixel
+    // registration", so the published bounds were most likely computed before
+    // resampling. One unit is one storage quantum, which is exactly why the
+    // tolerance is this: larger would hide a swapped byte order (which would
+    // diverge by thousands), smaller would fail on a property of the product
+    // itself.
     assert!(
         (low - grid.published.0).abs() <= 1 && (high - grid.published.1).abs() <= 1,
-        "виміряні межі ({low}, {high}) розійшлися з етикеткою {:?} більше ніж \
-         на квант — це або порядок байтів, або не той шматок файлу",
+        "measured bounds ({low}, {high}) diverge from the label {:?} by more \
+         than a quantum -- either the byte order or the wrong part of the file",
         grid.published
     );
-    // Масштаб застосований: у метрах це десяток кілометрів, а не двадцять.
+    // The scale is applied: in metres this is ten kilometres, not twenty.
     let relief = f64::from(high - low) * grid.scale_m;
     assert!(
         (19_000.0..20_000.0).contains(&relief),
-        "розмах рельєфу {relief:.0} м — Місяць має близько 19.4 км"
+        "terrain range {relief:.0} m -- the Moon has about 19.4 km"
     );
 }
 
-/// Карта лежить правильним боком — за двома відомими асиметріями Місяця.
+/// The map lies the right way up -- by two known lunar asymmetries.
 ///
-/// Без цього перша перевірка не ловить нічого про **орієнтацію**: карта,
-/// перевернута по широті або відлічена на захід, має ті самі межі. Оракули
-/// тут — не окремі пікселі (на 7.6 км/піксель вони згладжені), а великі
-/// відомі факти, які не зрушить похибка в кілька клітинок:
+/// Without this the first check catches nothing about **orientation**: a map
+/// flipped in latitude or counted westwards has the same bounds. The oracles
+/// here are not individual pixels (at 7.6 km/pixel they are smoothed) but
+/// large known facts that an error of a few cells will not move:
 ///
-/// 1. **Видимий бік нижчий за зворотний** приблизно на два кілометри — це
-///    зсув центра фігури Місяця відносно центра мас. Виміряно тут: середня
-///    висота півкулі навколо 0° сходить на **−1105 м**, навколо 180° — на
-///    **+608 м**, різниця **1713 м**. Ловить і напрямок відліку довготи, і
-///    її початок;
-/// 2. **Басейн Південний полюс — Ейткен** (−60°, 200°E) — найглибше місце
-///    Місяця; його дзеркало по широті (+60°, 200°E) — зворотне нагір'я.
-///    Виміряно: **−5577 м** проти **+3802 м**, тобто 9.4 км різниці.
-///    Перевернута широта помінялa б їх місцями, і не помітити цього не можна.
+/// 1. **The near side is lower than the far side** by about two kilometres --
+///    the offset of the Moon's centre of figure from its centre of mass.
+///    Measured here: mean hemisphere height about 0 comes to **-1105 m**,
+///    about 180 to **+608 m**, a difference of **1713 m**. Catches both the
+///    direction longitude is counted in and where it starts;
+/// 2. **The South Pole-Aitken basin** (-60, 200E) is the Moon's deepest place;
+///    its mirror in latitude (+60, 200E) is far-side highlands. Measured:
+///    **-5577 m** against **+3802 m**, i.e. 9.4 km apart. A flipped latitude
+///    would swap them, and that cannot go unnoticed.
 #[test]
 fn the_map_lies_the_right_way_round() {
     let grid = moon();
     let at = |lat: f64, lon: f64| grid.sample_m(lat.to_radians(), lon.to_radians());
 
-    // Середня висота півкулі навколо заданої довготи, з вагою за косинусом
-    // широти: інакше полюси, де клітинки вужчі, важили б стільки ж.
+    // Mean hemisphere height about a given longitude, weighted by the cosine
+    // of latitude: otherwise the poles, where cells are narrower, would count
+    // as much.
     let hemisphere = |centre: f64| {
         let (mut sum, mut weight) = (0.0, 0.0);
         for line in 0..grid.lines {
@@ -95,27 +97,28 @@ fn the_map_lies_the_right_way_round() {
     let mirror = at(60.0, 200.0);
 
     println!(
-        "  півкулі: видима {near_side:.0} м, зворотна {far_side:.0} м \
-         (різниця {:.0} м); Ейткен {aitken:.0} м проти дзеркала {mirror:.0} м",
+        "  hemispheres: near {near_side:.0} m, far {far_side:.0} m \
+         (difference {:.0} m); Aitken {aitken:.0} m against mirror {mirror:.0} m",
         far_side - near_side
     );
 
     assert!(
         far_side - near_side > 1000.0,
-        "зворотний бік не вищий за видимий ({far_side:.0} проти {near_side:.0}) \
-         — довгота відлічена не на схід або не від того меридіана"
+        "the far side is not higher than the near side ({far_side:.0} against \
+         {near_side:.0}) -- longitude is counted the wrong way or from the \
+         wrong meridian"
     );
     assert!(
         aitken < -3000.0 && mirror > 2000.0,
-        "широта перевернута: Ейткен {aitken:.0} м, дзеркало {mirror:.0} м"
+        "latitude is flipped: Aitken {aitken:.0} m, mirror {mirror:.0} m"
     );
 }
 
-/// Напрямок і пара кутів — один і той самий відлік.
+/// A direction and a pair of angles give the same sample.
 ///
-/// Кубосфера оперує напрямками, і переклад мусить жити в одному місці.
-/// Перевіряється на полюсах і на шві довготи, тобто там, де `atan2` міняє
-/// гілку.
+/// The cubesphere works in directions, and the translation must live in one
+/// place. Checked at the poles and on the longitude seam, i.e. where `atan2`
+/// changes branch.
 #[test]
 fn a_direction_and_a_pair_of_angles_read_the_same_sample() {
     let grid = moon();
@@ -133,29 +136,31 @@ fn a_direction_and_a_pair_of_angles_read_the_same_sample() {
         let by_direction = grid.sample_direction_m(direction);
         assert!(
             (by_angles - by_direction).abs() < 1e-6,
-            "({lat}, {lon}): {by_angles} проти {by_direction}"
+            "({lat}, {lon}): {by_angles} against {by_direction}"
         );
     }
 }
 
-/// Пікселе-реєстрація: центр першого відліку — на півклітинки всередині.
+/// Pixel registration: the first sample's centre sits half a cell inside.
 ///
-/// Число, а не міркування: без зсуву на пів пікселя карта Місяця з'їхала б
-/// на 3790 м, тобто рівно на півклітинки цього продукту.
+/// A number rather than an argument: without the half-pixel shift the lunar
+/// map would slide by 3790 m, exactly half a cell of this product.
 #[test]
 fn the_grid_is_pixel_registered_and_the_half_pixel_is_worth_metres() {
     let grid = moon();
     let (line, sample) = grid.index_of(90.0_f64.to_radians(), 0.0);
     assert!(
         (line - (-0.5)).abs() < 1e-9,
-        "північний полюс мав лягти на край першого рядка, а ліг на {line}"
+        "the north pole should have landed on the first row's edge, but landed \
+         on {line}"
     );
     assert!(
         (sample - (-0.5)).abs() < 1e-9,
-        "нульова довгота мала лягти на край першого стовпця, а лягла на {sample}"
+        "zero longitude should have landed on the first column\'s edge, but \
+         landed on {sample}"
     );
 
     let half = grid.metres_per_pixel / 2.0;
-    println!("  пів пікселя цього продукту — {half:.0} м на екваторі");
+    println!("  half a pixel of this product is {half:.0} m at the equator");
     assert!((3700.0..3900.0).contains(&half));
 }

@@ -1,33 +1,35 @@
-//! Кукер поверхні: LOLA і LROC WAC → тайли кубосфери (R5b; етап T, T2d).
+//! Surface cooker: LOLA and LROC WAC to cubesphere tiles (R5b; stage T, T2d).
 //!
-//! Перший інструмент ассет-пайплайну на Rust. Єдиний кукер до нього — на C
-//! (`make cook`, ефемерида), і форма кроку та сама: офлайн, власний формат,
-//! версія в заголовку, детермінований вихід.
+//! The first asset-pipeline tool in Rust. The only cooker before it is in C
+//! (`make cook`, the ephemeris), and the shape of the step is the same:
+//! offline, own format, version in the header, deterministic output.
 //!
-//! ## Що робить, у трьох рядках
+//! ## What it does, in three lines
 //!
-//! Для кожного патча кожного рівня піраміди бере напрямок кожного вузла
-//! сітки (`cubesphere::Patch::vertex` на одиничній сфері), питає в джерела
-//! значення в цьому напрямку й кладе його цілим: висоту — у пів метра, тими
-//! самими одиницями, у яких її зберігає LOLA; колір — у частках [`SCALE`].
+//! For every patch of every pyramid level it takes the direction of every grid
+//! node (`cubesphere::Patch::vertex` on the unit sphere), asks the source for
+//! the value along that direction, and stores it as an integer: height in half
+//! metres, the same units LOLA stores it in; colour in fractions of [`SCALE`].
 //!
-//! ## Два джерела, один обхід
+//! ## Two sources, one traversal
 //!
-//! Обхід спільний навмисно (`tiles::node_direction`): **вузол кольору мусить
-//! лежати рівно там, де вузол висоти**. Інакше колір і рельєф зсунулись би один відносно
-//! одного на пів вузла, і виглядало б це як помилка джерела, а не як два різні
-//! обходи. Глибина пірамід при цьому різна (5 проти 6) — і саме тому вона
-//! параметр, а не константа обходу.
+//! The traversal is shared deliberately (`tiles::node_direction`): **a colour
+//! node must lie exactly where a height node lies**. Otherwise colour and
+//! terrain would shift half a node against each other, and it would look like
+//! a source error rather than two different traversals. The pyramid depths
+//! differ meanwhile (5 against 6) -- which is exactly why depth is a parameter
+//! and not a constant of the traversal.
 //!
-//! ## Чому вихід детермінований, і чому це не випадковість
+//! ## Why the output is deterministic, and why that is not luck
 //!
-//! Порядок обходу сталий, вершини патча бітово однакові з обох боків ребра
-//! (R2b), а вибірка з сітки — чиста функція від напрямку. Отже той самий
-//! вхід дає той самий байт, і SHA файлу стабільний між прогонами. Це
-//! перевіряється, а не проголошується: `tools/dem-cook/tests/cook.rs`.
+//! The traversal order is fixed, patch vertices are bit-identical on both
+//! sides of an edge (R2b), and grid sampling is a pure function of direction.
+//! So the same input gives the same byte and the file's SHA is stable across
+//! runs. That is checked rather than proclaimed:
+//! `tools/dem-cook/tests/cook.rs`.
 //!
-//! `libm` тут дозволений без застережень — правило 4 етапу R: кукер це офлайн
-//! і CPU поза інтегратором.
+//! `libm` is allowed here without reservation -- rule 4 of stage R: the cooker
+//! is offline and CPU outside the integrator.
 
 use crate::albedo::Albedo;
 use crate::bmng::{self, Mosaic};
@@ -37,19 +39,20 @@ use engine::cubesphere::{Patch, FACES, SIDE};
 use engine::tiles::{self, node_direction, Colour, Terrain, HALO, NODES, STORED};
 use std::path::Path;
 
-/// Чому дорівнює відлік 255 у колірному тайлі — відбивна здатність.
+/// What sample 255 in a colour tile equals -- reflectance.
 ///
-/// Стала, а не перцентиль, порахований на льоту, і причина в тому, що вихід
-/// кукера мусить бути передбачуваним: число, обране з самих даних, тихо
-/// змінило б **усі** байти ассета від правки в одному кратері. Виміряне
-/// підґрунтя — розподіл мозаїки WAC: медіана 0.044, p99.9 = 0.197, хвіст до
-/// 0.599 — це 0.09% пікселів (`engine::tiles::Colour`).
+/// A constant rather than a percentile computed on the fly, because the
+/// cooker's output must be predictable: a number chosen from the data itself
+/// would silently change **every** byte of the asset after an edit to one
+/// crater. The measured basis is the WAC mosaic's distribution: median 0.044,
+/// p99.9 = 0.197, a tail to 0.599 covering 0.09% of pixels
+/// (`engine::tiles::Colour`).
 ///
-/// Скільки вузлів насправді насичилось, кукер друкує в звіті — тобто вибір
-/// перевіряється числом, а не лишається здогадом у коді.
+/// How many nodes actually saturated is printed in the cooker's report, so the
+/// choice is checked by a number rather than left a guess in the code.
 pub const SCALE: f32 = 0.25;
 
-/// Скукувати тайлсет із сітки LOLA.
+/// Cook a tileset from the LOLA grid.
 pub fn cook(source: &Path, out: &Path, levels: u32) -> Result<String, String> {
     let grid = Grid::read(source)?;
     let terrain = build(&grid, levels);
@@ -61,7 +64,7 @@ pub fn cook(source: &Path, out: &Path, levels: u32) -> Result<String, String> {
     std::fs::write(out, &bytes).map_err(|e| format!("{}: {e}", out.display()))?;
 
     Ok(format!(
-        "{} — {} рівнів, {} тайлів, {:.1} МіБ; найнижча точка {:.1} м",
+        "{} -- {} levels, {} tiles, {:.1} MiB; lowest point {:.1} m",
         out.display(),
         levels,
         Terrain::count(levels),
@@ -70,13 +73,14 @@ pub fn cook(source: &Path, out: &Path, levels: u32) -> Result<String, String> {
     ))
 }
 
-/// Піраміда тайлів із сітки — без запису на диск, щоб тест міг звірити двічі.
+/// The tile pyramid from a grid, without writing to disk, so a test can
+/// compare it twice.
 pub fn build(grid: &Grid, levels: u32) -> Terrain {
-    // Одиниці зберігання ті самі, що в джерела: перекладати їх означало б
-    // округлити двічі там, де досить нуля разів.
+    // The storage units are the source's: translating them would mean
+    // rounding twice where zero times suffices.
     let scale = grid.scale_m as f32;
-    // Місяць моря не має, і сентинел каже це прямо: правило матеріалу
-    // працює на ньому скрізь, як і до T7f.
+    // The Moon has no sea, and the sentinel says so outright: the material
+    // rule applies everywhere on it, as it did before T7f.
     Terrain::build(
         levels,
         grid.reference_m,
@@ -86,12 +90,12 @@ pub fn build(grid: &Grid, levels: u32) -> Terrain {
     )
 }
 
-/// Сітки висот **з ореолом** — рівно те, що приймає `Terrain::build`.
+/// Height grids **with a halo** -- exactly what `Terrain::build` accepts.
 ///
-/// Окремо від [`build`] не заради структури, а заради оракула: з версії 4
-/// формату ореол у файл не потрапляє (нахил запечений, градієнт переїхав у
-/// записувач), тож перевірити «ореол — це справді вузол сусіда» можна лише
-/// тут, до того як його з'їдять. Перевіряє це
+/// Separate from [`build`] not for structure but for the oracle: since format
+/// version 4 the halo does not reach the file (the slope is baked and the
+/// gradient moved into the writer), so "the halo really is a neighbour's node"
+/// can only be checked here, before it is consumed. Checked by
 /// `tests/cook.rs::the_halo_holds_the_neighbours_own_node`.
 pub fn height_grids(grid: &Grid, levels: u32) -> Vec<Vec<i16>> {
     let mut grids = Vec::with_capacity(Terrain::count(levels));
@@ -105,13 +109,14 @@ pub fn height_grids(grid: &Grid, levels: u32) -> Vec<Vec<i16>> {
                     for a in 0..STORED as isize {
                         for b in 0..STORED as isize {
                             let (a, b) = (a - HALO as isize, b - HALO as isize);
-                            // Одинична сфера: висота залежить від напрямку, а
-                            // не від радіуса, і напрямок тут бітово той самий,
-                            // що в сусіднього патча на спільному ребрі.
+                            // Unit sphere: height depends on direction, not
+                            // radius, and the direction here is bit-identical
+                            // to the neighbouring patch's on a shared edge.
                             let metres = match node_direction(&patch, a, b) {
                                 Some(unit) => grid.sample_direction_m(unit),
-                                // Кут ореолу: сусіда через ребро там немає, і
-                                // ніхто його не читає (`engine::tiles`).
+                                // Halo corner: there is no across-edge
+                                // neighbour there, and nobody reads it
+                                // (`engine::tiles`).
                                 None => 0.0,
                             };
                             tile.push(quantise(metres, grid.scale_m));
@@ -125,11 +130,12 @@ pub fn height_grids(grid: &Grid, levels: u32) -> Vec<Vec<i16>> {
     grids
 }
 
-/// Скукувати тайлсет висот Землі з ETOPO.
+/// Cook Earth's height tileset from ETOPO.
 ///
-/// Окремо від [`cook`], а не прапорцем усередині: спільним у них лишається
-/// обхід (`tiles::node_direction`) і формат, а джерела різні в усьому — одиниці,
-/// опорний радіус, ланцюг, реєстрація довготи.
+/// Separate from [`cook`] rather than a flag inside it: what they share is the
+/// traversal (`tiles::node_direction`) and the format, while the sources
+/// differ in everything -- units, reference radius, chain, longitude
+/// registration.
 pub fn cook_earth(source: &Path, out: &Path, levels: u32) -> Result<String, String> {
     let relief = Relief::read(source)?;
     let terrain = build_earth(&relief, levels);
@@ -141,7 +147,7 @@ pub fn cook_earth(source: &Path, out: &Path, levels: u32) -> Result<String, Stri
     std::fs::write(out, &bytes).map_err(|e| format!("{}: {e}", out.display()))?;
 
     Ok(format!(
-        "{} — {} рівнів, {} тайлів, {:.1} МіБ; найнижча точка {:.1} м, суші {:.2}%",
+        "{} -- {} levels, {} tiles, {:.1} MiB; lowest point {:.1} m, land {:.2}%",
         out.display(),
         levels,
         Terrain::count(levels),
@@ -151,7 +157,8 @@ pub fn cook_earth(source: &Path, out: &Path, levels: u32) -> Result<String, Stri
     ))
 }
 
-/// Піраміда висот Землі — без запису на диск, щоб тест міг звірити двічі.
+/// Earth's height pyramid, without writing to disk, so a test can compare it
+/// twice.
 pub fn build_earth(relief: &Relief, levels: u32) -> Terrain {
     let chain = relief.chain();
     let rads = chain.iter().map(Relief::pixel_rad).collect::<Vec<f64>>();
@@ -170,12 +177,14 @@ pub fn build_earth(relief: &Relief, levels: u32) -> Terrain {
                             let (a, b) = (a - HALO as isize, b - HALO as isize);
                             let metres = match node_direction(&patch, a, b) {
                                 Some(unit) => source.sample_direction_m(unit),
-                                // Кут ореолу: сусіда через ребро там немає, і
-                                // ніхто його не читає (`engine::tiles`).
+                                // Halo corner: there is no across-edge
+                                // neighbour there, and nobody reads it
+                                // (`engine::tiles`).
                                 None => 0.0,
                             };
-                            // Одиниця зберігання — метр, тобто та сама, у якій
-                            // сітка вже лежить; округлення тут друге й останнє.
+                            // The storage unit is the metre, the one the grid
+                            // already uses; this rounding is the second and
+                            // last.
                             tile.push(quantise(metres, 1.0));
                         }
                     }
@@ -185,15 +194,15 @@ pub fn build_earth(relief: &Relief, levels: u32) -> Terrain {
         }
     }
 
-    // Рівень моря — рівно нуль, і це не домовленість: ETOPO міряє висоти від
-    // геоїда, а одиниця зберігання тут метр. Тобто «нижче нуля» в цьому
-    // тайлсеті означає «під водою» за побудовою джерела, а не за нашим
-    // вибором порога. Виміряно на скукованому ассеті: нижче нуля 72.0%
-    // вузлів, при справжній частці океану 71%.
+    // Sea level is exactly zero, and that is not a convention: ETOPO measures
+    // heights from the geoid and the storage unit here is the metre. So "below
+    // zero" in this tileset means "under water" by the source's construction,
+    // not by a threshold of ours. Measured on the cooked asset: 72.0% of nodes
+    // are below zero, against a true ocean fraction of 71%.
     Terrain::build(levels, etopo::REFERENCE_M, 1.0, 0.0, &grids)
 }
 
-/// Скукувати колірний тайлсет із мозаїки WAC.
+/// Cook the colour tileset from the WAC mosaic.
 pub fn cook_colour(source: &Path, out: &Path, levels: u32) -> Result<String, String> {
     let map = Albedo::read(source)?;
     let (colour, saturated) = build_colour(&map, levels);
@@ -206,8 +215,8 @@ pub fn cook_colour(source: &Path, out: &Path, levels: u32) -> Result<String, Str
 
     let nodes = tiles::count(levels) * NODES * NODES;
     Ok(format!(
-        "{} — {levels} рівнів, {} тайлів, {:.1} МіБ; шкала {SCALE}, насичено \
-         {saturated} вузлів з {nodes} ({:.4}%)",
+        "{} -- {levels} levels, {} tiles, {:.1} MiB; scale {SCALE}, saturated \
+         {saturated} nodes of {nodes} ({:.4}%)",
         out.display(),
         tiles::count(levels),
         bytes.len() as f64 / (1024.0 * 1024.0),
@@ -215,10 +224,11 @@ pub fn cook_colour(source: &Path, out: &Path, levels: u32) -> Result<String, Str
     ))
 }
 
-/// Піраміда колірних тайлів — без запису на диск, щоб тест міг звірити двічі.
+/// The colour tile pyramid, without writing to disk, so a test can compare it
+/// twice.
 ///
-/// Разом із нею — скільки вузлів упритул до [`SCALE`]: це і є ціна вибору
-/// шкали, і платиться вона в тих самих байтах, що й сам ассет.
+/// Alongside it, how many nodes came up against [`SCALE`]: that is the cost of
+/// the scale choice, and it is paid in the same bytes as the asset itself.
 pub fn build_colour(map: &Albedo, levels: u32) -> (Colour, usize) {
     let chain = map.chain();
     let rads = chain.iter().map(Albedo::pixel_rad).collect::<Vec<f64>>();
@@ -234,9 +244,9 @@ pub fn build_colour(map: &Albedo, levels: u32) -> (Colour, usize) {
                     let mut tile = Vec::with_capacity(NODES * NODES);
                     for a in 0..NODES {
                         for b in 0..NODES {
-                            // Ореолу колірний тайл не несе (W4): градієнта в
-                            // кольору немає, а вибірка на краю патча має на
-                            // ньому вагу нуль.
+                            // A colour tile carries no halo (W4): colour has
+                            // no gradient, and a sample at the patch edge has
+                            // zero weight on it.
                             let value = source.sample_direction(patch.vertex(a, b, 1.0));
                             let unit = quantise_colour(value);
                             if unit == u8::MAX {
@@ -253,7 +263,7 @@ pub fn build_colour(map: &Albedo, levels: u32) -> (Colour, usize) {
     (Colour::build(levels, 1, SCALE, false, &grids), saturated)
 }
 
-/// Скукувати колірний тайлсет Землі з мозаїки BMNG.
+/// Cook Earth's colour tileset from the BMNG mosaic.
 pub fn cook_earth_colour(source: &Path, out: &Path, levels: u32) -> Result<String, String> {
     let map = Mosaic::read(source)?;
     let colour = build_earth_colour(&map, levels);
@@ -264,15 +274,16 @@ pub fn cook_earth_colour(source: &Path, out: &Path, levels: u32) -> Result<Strin
     }
     std::fs::write(out, &bytes).map_err(|e| format!("{}: {e}", out.display()))?;
 
-    // Два середні поруч, і це не звіт, а звірка (T7h). Перше пораховане по
-    // сітці широта-довгота джерела, друге — по найгрубішому рівню піраміди
-    // кубосфери, тобто зовсім іншим шляхом і після трьох перетворень. Друге з
-    // них і читає рушій, коли будує таблицю неба.
+    // Two means side by side, and this is a cross-check rather than a report
+    // (T7h). The first is computed over the source's lat-lon grid, the second
+    // over the coarsest cubesphere pyramid level -- an entirely different route
+    // after three transformations. It is the second that the engine reads when
+    // it builds the sky table.
     let mean = map.mean();
     let ours = colour.mean();
     Ok(format!(
-        "{} — {levels} рівнів, {} тайлів, {:.1} МіБ, чотири канали sRGB; \
-         середній колір мозаїки {:.4} {:.4} {:.4}, піраміди {:.4} {:.4} {:.4}",
+        "{} -- {levels} levels, {} tiles, {:.1} MiB, four sRGB channels; \
+         mean mosaic colour {:.4} {:.4} {:.4}, pyramid {:.4} {:.4} {:.4}",
         out.display(),
         tiles::count(levels),
         bytes.len() as f64 / (1024.0 * 1024.0),
@@ -285,22 +296,24 @@ pub fn cook_earth_colour(source: &Path, out: &Path, levels: u32) -> Result<Strin
     ))
 }
 
-/// Піраміда колірних тайлів Землі — без запису на диск, щоб тест звірив двічі.
+/// Earth's colour tile pyramid, without writing to disk, so a test compares it
+/// twice.
 ///
-/// ## Чотири канали, з яких несе колір три
+/// ## Four channels, three of which carry colour
 ///
-/// Трибайтового формату текстури не існує ні в wgpu, ні у Vulkan (T2a), тож
-/// четвертий байт є в будь-якому разі. Він заповнюється `255` і не читається
-/// ніким: маска води виводиться з висоти безкоштовно (`h < 0`), а поле, яке
-/// ніхто не читає, гірше за свою відсутність — тому туди й не кладеться нічого
-/// «про запас».
+/// No three-byte texture format exists in wgpu or in Vulkan (T2a), so the
+/// fourth byte is there regardless. It is filled with `255` and read by
+/// nobody: the water mask follows from the height for free (`h < 0`), and a
+/// field nobody reads is worse than no field -- so nothing is put there "just
+/// in case".
 ///
-/// ## Байт зберігає sRGB, а не лінійне світло
+/// ## The byte stores sRGB, not linear light
 ///
-/// Усе всередині — і білінійна вага, і ланцюг — рахується лінійно
-/// (`bmng::Mosaic`), а в тайл кладеться sRGB-кодований байт. Причина числова:
-/// лінійна яскравість океану — 0.0015, тобто нуль у восьми бітах. Розкодує
-/// його GPU при вибірці (`Rgba8UnormSrgb`), безкоштовно, а на CPU —
+/// Everything inside -- the bilinear weights and the chain -- is computed
+/// linearly (`bmng::Mosaic`), while an sRGB-encoded byte goes into the tile.
+/// The reason is numerical: the ocean's linear luminance is 0.0015, i.e. zero
+/// in eight bits. The GPU decodes it on sampling (`Rgba8UnormSrgb`), for free,
+/// and on the CPU --
 /// `Colour::reflectance`.
 pub fn build_earth_colour(map: &Mosaic, levels: u32) -> Colour {
     let chain = map.chain();
@@ -330,25 +343,26 @@ pub fn build_earth_colour(map: &Mosaic, levels: u32) -> Colour {
         }
     }
 
-    // Шкала одиниця: у байті лежить весь діапазон кольору, і стискати його
-    // нема куди — на відміну від відбивної здатності Місяця, у якої 99.9%
-    // відліків нижчі за 0.2 (`SCALE`).
+    // Scale one: the byte holds the whole colour range and there is nowhere to
+    // compress it -- unlike the Moon's reflectance, of which 99.9% of samples
+    // lie below 0.2 (`SCALE`).
     Colour::build(levels, 4, 1.0, true, &grids)
 }
 
-/// Яку сітку ланцюга читає рівень піраміди.
+/// Which chain grid a pyramid level reads.
 ///
-/// Найгрубішу з тих, чий піксель ще не більший за вузол цього рівня. Кут, а
-/// не метри: вузол рівня `L` — це `(π/2) / (SIDE·2^L)` радіана незалежно від
-/// радіуса тіла, а піксель сітки — `π/(180·per_degree)`. Радіус скорочується,
-/// тож те саме число працює і для Місяця, і для Землі.
+/// The coarsest whose pixel is not yet larger than this level's node. Angles,
+/// not metres: a level `L` node is `(pi/2) / (SIDE*2^L)` radians regardless of
+/// body radius, and a grid pixel is `pi/(180*per_degree)`. The radius cancels,
+/// so the same number works for both the Moon and Earth.
 ///
-/// Дрібніша сітка дала б точкову вибірку там, де вузол накриває тисячі
-/// пікселів (плямистий шум замість карти); грубіша викинула б деталь, яку
-/// вузол ще здатен нести.
+/// A finer grid would give point sampling where a node covers thousands of
+/// pixels (blotchy noise instead of a map); a coarser one would throw away
+/// detail the node can still carry.
 ///
-/// Параметр — самі кути, а не ланцюг: сіток тепер три різні типи (висоти
-/// Місяця, мозаїка Місяця, висоти й колір Землі), а питання до них одне.
+/// The parameter is the angles themselves rather than the chain: there are now
+/// three different grid types (lunar heights, lunar mosaic, Earth heights and
+/// colour) and one question to ask them.
 pub fn source_for(pixel_rad: &[f64], level: u32) -> usize {
     let node_rad = std::f64::consts::FRAC_PI_2 / f64::from(SIDE as u32 * (1u32 << level));
     let mut best = 0;
@@ -360,21 +374,21 @@ pub fn source_for(pixel_rad: &[f64], level: u32) -> usize {
     best
 }
 
-/// Відбивна здатність → один байт.
+/// Reflectance to one byte.
 ///
-/// Затискається з обох боків, і обидва боки означають різне. Знизу — від'ємні
-/// значення джерела (1.66% мозаїки): це шум фотометричної нормалізації, а нуль
-/// — фізична підлога. Згори — хвіст понад [`SCALE`], і його насичення в білий
-/// кукер рахує й друкує.
+/// Clamped on both sides, and the two sides mean different things. Below,
+/// negative source values (1.66% of the mosaic): photometric normalisation
+/// noise, with zero the physical floor. Above, the tail past [`SCALE`], whose
+/// saturation to white the cooker counts and prints.
 fn quantise_colour(value: f64) -> u8 {
     let units = (value / f64::from(SCALE) * 255.0).round();
     units.clamp(0.0, 255.0) as u8
 }
 
-/// Метри → одиниці зберігання, з насиченням замість загортання.
+/// Metres to storage units, saturating rather than wrapping.
 ///
-/// Загортання тут було б найгіршим із можливих: гора на 33 км перетворилась
-/// би на западину, і виглядало б це правдоподібно.
+/// Wrapping here would be the worst possible: a 33 km mountain would turn into
+/// a basin, and it would look plausible.
 fn quantise(metres: f64, scale: f64) -> i16 {
     let units = (metres / scale).round();
     units.clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16

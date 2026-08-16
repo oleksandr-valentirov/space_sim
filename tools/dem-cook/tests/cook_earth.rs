@@ -1,18 +1,18 @@
-//! Кукер висот Землі: ETOPO → тайлсет кубосфери (етап T, крок T7d).
+//! Earth height cooker: ETOPO to a cubesphere tileset (stage T, step T7d).
 //!
-//! Оракули тут не повторюють `cook.rs` (Місяць): формат, ореол і зшивання
-//! рівнів уже доведені там і від джерела не залежать. Доводиться те, що в
-//! Землі **інше**:
+//! The oracles here do not repeat `cook.rs` (the Moon): the format, the halo
+//! and level stitching are already proved there and do not depend on the
+//! source. What is proved is what is **different** about Earth:
 //!
-//! 1. **ланцюг** — джерело вп'ятеро дрібніше за вузол найглибшого рівня і в
-//!    тридцять тисяч разів дрібніше за вузол нульового, тож грубий рівень
-//!    мусить усереднювати, а не брати піксель;
-//! 2. **берегова лінія** — те, заради чого крок узагалі є: знак висоти в
-//!    тайлі мусить збігатися зі знаком у джерелі, у координатах;
-//! 3. **опорний радіус і одиниці** — метр і 6 371 010 м, а не пів метра й
-//!    місячний радіус.
+//! 1. **the chain** -- the source is five times finer than the deepest level's
+//!    node and thirty thousand times finer than the zeroth's, so a coarse
+//!    level must average rather than take a pixel;
+//! 2. **the coastline** -- what the step exists for: the sign of the height in
+//!    the tile must match the sign in the source, in coordinates;
+//! 3. **reference radius and units** -- the metre and 6,371,010 m, not half a
+//!    metre and the lunar radius.
 //!
-//! Усе, що потребує самого продукту, пропускається без нього.
+//! Anything needing the product itself is skipped without it.
 
 use dem_cook::bmng::Mosaic;
 use dem_cook::cook::{build_earth, build_earth_colour};
@@ -25,13 +25,14 @@ fn source() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/etopo/etopo_2022_60s_surface.tif")
 }
 
-/// Сітка ETOPO, або `None` — тоді тест каже, чого бракує, і не падає (Q5).
+/// The ETOPO grid, or `None` -- then the test says what is missing and does
+/// not fail (Q5).
 fn relief() -> Option<Relief> {
     match Relief::read(&source()) {
         Ok(grid) => Some(grid),
         Err(_) => {
             eprintln!(
-                "ПРОПУЩЕНО: немає {}. Як покласти назад — data/etopo/README.md",
+                "SKIPPED: missing {}. How to put it back: data/etopo/README.md",
                 source().display()
             );
             None
@@ -39,10 +40,10 @@ fn relief() -> Option<Relief> {
     }
 }
 
-/// Два прогони кукера дають байт у байт те саме.
+/// Two cooker runs give byte-for-byte the same.
 ///
-/// Кукається дві піраміди на два рівні, а не на шість: детермінізм не
-/// залежить від глибини, а тест не має права коштувати хвилини.
+/// Two pyramids of two levels are cooked rather than six: determinism does not
+/// depend on depth, and a test has no business costing minutes.
 #[test]
 fn cooking_twice_gives_the_same_bytes() {
     let Some(grid) = relief() else { return };
@@ -53,11 +54,11 @@ fn cooking_twice_gives_the_same_bytes() {
     assert_eq!(first, second);
 }
 
-/// Одиниці й опорний радіус — Землі, а не Місяця.
+/// The units and reference radius are Earth's, not the Moon's.
 ///
-/// Дрібниця, яку легко не помітити й неможливо побачити в кадрі: рельєф з
-/// місячним масштабом 0.5 просто вдвічі нижчий, а з місячним радіусом —
-/// поверхня, втоплена на чотири з половиною тисячі кілометрів.
+/// A small thing, easy to miss and impossible to see in frame: terrain with
+/// the lunar scale of 0.5 is simply half as tall, and with the lunar radius it
+/// is a surface sunk by four and a half thousand kilometres.
 #[test]
 fn the_asset_carries_earths_own_numbers() {
     let Some(grid) = relief() else { return };
@@ -68,11 +69,12 @@ fn the_asset_carries_earths_own_numbers() {
     assert_eq!(terrain.reference_m, REFERENCE_M);
 }
 
-/// Кожен вузол тайла — те саме число, що дає джерело, прочитане іншим шляхом.
+/// Every tile node is the same number the source gives, read by another path.
 ///
-/// Іншим шляхом: тайл читається через `Terrain::node`, а джерело — через
-/// `sample_direction_m` у напрямку тієї самої вершини патча. Збігтися вони
-/// мусять точно, бо між ними лише округлення до метра, яке робить обидва.
+/// Another path: the tile is read through `Terrain::node` and the source
+/// through `sample_direction_m` along the direction of the same patch vertex.
+/// They must agree exactly, because between them lies only the rounding to a
+/// metre, which both do.
 #[test]
 fn every_node_is_the_source_read_a_second_way() {
     let Some(grid) = relief() else { return };
@@ -80,8 +82,9 @@ fn every_node_is_the_source_read_a_second_way() {
     let levels = 2;
     let terrain = build_earth(&grid, levels);
     let chain = grid.chain();
-    // Найглибший рівень піраміди читає ту сітку, яку йому дав ланцюг; для
-    // рівня 1 це не сама ETOPO, і брати тут `grid` було б перевіркою іншого.
+    // The deepest pyramid level reads the grid the chain gave it; for level 1
+    // that is not ETOPO itself, and taking `grid` here would check something
+    // else.
     let rads = chain.iter().map(Relief::pixel_rad).collect::<Vec<f64>>();
     let source = &chain[dem_cook::cook::source_for(&rads, levels - 1)];
 
@@ -91,33 +94,34 @@ fn every_node_is_the_source_read_a_second_way() {
         i: 1,
         j: 0,
     };
-    let index = terrain.index(&patch).expect("патч у піраміді");
+    let index = terrain.index(&patch).expect("patch in the pyramid");
     for a in (0..=SIDE).step_by(7) {
         for b in (0..=SIDE).step_by(7) {
             let unit = patch.vertex(a, b, 1.0);
             let expect = source.sample_direction_m(unit).round();
             let got = f64::from(terrain.node(index, a as i32, b as i32));
-            assert_eq!(got, expect, "вузол ({a}, {b})");
+            assert_eq!(got, expect, "node ({a}, {b})");
         }
     }
 }
 
-/// Грубий рівень читає усереднену сітку ланцюга, а не саму ETOPO (T3c).
+/// A coarse level reads the chain's averaged grid rather than ETOPO itself
+/// (T3c).
 ///
-/// ⚠ **Два оракули, які тут напрошуються, обидва не працюють**, і це варто
-/// знати наперед:
+/// WARNING: **the two oracles that suggest themselves here both fail**, and
+/// that is worth knowing in advance:
 ///
-/// - *дисперсія сусідів*: на рівні 0 вузол накриває 312 км, і сусідні вузли
-///   законно різняться на чотири кілометри — шельф проти океанічного дна.
-///   Виміряно 3924 м, і це правда про Землю;
-/// - *близькість до площинного середнього*: саме «середнє» доводиться
-///   оцінювати вибіркою, і при 11×11 точках його власний шум (±360 м) більший
-///   за різницю, яку він мав би показати. Виміряно: 290 м проти 239 м, тобто
-///   оракул відповідає на своє питання шумом.
+/// - *neighbour variance*: at level 0 a node covers 312 km, and neighbouring
+///   nodes legitimately differ by four kilometres -- shelf against ocean
+///   floor. Measured 3924 m, and that is a truth about Earth;
+/// - *closeness to an area mean*: that "mean" itself has to be estimated by
+///   sampling, and at 11x11 points its own noise (+/-360 m) exceeds the
+///   difference it should show. Measured: 290 m against 239 m, i.e. the oracle
+///   answers its own question with noise.
 ///
-/// Працює натомість інваріант самого ланцюга, і він точний: рівень 0 мусить
-/// брати **не нульову** сітку, і вузол тайла мусить бітово дорівнювати
-/// вибірці саме з неї.
+/// What works instead is the chain's own invariant, and it is exact: level 0
+/// must take a **non-zeroth** grid, and a tile node must equal bitwise a
+/// sample from exactly that one.
 #[test]
 fn a_coarse_level_reads_a_reduced_grid() {
     let Some(grid) = relief() else { return };
@@ -127,11 +131,11 @@ fn a_coarse_level_reads_a_reduced_grid() {
     let chosen = dem_cook::cook::source_for(&rads, 0);
     assert!(
         chosen > 0,
-        "рівень 0 читає саму ETOPO — ланцюг не дійшов до 312-кілометрового вузла"
+        "level 0 reads ETOPO itself -- the chain did not reach the 312 km node"
     );
 
-    // І та сітка справді грубіша за вузол не більш ніж на крок ланцюга:
-    // грубіша дала б рівню 0 менше деталі, ніж він здатен нести.
+    // And that grid really is coarser than the node by no more than one chain
+    // step: coarser would give level 0 less detail than it can carry.
     let node_rad = std::f64::consts::FRAC_PI_2 / SIDE as f64;
     assert!(chain[chosen].pixel_rad() <= node_rad);
     assert!(chain[chosen + 1].pixel_rad() > node_rad);
@@ -143,7 +147,7 @@ fn a_coarse_level_reads_a_reduced_grid() {
         i: 0,
         j: 0,
     };
-    let index = terrain.index(&patch).expect("патч у піраміді");
+    let index = terrain.index(&patch).expect("patch in the pyramid");
     for a in (0..=SIDE).step_by(7) {
         for b in (0..=SIDE).step_by(7) {
             let unit = cubesphere::vertex(
@@ -154,19 +158,20 @@ fn a_coarse_level_reads_a_reduced_grid() {
             );
             let expect = chain[chosen].sample_direction_m(unit).round();
             let got = f64::from(terrain.node(index, a as i32, b as i32));
-            assert_eq!(got, expect, "вузол ({a}, {b})");
+            assert_eq!(got, expect, "node ({a}, {b})");
         }
     }
 }
 
-/// Берегова лінія в тайлсеті стоїть там, де вона в джерела.
+/// The coastline in the tileset stands where it stands in the source.
 ///
-/// Це та перевірка, заради якої крок і робився (T7). Знак висоти, а не саме
-/// значення: між тайлом і джерелом стоїть ланцюг, тобто числа різняться
-/// законно — а от суша, що стала морем, означала б зсунуту сітку.
+/// This is the check the step was made for (T7). The sign of the height rather
+/// than the value: between tile and source stands the chain, so the numbers
+/// differ legitimately -- but land turned sea would mean a shifted grid.
 ///
-/// Точки взяті по обидва боки берега й у глибині обох середовищ, включно з
-/// внутрішнім морем (Каспій) — тим випадком, який ловить дзеркальну довготу.
+/// The points are taken on both sides of a coast and deep inside both media,
+/// including an inland sea (the Caspian) -- the case that catches a mirrored
+/// longitude.
 #[test]
 fn the_coastline_lands_where_the_source_has_it() {
     let Some(grid) = relief() else { return };
@@ -175,20 +180,21 @@ fn the_coastline_lands_where_the_source_has_it() {
     let degrees = std::f64::consts::PI / 180.0;
 
     for (name, lat, lon, land) in [
-        ("Сахара", 23.0, 13.0, true),
-        ("Тибет", 32.0, 88.0, true),
-        ("Амазонія", -3.0, -60.0, true),
-        ("Антарктида", -80.0, 0.0, true),
-        ("центр Тихого океану", 0.0, -140.0, false),
-        ("Атлантика", 30.0, -40.0, false),
-        ("Каспій", 42.0, 51.0, false),
-        ("Північний Льодовитий", 89.0, 0.0, false),
+        ("Sahara", 23.0, 13.0, true),
+        ("Tibet", 32.0, 88.0, true),
+        ("Amazonia", -3.0, -60.0, true),
+        ("Antarctica", -80.0, 0.0, true),
+        ("mid Pacific", 0.0, -140.0, false),
+        ("Atlantic", 30.0, -40.0, false),
+        ("Caspian", 42.0, 51.0, false),
+        ("Arctic Ocean", 89.0, 0.0, false),
     ] {
         let (lat, lon) = (lat * degrees, lon * degrees);
         let unit = [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()];
 
-        // Від напрямку до вузла тайла: грань і місце на ній дає `locate`,
-        // а патч найглибшого рівня — це просто ціла частина місця в сітці.
+        // From a direction to a tile node: `locate` gives the face and the
+        // place on it, and the deepest level's patch is simply the integer
+        // part of that place in the grid.
         let place = cubesphere::locate(unit);
         let nodes = Patch::face_nodes(5);
         let (u, v) = (place.s * nodes as f64, place.t * nodes as f64);
@@ -203,15 +209,16 @@ fn the_coastline_lands_where_the_source_has_it() {
         assert_eq!(
             height >= 0.0,
             land,
-            "{name}: тайлсет дає {height:.0} м, джерело — {:.0} м",
+            "{name}: the tileset gives {height:.0} m, the source {:.0} m",
             grid.sample_direction_m(unit)
         );
     }
 }
 
-// ── Колір (T7e) ──────────────────────────────────────────────────────────
+// -- Colour (T7e) ---------------------------------------------------------
 
-/// Мозаїка BMNG, або `None` — тоді тест каже, чого бракує, і не падає (Q5).
+/// The BMNG mosaic, or `None` -- then the test says what is missing and does
+/// not fail (Q5).
 fn mosaic() -> Option<Mosaic> {
     let path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/bmng/world.topo.bathy.200407.jpg");
@@ -219,7 +226,7 @@ fn mosaic() -> Option<Mosaic> {
         Ok(map) => Some(map),
         Err(_) => {
             eprintln!(
-                "ПРОПУЩЕНО: немає {}. Як покласти назад — data/bmng/README.md",
+                "SKIPPED: missing {}. How to put it back: data/bmng/README.md",
                 path.display()
             );
             None
@@ -227,12 +234,12 @@ fn mosaic() -> Option<Mosaic> {
     }
 }
 
-/// Заголовок кольору Землі несе те, що відрізняє її від Місяця.
+/// Earth's colour header carries what distinguishes it from the Moon.
 ///
-/// Чотири канали, шкала одиниця й **простір sRGB** — останнє нове в форматі
-/// (`Colour::srgb`, з версії 2 формату). Без цього поля байт «колір» означав би
-/// різне для двох тіл, а
-/// дізнатися, яке саме, можна було б лише за кількістю каналів, тобто здогадом.
+/// Four channels, a scale of one and the **sRGB space** -- the last new in the
+/// format (`Colour::srgb`, since format version 2). Without that field a
+/// "colour" byte would mean different things for the two bodies, and which
+/// could only be learned from the channel count, i.e. by guessing.
 #[test]
 fn the_colour_asset_says_what_space_it_is_in() {
     let Some(map) = mosaic() else { return };
@@ -243,15 +250,15 @@ fn the_colour_asset_says_what_space_it_is_in() {
     assert_eq!(colour.scale, 1.0);
     assert!(colour.srgb);
 
-    let read = Colour::from_bytes(&colour.to_bytes()).expect("свій же файл");
+    let read = Colour::from_bytes(&colour.to_bytes()).expect("our own file");
     assert_eq!(read.srgb, colour.srgb);
     assert_eq!(read.channels, colour.channels);
 }
 
-/// Кожен вузол кольору — джерело, прочитане іншим шляхом, і саме в sRGB.
+/// Every colour node is the source read by another path, and in sRGB.
 ///
-/// Ланцюг тут той самий, що у висот, тож звіряти треба з тією сіткою, яку
-/// вибрав `source_for`, а не з мозаїкою.
+/// The chain here is the same as for the heights, so the comparison must be
+/// against the grid `source_for` chose rather than against the mosaic.
 #[test]
 fn every_colour_node_is_the_source_read_a_second_way() {
     let Some(map) = mosaic() else { return };
@@ -268,25 +275,27 @@ fn every_colour_node_is_the_source_read_a_second_way() {
         i: 0,
         j: 1,
     };
-    let index = tiles::index(colour.levels, &patch).expect("патч у піраміді");
+    let index = tiles::index(colour.levels, &patch).expect("patch in the pyramid");
     for a in (0..=SIDE).step_by(7) {
         for b in (0..=SIDE).step_by(7) {
             let linear = source.sample_direction(patch.vertex(a, b, 1.0));
             for channel in 0..3u32 {
                 let expect = dem_cook::bmng::to_srgb(linear[channel as usize]);
                 let got = colour.node(index, a as i32, b as i32, channel);
-                assert_eq!(got, expect, "вузол ({a}, {b}), канал {channel}");
+                assert_eq!(got, expect, "node ({a}, {b}), channel {channel}");
             }
-            // Четвертий канал існує лише тому, що трибайтової текстури немає.
+            // The fourth channel exists only because there is no three-byte
+            // texture.
             assert_eq!(colour.node(index, a as i32, b as i32, 3), u8::MAX);
         }
     }
 }
 
-/// Те, що читає CPU, лишається лінійним — незалежно від того, як лежить байт.
+/// What the CPU reads stays linear -- regardless of how the byte is stored.
 ///
-/// Це і є причина заводити поле `srgb`: сяйво планети (T6) питає про світло, і
-/// на темному океані різниця між байтом і світлом двадцятикратна.
+/// That is the reason for the `srgb` field: planetshine (T6) asks about light,
+/// and over a dark ocean the difference between byte and light is
+/// twentyfold.
 #[test]
 fn what_the_cpu_reads_is_linear() {
     let Some(map) = mosaic() else { return };
@@ -296,8 +305,9 @@ fn what_the_cpu_reads_is_linear() {
     let (lat, lon) = (0.0f64, -140.0 * degrees);
     let unit = [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()];
 
-    // Нульовий рівень усереднений ланцюгом, тож звіряємо не з мозаїкою, а з
-    // самим тайлом: питання тут не «яке число», а «в якому воно просторі».
+    // Level zero is averaged by the chain, so the comparison is against the
+    // tile itself rather than the mosaic: the question here is not "which
+    // number" but "in which space".
     let (a, b) = (0, 0);
     let index = tiles::index(
         colour.levels,
@@ -308,24 +318,24 @@ fn what_the_cpu_reads_is_linear() {
             j: 0,
         },
     )
-    .expect("нульовий рівень є завжди");
+    .expect("level zero always exists");
 
     for channel in 0..3u32 {
         let byte = f64::from(colour.node(index, a, b, channel)) / 255.0;
         let linear = colour.reflectance(index, a, b, channel);
         assert!(
             linear < byte,
-            "канал {channel}: {linear} не темніший за байт {byte} — sRGB не розкодовано"
+            "channel {channel}: {linear} is not darker than byte {byte} -- sRGB was not decoded"
         );
     }
 }
 
-/// Колір і висота стоять в одному вузлі: море синє там, де воно нижче нуля.
+/// Colour and height sit at one node: the sea is blue where it is below zero.
 ///
-/// Це та сама перевірка берегової лінії, але вже **між двома ассетами**, а не
-/// між ассетом і джерелом: обидва тайлсети мають однакову геометрію піраміди
-/// й спільний обхід, тож розбіжність тут означала б зсув на пів вузла — саме
-/// те, проти чого спільний `direction` і написаний.
+/// The same coastline check, but now **between two assets** rather than
+/// between an asset and a source: both tilesets share the pyramid geometry and
+/// the traversal, so a discrepancy here would mean a half-node shift -- exactly
+/// what the shared `direction` is written against.
 #[test]
 fn colour_and_height_agree_on_the_shore() {
     let Some(map) = mosaic() else { return };
@@ -341,8 +351,8 @@ fn colour_and_height_agree_on_the_shore() {
         i: 2,
         j: 1,
     };
-    let ci = tiles::index(colour.levels, &patch).expect("патч у піраміді");
-    let ti = terrain.index(&patch).expect("патч у піраміді");
+    let ci = tiles::index(colour.levels, &patch).expect("patch in the pyramid");
+    let ti = terrain.index(&patch).expect("patch in the pyramid");
 
     let mut agree = 0;
     let mut total = 0;
@@ -361,7 +371,7 @@ fn colour_and_height_agree_on_the_shore() {
     let fraction = f64::from(agree) / f64::from(total);
     assert!(
         fraction > 0.9,
-        "колір і висота згодні лише на {:.1}% вузлів — тайлсети зсунуті",
+        "colour and height agree on only {:.1}% of nodes -- the tilesets are shifted",
         100.0 * fraction
     );
 }

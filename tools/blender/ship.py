@@ -1,45 +1,46 @@
-# Модель корабля й експорт для кукера (ROADMAP, T5d1; форма й фарба — T9).
+# Ship model and export for the cooker (ROADMAP, T5d1; shape and paint, T9).
 #
-# Запуск — тільки headless і тільки цим скриптом:
+# Run headless only, and only through this script:
 #
 #   BLENDER=~/snap/steam/common/.steam/steam/steamapps/common/Blender/blender
 #   "$BLENDER" -b --factory-startup -noaudio -P tools/blender/ship.py -- assets-src
 #
-# `--factory-startup` обов'язковий: без нього на вихід впливають налаштування
-# користувача й увімкнені аддони, тобто ассет перестає бути функцією входу.
-# Той самий клас, що `-ffast-math`.
+# `--factory-startup` is mandatory: without it user preferences and enabled
+# add-ons affect the output, i.e. the asset stops being a function of its
+# inputs. Same class as `-ffast-math`.
 #
-# Що робить скрипт: будує корпус, чотири стабілізатори, ілюмінатор і антену,
-# фарбує їх **вершинним кольором**, зберігає `.blend`, експортує glTF і кладе
-# поруч **оракул** — числа, які порахував Blender. Ручна робота мишею тут не
-# крок: вона не відтворюється й не переглядається в рев'ю.
+# What the script does: builds the hull, four fins, a porthole and an antenna,
+# paints them with **vertex colour**, saves the `.blend`, exports glTF and puts
+# an **oracle** beside it -- the numbers Blender computed. Mouse work is not a
+# step here: it does not reproduce and does not get reviewed.
 #
-# ## Осі
+# ## Axes
 #
-# Ніс уздовж −Y, верх уздовж +Z — тоді експорт дефолтами дає glTF з носом по
-# +Z, тобто вже в конвенції `Scene::Ship`, і кукер не перетворює нічого
-# (виміряно, скіл `blender-assets`).
+# Nose along -Y, up along +Z -- then a default export gives glTF with the nose
+# at +Z, already the `Scene::Ship` convention, and the cooker transforms
+# nothing (measured, skill `blender-assets`).
 #
-# ## Габарит моделі — рівно `LENGTH_M`
+# ## The model's extent is exactly `LENGTH_M`
 #
-# Уся геометрія лежить у `along` від 0 (п'яти стабілізаторів) до 1 (вістря
-# конуса), тож висота моделі дорівнює `LENGTH_M` точно, а не «десь близько».
-# Це не косметика: рушій нормалізує меш **його ж габаритом** (`Model::
-# from_metres`), і якби стабілізатори вилазили за одиницю, число в оракулі
-# перестало б збігатися з тим, що поділив кукер.
+# All geometry lies in `along` from 0 (the fins' heels) to 1 (the cone's tip),
+# so the model height equals `LENGTH_M` exactly, not "about that". Not
+# cosmetic: the engine normalises the mesh by **its own extent**
+# (`Model::from_metres`), and if the fins stuck out past one, the oracle number
+# would stop matching what the cooker divided by.
 #
-# ## Чому форма несиметрична
+# ## Why the shape is asymmetric
 #
-# Поворот гладкої кулі показати не можна взагалі: силует переходить сам у
-# себе. Ніс відрізняє напрямок осі, стабілізатори — площину, а ілюмінатор і
-# антена ламають симетрію 90°, яку самі стабілізатори лишають. Без цього
-# оракул орієнтації перевіряв би нічого — рівно як фікстура над центром грані
-# куба, на якій D13 і D14 прожили невидимими.
+# The rotation of a smooth ball cannot be shown at all: the silhouette maps
+# onto itself. The nose distinguishes the axis direction, the fins the plane,
+# and the porthole and antenna break the 90-degree symmetry the fins leave.
+# Without this an orientation oracle would check nothing -- exactly like the
+# fixture above a cube face centre, where D13 and D14 lived invisibly.
 #
-# ⚠ Одна антена лишається в моделі **навмисно**, хоч на референсі її немає:
-# без неї корабель має дзеркало `z → −z` (корпус — тіло обертання, чотири
-# стабілізатори переходять самі в себе, ілюмінатор стоїть на осі дзеркала), а
-# дзеркало ховає помилку ліворукості осей повністю.
+# WARNING: one antenna stays in the model **deliberately**, though the
+# reference has none: without it the ship has a `z -> -z` mirror (the hull is a
+# surface of revolution, the four fins map onto themselves, the porthole sits
+# on the mirror axis), and a mirror hides an axis-handedness error
+# completely.
 
 import json
 import math
@@ -49,33 +50,35 @@ import sys
 import bmesh
 import bpy
 
-# ⚠ Steam оновлює Blender сам, а версія друкується в `.gltf` (`generator`).
-# Тихе оновлення дало б діф у закоміченому ассеті без жодної зміни моделі —
-# краще зупинка, ніж мовчазна зміна геометрії.
+# WARNING: Steam updates Blender by itself, and the version is printed into
+# the `.gltf` (`generator`). A silent update would produce a diff in the
+# committed asset with no model change at all -- better a halt than a silent
+# geometry change.
 REQUIRED_VERSION = (5, 2)
 
-# Габарит корабля в метрах — уздовж осі носа, від п'ят до вістря. Рушій тримає
-# меш **одиничної висоти** й масштабує його `height_m` (V2), тож для гри це
-# довідка; але моделювати треба в метрах, інакше числа в `.blend` нічого не
-# означають.
+# Ship extent in metres, along the nose axis from heels to tip. The engine
+# keeps a **unit-height** mesh and scales it by `height_m` (V2), so for the
+# game this is reference only; but modelling must happen in metres, or the
+# numbers in the `.blend` mean nothing.
 LENGTH_M = 6.0
 
-# Найбільший радіус корпусу — частка габариту. 0.113 зміряно з референсу:
-# 87 пікселів півширини на 767 пікселів висоти.
+# Largest hull radius, as a fraction of the extent. 0.113 measured off the
+# reference: 87 pixels of half-width against 767 pixels of height.
 RADIUS = 0.113
 
-# Скільки граней у кола корпусу. 32 — той самий поділ, що в заглушки V1:
-# силует уже гладкий, а вершин лишається кілька сотень.
+# How many faces in the hull's circle. 32 is the same subdivision as the V1
+# placeholder: the silhouette is already smooth and the vertices stay in the
+# hundreds.
 SEGMENTS = 32
 
-# Профіль корпусу від хвоста до носа: (частка габариту, частка найбільшого
-# радіуса). Хвіст починається не з нуля — під ним ще п'яти стабілізаторів.
+# Hull profile from tail to nose: (fraction of extent, fraction of the largest
+# radius). The tail does not start at zero -- the fins' heels are below it.
 #
-# Форма з референсу: сопло вузьким конусом, майже циліндричне денце корпусу,
-# оживало, що плавно тоншає догори, і **короткий** носовий конус — не третина
-# корабля, як здається на око, а восьма частина. Уступ під корпусом (два
-# кільця на однаковому `along`) — це і є та кільцева площина, яку на референсі
-# видно тінню між білим корпусом і сірим соплом.
+# Shape from the reference: the nozzle a narrow cone, a nearly cylindrical hull
+# base, an ogive thinning smoothly upwards, and a **short** nose cone -- an
+# eighth of the ship rather than the third it looks like. The step under the
+# hull (two rings at the same `along`) is the annular plane the reference shows
+# as a shadow between the white hull and the grey nozzle.
 PROFILE = [
     (0.013, 0.000),
     (0.013, 0.430),
@@ -94,24 +97,27 @@ PROFILE = [
     (1.000, 0.000),
 ]
 
-# Межі фарби в частках габариту. Стоять **між** кільцями профілю, а не на
-# кільці: інакше смуга залежала б від того, куди округлиться порівняння.
+# Paint boundaries as fractions of the extent. They sit **between** profile
+# rings rather than on one: otherwise a band would depend on which way a
+# comparison rounded.
 #
-# Шов панелі — смуга завширшки 4 см між двома сусідніми кільцями. Геометрії
-# він не має взагалі (злам нахилу там менший за 0.2°), і це навмисно: на
-# референсі це лінія фарби, а не уступ. Заклепок немає — вони там текстура, а
-# текстур через межу ще не їде жодна (скіл `blender-assets`).
+# The panel seam is a 4 cm band between two adjacent rings. It has no geometry
+# at all (the slope break there is under 0.2 degrees), deliberately: on the
+# reference it is a painted line, not a step. There are no rivets -- those are
+# a texture there, and no texture crosses the boundary yet (skill
+# `blender-assets`).
 NOZZLE_UNTIL = 0.117
 SEAM = (0.428, 0.434)
 CONE_FROM = 0.874
 
 FINS = 4
 
-# Стабілізатор — контур у площині (вздовж осі, назовні) плюс частка товщини в
-# кожній точці: (частка габариту, частка радіуса корпусу, частка товщини).
-# Плоска стрілоподібна пластина з референсу: пряма передня кромка від корпусу
-# вниз-назовні до гострої п'яти, коротка кромка внизу й пряма задня кромка
-# назад до денця. Товщина однакова скрізь — це пластина, а не лита нога.
+# A fin is an outline in the plane (along the axis, outwards) plus a thickness
+# fraction at each point: (fraction of extent, fraction of hull radius,
+# fraction of thickness). The flat swept plate from the reference: a straight
+# leading edge running from the hull down and out to a sharp heel, a short edge
+# at the bottom, and a straight trailing edge back to the base. Thickness is
+# uniform -- this is a plate, not a cast leg.
 FIN_OUTLINE = [
     (0.360, 0.80, 1.0),
     (0.010, 2.25, 1.0),
@@ -120,7 +126,7 @@ FIN_OUTLINE = [
 ]
 FIN_THICKNESS = 0.08
 
-# Антена — маленьке спинне перо тим самим кодом, що стабілізатор.
+# The antenna is a small dorsal blade, built by the same code as a fin.
 ANTENNA_OUTLINE = [
     (0.700, 0.70, 1.0),
     (0.755, 0.70, 1.0),
@@ -129,32 +135,33 @@ ANTENNA_OUTLINE = [
 ]
 ANTENNA_THICKNESS = 0.07
 
-# Ілюмінатор — кільця в частках радіуса корпусу разом з висотою над **самою
-# поверхнею** корпусу (теж у частках радіуса). Не над площиною: пластина
-# завширшки 0.65 радіуса на опуклому корпусі відстає від нього по краях на
-# третину радіуса, і плоский обідок висів би в повітрі.
+# The porthole is rings in fractions of the hull radius, together with a
+# height above the hull's **actual surface** (also in fractions of the radius).
+# Not above a plane: a plate 0.65 radii wide on a convex hull stands a third of
+# a radius off it at the edges, and a flat rim would hang in the air.
 PORTHOLE_AT = 0.636
 PORTHOLE_RIM = 0.655
 PORTHOLE_GLASS = 0.506
 PORTHOLE_SEGMENTS = 24
-# (радіус, висота над поверхнею) від дна всередині корпусу до краю скла.
+# (radius, height above the surface) from the floor inside the hull to the
+# glass rim.
 PORTHOLE_RINGS = [
     (PORTHOLE_RIM, -0.120),
     (PORTHOLE_RIM, 0.030),
     (PORTHOLE_GLASS, 0.030),
     (PORTHOLE_GLASS, 0.012),
 ]
-# Скло — купол, а не диск: на референсі воно опукле, і саме опуклість дає йому
-# власний відблиск замість плаского плями.
+# The glass is a dome, not a disc: on the reference it is convex, and it is
+# the convexity that gives it its own highlight instead of a flat patch.
 PORTHOLE_DOME = [
     (0.78 * PORTHOLE_GLASS, 0.048),
     (0.42 * PORTHOLE_GLASS, 0.070),
 ]
 PORTHOLE_APEX = 0.078
 
-# Фарба — **лінійне світло**, як усе в кадрі (T6), і без запеченого освітлення:
-# у грі одне джерело й нуль ambient, тож підмальована тінь у базовому кольорі
-# виглядала б брудом (скіл `blender-assets`).
+# Paint is **linear light** like everything in the frame (T6), with no baked
+# lighting: the game has one light source and zero ambient, so a shadow painted
+# into the base colour would read as dirt (skill `blender-assets`).
 ENAMEL = (0.82, 0.82, 0.82)
 RED = (0.75, 0.050, 0.020)
 YELLOW = (0.90, 0.60, 0.020)
@@ -167,15 +174,17 @@ def require_blender():
     got = bpy.app.version[:2]
     if got != REQUIRED_VERSION:
         raise SystemExit(
-            f"Blender {got[0]}.{got[1]}, а ассет кукався на "
-            f"{REQUIRED_VERSION[0]}.{REQUIRED_VERSION[1]}: числа могли поїхати. "
-            "Онови REQUIRED_VERSION свідомо, разом з перекуканим ассетом."
+            f"Blender {got[0]}.{got[1]}, but the asset was cooked on "
+            f"{REQUIRED_VERSION[0]}.{REQUIRED_VERSION[1]}: the numbers may have "
+            "moved. Update REQUIRED_VERSION deliberately, together with a "
+            "recooked asset."
         )
 
 
 def axis(along, out, angle):
-    """Точка корпусу: `along` — частка габариту від п'ят, `out` — радіус."""
-    # Ніс уздовж −Y, тобто хвіст у +Y: вздовж осі йдемо від +Y до −Y.
+    """A hull point: `along` is the fraction of extent from the heels, `out`
+    the radius."""
+    # Nose along -Y, so the tail is at +Y: along the axis we go from +Y to -Y.
     y = (0.5 - along) * LENGTH_M
     return (
         out * math.cos(angle) * RADIUS * LENGTH_M,
@@ -185,7 +194,7 @@ def axis(along, out, angle):
 
 
 def hull(bm, paint):
-    """Корпус обертанням профілю. Гладке затінення — вдвічі менше вершин."""
+    """Hull by revolving the profile. Smooth shading halves the vertices."""
     rings = []
     for along, out in PROFILE:
         if out == 0.0:
@@ -223,9 +232,10 @@ def hull(bm, paint):
             ]
 
         low, high = PROFILE[index], PROFILE[index + 1]
-        # Кільце — це смуга, у якої зміна радіуса більша за підйом уздовж осі:
-        # денце й уступ під корпусом. Такі смуги плоскі, і саме їхні краї
-        # дають зламу де бути. Решта гладка.
+        # A ring is a band whose radius change exceeds its rise along the
+        # axis: the base and the step under the hull. Such bands are flat, and
+        # it is their edges that give the crease somewhere to live. The rest is
+        # smooth.
         rise = abs(high[0] - low[0]) * LENGTH_M
         flare = abs(high[1] - low[1]) * RADIUS * LENGTH_M
         smooth = rise > flare
@@ -248,11 +258,13 @@ def hull(bm, paint):
 
 
 def blade(bm, paint, outline, thickness, angle, colour):
-    """Перо: контур у площині (вздовж осі, назовні), товщина впоперек.
+    """A blade: an outline in the plane (along the axis, outwards) with
+    thickness across it.
 
-    Ним зроблені і стабілізатори, і антена. Компоненти навмисно **не
-    зшиваються** з корпусом: кожен лишається замкненою оболонкою, і знаковий
-    об'єм цілого дорівнює сумі об'ємів навіть там, де вони перетинаються.
+    Both the fins and the antenna are made with it. The components are
+    deliberately **not stitched** to the hull: each stays a closed shell, and
+    the signed volume of the whole equals the sum of the volumes even where
+    they intersect.
     """
     side = (-math.sin(angle), 0.0, math.cos(angle))
     layers = []
@@ -279,9 +291,9 @@ def blade(bm, paint, outline, thickness, angle, colour):
                 )
             )
         )
-    # Пластина плоска цілком: гладке затінення на кромці завтовшки 5 см
-    # округлило б те, що на референсі гостре, і з'їло б саме ту лінію, за
-    # якою стабілізатор видно з торця.
+    # The plate is flat throughout: smooth shading on a 5 cm edge would round
+    # what the reference makes sharp and would eat the very line by which a fin
+    # is seen end-on.
     for face in made:
         face.smooth = False
 
@@ -290,33 +302,36 @@ def blade(bm, paint, outline, thickness, angle, colour):
 
 
 def hull_radius_m(along):
-    """Радіус корпусу на цій частці габариту, метри — лінійно між кільцями.
+    """Hull radius at this fraction of the extent, in metres -- linear between
+    rings.
 
-    Потрібен ілюмінаторові: він сідає **на поверхню**, а не на площину, і
-    висоту над нею треба відкладати від правильного числа.
+    The porthole needs it: it sits **on the surface** rather than on a plane,
+    and the height above it must be measured from the right number.
     """
     for (low, low_r), (high, high_r) in zip(PROFILE, PROFILE[1:]):
         if low <= along <= high and high > low:
             k = (along - low) / (high - low)
             return (low_r + k * (high_r - low_r)) * RADIUS * LENGTH_M
-    raise SystemExit(f"{along} поза профілем корпусу")
+    raise SystemExit(f"{along} is outside the hull profile")
 
 
 def porthole(bm, paint):
-    """Ілюмінатор: обідок на корпусі й купол скла в ньому."""
+    """Porthole: a rim on the hull and a glass dome inside it."""
 
     def ring(radius, height):
         made = []
         for k in range(PORTHOLE_SEGMENTS):
             angle = 2.0 * math.pi * k / PORTHOLE_SEGMENTS
-            # Коло в площині (вздовж осі, вгору), винесене назовні по +X.
+            # A circle in the plane (along the axis, up), carried outwards
+            # along +X.
             along = PORTHOLE_AT + radius * math.cos(angle) * RADIUS
             z = radius * math.sin(angle) * RADIUS * LENGTH_M
             surface = hull_radius_m(along)
-            # Корпус — тіло обертання, тож на цій `along` його поверхня в
-            # площині `z` стоїть на `sqrt(r² − z²)`. Під самим краєм великого
-            # ілюмінатора це помітно менше за `r`, і саме тому обідок треба
-            # класти сюди, а не на дотичну площину.
+            # The hull is a surface of revolution, so at this `along` its
+            # surface in the `z` plane sits at `sqrt(r^2 - z^2)`. Right at the
+            # edge of a large porthole that is noticeably less than `r`, which
+            # is exactly why the rim must be laid here rather than on a tangent
+            # plane.
             base = math.sqrt(max(surface * surface - z * z, 0.0))
             made.append(bm.verts.new((base + height * RADIUS * LENGTH_M, axis(along, 0.0, 0.0)[1], z)))
         return made
@@ -338,9 +353,9 @@ def porthole(bm, paint):
             made.append(bm.faces.new((lower[k], lower[j], upper[j], upper[k])))
         return made
 
-    # Обхід один на всі смуги: обідок усередину — це та сама смуга, а не
-    # перевернута. Що вона дивиться всередину, каже геометрія (радіус меншає),
-    # а не другий порядок вершин.
+    # One winding for all bands: the rim turning inwards is the same band, not
+    # a reversed one. That it faces inwards is stated by the geometry (the
+    # radius decreases), not by a second vertex order.
     rim = [bm.faces.new(list(reversed(rings[0])))]
     for lower, upper in zip(rings, rings[1:]):
         rim += band(lower, upper)
@@ -364,7 +379,7 @@ def porthole(bm, paint):
 
 
 def shell_volume(faces):
-    """Знаковий об'єм саме цих граней — по компоненту, а не по всій моделі."""
+    """Signed volume of exactly these faces -- per component, not per model."""
     total = 0.0
     for face in faces:
         points = [v.co for v in face.verts]
@@ -374,19 +389,20 @@ def shell_volume(faces):
 
 
 def close_shell(name, faces):
-    """Перевірити оболонку й повернути її назовні, якщо вона вивернута.
+    """Check a shell and turn it outwards if it is inside out.
 
-    Дві перевірки, і друга важливіша за першу:
+    Two checks, and the second matters more than the first:
 
-    1. **Кожне ребро пройдене двічі й у різні боки.** Це і замкненість, і
-       узгодженість обходу разом. `bmesh.calc_volume(signed=True)` не ловить
-       ні того, ні іншого: він рахує **суму** по всій моделі, тож і окрема
-       вивернута оболонка, і окрема неузгоджена грань у ній ховаються за
-       рештою. Написана вона тут не про запас — на ній одразу впали кришки
-       призми, які від T5d стояли поверненими всередину, і побачити це в
-       кадрі було ніяк: усередині корпусу.
-    2. **Об'єм додатний.** Обхід, узгоджений з собою, все ще може дивитися
-       всередину цілком; тоді оболонка перевертається одним рухом.
+    1. **Every edge is traversed twice, in opposite directions.** That is
+       closedness and winding consistency at once.
+       `bmesh.calc_volume(signed=True)` catches neither: it computes a **sum**
+       over the whole model, so both an individually inverted shell and an
+       individually inconsistent face inside it hide behind the rest. This was
+       not written as insurance -- it immediately failed on the prism caps,
+       which had faced inwards since T5d, and there was no way to see that in
+       frame: they are inside the hull.
+    2. **The volume is positive.** A winding consistent with itself can still
+       face inwards entirely; then the shell is flipped in one move.
     """
     seen = set()
     for face in faces:
@@ -394,32 +410,32 @@ def close_shell(name, faces):
         for k, a in enumerate(points):
             edge = (a, points[(k + 1) % len(points)])
             if edge in seen:
-                raise SystemExit(f"{name}: ребро {edge} пройдене двічі в один бік")
+                raise SystemExit(f"{name}: edge {edge} traversed twice in the same direction")
             seen.add(edge)
     for a, b in seen:
         if (b, a) not in seen:
-            raise SystemExit(f"{name}: ребро {(a, b)} без пари — оболонка не замкнена")
+            raise SystemExit(f"{name}: edge {(a, b)} unpaired -- the shell is not closed")
 
     if shell_volume(faces) < 0.0:
         for face in faces:
             face.normal_flip()
     if shell_volume(faces) <= 0.0:
-        raise SystemExit(f"{name}: нульовий об'єм")
+        raise SystemExit(f"{name}: zero volume")
 
 
 def build():
     bm = bmesh.new()
     paint = []
-    shells = {"корпус": hull(bm, paint)}
+    shells = {"hull": hull(bm, paint)}
     for k in range(FINS):
         angle = 2.0 * math.pi * k / FINS
-        shells[f"стабілізатор {k}"] = blade(
+        shells[f"fin {k}"] = blade(
             bm, paint, FIN_OUTLINE, FIN_THICKNESS, angle, RED
         )
-    shells["антена"] = blade(
+    shells["antenna"] = blade(
         bm, paint, ANTENNA_OUTLINE, ANTENNA_THICKNESS, 0.5 * math.pi, STEEL
     )
-    shells["ілюмінатор"] = porthole(bm, paint)
+    shells["porthole"] = porthole(bm, paint)
 
     for name, faces in shells.items():
         close_shell(name, faces)
@@ -428,15 +444,15 @@ def build():
     volume = bm.calc_volume(signed=True)
     colours = [colour for _, colour in paint]
     if len(colours) != len(bm.faces):
-        raise SystemExit(f"{len(colours)} кольорів на {len(bm.faces)} граней")
+        raise SystemExit(f"{len(colours)} colours for {len(bm.faces)} faces")
 
     mesh = bpy.data.meshes.new("ship")
     bm.to_mesh(mesh)
     bm.free()
 
-    # Фарба по **кутках**, а не по вершинах: на шві корпусу з конусом колір
-    # мусить стрибати, а вершина там спільна. Порядок граней bmesh зберігає,
-    # тож `paint` іде поруч із `mesh.polygons` індекс в індекс.
+    # Paint per **corner**, not per vertex: at the seam between hull and cone
+    # the colour must jump, while the vertex there is shared. bmesh preserves
+    # face order, so `paint` runs alongside `mesh.polygons` index for index.
     attribute = mesh.color_attributes.new(name="paint", type="FLOAT_COLOR", domain="CORNER")
     for polygon, colour in zip(mesh.polygons, colours):
         for loop in polygon.loop_indices:
@@ -468,9 +484,9 @@ def main():
     obj, volume = build()
 
     low, high = bounds(obj)
-    # Радіус обмежувальної сфери навколо початку координат: на ньому стоять
-    # `near` і камера третьої особи (V2), і з габаритів він не виводиться —
-    # стабілізатори вже виступають за корпус.
+    # Radius of the bounding sphere about the origin: `near` and the
+    # third-person camera (V2) rest on it, and it does not follow from the
+    # bounds -- the fins already stick out past the hull.
     extent = max(
         math.dist((0.0, 0.0, 0.0), tuple(v.co)) for v in obj.data.vertices
     )
@@ -478,23 +494,24 @@ def main():
     blend = os.path.join(out, "ship.blend")
     gltf = os.path.join(out, "ship.gltf")
     bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(blend))
-    # `export_vertex_color="ACTIVE"` — явно, а не дефолтом: дефолт `MATERIAL`
-    # віддає колір лише тоді, коли його читає матеріал, а матеріалів у моделі
-    # немає взагалі (фарбу везе `COLOR_0`).
+    # `export_vertex_color="ACTIVE"` explicitly, not by default: the default
+    # `MATERIAL` emits colour only when a material reads it, and the model has
+    # no materials at all (`COLOR_0` carries the paint).
     bpy.ops.export_scene.gltf(
         filepath=os.path.abspath(gltf),
         export_format="GLTF_SEPARATE",
         export_vertex_color="ACTIVE",
     )
 
-    # Оракул їде разом з ассетом і рахується **іншим інструментом**: наш
-    # кукер мусить відтворити ці числа зі свого читача `.bin`, а не з
-    # власного перерахунку моделі.
+    # The oracle ships with the asset and is computed by **another tool**: our
+    # cooker must reproduce these numbers from its own `.bin` reader rather
+    # than from its own recomputation of the model.
     #
-    # ⚠ Габарити тут у **осях Blender**, а не glTF, і навмисно: щоб звірити їх,
-    # читач мусить застосувати перестановку осей (ніс −Y → +Z), тобто оракул
-    # питає ще й про неї. Ті самі числа в осях glTF уже лежать в акесорі
-    # `POSITION` — це другий, незалежний оракул на той самий `.bin`.
+    # WARNING: the bounds here are in **Blender axes**, not glTF, and
+    # deliberately so: to compare them the reader must apply the axis
+    # permutation (nose -Y -> +Z), so the oracle asks about that too. The same
+    # numbers in glTF axes already sit in the `POSITION` accessor -- a second,
+    # independent oracle over the same `.bin`.
     oracle = {
         "blender": ".".join(str(v) for v in bpy.app.version),
         "length_m": LENGTH_M,
@@ -509,7 +526,7 @@ def main():
         json.dump(oracle, f, indent=2, sort_keys=True)
         f.write("\n")
 
-    print("ассет: " + gltf)
+    print("asset: " + gltf)
     for key, value in sorted(oracle.items()):
         print(f"  {key}: {value}")
 

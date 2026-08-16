@@ -1,57 +1,58 @@
-//! Читач мозаїки Blue Marble Next Generation: колір Землі (етап T, крок T7c).
+//! Blue Marble Next Generation mosaic reader: Earth's colour (stage T, T7c).
 //!
-//! Четверте джерело поверхні, і геометрія в нього та сама, що в ETOPO
-//! ([`crate::etopo`]): проста циліндрична проєкція, пікселе-реєстрована,
-//! 60 відліків на градус, перший стовпець — 180° західної. Збіг сіток
-//! **пікселе-в-піксель** і був причиною взяти саме цю пару продуктів (T7):
-//! вузол кольору лягає рівно на вузол висоти, тож берегова лінія не може
-//! розійтися сама з собою.
+//! The fourth surface source, with the same geometry as ETOPO
+//! ([`crate::etopo`]): simple cylindrical projection, pixel-registered, 60
+//! samples per degree, first column at 180 west. That the grids match
+//! **pixel for pixel** was the reason to take this pair of products (T7): a
+//! colour node lands exactly on a height node, so a coastline cannot diverge
+//! from itself.
 //!
-//! ## Що тут чуже, а що своє
+//! ## What here is someone else's and what is ours
 //!
-//! JPEG розбирає крейт `jpeg-decoder` — декодери зображень ми не пишемо
-//! (CLAUDE.md, «Чого НЕ робимо»). Своє — те, чого декодер не знає: як ці
-//! байти прив'язані до глобуса і в якому вони просторі.
+//! The `jpeg-decoder` crate parses the JPEG -- we do not write image decoders
+//! (CLAUDE.md, "what we do NOT write"). Ours is what the decoder does not
+//! know: how these bytes are tied to the globe and which space they are in.
 //!
-//! ## Простір: sRGB у файлі, лінійний у пам'яті
+//! ## Space: sRGB in the file, linear in memory
 //!
-//! Мозаїка кодована **sRGB** — це картинка для ока, а не поле фізичних
-//! величин. Кадр же працює в лінійному світлі (T5c), і будь-яке усереднення
-//! — білінійна вага, ланцюг грубіших сіток — має сенс лише в лінійному:
-//! середнє двох sRGB-байтів це не колір суміші, а колір «між ними на око».
-//! Тому читач декодує один раз, при завантаженні, і далі всі числа тут
-//! лінійні.
+//! The mosaic is **sRGB**-encoded -- a picture for the eye, not a field of
+//! physical quantities. The frame works in linear light (T5c), and any
+//! averaging -- bilinear weights, the chain of coarser grids -- only makes
+//! sense in linear: the mean of two sRGB bytes is not the colour of the
+//! mixture but the colour "between them to the eye". So the reader decodes
+//! once, on load, and every number here afterwards is linear.
 //!
-//! Ціна названа: `float32` замість байта — це 2.8 ГБ на нульовий рівень і
-//! ~3.7 ГБ на весь ланцюг. Кукер офлайновий, і платити пам'яттю тут дешевше,
-//! ніж округлювати сім разів поспіль.
+//! The cost is named: `float32` instead of a byte is 2.8 GB for level zero and
+//! about 3.7 GB for the whole chain. The cooker is offline, and paying in
+//! memory here is cheaper than rounding seven times in a row.
 //!
-//! ⚠ **Це не альбедо.** Мозаїка зібрана з MODIS і відретушована для ока: у
-//! ній лишились тіні схилів і сліди атмосферної корекції. Фізичного
-//! відбиття, як у WAC, вона не обіцяє — і саме тому колірний тайл Землі несе
-//! «колір поверхні», а не «відбивну здатність».
+//! WARNING: **this is not albedo.** The mosaic is assembled from MODIS and
+//! retouched for the eye: slope shadows and traces of atmospheric correction
+//! remain in it. It promises no physical reflectance the way WAC does -- which
+//! is exactly why Earth's colour tile carries "surface colour" rather than
+//! "reflectance".
 
 use std::path::Path;
 
-/// Скільки каналів несе мозаїка.
+/// How many channels the mosaic carries.
 pub const CHANNELS: usize = 3;
 
-/// Сітка кольору в простій циліндричній проєкції, **лінійне** світло.
+/// A colour grid in the simple cylindrical projection, **linear** light.
 #[derive(Clone, Debug)]
 pub struct Mosaic {
-    /// Скільки відліків по довготі.
+    /// Samples along longitude.
     pub samples: usize,
-    /// Скільки рядків по широті.
+    /// Rows along latitude.
     pub lines: usize,
-    /// Відліків на градус.
+    /// Samples per degree.
     pub per_degree: f64,
-    /// Самі відліки: `CHANNELS` підряд на піксель, рядок за рядком з півночі
-    /// на південь, кожен від 0 до 1 у лінійному світлі.
+    /// The samples themselves: `CHANNELS` in a row per pixel, row by row from
+    /// north to south, each from 0 to 1 in linear light.
     pub raw: Vec<f32>,
 }
 
 impl Mosaic {
-    /// Прочитати мозаїку цілком.
+    /// Read the whole mosaic.
     pub fn read(path: &Path) -> Result<Mosaic, String> {
         let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let mut decoder = jpeg_decoder::Decoder::new(std::io::BufReader::new(file));
@@ -60,30 +61,31 @@ impl Mosaic {
             .map_err(|e| format!("{}: {e}", path.display()))?;
         let info = decoder
             .info()
-            .ok_or_else(|| format!("{}: JPEG без заголовка", path.display()))?;
+            .ok_or_else(|| format!("{}: JPEG without a header", path.display()))?;
 
         if info.pixel_format != jpeg_decoder::PixelFormat::RGB24 {
             return Err(format!(
-                "{}: очікували три канали по вісім біт, а там {:?}",
+                "{}: expected three eight-bit channels, found {:?}",
                 path.display(),
                 info.pixel_format
             ));
         }
 
         let (samples, lines) = (info.width as usize, info.height as usize);
-        // Мозаїка мусить накривати глобус, і накривати його рівно: два до
-        // одного. Продукт-плитка (BMNG роздається ще й вісьмома шматками)
-        // читався б без помилки й давав би восьму частину світу на всю Землю.
+        // The mosaic must cover the globe, and cover it exactly: two to one. A
+        // tile product (BMNG is also distributed in eight pieces) would read
+        // without an error and give an eighth of the world as the whole
+        // Earth.
         if samples != 2 * lines {
             return Err(format!(
-                "{}: {samples}×{lines} — це не глобус, у якого довгота вдвічі \
-                 довша за широту",
+                "{}: {samples}x{lines} is not a globe, whose longitude is twice \
+                 its latitude",
                 path.display()
             ));
         }
         if pixels.len() != samples * lines * CHANNELS {
             return Err(format!(
-                "{}: {} байтів замість {samples}×{lines}×{CHANNELS}",
+                "{}: {} bytes instead of {samples}x{lines}x{CHANNELS}",
                 path.display(),
                 pixels.len()
             ));
@@ -100,18 +102,19 @@ impl Mosaic {
         })
     }
 
-    /// Відлік сітки, лінійний. Індекси загортаються по довготі й затискаються
-    /// по широті — саме так поводиться сама сфера.
+    /// A grid sample, linear. Indices wrap in longitude and clamp in latitude
+    /// -- exactly how the sphere itself behaves.
     pub fn at(&self, line: i64, sample: i64, channel: usize) -> f32 {
         let line = line.clamp(0, self.lines as i64 - 1) as usize;
         let sample = sample.rem_euclid(self.samples as i64) as usize;
         self.raw[(line * self.samples + sample) * CHANNELS + channel]
     }
 
-    /// Колір у довільній точці, білінійно між чотирма відліками.
+    /// Colour at an arbitrary point, bilinear between four samples.
     ///
-    /// ⚠ Довгота зсунута на π з тієї ж причини, що в [`crate::etopo`]: сітка
-    /// починається з −180°, а спільна реєстрація рахує від нуля.
+    /// WARNING: the longitude is shifted by pi for the same reason as in
+    /// [`crate::etopo`]: the grid starts at -180 while the shared registration
+    /// counts from zero.
     pub fn sample(&self, lat: f64, lon: f64) -> [f64; CHANNELS] {
         let mut out = [0.0; CHANNELS];
         for (channel, value) in out.iter_mut().enumerate() {
@@ -125,21 +128,22 @@ impl Mosaic {
         out
     }
 
-    /// Колір у напрямку `direction` (не обов'язково одиничному).
+    /// Colour along `direction` (not necessarily unit).
     pub fn sample_direction(&self, direction: [f64; 3]) -> [f64; CHANNELS] {
         let (lat, lon) = crate::lat_lon(direction);
         self.sample(lat, lon)
     }
 
-    /// Кутовий розмір пікселя, радіани.
+    /// Angular size of a pixel, radians.
     pub fn pixel_rad(&self) -> f64 {
         std::f64::consts::PI / 180.0 / self.per_degree
     }
 
-    /// Та сама мозаїка, грубіша на крок ланцюга: кожен відлік — середнє блоку.
+    /// The same mosaic, coarser by one chain step: each sample is a block
+    /// mean.
     ///
-    /// Середнє **лінійних** значень, а не sRGB-байтів, — це й було причиною
-    /// декодувати один раз при читанні.
+    /// A mean of **linear** values rather than sRGB bytes -- which was the
+    /// reason to decode once on read.
     pub fn reduced(&self) -> Option<Mosaic> {
         let step = crate::reduce_step(self.samples, self.lines)?;
         let (samples, lines) = (self.samples / step, self.lines / step);
@@ -167,25 +171,26 @@ impl Mosaic {
         })
     }
 
-    /// Ланцюг сіток, кожна грубіша за попередню; нульова — ця сама.
+    /// The chain of grids, each coarser than the last; the zeroth is this one.
     ///
-    /// Те саме й з тієї ж причини, що [`crate::albedo::Albedo::chain`]: без
-    /// нього грубий рівень піраміди брав би точкову вибірку з тисячі пікселів
-    /// і давав плямистий шум замість карти (T3c). На скільки грубішає кожен
-    /// крок, вирішує [`crate::reduce_step`] — і не завжди вдвічі: сітка Землі
-    /// ділиться надвоє лише чотири рази.
+    /// The same thing for the same reason as
+    /// [`crate::albedo::Albedo::chain`]: without it a coarse pyramid level
+    /// would point-sample from a thousand pixels and give blotchy noise
+    /// instead of a map (T3c). How much each step coarsens is decided by
+    /// [`crate::reduce_step`] -- and not always by two: Earth's grid halves
+    /// only four times.
     pub fn chain(&self) -> Vec<Mosaic> {
         let mut out = vec![self.clone()];
-        while let Some(next) = out.last().expect("ланцюг не порожній").reduced() {
+        while let Some(next) = out.last().expect("the chain is not empty").reduced() {
             out.push(next);
         }
         out
     }
 
-    /// Середній колір по всій мозаїці, зважений `cos(широта)`.
+    /// Mean colour over the whole mosaic, weighted by `cos(latitude)`.
     ///
-    /// Потрібен не для краси: альбедо неба (S1) бере один колір на тіло, і
-    /// саме це число буде його оцінкою, поки в кадрі немає кращої.
+    /// Not decoration: the sky albedo (S1) takes one colour per body, and this
+    /// number is its estimate until the frame has a better one.
     pub fn mean(&self) -> [f64; CHANNELS] {
         let degrees = std::f64::consts::PI / 180.0;
         let mut sum = [0.0; CHANNELS];
@@ -206,12 +211,12 @@ impl Mosaic {
     }
 }
 
-/// sRGB-байт → лінійне світло, таблицею на 256 входів.
+/// sRGB byte to linear light, via a 256-entry table.
 ///
-/// Таблицею, а не формулою на кожен піксель: входів рівно 256, а пікселів
-/// 233 мільйони. Сама формула — стандартна sRGB, з лінійною ділянкою внизу;
-/// наближення `x^2.2` тут не годиться саме в темному, тобто в океані, який
-/// займає дві третини кадру.
+/// A table rather than a formula per pixel: there are exactly 256 inputs and
+/// 233 million pixels. The formula itself is standard sRGB with a linear
+/// segment at the bottom; the `x^2.2` approximation fails precisely in the
+/// dark, i.e. in the ocean, which occupies two thirds of the frame.
 fn srgb_table() -> [f32; 256] {
     let mut table = [0.0f32; 256];
     for (index, value) in table.iter_mut().enumerate() {
@@ -225,12 +230,12 @@ fn srgb_table() -> [f32; 256] {
     table
 }
 
-/// Лінійне світло → sRGB-байт. Обернене до [`srgb_table`].
+/// Linear light to an sRGB byte. The inverse of [`srgb_table`].
 ///
-/// Потрібне кукеру: тайл зберігає **байт**, і зберігати в ньому лінійне
-/// значення означало б витратити всю шкалу на світлі тони — океан при 0.0015
-/// лінійних отримав би нуль. Отже в тайлі знову sRGB, а розкодує його GPU
-/// при вибірці, безкоштовно (`Rgba8UnormSrgb`).
+/// The cooker needs it: a tile stores a **byte**, and storing a linear value
+/// there would spend the whole scale on light tones -- the ocean at 0.0015
+/// linear would get zero. So the tile holds sRGB again, and the GPU decodes it
+/// on sampling, for free (`Rgba8UnormSrgb`).
 pub fn to_srgb(linear: f64) -> u8 {
     let x = linear.clamp(0.0, 1.0);
     let encoded = if x <= 0.003_130_8 {

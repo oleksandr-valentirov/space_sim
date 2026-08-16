@@ -1,43 +1,44 @@
-//! Кукер поверхні: командний рядок (R5b; етап T, T2d).
+//! Surface cooker: command line (R5b; stage T, T2d).
 //!
-//! Сама робота — у [`dem_cook::cook`]; тут лише розбір аргументів. Розділено
-//! не з любові до шарів: тест не може покликати функцію з бінарника, а
-//! детермінізм виходу треба перевіряти саме викликом, двічі.
+//! The work itself is in [`dem_cook::cook`]; this is argument parsing only.
+//! Split not out of love for layers: a test cannot call a function out of a
+//! binary, and output determinism has to be checked by calling it, twice.
 //!
 //!     cargo run -p dem-cook                       data/lola  → assets/moon.dem
 //!     cargo run -p dem-cook -- --colour           data/wac   → assets/moon.col
 //!     cargo run -p dem-cook -- --body earth       data/etopo → assets/earth.dem
 //!     cargo run -p dem-cook -- --body earth --colour  data/bmng → assets/earth.col
 //!
-//! Тіло — окремий прапорець, а не окремий бінарник: спільного в них рівно
-//! стільки, скільки й мало б бути — обхід кубосфери й формат тайла.
+//! The body is a flag rather than a separate binary: they share exactly as
+//! much as they should -- the cubesphere traversal and the tile format.
 
 use dem_cook::cook::{cook, cook_colour, cook_earth, cook_earth_colour};
 use std::path::PathBuf;
 
-/// Скільки рівнів піраміди висот кукати за замовчуванням.
+/// How many height pyramid levels to cook by default.
 ///
-/// Виміряне число, не смак. LDEM_4 дає 7581 м на відлік; клітинка патча
-/// рівня `L` на Місяці — `(π·R/2) / (SIDE·2^L)`, тобто 85 км на рівні 0 і
-/// 5.3 км на рівні 4. Тобто рівень 4 уже дрібніший за джерело, а рівень 5
-/// не приніс би жодного нового числа — лише вчетверо більше файлу.
+/// A measured number, not a taste. LDEM_4 gives 7581 m per sample; a level `L`
+/// patch cell on the Moon is `(pi*R/2) / (SIDE*2^L)`, i.e. 85 km at level 0
+/// and 5.3 km at level 4. So level 4 is already finer than the source, and
+/// level 5 would bring no new number -- only a fourfold larger file.
 const DEFAULT_LEVELS: u32 = 5;
 
-/// Скільки рівнів піраміди кольору — на один більше, і теж виміряне (T2a).
+/// How many colour pyramid levels -- one more, also measured (T2a).
 ///
-/// Джерело вдвічі дрібніше за LOLA (1.9 км проти 7.6 км на піксель), тож
-/// шостий рівень має що взяти: 3.8 км на вузол. Сьомий коштував би 256 МіБ
-/// відеопам'яті проти 32 і вчетверо довшого завантаження, а екрана не досягає
-/// однаково — той розрив закриває правило матеріалу (T4).
+/// The source is twice as fine as LOLA (1.9 km against 7.6 km per pixel), so a
+/// sixth level has something to take: 3.8 km per node. A seventh would cost
+/// 256 MiB of video memory against 32 and a fourfold longer load, and reaches
+/// the screen no better either way -- the material rule (T4) closes that
+/// gap.
 const DEFAULT_COLOUR_LEVELS: u32 = 6;
 
-/// Скільки рівнів піраміди в Землі — шість, і теж виміряне (T7).
+/// How many pyramid levels for Earth -- six, also measured (T7).
 ///
-/// Вузол рівня 6 накриває 9.77 км Землі, тобто вп'ятеро грубіше за джерело
-/// (1.85 км) — сітку кукер усереднює ланцюгом. Сьомий рівень коштував би
-/// 384 МіБ відеопам'яті проти 96 і 1.67 мс кадру проти 0.42 (борг D19), а
-/// екрана не досягає однаково: при камері на 100 км вузол шостого рівня — це
-/// 61 екранний піксель.
+/// A level 6 node covers 9.77 km of Earth, five times coarser than the source
+/// (1.85 km) -- the cooker averages the grid down a chain. A seventh level
+/// would cost 384 MiB of video memory against 96 and 1.67 ms of frame against
+/// 0.42 (debt D19), and reaches the screen no better either way: with the
+/// camera at 100 km a level 6 node is 61 screen pixels.
 const DEFAULT_EARTH_LEVELS: u32 = 6;
 
 fn main() {
@@ -55,29 +56,29 @@ fn main() {
                 Some("earth") => earth = true,
                 Some("moon") => earth = false,
                 other => {
-                    eprintln!("--body хоче moon або earth, а не {other:?}");
+                    eprintln!("--body wants moon or earth, not {other:?}");
                     std::process::exit(2);
                 }
             },
-            "--source" => source = Some(args.next().expect("--source хоче шлях").into()),
-            "--out" => out = Some(args.next().expect("--out хоче шлях").into()),
+            "--source" => source = Some(args.next().expect("--source wants a path").into()),
+            "--out" => out = Some(args.next().expect("--out wants a path").into()),
             "--levels" => {
                 levels = Some(
                     args.next()
-                        .expect("--levels хоче число")
+                        .expect("--levels wants a number")
                         .parse()
-                        .expect("--levels хоче число"),
+                        .expect("--levels wants a number"),
                 )
             }
             other => {
-                eprintln!("невідомий аргумент {other}");
+                eprintln!("unknown argument {other}");
                 std::process::exit(2);
             }
         }
     }
 
-    // Замовчування залежать від того, що кукається: джерела різні, глибини
-    // пірамід різні, і плутати їх мовчки не можна.
+    // The defaults depend on what is being cooked: different sources,
+    // different pyramid depths, and they must not be confused silently.
     let (default_source, default_out, default_levels) = match (earth, colour) {
         (false, false) => ("data/lola/ldem_4.img", "assets/moon.dem", DEFAULT_LEVELS),
         (false, true) => (
@@ -110,7 +111,7 @@ fn main() {
     match result {
         Ok(report) => println!("{report}"),
         Err(message) => {
-            eprintln!("кукер не впорався: {message}");
+            eprintln!("the cooker failed: {message}");
             std::process::exit(1);
         }
     }

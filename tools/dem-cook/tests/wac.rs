@@ -1,18 +1,20 @@
-//! Читач мозаїки LROC WAC (етап T, крок T2b).
+//! LROC WAC mosaic reader (stage T, step T2b).
 //!
-//! Оракули поділені за тим, що кожен може зловити **сам**, і за тим, що для
-//! кожного мусить лежати на диску:
+//! The oracles are split by what each can catch **on its own**, and by what
+//! must be on disk for it:
 //!
-//! 1. **етикетка** — числа, від яких залежить уся арифметика. Перевіряється
-//!    окремо від пікселів, бо в git лежить рівно вона (66 МБ мозаїки — ні,
-//!    Q5), і бо жодна помилка в ній не видна на картинці;
-//! 2. **зроблена руками мозаїка** — реєстрація, порядок байтів, білінійна
-//!    вага й відмова від спеціальних значень, на файлі, кожен відлік якого
-//!    відомий наперед. Ці оракули біжать завжди, джерело їм не потрібне;
-//! 3. **самі дані** — орієнтація карти, і вона розпадається на **два**
-//!    твердження, а не одне. Широту ловить «моря темніші за материки»;
-//!    довготу воно **не ловить** (виміряно), і для неї є окрема пара точок.
-//!    Обидва пропускаються без джерела — і кажуть, чого бракує.
+//! 1. **the label** -- the numbers all the arithmetic depends on. Checked
+//!    separately from the pixels, because that is exactly what git holds (the
+//!    66 MB mosaic is not, Q5), and because no error in it is visible in a
+//!    picture;
+//! 2. **a hand-built mosaic** -- registration, byte order, bilinear weights
+//!    and refusal of special values, over a file whose every sample is known
+//!    in advance. These oracles always run; they need no source;
+//! 3. **the data itself** -- map orientation, which splits into **two** claims
+//!    rather than one. Latitude is caught by "maria are darker than
+//!    highlands"; that does **not** catch longitude (measured), which has its
+//!    own pair of points. Both are skipped without the source -- and say what
+//!    is missing.
 
 use dem_cook::albedo::{Albedo, Header};
 use std::path::{Path, PathBuf};
@@ -23,14 +25,15 @@ fn data(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// Сама мозаїка, або `None` — тоді тест каже, чого бракує, і не падає (Q5).
+/// The mosaic itself, or `None` -- then the test says what is missing and does
+/// not fail (Q5).
 fn mosaic() -> Option<Albedo> {
     let path = data("wac_global_016p.img");
     match Albedo::read(&path) {
         Ok(map) => Some(map),
         Err(_) => {
             eprintln!(
-                "ПРОПУЩЕНО: немає {}. Як покласти назад — data/wac/README.md",
+                "SKIPPED: missing {}. How to put it back: data/wac/README.md",
                 path.display()
             );
             None
@@ -38,11 +41,11 @@ fn mosaic() -> Option<Albedo> {
     }
 }
 
-/// Середня відбивна здатність по квадрату 5°×5° навколо точки.
+/// Mean reflectance over a 5x5 degree square about a point.
 ///
-/// Середнє, а не піксель: мозаїка знята при кутах падіння 53–70°, тож тінь
-/// одного кратера темніша за будь-яке море, і поодинокий відлік нічого не
-/// каже про те, що під ним.
+/// A mean rather than a pixel: the mosaic was shot at incidence angles of
+/// 53-70 degrees, so a single crater's shadow is darker than any mare, and one
+/// sample says nothing about what lies under it.
 fn box_mean(map: &Albedo, lat: f64, lon: f64) -> f64 {
     let degrees = std::f64::consts::PI / 180.0;
     let half = 2.5;
@@ -58,20 +61,20 @@ fn box_mean(map: &Albedo, lat: f64, lon: f64) -> f64 {
     sum / f64::from(steps * steps)
 }
 
-/// Етикетка дає рівно ті числа, на яких стоїть читач.
+/// The label gives exactly the numbers the reader rests on.
 ///
-/// Останнє твердження — не переказ етикетки, а звірка **двох її полів між
-/// собою**: `MAP_SCALE` мусить дорівнювати довжині кола Місяця, поділеній на
-/// кількість пікселів по екватору. Це і є перевірка `MAP_RESOLUTION`, якої
-/// саме по собі не існує: помилка в ньому вдвічі зсунула б усю карту й не
-/// зачепила б жодного іншого поля.
+/// The last claim is not a restatement of the label but a cross-check of **two
+/// of its fields against each other**: `MAP_SCALE` must equal the Moon's
+/// circumference divided by the pixel count along the equator. That is the
+/// check on `MAP_RESOLUTION`, which does not exist on its own: an error in it
+/// would shift the whole map twofold and touch no other field.
 #[test]
 fn the_label_gives_the_numbers_the_reader_stands_on() {
-    let bytes = std::fs::read(data("wac_global_016p.lbl")).expect("етикетка лежить у git");
-    let header = Header::parse(&bytes).expect("етикетка мала прочитатися");
+    let bytes = std::fs::read(data("wac_global_016p.lbl")).expect("the label lives in git");
+    let header = Header::parse(&bytes).expect("the label should have parsed");
 
     println!(
-        "  {}×{} відліків, {} пікс/градус, {:.2} м/піксель; пікселі з байта {}",
+        "  {}x{} samples, {} px/degree, {:.2} m/pixel; pixels from byte {}",
         header.samples,
         header.lines,
         header.per_degree,
@@ -82,35 +85,36 @@ fn the_label_gives_the_numbers_the_reader_stands_on() {
     assert_eq!(header.samples, 5760);
     assert_eq!(header.lines, 2880);
     assert_eq!(header.per_degree, 16.0);
-    // `^IMAGE = 2` записів по 23040 байтів: пікселі починаються рівно там, де
-    // закінчується єдиний запис етикетки. Нуль тут означав би, що читач узяв
-    // текст етикетки за перший рядок картинки.
+    // `^IMAGE = 2` records of 23040 bytes: the pixels begin exactly where the
+    // single label record ends. Zero here would mean the reader took the label
+    // text for the picture's first row.
     assert_eq!(header.data_offset, 23_040);
     assert_eq!(bytes.len(), header.data_offset);
 
-    // Довжина кола на 1737.4 км радіуса, поділена на 5760 пікселів екватора.
+    // The circumference at a 1737.4 km radius, divided by 5760 equatorial
+    // pixels.
     let moon_radius_m = 1_737_400.0;
     let along_equator = 2.0 * std::f64::consts::PI * moon_radius_m / header.samples as f64;
     let error = (header.metres_per_pixel - along_equator).abs() / along_equator;
     assert!(
         error < 1e-3,
-        "MAP_SCALE {:.3} м/піксель проти {along_equator:.3} з геометрії — розбіжність {:.1}%",
+        "MAP_SCALE {:.3} m/pixel against {along_equator:.3} from geometry -- {:.1}% apart",
         header.metres_per_pixel,
         error * 100.0
     );
 }
 
-/// Сітка, зібрана руками: кожен відлік дорівнює своєму номеру рядка.
+/// A hand-built grid: every sample equals its row number.
 ///
-/// Файл із вбудованою етикеткою, як у справжнього продукту, але 8×4 відліки й
-/// значення, які відомі наперед. Такий оракул ловить те, чого не ловить
-/// жодна перевірка на справжніх даних: `at` за межами сітки, реєстрацію на
-/// півклітинки й білінійну вагу — на справжній мозаїці всі три дали б
-/// правдоподібні числа.
+/// A file with an embedded label, like the real product, but 8x4 samples and
+/// values known in advance. Such an oracle catches what no check on real data
+/// catches: `at` outside the grid, half-cell registration and the bilinear
+/// weights -- on the real mosaic all three would give plausible numbers.
 fn hand_made(values: &[f32], samples: usize, lines: usize) -> Vec<u8> {
-    // Запис навмисно **не** дорівнює рядку картинки, хоч у справжнього
-    // продукту він дорівнює: тоді зсув до пікселів справді рахується з двох
-    // полів етикетки, а не збігається з чимось, що читач і так знає.
+    // The record deliberately does **not** equal a picture row, though it does
+    // in the real product: then the offset to the pixels really is computed
+    // from two label fields rather than coinciding with something the reader
+    // already knows.
     let record = 1024;
     let label = format!(
         "PDS_VERSION_ID = PDS3\r\n\
@@ -133,7 +137,7 @@ fn hand_made(values: &[f32], samples: usize, lines: usize) -> Vec<u8> {
          END\r\n",
         res = samples as f64 / 360.0,
     );
-    assert!(label.len() <= record, "етикетка не влізла в запис");
+    assert!(label.len() <= record, "the label did not fit in the record");
 
     let mut bytes = label.into_bytes();
     bytes.resize(record, 0);
@@ -145,15 +149,15 @@ fn hand_made(values: &[f32], samples: usize, lines: usize) -> Vec<u8> {
 
 fn write_temp(name: &str, bytes: &[u8]) -> PathBuf {
     let path = std::env::temp_dir().join(name);
-    std::fs::write(&path, bytes).expect("тимчасовий файл мав записатися");
+    std::fs::write(&path, bytes).expect("the temporary file should have written");
     path
 }
 
 #[test]
 fn a_hand_made_mosaic_reads_back_exactly() {
     let (samples, lines) = (8usize, 4usize);
-    // Значення = номер рядка: тоді вибірка по широті мусить дати саму широту,
-    // а вибірка по довготі — не зрушити нічого.
+    // Value = row number: then sampling in latitude must give the latitude
+    // itself, and sampling in longitude must move nothing.
     let values: Vec<f32> = (0..lines)
         .flat_map(|line| (0..samples).map(move |_| line as f32))
         .collect();
@@ -161,45 +165,46 @@ fn a_hand_made_mosaic_reads_back_exactly() {
         "space_sim_wac_rows.img",
         &hand_made(&values, samples, lines),
     );
-    let map = Albedo::read(&path).expect("рукотворна мозаїка мала прочитатися");
+    let map = Albedo::read(&path).expect("the hand-built mosaic should have read");
     std::fs::remove_file(&path).ok();
 
     assert_eq!((map.samples, map.lines), (samples, lines));
     assert_eq!(map.per_degree, samples as f64 / 360.0);
     assert_eq!(map.measured(), (0.0, (lines - 1) as f32));
 
-    // Центри рядків: широта центра рядка `l` — це `90 − (l + 0.5)/per_degree`
-    // градусів, і там вибірка мусить дати рівно `l`, без інтерполяції.
+    // Row centres: the latitude of row `l`'s centre is
+    // `90 - (l + 0.5)/per_degree` degrees, and sampling there must give exactly
+    // `l`, with no interpolation.
     let degrees = std::f64::consts::PI / 180.0;
     for line in 0..lines {
         let lat = (90.0 - (line as f64 + 0.5) / map.per_degree) * degrees;
         let got = map.sample(lat, 0.0);
         assert!(
             (got - line as f64).abs() < 1e-9,
-            "центр рядка {line} дав {got}, а мусив дати {line}"
+            "the centre of row {line} gave {got}, but must give {line}"
         );
     }
 
-    // Рівно між центрами двох рядків — половина. Це і є перевірка ваги: зсув
-    // на півклітинки зробив би тут ціле число.
+    // Exactly between two row centres, a half. That is the weight check: a
+    // half-cell shift would make this a whole number.
     let between = (90.0 - 1.0 / map.per_degree) * degrees;
     let got = map.sample(between, 0.0);
     assert!(
         (got - 0.5).abs() < 1e-9,
-        "між центрами рядків 0 і 1 вибірка дала {got}, а мусила 0.5"
+        "between the centres of rows 0 and 1 sampling gave {got}, but must give 0.5"
     );
 
-    // Довгота загортається, широта затискається — обидва краї сітки.
+    // Longitude wraps, latitude clamps -- both edges of the grid.
     assert_eq!(map.at(0, samples as i64), map.at(0, 0));
     assert_eq!(map.at(-1, 0), map.at(0, 0));
     assert_eq!(map.at(lines as i64, 0), map.at(lines as i64 - 1, 0));
 }
 
-/// Спеціальне значення PDS3 зупиняє читання, а не їде далі числом.
+/// A PDS3 special value stops the read rather than travelling on as a number.
 ///
-/// Перевірка існує тому, що мовчазний шлях тут виглядав би нормально:
-/// −3.4·10³⁸ у білінійній вибірці дає чорну пляму правильної форми, і жоден
-/// інший оракул про неї не спитає.
+/// The check exists because the silent path here would look fine: -3.4e38 in
+/// bilinear sampling gives a black patch of the right shape, and no other
+/// oracle will ask about it.
 #[test]
 fn a_special_value_stops_the_reader() {
     let (samples, lines) = (8usize, 4usize);
@@ -212,25 +217,27 @@ fn a_special_value_stops_the_reader() {
     let result = Albedo::read(&path);
     std::fs::remove_file(&path).ok();
 
-    let message = result.expect_err("читач мусив відмовитись").to_string();
+    let message = result.expect_err("the reader must have refused").to_string();
     assert!(
-        message.contains("1 спеціальних значень"),
-        "не те повідомлення: {message}"
+        message.contains("1 PDS3 special values"),
+        "wrong message: {message}"
     );
 }
 
-/// Маріа темніші за материки — і саме там, де вони справді є.
+/// The maria are darker than the highlands -- and exactly where they really
+/// are.
 ///
-/// Оракул, який питає про **орієнтацію**: карта, перевернута по широті, має ті
-/// самі розміри, той самий діапазон і ту саму етикетку. Числа — середні по
-/// квадрату 5°×5°, а не окремі пікселі: мозаїка знята при великих кутах
-/// падіння, тож окремий піксель у тіні кратера темніший за будь-яке море.
+/// An oracle that asks about **orientation**: a map flipped in latitude has
+/// the same dimensions, the same range and the same label. The numbers are
+/// means over 5x5 degree squares rather than individual pixels: the mosaic was
+/// shot at large incidence angles, so a single pixel in a crater's shadow is
+/// darker than any mare.
 ///
-/// ⚠ **Знака довготи це твердження не ловить, і це виміряно, а не здогад.**
-/// Перевернутий знак пройшов усі чотири перевірки цього файлу, бо моря
-/// видимого боку розкидані майже симетрично щодо нульового меридіана: дзеркало
-/// відображає море в море, а зворотний бік — сам у себе. Для знака є окрема
-/// перевірка нижче.
+/// WARNING: **this claim does not catch the sign of longitude, and that is
+/// measured rather than guessed.** A flipped sign passed all four checks in
+/// this file, because the near side's maria are scattered almost symmetrically
+/// about the prime meridian: the mirror maps mare to mare, and the far side
+/// onto itself. The sign has its own check below.
 #[test]
 fn the_maria_are_darker_than_the_highlands() {
     let Some(map) = mosaic() else {
@@ -238,56 +245,59 @@ fn the_maria_are_darker_than_the_highlands() {
     };
 
     let maria = [
-        ("Ясності", 28.0, 17.5),
-        ("Дощів", 35.0, 345.0),
-        ("Океан Бур", 18.0, 303.0),
-        ("Спокою", 8.0, 31.0),
-        ("Криз", 17.0, 59.0),
+        ("Serenitatis", 28.0, 17.5),
+        ("Imbrium", 35.0, 345.0),
+        ("Oceanus Procellarum", 18.0, 303.0),
+        ("Tranquillitatis", 8.0, 31.0),
+        ("Crisium", 17.0, 59.0),
     ];
     let highlands = [
-        ("південніше Птолемея", -20.0, 355.0),
-        ("зворотний бік, −10°", -10.0, 180.0),
-        ("зворотний бік, +10°", 10.0, 200.0),
-        ("зворотний бік, −25°", -25.0, 150.0),
+        ("south of Ptolemaeus", -20.0, 355.0),
+        ("far side, -10", -10.0, 180.0),
+        ("far side, +10", 10.0, 200.0),
+        ("far side, -25", -25.0, 150.0),
     ];
 
     let mut darkest_highland = f64::MAX;
     let mut brightest_mare = f64::MIN;
     for (name, lat, lon) in maria {
         let value = box_mean(&map, lat, lon);
-        println!("  море {name}: {value:.4}");
+        println!("  mare {name}: {value:.4}");
         brightest_mare = brightest_mare.max(value);
     }
     for (name, lat, lon) in highlands {
         let value = box_mean(&map, lat, lon);
-        println!("  материк {name}: {value:.4}");
+        println!("  highland {name}: {value:.4}");
         darkest_highland = darkest_highland.min(value);
     }
 
-    // Розрив, а не просто нерівність: виміряно 0.0267 проти 0.0456, тобто
-    // в 1.7 раза. Множник 1.3 лишає запас на вибір точок і водночас падає
-    // від будь-якого перевороту карти — там числа міняються місцями.
+    // A gap rather than mere inequality: measured 0.0267 against 0.0456, i.e.
+    // a factor of 1.7. The 1.3 multiplier leaves margin for the choice of
+    // points while still failing under any flip of the map -- there the
+    // numbers swap places.
     assert!(
         darkest_highland > 1.3 * brightest_mare,
-        "найсвітліше море {brightest_mare:.4} і найтемніший материк \
-         {darkest_highland:.4} не розділені — карта лежить не тим боком"
+        "the brightest mare {brightest_mare:.4} and the darkest highland \
+         {darkest_highland:.4} are not separated -- the map lies the wrong way"
     );
 }
 
-/// Схід — це схід: дзеркало по довготі ламає карту, і ось точка, яка це бачить.
+/// East is east: mirroring longitude breaks the map, and here is the point
+/// that sees it.
 ///
-/// Ця перевірка з'явилася тому, що попередня знака довготи **не ловила**, і це
-/// було виміряно: перевернутий знак пройшов усі чотири тести. Причина —
-/// симетрія самого Місяця, а не слабкість оракула: моря видимого боку лежать
-/// майже симетрично щодо нульового меридіана, зворотний бік дзеркалиться сам у
-/// себе, тож пари «море проти материка» дзеркало переставляє одна в одну.
+/// This check appeared because the previous one **did not catch** the sign of
+/// longitude, and that was measured: a flipped sign passed all four tests. The
+/// cause is the Moon's own symmetry rather than a weak oracle: the near side's
+/// maria lie almost symmetrically about the prime meridian, the far side
+/// mirrors onto itself, so the mirror permutes "mare against highland" pairs
+/// into one another.
 ///
-/// Розрізняє їх пара, у якої дзеркальні точки належать до **різних** класів, і
-/// знайдена вона перебором по всій карті, а не з голови. Найкраща виявилася
-/// пам'ятною: **Море Спокою (10° пн., 20° сх.)** і його дзеркало —
-/// **Коперник (10° пн., 20° зх.)**, кратер зі світлою системою променів.
-/// Виміряно: 0.0207 проти 0.0466, тобто перевернутий знак поміняв би темне зі
-/// світлим удвічі.
+/// They are told apart by a pair whose mirrored points belong to **different**
+/// classes, found by a sweep over the whole map rather than from memory. The
+/// best turned out to be a memorable one: **Mare Tranquillitatis (10 N,
+/// 20 E)** and its mirror, **Copernicus (10 N, 20 W)**, a crater with a bright
+/// ray system. Measured: 0.0207 against 0.0466, so a flipped sign would swap
+/// dark for light by a factor of two.
 #[test]
 fn east_is_east_and_the_mirror_of_a_mare_is_a_bright_crater() {
     let Some(map) = mosaic() else {
@@ -296,11 +306,11 @@ fn east_is_east_and_the_mirror_of_a_mare_is_a_bright_crater() {
 
     let mare = box_mean(&map, 10.0, 20.0);
     let crater = box_mean(&map, 10.0, -20.0);
-    println!("  Море Спокою (20° сх.): {mare:.4}; Коперник (20° зх.): {crater:.4}");
+    println!("  Tranquillitatis (20 E): {mare:.4}; Copernicus (20 W): {crater:.4}");
 
     assert!(
         crater > 1.5 * mare,
-        "20° східної ({mare:.4}) і 20° західної ({crater:.4}) не розділені — \
-         знак довготи або нульовий меридіан не той"
+        "20 E ({mare:.4}) and 20 W ({crater:.4}) are not separated -- the sign \
+         of longitude or the prime meridian is wrong"
     );
 }

@@ -1,94 +1,99 @@
-//! Читач ETOPO 2022: форма Землі з батиметрією (етап T, крок T7b).
+//! ETOPO 2022 reader: Earth's shape with bathymetry (stage T, step T7b).
 //!
-//! Третє джерело поверхні поруч із LOLA й LROC WAC, і геометрія сітки в нього
-//! **та сама**: проста циліндрична проєкція, пікселе-реєстрована, 60 відліків
-//! на градус. Тому реєстрація й білінійна вибірка беруться з
-//! [`crate::index_of`] і [`crate::bilinear`], а не пишуться втретє.
+//! The third surface source alongside LOLA and LROC WAC, and its grid geometry
+//! is **the same**: simple cylindrical projection, pixel-registered, 60
+//! samples per degree. So registration and bilinear sampling come from
+//! [`crate::index_of`] and [`crate::bilinear`] rather than being written a
+//! third time.
 //!
-//! ## Що тут своє, а що чуже
+//! ## What is ours here and what is not
 //!
-//! Контейнер — **GeoTIFF**, тобто вперше в кукері формат, у якому дані
-//! стиснені. Розпаковує їх крейт `tiff` (Deflate з floating-point
-//! предиктором, тайли 256×256), і це рівно те, чого «Чого НЕ робимо» вимагає:
-//! стиснення й декодери ми не пишемо. Своє тут — **інтерпретація тегів**:
-//! GeoTIFF описує прив'язку до глобуса трьома масивами чисел, і жодна
-//! бібліотека не скаже, чи означають вони те, чого чекає кукер.
+//! The container is **GeoTIFF**, the cooker's first format with compressed
+//! data. The `tiff` crate decompresses it (Deflate with a floating-point
+//! predictor, 256x256 tiles), which is exactly what "what we do NOT write"
+//! requires: we write neither compression nor decoders. What is ours is the
+//! **interpretation of the tags**: GeoTIFF describes the mapping to the globe
+//! with three arrays of numbers, and no library will say whether they mean
+//! what the cooker expects.
 //!
-//! ## Три перевірки, кожна ловить помилку, якої не видно на картинці
+//! ## Three checks, each catching an error invisible in a picture
 //!
-//! 1. **реєстрація.** `RasterType = PixelIsArea` (GeoKey 1025 = 1), тобто
-//!    піксель накриває комірку, а не стоїть у вузлі. Зсув на півклітинки —
-//!    0.93 км — рухає берегову лінію рівно там, де колір міняється стрибком;
-//! 2. **прив'язка.** `ModelPixelScale` мусить бути 1/60 градуса по обох осях,
-//!    а `ModelTiepoint` — класти піксель `(0, 0)` у `(−180°, +90°)`. Продукт
-//!    з іншим кутом читався б без жодної помилки й давав би перевернуту або
-//!    зсунуту Землю;
-//! 3. **порожні пікселі.** `GDAL_NODATA = −99999`, і поводимось із ними так
-//!    само, як з `CORE_NULL` у WAC: **рахуємо й падаємо**, якщо трапився хоч
-//!    один. Виміряно на всьому продукті — їх немає жодного, тож правила
-//!    заповнення тут немає навмисно: воно було б здогадом про дані, яких ми
-//!    не бачили.
+//! 1. **registration.** `RasterType = PixelIsArea` (GeoKey 1025 = 1), i.e. a
+//!    pixel covers a cell rather than sitting at a node. A half-cell shift --
+//!    0.93 km -- moves the coastline exactly where the colour changes
+//!    abruptly;
+//! 2. **georeferencing.** `ModelPixelScale` must be 1/60 degree on both axes,
+//!    and `ModelTiepoint` must put pixel `(0, 0)` at `(-180, +90)`. A product
+//!    with a different corner would read without a single error and give a
+//!    flipped or shifted Earth;
+//! 3. **empty pixels.** `GDAL_NODATA = -99999`, handled the same way as
+//!    `CORE_NULL` in WAC: **count and fail** if even one occurs. Measured over
+//!    the whole product -- there are none, so there is deliberately no fill
+//!    rule here: it would be a guess about data we have not seen.
 //!
-//! ## Чому відліки стають цілими метрами
+//! ## Why samples become integer metres
 //!
-//! Джерело — `float32` над геоїдом EGM2008, діапазон −10 752 … +8157 м. Тайл
-//! рельєфу зберігає `i16` (R5c), тож масштаб 1 м покриває весь діапазон із
-//! запасом, а дробові метри однаково нижчі за квант формату. Округлення тут
-//! **одне**, а не два: сітка одразу лежить у тих одиницях, у яких її запише
-//! кукер.
+//! The source is `float32` over the EGM2008 geoid, range -10,752 to +8157 m. A
+//! terrain tile stores `i16` (R5c), so a scale of 1 m covers the whole range
+//! with room to spare, and fractional metres are below the format's quantum
+//! anyway. There is **one** rounding here, not two: the grid already sits in
+//! the units the cooker will write.
 //!
-//! ⚠ Висоти відлічені від **геоїда**, а гра малює сферу радіусом 6 371 010 м
-//! (`reference_m`). Різниця — геоїдна хвиля ±100 м і сплюснутість 21 км — не
-//! додається: етап T свідомо лишив сферу. Наслідок названий чесно: висоти
-//! правильні відносно поверхні води, а не відносно центра Землі.
+//! WARNING: heights are measured from the **geoid**, while the game draws a
+//! sphere of radius 6,371,010 m (`reference_m`). The difference -- a geoid
+//! undulation of +/-100 m and 21 km of flattening -- is not added: stage T
+//! deliberately kept the sphere. The consequence stated honestly: the heights
+//! are correct relative to the water surface, not relative to Earth's
+//! centre.
 
 use std::path::Path;
 
 use tiff::decoder::{Decoder, DecodingResult, Limits};
 use tiff::tags::Tag;
 
-/// Опорний радіус, від якого кукер відлічує висоти Землі, метри.
+/// Reference radius the cooker measures Earth's heights from, metres.
 ///
-/// Той самий, що несе ассет ефемериди (`ephemeris.h`: середній радіус
-/// 6 371 010 м проти екваторіального 6 378 137), і це не збіг, а вимога: тіло
-/// в кадрі малюється сферою саме цього радіуса, тож будь-яке інше число тут
-/// підняло б або втопило всю поверхню разом.
+/// The one the ephemeris asset carries (`ephemeris.h`: mean radius 6,371,010 m
+/// against an equatorial 6,378,137), and that is a requirement rather than a
+/// coincidence: the body in frame is drawn as a sphere of exactly this radius,
+/// so any other number here would raise or sink the whole surface at once.
 pub const REFERENCE_M: f64 = 6_371_010.0;
 
-/// Значення «даних немає» з тега `GDAL_NODATA`.
+/// The "no data" value from the `GDAL_NODATA` tag.
 const NODATA: f32 = -99999.0;
 
-/// Тег GeoTIFF: розмір пікселя в одиницях координатної системи.
+/// GeoTIFF tag: pixel size in coordinate system units.
 const TAG_PIXEL_SCALE: Tag = Tag::Unknown(33550);
-/// Тег GeoTIFF: прив'язка пікселя до координат.
+/// GeoTIFF tag: the pixel's tie to coordinates.
 const TAG_TIEPOINT: Tag = Tag::Unknown(33922);
-/// Тег GeoTIFF: словник ключів, серед них реєстрація й датум.
+/// GeoTIFF tag: a key dictionary, among them registration and datum.
 const TAG_GEO_KEYS: Tag = Tag::Unknown(34735);
 
-/// Те, що читач бере з заголовка, перш ніж торкнутись пікселів.
+/// What the reader takes from the header before touching any pixels.
 ///
-/// Окремим типом з тієї ж причини, що [`crate::albedo::Header`]: у git лежить
-/// рівно заголовок (`data/etopo/etopo_2022_60s_surface.lbl`, 32 КіБ), а сам
-/// продукт на 466 МБ — ні (Q5). Отже розбір мусить бути викличним **без
-/// даних**, інакше перевіряти його не було б чим.
+/// Its own type for the same reason as [`crate::albedo::Header`]: git holds
+/// exactly the header (`data/etopo/etopo_2022_60s_surface.lbl`, 32 KiB) while
+/// the 466 MB product itself does not (Q5). So parsing must be callable
+/// **without the data**, or there would be nothing to check it with.
 #[derive(Clone, Debug)]
 pub struct Header {
-    /// Скільки відліків по довготі.
+    /// Samples along longitude.
     pub samples: usize,
-    /// Скільки рядків по широті.
+    /// Rows along latitude.
     pub lines: usize,
-    /// Відліків на градус — обернене до `ModelPixelScale`.
+    /// Samples per degree -- the inverse of `ModelPixelScale`.
     pub per_degree: f64,
-    /// Куди прив'язаний кут пікселя `(0, 0)`: довгота й широта, градуси.
+    /// Where the corner of pixel `(0, 0)` is tied: longitude and latitude,
+    /// degrees.
     pub corner_deg: (f64, f64),
 }
 
 impl Header {
-    /// Прочитати заголовок — і з продукту, і з етикетки в git.
+    /// Read the header, from the product and from the label in git alike.
     ///
-    /// Працює на обох, бо `Decoder::new` читає лише IFD: пікселі лишаються
-    /// незайманими доти, доки їх не попросять. Саме тому етикеткою може бути
-    /// голова файлу, а не окремий опис.
+    /// Works on both because `Decoder::new` reads only the IFD: the pixels
+    /// stay untouched until asked for. That is exactly why the label can be
+    /// the head of the file rather than a separate description.
     pub fn read(path: &Path) -> Result<Header, String> {
         let mut decoder = open(path)?;
         Header::from_decoder(&mut decoder)
@@ -99,52 +104,53 @@ impl Header {
     ) -> Result<Header, String> {
         let (width, height) = decoder
             .dimensions()
-            .map_err(|e| format!("розміри GeoTIFF: {e}"))?;
+            .map_err(|e| format!("GeoTIFF dimensions: {e}"))?;
 
         let scale = doubles(decoder, TAG_PIXEL_SCALE, "ModelPixelScale")?;
         if scale.len() < 2 {
             return Err(format!(
-                "ModelPixelScale має {} чисел замість 3",
+                "ModelPixelScale has {} numbers instead of 3",
                 scale.len()
             ));
         }
-        // Крок по довготі й широті мусить бути однаковий: сітка квадратна в
-        // градусах, і саме на цьому стоїть один `per_degree` замість двох.
+        // The step in longitude and latitude must be equal: the grid is square
+        // in degrees, and a single `per_degree` instead of two rests on that.
         if (scale[0] - scale[1]).abs() > 1e-12 {
             return Err(format!(
-                "ModelPixelScale не квадратний: {} проти {} градуса",
+                "ModelPixelScale is not square: {} against {} degrees",
                 scale[0], scale[1]
             ));
         }
         if scale[0] <= 0.0 {
-            return Err(format!("ModelPixelScale = {} градуса", scale[0]));
+            return Err(format!("ModelPixelScale = {} degrees", scale[0]));
         }
 
         let tie = doubles(decoder, TAG_TIEPOINT, "ModelTiepoint")?;
         if tie.len() < 6 {
-            return Err(format!("ModelTiepoint має {} чисел замість 6", tie.len()));
+            return Err(format!("ModelTiepoint has {} numbers instead of 6", tie.len()));
         }
-        // Перша трійка — піксель, друга — його координати. Кукер уміє читати
-        // лише прив'язку до кута растра; будь-яка інша означає інший продукт.
+        // The first triple is the pixel, the second its coordinates. The
+        // cooker can read only a tie to the raster corner; any other means a
+        // different product.
         if tie[0] != 0.0 || tie[1] != 0.0 {
             return Err(format!(
-                "ModelTiepoint прив'язує піксель ({}, {}), а не кут растра",
+                "ModelTiepoint ties pixel ({}, {}), not the raster corner",
                 tie[0], tie[1]
             ));
         }
 
-        // Реєстрація: 1 — PixelIsArea, 2 — PixelIsPoint. Різниця в пів пікселя,
-        // тобто 0.93 км на екваторі, і жодна картинка її не покаже.
+        // Registration: 1 is PixelIsArea, 2 is PixelIsPoint. The difference is
+        // half a pixel, i.e. 0.93 km at the equator, and no picture shows it.
         let keys = shorts(decoder, TAG_GEO_KEYS, "GeoKeyDirectory")?;
         match geo_key(&keys, 1025) {
             Some(1) => {}
             Some(other) => {
                 return Err(format!(
-                    "RasterType = {other}: сітка вузлова, а читач рахує \
-                     пікселе-реєстровану"
+                    "RasterType = {other}: the grid is node-registered, but \
+                     the reader assumes pixel-registered"
                 ))
             }
-            None => return Err("у GeoKeyDirectory немає RasterType".to_string()),
+            None => return Err("GeoKeyDirectory has no RasterType".to_string()),
         }
 
         Ok(Header {
@@ -155,10 +161,11 @@ impl Header {
         })
     }
 
-    /// Чи прив'язана сітка так, як чекає кукер: північно-західний кут світу.
+    /// Whether the grid is tied where the cooker expects: the world's
+    /// north-west corner.
     ///
-    /// Продукт, що починається деінде, читався б без єдиної помилки й давав
-    /// би зсунуту Землю — тобто помилку, яку видно лише поруч із берегом.
+    /// A product starting elsewhere would read without a single error and give
+    /// a shifted Earth -- an error visible only next to a coastline.
     pub fn covers_globe(&self) -> bool {
         let span_lon = self.samples as f64 / self.per_degree;
         let span_lat = self.lines as f64 / self.per_degree;
@@ -169,56 +176,56 @@ impl Header {
     }
 }
 
-/// Сітка висот Землі в простій циліндричній проєкції, цілі метри.
+/// Earth's height grid in the simple cylindrical projection, integer metres.
 #[derive(Clone, Debug)]
 pub struct Relief {
-    /// Скільки відліків по довготі.
+    /// Samples along longitude.
     pub samples: usize,
-    /// Скільки рядків по широті.
+    /// Rows along latitude.
     pub lines: usize,
-    /// Відліків на градус.
+    /// Samples per degree.
     pub per_degree: f64,
-    /// Самі відліки, рядок за рядком з півночі на південь, метри.
+    /// The samples themselves, row by row from north to south, metres.
     pub raw: Vec<i16>,
 }
 
 impl Relief {
-    /// Прочитати продукт цілком.
+    /// Read the whole product.
     pub fn read(path: &Path) -> Result<Relief, String> {
         let mut decoder = open(path)?;
         let header = Header::from_decoder(&mut decoder)?;
         if !header.covers_globe() {
             return Err(format!(
-                "сітка {}×{} з кутом {:?} не накриває глобус",
+                "a {}x{} grid with corner {:?} does not cover the globe",
                 header.samples, header.lines, header.corner_deg
             ));
         }
 
-        // Ліміти крейта розраховані на картинки для екрана; тут 933 МБ
-        // відліків, і це нормальний розмір джерела, а не ознака поламаного
-        // файлу. Кукер офлайновий, пам'ять у нього є.
+        // The crate's limits are sized for pictures on a screen; here there
+        // are 933 MB of samples, a normal source size rather than a sign of a
+        // broken file. The cooker is offline and has the memory.
         let image = decoder
             .read_image()
             .map_err(|e| format!("{}: {e}", path.display()))?;
         let DecodingResult::F32(values) = image else {
-            return Err("очікували float32 — інший тип відліку тут не читається".to_string());
+            return Err("expected float32 -- no other sample type is read here".to_string());
         };
         if values.len() != header.samples * header.lines {
             return Err(format!(
-                "{} відліків замість {}×{}",
+                "{} samples instead of {}x{}",
                 values.len(),
                 header.samples,
                 header.lines
             ));
         }
 
-        // Правила заповнення немає навмисно (див. вступ модуля): продукт з
-        // дірками — це інший продукт, і кукати його мовчки не можна.
+        // There is deliberately no fill rule (see the module intro): a product
+        // with holes is a different product and must not be cooked silently.
         let empty = values.iter().filter(|&&v| v == NODATA).count();
         if empty > 0 {
             return Err(format!(
-                "{empty} відліків = {NODATA} (GDAL_NODATA); правила заповнення \
-                 в кукера немає"
+                "{empty} samples = {NODATA} (GDAL_NODATA); the cooker has no \
+                 fill rule"
             ));
         }
 
@@ -236,27 +243,28 @@ impl Relief {
         })
     }
 
-    /// Відлік сітки. Індекси загортаються по довготі й затискаються по
-    /// широті — саме так поводиться сама сфера.
+    /// A grid sample. Indices wrap in longitude and clamp in latitude --
+    /// exactly how the sphere itself behaves.
     pub fn at(&self, line: i64, sample: i64) -> i16 {
         let line = line.clamp(0, self.lines as i64 - 1) as usize;
         let sample = sample.rem_euclid(self.samples as i64) as usize;
         self.raw[line * self.samples + sample]
     }
 
-    /// Висота відліку над опорною сферою, метри.
+    /// Sample height above the reference sphere, metres.
     pub fn height_m(&self, line: i64, sample: i64) -> f64 {
         f64::from(self.at(line, sample))
     }
 
-    /// Висота в довільній точці, білінійно між чотирма відліками.
+    /// Height at an arbitrary point, bilinear between four samples.
     ///
-    /// ⚠ **Перший стовпець тут — 180° західної, а не нульовий меридіан.** У
-    /// LOLA й WAC сітка починається з 0° (`index_of` це й припускає), в ETOPO
-    /// — з −180°, і саме це каже `ModelTiepoint`. Тому довгота приїжджає в
-    /// спільну реєстрацію зсунутою на π: без зсуву карта читалася б без
-    /// жодної помилки й стояла б на пів глобуса не там — тобто помилка,
-    /// схожа на правильну Землю, поки не глянеш, де океан.
+    /// WARNING: **the first column here is 180 west, not the prime meridian.**
+    /// In LOLA and WAC the grid starts at 0 (which `index_of` assumes), in
+    /// ETOPO at -180, and `ModelTiepoint` is what says so. So the longitude
+    /// arrives in the shared registration shifted by pi: without the shift the
+    /// map would read without a single error and stand half a globe off -- an
+    /// error that looks like a correct Earth until you check where the ocean
+    /// is.
     pub fn sample_m(&self, lat: f64, lon: f64) -> f64 {
         crate::bilinear(
             self.per_degree,
@@ -266,13 +274,13 @@ impl Relief {
         )
     }
 
-    /// Висота в напрямку `direction` (не обов'язково одиничному), метри.
+    /// Height along `direction` (not necessarily unit), metres.
     pub fn sample_direction_m(&self, direction: [f64; 3]) -> f64 {
         let (lat, lon) = crate::lat_lon(direction);
         self.sample_m(lat, lon)
     }
 
-    /// Межі, пораховані з самих даних, метри.
+    /// Bounds computed from the data itself, metres.
     pub fn measured(&self) -> (i16, i16) {
         let mut low = i16::MAX;
         let mut high = i16::MIN;
@@ -283,16 +291,17 @@ impl Relief {
         (low, high)
     }
 
-    /// Частка суші (`h ≥ 0`) на сфері, зважена `cos(широта)`.
+    /// Land fraction (`h >= 0`) over the sphere, weighted by `cos(latitude)`.
     ///
-    /// Головний оракул читача, і саме тому він живе тут, а не в тесті: одне
-    /// число ловить увесь клас помилок геометрії. Справжня частка — 29.2%;
-    /// зсув на пів пікселя, перевернутий порядок рядків чи хибно розібраний
-    /// предиктор рухають його на відсотки, а поламана сітка — на десятки.
+    /// The reader's principal oracle, which is exactly why it lives here and
+    /// not in a test: one number catches the whole class of geometry errors.
+    /// The true fraction is 29.2%; a half-pixel shift, reversed row order or a
+    /// misparsed predictor move it by percent, and a broken grid by tens.
     ///
-    /// Вага `cos(широта)`, а не рахунок пікселів: у циліндричній проєкції
-    /// полярний рядок накриває в сотні разів меншу площу, ніж екваторіальний,
-    /// і без ваги Антарктида важила б як Африка.
+    /// Weighted by `cos(latitude)` rather than counting pixels: in a
+    /// cylindrical projection a polar row covers hundreds of times less area
+    /// than an equatorial one, and without the weight Antarctica would count
+    /// as much as Africa.
     pub fn land_fraction(&self) -> f64 {
         let degrees = std::f64::consts::PI / 180.0;
         let mut land = 0.0;
@@ -308,25 +317,26 @@ impl Relief {
         land / total
     }
 
-    /// Кут, який накриває один піксель сітки, радіани.
+    /// The angle one grid pixel covers, radians.
     ///
-    /// Те саме, що [`crate::albedo::Albedo::pixel_rad`], і потрібне тому
-    /// самому — вибору сітки під рівень піраміди (T3c, `cook::source_for`).
+    /// The same as [`crate::albedo::Albedo::pixel_rad`], and needed for the
+    /// same thing -- choosing a grid for a pyramid level (T3c,
+    /// `cook::source_for`).
     pub fn pixel_rad(&self) -> f64 {
         std::f64::consts::PI / (180.0 * self.per_degree)
     }
 
-    /// Та сама сітка, грубіша на крок ланцюга: кожен відлік — середнє блоку.
+    /// The same grid, coarser by one chain step: each sample is a block mean.
     ///
-    /// ⚠ **Висоти теж потребують ланцюга, і це відмінність від Місяця.** Там
-    /// джерело (7.6 км) грубіше за вузол найглибшого рівня (5.3 км), тож
-    /// точкова вибірка чесна на всіх рівнях. Тут джерело вп'ятеро дрібніше за
-    /// вузол, а на рівні 0 — у тридцять тисяч разів, і без усереднення
-    /// далекий силует Землі складався б із випадкових пікселів джерела: то
-    /// западина, то гора.
+    /// WARNING: **heights need the chain too, unlike the Moon.** There the
+    /// source (7.6 km) is coarser than the deepest level's node (5.3 km), so
+    /// point sampling is honest at every level. Here the source is five times
+    /// finer than a node, and thirty thousand times at level 0, so without
+    /// averaging Earth's distant silhouette would be made of random source
+    /// pixels: now a trench, now a mountain.
     ///
-    /// Середнє береться в `f64` і округлюється один раз — інакше сім кроків
-    /// ланцюга внесли б сім округлень по пів метра кожне.
+    /// The mean is taken in `f64` and rounded once -- otherwise seven chain
+    /// steps would contribute seven roundings of half a metre each.
     pub fn reduced(&self) -> Option<Relief> {
         let step = crate::reduce_step(self.samples, self.lines)?;
         let (samples, lines) = (self.samples / step, self.lines / step);
@@ -352,22 +362,23 @@ impl Relief {
         })
     }
 
-    /// Ланцюг сіток, кожна грубіша за попередню; нульова — ця сама (T3c).
+    /// The chain of grids, each coarser than the last; the zeroth is this one
+    /// (T3c).
     pub fn chain(&self) -> Vec<Relief> {
         let mut out = vec![self.clone()];
-        while let Some(next) = out.last().expect("ланцюг не порожній").reduced() {
+        while let Some(next) = out.last().expect("the chain is not empty").reduced() {
             out.push(next);
         }
         out
     }
 }
 
-/// Метри з плаваючою комою → цілі метри, з насиченням замість загортання.
+/// Floating-point metres to integer metres, saturating rather than wrapping.
 ///
-/// Загортання тут було б найгіршим із можливих: западина на 40 км стала б
-/// горою, і виглядало б це правдоподібно. Виміряний діапазон продукту
-/// (−10 752 … +8157) не наближається до межі, тож насичення — це запобіжник
-/// на чужий продукт, а не робочий шлях.
+/// Wrapping here would be the worst possible: a 40 km trench would become a
+/// mountain, and it would look plausible. The product's measured range
+/// (-10,752 to +8157) does not approach the limit, so saturation is a
+/// safeguard against a different product rather than a working path.
 fn quantise(metres: f64) -> i16 {
     metres
         .round()
@@ -388,7 +399,7 @@ fn doubles(
 ) -> Result<Vec<f64>, String> {
     decoder
         .get_tag_f64_vec(tag)
-        .map_err(|e| format!("тег {name}: {e}"))
+        .map_err(|e| format!("tag {name}: {e}"))
 }
 
 fn shorts(
@@ -398,15 +409,15 @@ fn shorts(
 ) -> Result<Vec<u16>, String> {
     decoder
         .get_tag_u16_vec(tag)
-        .map_err(|e| format!("тег {name}: {e}"))
+        .map_err(|e| format!("tag {name}: {e}"))
 }
 
-/// Значення ключа з `GeoKeyDirectory`.
+/// A key's value from the `GeoKeyDirectory`.
 ///
-/// Директорія — це масив `u16` четвірками: чотири числа заголовка, далі по
-/// чотири на ключ (номер, куди веде значення, скільки його, саме значення).
-/// Нас цікавлять лише ключі, що лежать у самій директорії (`location == 0`);
-/// решта посилається на інші теги, і жодного такого кукер не читає.
+/// The directory is an array of `u16` in fours: four header numbers, then four
+/// per key (number, where the value lives, how much of it, the value itself).
+/// Only keys held in the directory itself (`location == 0`) matter here; the
+/// rest point at other tags, and the cooker reads none of those.
 fn geo_key(keys: &[u16], wanted: u16) -> Option<u16> {
     if keys.len() < 4 {
         return None;
