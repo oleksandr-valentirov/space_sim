@@ -1,4 +1,4 @@
-# Модель корабля й експорт для кукера (ROADMAP, T5d1).
+# Модель корабля й експорт для кукера (ROADMAP, T5d1; форма й фарба — T9).
 #
 # Запуск — тільки headless і тільки цим скриптом:
 #
@@ -10,15 +10,23 @@
 # Той самий клас, що `-ffast-math`.
 #
 # Що робить скрипт: будує корпус, чотири стабілізатори, ілюмінатор і антену,
-# зберігає `.blend`, експортує glTF і кладе поруч **оракул** — числа, які
-# порахував Blender. Ручна робота мишею тут не крок: вона не відтворюється й
-# не переглядається в рев'ю.
+# фарбує їх **вершинним кольором**, зберігає `.blend`, експортує glTF і кладе
+# поруч **оракул** — числа, які порахував Blender. Ручна робота мишею тут не
+# крок: вона не відтворюється й не переглядається в рев'ю.
 #
 # ## Осі
 #
 # Ніс уздовж −Y, верх уздовж +Z — тоді експорт дефолтами дає glTF з носом по
 # +Z, тобто вже в конвенції `Scene::Ship`, і кукер не перетворює нічого
 # (виміряно, скіл `blender-assets`).
+#
+# ## Габарит моделі — рівно `LENGTH_M`
+#
+# Уся геометрія лежить у `along` від 0 (п'яти стабілізаторів) до 1 (вістря
+# конуса), тож висота моделі дорівнює `LENGTH_M` точно, а не «десь близько».
+# Це не косметика: рушій нормалізує меш **його ж габаритом** (`Model::
+# from_metres`), і якби стабілізатори вилазили за одиницю, число в оракулі
+# перестало б збігатися з тим, що поділив кукер.
 #
 # ## Чому форма несиметрична
 #
@@ -27,6 +35,11 @@
 # антена ламають симетрію 90°, яку самі стабілізатори лишають. Без цього
 # оракул орієнтації перевіряв би нічого — рівно як фікстура над центром грані
 # куба, на якій D13 і D14 прожили невидимими.
+#
+# ⚠ Одна антена лишається в моделі **навмисно**, хоч на референсі її немає:
+# без неї корабель має дзеркало `z → −z` (корпус — тіло обертання, чотири
+# стабілізатори переходять самі в себе, ілюмінатор стоїть на осі дзеркала), а
+# дзеркало ховає помилку ліворукості осей повністю.
 
 import json
 import math
@@ -41,46 +54,113 @@ import bpy
 # краще зупинка, ніж мовчазна зміна геометрії.
 REQUIRED_VERSION = (5, 2)
 
-# Довжина корабля в метрах — уздовж осі носа. Рушій тримає меш **одиничної
-# висоти** й масштабує його `height_m` (V2), тож для гри це довідка; але
-# моделювати треба в метрах, інакше числа в `.blend` нічого не означають.
+# Габарит корабля в метрах — уздовж осі носа, від п'ят до вістря. Рушій тримає
+# меш **одиничної висоти** й масштабує його `height_m` (V2), тож для гри це
+# довідка; але моделювати треба в метрах, інакше числа в `.blend` нічого не
+# означають.
 LENGTH_M = 6.0
 
-# Найбільший радіус корпусу — частка довжини.
-RADIUS = 0.20
+# Найбільший радіус корпусу — частка габариту. 0.113 зміряно з референсу:
+# 87 пікселів півширини на 767 пікселів висоти.
+RADIUS = 0.113
 
 # Скільки граней у кола корпусу. 32 — той самий поділ, що в заглушки V1:
 # силует уже гладкий, а вершин лишається кілька сотень.
 SEGMENTS = 32
 
-# Профіль корпусу від хвоста до носа: (частка довжини, частка найбільшого
-# радіуса). Вертикальні ділянки (однакове `t`) — кільця: сопловий комір і
-# уступ під носовим конусом.
+# Профіль корпусу від хвоста до носа: (частка габариту, частка найбільшого
+# радіуса). Хвіст починається не з нуля — під ним ще п'яти стабілізаторів.
+#
+# Форма з референсу: сопло вузьким конусом, майже циліндричне денце корпусу,
+# оживало, що плавно тоншає догори, і **короткий** носовий конус — не третина
+# корабля, як здається на око, а восьма частина. Уступ під корпусом (два
+# кільця на однаковому `along`) — це і є та кільцева площина, яку на референсі
+# видно тінню між білим корпусом і сірим соплом.
 PROFILE = [
-    (0.000, 0.000),
-    (0.000, 0.62),
-    (0.045, 0.62),
-    (0.070, 0.78),
-    (0.180, 0.94),
-    (0.420, 1.00),
-    (0.660, 1.00),
-    (0.780, 0.92),
-    (0.820, 0.72),
-    (1.000, 0.00),
+    (0.013, 0.000),
+    (0.013, 0.430),
+    (0.039, 0.437),
+    (0.117, 0.632),
+    (0.117, 0.989),
+    (0.241, 1.000),
+    (0.372, 0.989),
+    (0.428, 0.969),
+    (0.434, 0.967),
+    (0.502, 0.943),
+    (0.632, 0.851),
+    (0.763, 0.690),
+    (0.841, 0.517),
+    (0.874, 0.460),
+    (1.000, 0.000),
 ]
 
-FINS = 4
-# Стабілізатор у площині (частка довжини вздовж осі, частка радіуса впоперек).
-FIN_PROFILE = [(0.02, 0.55), (0.30, 0.55), (0.00, 2.05)]
-FIN_THICKNESS = 0.09
+# Межі фарби в частках габариту. Стоять **між** кільцями профілю, а не на
+# кільці: інакше смуга залежала б від того, куди округлиться порівняння.
+#
+# Шов панелі — смуга завширшки 4 см між двома сусідніми кільцями. Геометрії
+# він не має взагалі (злам нахилу там менший за 0.2°), і це навмисно: на
+# референсі це лінія фарби, а не уступ. Заклепок немає — вони там текстура, а
+# текстур через межу ще не їде жодна (скіл `blender-assets`).
+NOZZLE_UNTIL = 0.117
+SEAM = (0.428, 0.434)
+CONE_FROM = 0.874
 
-# Ілюмінатор — циліндр упоперек корпусу; антена — тонкий брусок над ним.
-PORTHOLE_AT = 0.62
-PORTHOLE_RADIUS = 0.26
-PORTHOLE_REACH = (0.86, 1.16)
-ANTENNA_AT = (0.30, 0.52)
-ANTENNA_SIZE = (0.04, 0.04)
-ANTENNA_REACH = (0.95, 2.30)
+FINS = 4
+
+# Стабілізатор — контур у площині (вздовж осі, назовні) плюс частка товщини в
+# кожній точці: (частка габариту, частка радіуса корпусу, частка товщини).
+# Плоска стрілоподібна пластина з референсу: пряма передня кромка від корпусу
+# вниз-назовні до гострої п'яти, коротка кромка внизу й пряма задня кромка
+# назад до денця. Товщина однакова скрізь — це пластина, а не лита нога.
+FIN_OUTLINE = [
+    (0.360, 0.80, 1.0),
+    (0.010, 2.25, 1.0),
+    (0.000, 2.05, 1.0),
+    (0.100, 0.80, 1.0),
+]
+FIN_THICKNESS = 0.08
+
+# Антена — маленьке спинне перо тим самим кодом, що стабілізатор.
+ANTENNA_OUTLINE = [
+    (0.700, 0.70, 1.0),
+    (0.755, 0.70, 1.0),
+    (0.740, 1.22, 0.6),
+    (0.712, 1.22, 0.6),
+]
+ANTENNA_THICKNESS = 0.07
+
+# Ілюмінатор — кільця в частках радіуса корпусу разом з висотою над **самою
+# поверхнею** корпусу (теж у частках радіуса). Не над площиною: пластина
+# завширшки 0.65 радіуса на опуклому корпусі відстає від нього по краях на
+# третину радіуса, і плоский обідок висів би в повітрі.
+PORTHOLE_AT = 0.636
+PORTHOLE_RIM = 0.655
+PORTHOLE_GLASS = 0.506
+PORTHOLE_SEGMENTS = 24
+# (радіус, висота над поверхнею) від дна всередині корпусу до краю скла.
+PORTHOLE_RINGS = [
+    (PORTHOLE_RIM, -0.120),
+    (PORTHOLE_RIM, 0.030),
+    (PORTHOLE_GLASS, 0.030),
+    (PORTHOLE_GLASS, 0.012),
+]
+# Скло — купол, а не диск: на референсі воно опукле, і саме опуклість дає йому
+# власний відблиск замість плаского плями.
+PORTHOLE_DOME = [
+    (0.78 * PORTHOLE_GLASS, 0.048),
+    (0.42 * PORTHOLE_GLASS, 0.070),
+]
+PORTHOLE_APEX = 0.078
+
+# Фарба — **лінійне світло**, як усе в кадрі (T6), і без запеченого освітлення:
+# у грі одне джерело й нуль ambient, тож підмальована тінь у базовому кольорі
+# виглядала б брудом (скіл `blender-assets`).
+ENAMEL = (0.82, 0.82, 0.82)
+RED = (0.75, 0.050, 0.020)
+YELLOW = (0.90, 0.60, 0.020)
+STEEL = (0.30, 0.30, 0.31)
+SEAM_PAINT = (0.10, 0.10, 0.10)
+GLASS = (0.45, 0.56, 0.66)
 
 
 def require_blender():
@@ -94,7 +174,7 @@ def require_blender():
 
 
 def axis(along, out, angle):
-    """Точка корпусу: `along` — частка довжини від хвоста, `out` — радіус."""
+    """Точка корпусу: `along` — частка габариту від п'ят, `out` — радіус."""
     # Ніс уздовж −Y, тобто хвіст у +Y: вздовж осі йдемо від +Y до −Y.
     y = (0.5 - along) * LENGTH_M
     return (
@@ -104,7 +184,7 @@ def axis(along, out, angle):
     )
 
 
-def hull(bm):
+def hull(bm, paint):
     """Корпус обертанням профілю. Гладке затінення — вдвічі менше вершин."""
     rings = []
     for along, out in PROFILE:
@@ -117,20 +197,20 @@ def hull(bm):
             ring.append(bm.verts.new(axis(along, out, angle)))
         rings.append(ring)
 
-    faces = []
-    for lower, upper in zip(rings, rings[1:]):
+    made = []
+    for index, (lower, upper) in enumerate(zip(rings, rings[1:])):
         if len(lower) == 1:
-            faces += [
+            band = [
                 bm.faces.new((lower[0], upper[k], upper[(k + 1) % SEGMENTS]))
                 for k in range(SEGMENTS)
             ]
         elif len(upper) == 1:
-            faces += [
+            band = [
                 bm.faces.new((lower[k], upper[0], lower[(k + 1) % SEGMENTS]))
                 for k in range(SEGMENTS)
             ]
         else:
-            faces += [
+            band = [
                 bm.faces.new(
                     (
                         lower[k],
@@ -141,112 +221,227 @@ def hull(bm):
                 )
                 for k in range(SEGMENTS)
             ]
-    for face in faces:
-        face.smooth = True
+
+        low, high = PROFILE[index], PROFILE[index + 1]
+        # Кільце — це смуга, у якої зміна радіуса більша за підйом уздовж осі:
+        # денце й уступ під корпусом. Такі смуги плоскі, і саме їхні краї
+        # дають зламу де бути. Решта гладка.
+        rise = abs(high[0] - low[0]) * LENGTH_M
+        flare = abs(high[1] - low[1]) * RADIUS * LENGTH_M
+        smooth = rise > flare
+        middle = 0.5 * (low[0] + high[0])
+        if middle < NOZZLE_UNTIL:
+            colour = STEEL
+        elif middle > CONE_FROM:
+            colour = RED
+        elif SEAM[0] < middle < SEAM[1]:
+            colour = SEAM_PAINT
+        else:
+            colour = ENAMEL
+
+        for face in band:
+            face.smooth = smooth
+        made += [(face, colour) for face in band]
+
+    paint += made
+    return [face for face, _ in made]
 
 
-def prism(bm, points, thickness, angle):
-    """Призма: багатокутник у площині (вздовж осі, назовні), товщина впоперек.
+def blade(bm, paint, outline, thickness, angle, colour):
+    """Перо: контур у площині (вздовж осі, назовні), товщина впоперек.
 
-    Використовується стабілізаторами. Компоненти навмисно **не зшиваються**
-    з корпусом: кожен лишається замкненою оболонкою, і знаковий об'єм цілого
-    дорівнює сумі об'ємів навіть там, де вони перетинаються.
+    Ним зроблені і стабілізатори, і антена. Компоненти навмисно **не
+    зшиваються** з корпусом: кожен лишається замкненою оболонкою, і знаковий
+    об'єм цілого дорівнює сумі об'ємів навіть там, де вони перетинаються.
     """
-    half = 0.5 * thickness * RADIUS * LENGTH_M
-    side = (-math.sin(angle) * half, 0.0, math.cos(angle) * half)
+    side = (-math.sin(angle), 0.0, math.cos(angle))
     layers = []
     for sign in (-1.0, 1.0):
         layer = []
-        for along, out in points:
+        for along, out, weight in outline:
             x, y, z = axis(along, out, angle)
-            layer.append(bm.verts.new((x + sign * side[0], y, z + sign * side[2])))
+            half = 0.5 * thickness * weight * RADIUS * LENGTH_M
+            layer.append(
+                bm.verts.new((x + sign * side[0] * half, y, z + sign * side[2] * half))
+            )
         layers.append(layer)
 
-    n = len(points)
-    bm.faces.new(layers[0])
-    bm.faces.new(list(reversed(layers[1])))
+    n = len(outline)
+    made = [bm.faces.new(list(reversed(layers[0]))), bm.faces.new(layers[1])]
     for k in range(n):
-        bm.faces.new(
-            (
-                layers[0][k],
-                layers[0][(k + 1) % n],
-                layers[1][(k + 1) % n],
-                layers[1][k],
-            )
-        )
-
-
-def tube(bm, at, radius, reach, segments=12):
-    """Циліндр упоперек корпусу — ілюмінатор."""
-    caps = []
-    for out in reach:
-        ring = []
-        for k in range(segments):
-            angle = 2.0 * math.pi * k / segments
-            # Коло в площині (вздовж осі, вгору), винесене назовні по +X.
-            along = at + radius * math.cos(angle) * RADIUS
-            z = radius * math.sin(angle) * RADIUS * LENGTH_M
-            x, y, _ = axis(along, out, 0.0)
-            ring.append(bm.verts.new((x, y, z)))
-        caps.append(ring)
-    bm.faces.new(caps[0])
-    bm.faces.new(list(reversed(caps[1])))
-    for k in range(segments):
-        bm.faces.new(
-            (
-                caps[0][k],
-                caps[0][(k + 1) % segments],
-                caps[1][(k + 1) % segments],
-                caps[1][k],
-            )
-        )
-
-
-def box(bm, span, size, reach):
-    """Брусок над корпусом — антена. Ламає симетрію 90°, як і ілюмінатор."""
-    corners = []
-    for out in reach:
-        for along in span:
-            for side in (-1.0, 1.0):
-                x, y, z = axis(along, out, 0.5 * math.pi)
-                corners.append(
-                    bm.verts.new((x + side * size[0] * RADIUS * LENGTH_M, y, z))
+        made.append(
+            bm.faces.new(
+                (
+                    layers[0][k],
+                    layers[0][(k + 1) % n],
+                    layers[1][(k + 1) % n],
+                    layers[1][k],
                 )
-    #  Порядок вершин: [out][along][side] — грані виписані явно.
-    def at(o, a, s):
-        return corners[o * 4 + a * 2 + s]
+            )
+        )
+    # Пластина плоска цілком: гладке затінення на кромці завтовшки 5 см
+    # округлило б те, що на референсі гостре, і з'їло б саме ту лінію, за
+    # якою стабілізатор видно з торця.
+    for face in made:
+        face.smooth = False
 
-    quads = [
-        (at(0, 0, 0), at(0, 0, 1), at(0, 1, 1), at(0, 1, 0)),
-        (at(1, 0, 0), at(1, 1, 0), at(1, 1, 1), at(1, 0, 1)),
-        (at(0, 0, 0), at(0, 1, 0), at(1, 1, 0), at(1, 0, 0)),
-        (at(0, 0, 1), at(1, 0, 1), at(1, 1, 1), at(0, 1, 1)),
-        (at(0, 0, 0), at(1, 0, 0), at(1, 0, 1), at(0, 0, 1)),
-        (at(0, 1, 0), at(0, 1, 1), at(1, 1, 1), at(1, 1, 0)),
+    paint += [(face, colour) for face in made]
+    return made
+
+
+def hull_radius_m(along):
+    """Радіус корпусу на цій частці габариту, метри — лінійно між кільцями.
+
+    Потрібен ілюмінаторові: він сідає **на поверхню**, а не на площину, і
+    висоту над нею треба відкладати від правильного числа.
+    """
+    for (low, low_r), (high, high_r) in zip(PROFILE, PROFILE[1:]):
+        if low <= along <= high and high > low:
+            k = (along - low) / (high - low)
+            return (low_r + k * (high_r - low_r)) * RADIUS * LENGTH_M
+    raise SystemExit(f"{along} поза профілем корпусу")
+
+
+def porthole(bm, paint):
+    """Ілюмінатор: обідок на корпусі й купол скла в ньому."""
+
+    def ring(radius, height):
+        made = []
+        for k in range(PORTHOLE_SEGMENTS):
+            angle = 2.0 * math.pi * k / PORTHOLE_SEGMENTS
+            # Коло в площині (вздовж осі, вгору), винесене назовні по +X.
+            along = PORTHOLE_AT + radius * math.cos(angle) * RADIUS
+            z = radius * math.sin(angle) * RADIUS * LENGTH_M
+            surface = hull_radius_m(along)
+            # Корпус — тіло обертання, тож на цій `along` його поверхня в
+            # площині `z` стоїть на `sqrt(r² − z²)`. Під самим краєм великого
+            # ілюмінатора це помітно менше за `r`, і саме тому обідок треба
+            # класти сюди, а не на дотичну площину.
+            base = math.sqrt(max(surface * surface - z * z, 0.0))
+            made.append(bm.verts.new((base + height * RADIUS * LENGTH_M, axis(along, 0.0, 0.0)[1], z)))
+        return made
+
+    rings = [ring(radius, height) for radius, height in PORTHOLE_RINGS]
+    dome = [ring(radius, height) for radius, height in PORTHOLE_DOME]
+    apex = bm.verts.new(
+        (
+            hull_radius_m(PORTHOLE_AT) + PORTHOLE_APEX * RADIUS * LENGTH_M,
+            axis(PORTHOLE_AT, 0.0, 0.0)[1],
+            0.0,
+        )
+    )
+
+    def band(lower, upper):
+        made = []
+        for k in range(PORTHOLE_SEGMENTS):
+            j = (k + 1) % PORTHOLE_SEGMENTS
+            made.append(bm.faces.new((lower[k], lower[j], upper[j], upper[k])))
+        return made
+
+    # Обхід один на всі смуги: обідок усередину — це та сама смуга, а не
+    # перевернута. Що вона дивиться всередину, каже геометрія (радіус меншає),
+    # а не другий порядок вершин.
+    rim = [bm.faces.new(list(reversed(rings[0])))]
+    for lower, upper in zip(rings, rings[1:]):
+        rim += band(lower, upper)
+
+    layers = [rings[-1]] + dome
+    glass = []
+    for lower, upper in zip(layers, layers[1:]):
+        glass += band(lower, upper)
+    glass += [
+        bm.faces.new((layers[-1][k], layers[-1][(k + 1) % PORTHOLE_SEGMENTS], apex))
+        for k in range(PORTHOLE_SEGMENTS)
     ]
-    for quad in quads:
-        bm.faces.new(quad)
+
+    for face in rim:
+        face.smooth = False
+    for face in glass:
+        face.smooth = True
+    paint += [(face, YELLOW) for face in rim]
+    paint += [(face, GLASS) for face in glass]
+    return rim + glass
+
+
+def shell_volume(faces):
+    """Знаковий об'єм саме цих граней — по компоненту, а не по всій моделі."""
+    total = 0.0
+    for face in faces:
+        points = [v.co for v in face.verts]
+        for k in range(1, len(points) - 1):
+            total += points[0].dot(points[k].cross(points[k + 1]))
+    return total / 6.0
+
+
+def close_shell(name, faces):
+    """Перевірити оболонку й повернути її назовні, якщо вона вивернута.
+
+    Дві перевірки, і друга важливіша за першу:
+
+    1. **Кожне ребро пройдене двічі й у різні боки.** Це і замкненість, і
+       узгодженість обходу разом. `bmesh.calc_volume(signed=True)` не ловить
+       ні того, ні іншого: він рахує **суму** по всій моделі, тож і окрема
+       вивернута оболонка, і окрема неузгоджена грань у ній ховаються за
+       рештою. Написана вона тут не про запас — на ній одразу впали кришки
+       призми, які від T5d стояли поверненими всередину, і побачити це в
+       кадрі було ніяк: усередині корпусу.
+    2. **Об'єм додатний.** Обхід, узгоджений з собою, все ще може дивитися
+       всередину цілком; тоді оболонка перевертається одним рухом.
+    """
+    seen = set()
+    for face in faces:
+        points = list(face.verts)
+        for k, a in enumerate(points):
+            edge = (a, points[(k + 1) % len(points)])
+            if edge in seen:
+                raise SystemExit(f"{name}: ребро {edge} пройдене двічі в один бік")
+            seen.add(edge)
+    for a, b in seen:
+        if (b, a) not in seen:
+            raise SystemExit(f"{name}: ребро {(a, b)} без пари — оболонка не замкнена")
+
+    if shell_volume(faces) < 0.0:
+        for face in faces:
+            face.normal_flip()
+    if shell_volume(faces) <= 0.0:
+        raise SystemExit(f"{name}: нульовий об'єм")
 
 
 def build():
     bm = bmesh.new()
-    hull(bm)
+    paint = []
+    shells = {"корпус": hull(bm, paint)}
     for k in range(FINS):
-        prism(bm, FIN_PROFILE, FIN_THICKNESS, 2.0 * math.pi * k / FINS)
-    tube(bm, PORTHOLE_AT, PORTHOLE_RADIUS, PORTHOLE_REACH)
-    box(bm, ANTENNA_AT, ANTENNA_SIZE, ANTENNA_REACH)
+        angle = 2.0 * math.pi * k / FINS
+        shells[f"стабілізатор {k}"] = blade(
+            bm, paint, FIN_OUTLINE, FIN_THICKNESS, angle, RED
+        )
+    shells["антена"] = blade(
+        bm, paint, ANTENNA_OUTLINE, ANTENNA_THICKNESS, 0.5 * math.pi, STEEL
+    )
+    shells["ілюмінатор"] = porthole(bm, paint)
+
+    for name, faces in shells.items():
+        close_shell(name, faces)
 
     bm.normal_update()
-    # Нормалі назовні: у замкненої оболонки знаковий об'єм додатний, і це
-    # єдине, що тут означає «назовні». Перевіряється, а не припускається.
-    if bm.calc_volume(signed=True) < 0.0:
-        for face in bm.faces:
-            face.normal_flip()
+    volume = bm.calc_volume(signed=True)
+    colours = [colour for _, colour in paint]
+    if len(colours) != len(bm.faces):
+        raise SystemExit(f"{len(colours)} кольорів на {len(bm.faces)} граней")
 
     mesh = bpy.data.meshes.new("ship")
     bm.to_mesh(mesh)
-    volume = bm.calc_volume(signed=True)
     bm.free()
+
+    # Фарба по **кутках**, а не по вершинах: на шві корпусу з конусом колір
+    # мусить стрибати, а вершина там спільна. Порядок граней bmesh зберігає,
+    # тож `paint` іде поруч із `mesh.polygons` індекс в індекс.
+    attribute = mesh.color_attributes.new(name="paint", type="FLOAT_COLOR", domain="CORNER")
+    for polygon, colour in zip(mesh.polygons, colours):
+        for loop in polygon.loop_indices:
+            attribute.data[loop].color = (colour[0], colour[1], colour[2], 1.0)
+    mesh.color_attributes.active_color_index = 0
 
     obj = bpy.data.objects.new("ship", mesh)
     bpy.context.collection.objects.link(obj)
@@ -283,9 +478,13 @@ def main():
     blend = os.path.join(out, "ship.blend")
     gltf = os.path.join(out, "ship.gltf")
     bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(blend))
+    # `export_vertex_color="ACTIVE"` — явно, а не дефолтом: дефолт `MATERIAL`
+    # віддає колір лише тоді, коли його читає матеріал, а матеріалів у моделі
+    # немає взагалі (фарбу везе `COLOR_0`).
     bpy.ops.export_scene.gltf(
         filepath=os.path.abspath(gltf),
         export_format="GLTF_SEPARATE",
+        export_vertex_color="ACTIVE",
     )
 
     # Оракул їде разом з ассетом і рахується **іншим інструментом**: наш

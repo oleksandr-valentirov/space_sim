@@ -123,10 +123,10 @@ fn the_axes_arrive_the_way_the_convention_says() {
 
 /// Довжина й `extent` — ті самі числа, що порахував Blender.
 ///
-/// `extent` не виводиться з довжини: у цієї моделі він 0.647 висоти, тобто
-/// помітно більший за половину — за корпус виступають стабілізатори. На
-/// ньому стоять `near` і камера третьої особи (V2), тож помилка тут — це
-/// відсічений корпус, а не косметика.
+/// `extent` не виводиться з довжини: у цієї моделі він 0.552 висоти, тобто
+/// більший за половину — п'ята стабілізатора стоїть і нижче за сопло, і
+/// збоку від нього. На ньому стоять `near` і камера третьої особи (V2), тож
+/// помилка тут — це відсічений корпус, а не косметика.
 #[test]
 fn the_length_and_the_extent_are_blenders_numbers() {
     let cooked = ship();
@@ -142,7 +142,7 @@ fn the_length_and_the_extent_are_blenders_numbers() {
     assert!((cooked.model.height_m - length).abs() < 1e-5);
     assert!((cooked.model.extent * cooked.model.height_m - extent).abs() < 1e-5);
     assert!(
-        cooked.model.extent > 0.55,
+        cooked.model.extent > 0.52,
         "extent виявився половиною висоти: {}",
         cooked.model.extent
     );
@@ -177,8 +177,15 @@ fn cooking_twice_gives_the_same_file() {
     assert_eq!(first, second, "кукання не детерміноване");
 
     let read = Model::from_bytes(&first).expect("свій же файл");
-    assert_eq!(read.mesh.indices.len(), 1800);
-    assert!((read.height_m - 6.0).abs() < 1e-5);
+    // Числа беруться з оракула, а не вписуються сюди: модель — джерело, яке
+    // міняється (T9 перемалював її з референсу), і вписаний літерал зробив
+    // би цей тест перевіркою пам'яті автора, а не круговороту байтів.
+    let oracle = oracle();
+    assert_eq!(
+        read.mesh.indices.len(),
+        3 * number(&oracle, "triangles") as usize
+    );
+    assert!((read.height_m - number(&oracle, "length_m")).abs() < 1e-5);
 }
 
 // ---------------------------------------------------------------------------

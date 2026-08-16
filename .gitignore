@@ -49,3 +49,6 @@ __pycache__/
 # Ставиться scripts/fetch_slang.sh (ROADMAP P1).
 /tools/slang/
 engine/build/
+
+# Резервна копія Blender: пише її він сам при кожному збереженні.
+assets-src/*.blend1
