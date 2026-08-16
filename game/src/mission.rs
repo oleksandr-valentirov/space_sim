@@ -1,14 +1,14 @@
-//! Що саме гра запускає на J1 (ROADMAP J1).
+//! What the game actually launches at J1 (ROADMAP J1).
 //!
-//! Один апарат на halo-орбіті біля L2 — та сама орбіта 1151 каталогу JPL, що
-//! проходить через увесь проєкт: знайдена в CR3BP (C2), перенесена в реальну
-//! ефемериду multiple shooting (C4), намальована рушієм (F6) і вперше
-//! порахована живцем у H5. Тому її поведінку вже виміряно, і будь-яке
-//! відхилення тут — наше, а не її.
+//! One vessel on a halo orbit near L2 -- catalogue orbit 1151 from JPL, the
+//! one running through the whole project: found in CR3BP (C2), carried into
+//! the real ephemeris by multiple shooting (C4), drawn by the engine (F6) and
+//! first computed live in H5. So its behaviour is already measured, and any
+//! deviation here is ours rather than its.
 //!
-//! **Це не сцена гри й не сейв.** Звідки беруться апарати, вирішує
-//! завантаження сейву (J6); поки що місія задається кодом, щоб було що
-//! рахувати й з чим звіряти.
+//! **This is not the game's scene and not a save.** Where vessels come from is
+//! decided by loading a save (J6); for now the mission is set in code, so
+//! there is something to compute and something to compare against.
 
 use std::path::{Path, PathBuf};
 
@@ -17,44 +17,46 @@ use core_rs::{CoreError, Integrator, PropConfig, State};
 use crate::plan::{Frame, Manoeuvre, Plan};
 use crate::world::{VesselId, World, EARTH};
 
-/// Ассет ефемериди, від кореня репозиторію.
+/// The ephemeris asset, from the repository root.
 pub const ASSET: &str = "data/fixture/earth_moon.eph";
 
-/// Скільки діб місії. Стільки ж, скільки міряв H5, — інакше дві траєкторії
-/// не було б з чим звіряти.
+/// How many days the mission lasts. The same as H5 measured -- otherwise the
+/// two trajectories would have nothing to be compared against.
 pub const DAYS: f64 = 101.79;
 
-/// Допуск і стеля кроку — ті самі, з якими `ex_trajectory` рахував фікстуру.
-/// Один допуск на прогноз і на політ (CLAUDE.md, інваріант 5).
+/// Tolerance and step ceiling: the ones `ex_trajectory` computed the fixture
+/// with. One tolerance for prediction and for flight (CLAUDE.md, invariant
+/// 5).
 pub const TOL_M: f64 = 1e-2;
 pub const H_MAX_S: f64 = 3600.0;
 
-/// Warp за замовчуванням: скільки ігрових секунд на секунду реального часу.
+/// Default warp: game seconds per second of real time.
 ///
-/// Місія триває 101.79 доби, тобто 8.8·10⁶ с. При 10⁵ вона проходить за
-/// півтори хвилини реального часу — досить повільно, щоб побачити, як межа
-/// між історією й прогнозом повзе по кривій, і досить швидко, щоб не чекати.
-/// Це не стеля: стелю ставить горизонт (`clock::Stall::Horizon`).
+/// The mission lasts 101.79 days, i.e. 8.8e6 s. At 1e5 it passes in a minute
+/// and a half of real time -- slow enough to watch the boundary between
+/// history and prediction crawl along the curve, and fast enough not to wait.
+/// This is not the ceiling: the horizon sets that (`clock::Stall::Horizon`).
 pub const DEFAULT_WARP: f64 = 1.0e5;
 
-/// Звідки дивиться камера при старті, метри над поверхнею.
+/// Where the camera looks from at start, metres above the surface.
 ///
-/// Орбіта лежить за 4.5·10⁸ м від Землі, тож при полі зору 60° камері треба
-/// щонайменше 8.5·10⁸ м, щоб вона влізла в кадр. Мільярд — округлення вгору
-/// від цього числа, а не смак.
+/// The orbit lies 4.5e8 m from Earth, so at a 60-degree field of view the
+/// camera needs at least 8.5e8 m for it to fit in frame. A billion is that
+/// number rounded up, not a taste.
 pub const CAMERA_ALTITUDE_M: f64 = 1.0e9;
 
-/// Шлях до ассета за замовчуванням.
+/// The default asset path.
 ///
-/// Зібраний з `CARGO_MANIFEST_DIR`, бо `cargo run` стартує з поточного
-/// каталогу, а `cargo test` — з каталогу крейта, і відносний шлях означав би
-/// різне. Це тимчасово в тому самому сенсі, що й у H5: справжній шлях гра
-/// візьме з конфігурації застосунку, коли та з'явиться. Аргумент `--asset`
-/// уже дозволяє його підмінити, не чіпаючи код.
+/// Assembled from `CARGO_MANIFEST_DIR`, because `cargo run` starts in the
+/// current directory while `cargo test` starts in the crate's, and a relative
+/// path would mean different things. Temporary in the same sense as in H5: the
+/// game will take the real path from application configuration once that
+/// exists. The `--asset` argument already allows overriding it without
+/// touching code.
 pub fn default_asset() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .expect("game має лежати в репозиторії")
+        .expect("game must live inside the repository")
         .join(ASSET)
 }
 
@@ -64,34 +66,34 @@ pub fn config() -> PropConfig {
         tol_m: TOL_M,
         h_max_s: H_MAX_S,
         max_steps: 0,
-        // Профіль USSA-76 як він є в ассеті. Це те місце, куди прийде
-        // майбутня галочка «космічна погода»: множник рахує гра з рівня
-        // сонячної активності й ставить його тут, бо він сталий на ланку
-        // (`core_rs::PropConfig::density_scale`). Поки вимикача немає —
-        // одиниця, і вона не змінює нічого бітово.
+        // The USSA-76 profile as the asset holds it. This is where the future
+        // "space weather" toggle will land: the game computes the multiplier
+        // from the solar activity level and sets it here, because it is
+        // constant per leg (`core_rs::PropConfig::density_scale`). With no
+        // switch yet it is one, and one changes nothing bitwise.
         density_scale: 1.0,
     }
 }
 
-/// Стан, з якого починається місія.
+/// The state the mission starts from.
 ///
-/// Береться з тієї самої фікстури, що й у H5 (`engine::live`), і навмисно з
-/// неї: щоб дві траєкторії можна було звірити бітово, вони мусять починатися
-/// з тих самих бітів.
+/// Taken from the same fixture as H5 (`engine::live`), and deliberately so:
+/// for two trajectories to be comparable bitwise they must start from the same
+/// bits.
 pub fn start() -> State {
     engine::live::fixture_start()
 }
 
-/// План на показ: одне гальмування на десятій добі.
+/// A plan for display: one braking burn on the tenth day.
 ///
-/// Існує заради того, щоб маневр було **видно**, а не лише виміряно в
-/// тестах. Число обране так, щоб різниця читалася оком: 12 м/с проти
-/// швидкості порядку 200 м/с на цій орбіті — це помітно, а на нестійкій
-/// halo-орбіті з множником 594 за оберт (C3) за місяць виростає в мільйони
-/// кілометрів.
+/// Exists so a manoeuvre can be **seen** rather than only measured in tests.
+/// The number is chosen so the difference reads by eye: 12 m/s against a speed
+/// of order 200 m/s on this orbit is noticeable, and on an unstable halo orbit
+/// with a factor of 594 per revolution (C3) it grows into millions of
+/// kilometres over a month.
 ///
-/// Це не частина місії: [`world`] лишається без плану, інакше J1-порівняння
-/// з прогоном H5 перестало б мати сенс.
+/// Not part of the mission: [`world`] stays without a plan, otherwise the J1
+/// comparison against the H5 run would stop meaning anything.
 pub fn demo_plan(start_t: f64) -> Plan {
     let mut plan = Plan::new();
     plan.insert(Manoeuvre {
@@ -102,22 +104,23 @@ pub fn demo_plan(start_t: f64) -> Plan {
     plan
 }
 
-/// Той самий світ, але з [`demo_plan`].
+/// The same world, but with [`demo_plan`].
 pub fn world_with_demo_plan(asset: &Path) -> Result<World, CoreError> {
     let mut world = world(asset)?;
     let start = start();
     world
         .commit_plan(VesselId(0), demo_plan(start.t))
-        .expect("демо-план цілком у майбутньому");
+        .expect("the demo plan lies wholly in the future");
     Ok(world)
 }
 
-/// Параметри станції флоту: 5000 кг на 20 м², `cd` 2.2, `cr` 1.3.
+/// A fleet station's parameters: 5000 kg over 20 m^2, `cd` 2.2, `cr` 1.3.
 ///
-/// Балістичний коефіцієнт виходить 114 кг/м² — приблизно як у МКС, і саме він
-/// вирішує, доживе станція до кінця виміру чи зійде з орбіти посеред нього.
-/// `bench_prop` міряє 22.7 кг/м² (1000 кг на тих самих 20 м²), бо там потрібен
-/// найдорожчий крок, а не найдовше життя.
+/// The ballistic coefficient works out at 114 kg/m^2 -- about the ISS's -- and
+/// it is what decides whether a station survives to the end of the measurement
+/// or deorbits in the middle of it. `bench_prop` measures 22.7 kg/m^2 (1000 kg
+/// over the same 20 m^2), because there the most expensive step is wanted, not
+/// the longest life.
 pub const STATION_PARAMS: core_rs::VesselParams = core_rs::VesselParams {
     mass_kg: 5000.0,
     area_m2: 20.0,
@@ -125,30 +128,31 @@ pub const STATION_PARAMS: core_rs::VesselParams = core_rs::VesselParams {
     cd: 2.2,
 };
 
-/// Найнижча оболонка флоту, метри.
+/// The fleet's lowest shell, metres.
 ///
-/// 600 км, а не 400: ассет несе USSA-76, і на 400 км навіть станція за сто діб
-/// підійшла б до входу в атмосферу — вимір закінчився б відмовою прогону
-/// замість числа. Вище 600 км опір за той самий час не знімає й кілометра.
+/// 600 km rather than 400: the asset carries USSA-76, and at 400 km even a
+/// station would approach atmospheric entry over a hundred days -- the
+/// measurement would end in a failed run rather than a number. Above 600 km
+/// drag does not remove even a kilometre over the same time.
 const SHELL_FLOOR_M: f64 = 600.0e3;
 
-/// На скільки піднімається кожна наступна оболонка, метри.
+/// How much each successive shell rises, metres.
 ///
-/// 25 км × 29 апаратів — це смуга 600–1300 км, у якій частота семплів
-/// змінюється мало (`bench_prop`: 171 на добу на 400 км проти 129 на 2000 км),
-/// зате жодні два апарати не літають однією орбітою.
+/// 25 km x 29 vessels is a band of 600-1300 km, in which the sample rate
+/// changes little (`bench_prop`: 171 per day at 400 km against 129 at
+/// 2000 km), while no two vessels fly the same orbit.
 const SHELL_STEP_M: f64 = 25.0e3;
 
-/// Площини орбіт: пара цілих векторів на кожну — радіальний напрямок і
-/// супутник, з якого Грам-Шмідт бере напрямок швидкості.
+/// Orbital planes: a pair of integer vectors each -- the radial direction and
+/// a companion Gram-Schmidt takes the velocity direction from.
 ///
-/// Цілі трійки, а не кути, і це не педантизм: після нормування на `sqrt`
-/// вектор бітово однаковий на будь-якій платформі, тоді як `sin`/`cos` — ні
-/// (інваріант 3). Фікстура, яку не відтворити на сусідній машині, не варта
-/// того, щоб нею міряти.
+/// Integer triples rather than angles, and not out of pedantry: after
+/// normalising by `sqrt` the vector is bit-identical on any platform, whereas
+/// `sin`/`cos` are not (invariant 3). A fixture that cannot be reproduced on
+/// the machine next door is not worth measuring with.
 ///
-/// Сім штук проти двадцяти дев'яти оболонок — щоб період повторення (203)
-/// перевищив будь-який флот, який хтось захоче поставити.
+/// Seven of them against twenty-nine shells, so the repetition period (203)
+/// exceeds any fleet anyone might want to set up.
 const PLANES: [([f64; 3], [f64; 3]); 7] = [
     ([1.0, 0.0, 0.0], [0.0, 12.0, 5.0]),
     ([3.0, 4.0, 0.0], [0.0, 3.0, 4.0]),
@@ -159,17 +163,19 @@ const PLANES: [([f64; 3], [f64; 3]); 7] = [
     ([1.0, 7.0, -4.0], [5.0, 0.0, 2.0]),
 ];
 
-/// Флот для виміру N1: показова halo-орбіта плюс `stations` станцій на низьких
-/// орбітах Землі.
+/// The fleet for the N1 measurement: the showcase halo orbit plus `stations`
+/// stations in low Earth orbit.
 ///
-/// **Навіщо змішаний.** Межу сліду видно від кількості апаратів, і густину
-/// дають саме низькі орбіти: у місячної ~28 семплів на добу проти 171 у LEO
-/// (`bench_prop`), тож тридцять копій halo дали б 84 тисячі вершин замість
-/// 616. Але halo лишається першим апаратом, бо на ньому стоїть усе інше в
-/// грі — крива нульової швидкості, панелі, демо-план.
+/// **Why mixed.** The trail's limit shows through the number of vessels, and
+/// the density comes from the low orbits: the lunar one gives about 28 samples
+/// per day against 171 in LEO (`bench_prop`), so thirty copies of the halo
+/// would give 84 thousand vertices instead of 616. But the halo stays the
+/// first vessel, because everything else in the game rests on it -- the
+/// zero-velocity curve, the panels, the demo plan.
 ///
-/// **Це фікстура виміру, а не сцена гри.** Звідки беруться апарати насправді,
-/// вирішує сейв; тут вони існують, щоб борг D7 показав себе числом.
+/// **This is a measurement fixture, not the game's scene.** Where vessels
+/// really come from is decided by the save; here they exist so debt D7 shows
+/// itself as a number.
 pub fn fleet(asset: &Path, stations: usize) -> Result<World, CoreError> {
     let mut world = world(asset)?;
     let eph = world.ephemeris();
@@ -182,9 +188,9 @@ pub fn fleet(asset: &Path, stations: usize) -> Result<World, CoreError> {
         let radius = surface + SHELL_FLOOR_M + SHELL_STEP_M * (index % 29) as f64;
         let (out, along) = PLANES[index % PLANES.len()];
         let out = normalize(out);
-        // Швидкість — у площині (out, along), перпендикулярно до радіуса:
-        // Грам-Шмідт, бо таблиця пар ортогональних векторів читалася б гірше,
-        // ніж таблиця будь-яких двох.
+        // The velocity lies in the (out, along) plane, perpendicular to the
+        // radius: Gram-Schmidt, because a table of orthogonal vector pairs
+        // would read worse than a table of any two.
         let along = normalize(reject(along, out));
         let speed = (mu / radius).sqrt();
 
@@ -218,7 +224,7 @@ fn normalize(v: [f64; 3]) -> [f64; 3] {
     [v[0] / length, v[1] / length, v[2] / length]
 }
 
-/// Складова `v`, перпендикулярна до одиничного `unit`.
+/// The component of `v` perpendicular to the unit vector `unit`.
 fn reject(v: [f64; 3], unit: [f64; 3]) -> [f64; 3] {
     let dot = v[0] * unit[0] + v[1] * unit[1] + v[2] * unit[2];
     [
@@ -228,16 +234,17 @@ fn reject(v: [f64; 3], unit: [f64; 3]) -> [f64; 3] {
     ]
 }
 
-/// Світ з одним апаратом, готовий до першого тіку.
+/// A world with one vessel, ready for its first tick.
 pub fn world(asset: &Path) -> Result<World, CoreError> {
     let start = start();
-    // Курсор стартує там, де стартує апарат: епоха ассета — це нуль часу для
-    // ефемериди, а не для місії.
+    // The cursor starts where the vessel starts: the asset epoch is time zero
+    // for the ephemeris, not for the mission.
     let mut world = World::new(asset, config(), start.t, DEFAULT_WARP)?;
-    // Без площі: тиск світла (K6b) є в моделі сил, але цей апарат крізь неї
-    // не летить. Halo-орбіта демо підбиралася без нього, і додати його тут
-    // означало б змінити зміст демонстрації під приводом технічного кроку -
-    // це рішення про контент, а не про проводку.
+    // Without area: radiation pressure (K6b) is in the force model, but this
+    // vessel does not fly through it. The demo's halo orbit was selected
+    // without it, and adding it here would change what the demonstration shows
+    // under the pretext of a technical step -- that is a decision about
+    // content, not about wiring.
     world.add_vessel("halo 1151", start, start.t + DAYS * 86400.0, None);
     Ok(world)
 }

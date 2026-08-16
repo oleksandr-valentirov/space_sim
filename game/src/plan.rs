@@ -1,76 +1,77 @@
-//! План маневрів (ROADMAP J3, PROJECT.md §8).
+//! The manoeuvre plan (ROADMAP J3, PROJECT.md §8).
 //!
-//! Маневр — це `(час, Δv у фреймі)`, план — список маневрів, перерахунок
-//! каскадний. Тобто рівно те, що §8 називає флайт-планером, у мінімальній
-//! формі, яку вже можна виконати: **імпульсний** Δv.
+//! A manoeuvre is `(time, dv in a frame)`, a plan is a list of manoeuvres, and
+//! recomputation is cascading. That is exactly what §8 calls the flight
+//! planner, in the minimal form that can already be executed: an **impulsive**
+//! dv.
 //!
-//! ## Чому імпульсний, а не з тривалістю горіння
+//! ## Why impulsive rather than with a burn duration
 //!
-//! Скінченне горіння потребує тяги в силовій моделі C, а її там немає й не
-//! буде до M3.5. Імпульс же виконується тим, що вже є: пропагувати до моменту
-//! запалення, додати Δv до швидкості, продовжити. Форма плану до тривалості
-//! готова — з'явиться поле, а не інший механізм.
+//! A finite burn needs thrust in C's force model, which is not there and will
+//! not be until M3.5. An impulse is executed with what already exists:
+//! propagate to ignition, add dv to the velocity, continue. The plan's shape is
+//! ready for duration -- a field will appear, not a different mechanism.
 //!
-//! ## Межа детермінізму проходить тут
+//! ## The determinism boundary runs here
 //!
-//! PROJECT.md §4: «Симуляція заданого плану мусить збігатися біт-у-біт; те, як
-//! гравець цей план придумав, — ні». План — це **дані**: два числа й фрейм.
-//! Lambert, porkchop і диференціальна корекція можуть давати трохи різні числа
-//! на різних машинах, і це дозволено; те, що з отриманого плану вийде, —
-//! ні.
+//! PROJECT.md §4: "Simulating a given plan must match bit for bit; how the
+//! player came up with that plan need not." A plan is **data**: two numbers
+//! and a frame. Lambert, porkchop and differential correction may give
+//! slightly different numbers on different machines, and that is allowed; what
+//! comes out of the resulting plan may not.
 //!
-//! Перетворення Δv з фрейму в інерціальні координати робиться **всередині**
-//! межі детермінізму: там лише `+ − * /` і `sqrt`, тобто ті самі операції, які
-//! CLAUDE.md дозволяє в циклі інтегрування (інваріант 3). Тригонометрії тут
-//! немає й бути не має.
+//! Converting dv from a frame into inertial coordinates happens **inside** the
+//! determinism boundary: only `+ - * /` and `sqrt` there, the same operations
+//! CLAUDE.md allows in the integration loop (invariant 3). There is no
+//! trigonometry here and there must be none.
 
 use core_rs::State;
 
-/// У чому задані компоненти Δv.
+/// What the dv components are expressed in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Frame {
-    /// Барицентричний інерціальний — той самий, у якому рахується все інше.
-    /// Так задають Δv солвери: Lambert віддає вектори швидкості, не «стільки
-    /// вперед».
+    /// Barycentric inertial -- the frame everything else is computed in.
+    /// That is how solvers give dv: Lambert returns velocity vectors, not "so
+    /// much forward".
     Inertial,
 
-    /// Уздовж швидкості / нормаль до площини / назовні, відносно тіла `body`.
+    /// Along velocity / normal to the plane / outwards, relative to `body`.
     ///
-    /// Так думає гравець: «сто метрів за секунду вперед». Обов'язково
-    /// відносно тіла: у барицентричних координатах швидкість апарата біля
-    /// Землі — це переважно швидкість самої Землі навколо Сонця, і «вперед»
-    /// означало б уздовж земної орбіти.
+    /// This is how the player thinks: "a hundred metres per second forward".
+    /// Necessarily relative to a body: in barycentric coordinates a vessel's
+    /// velocity near Earth is mostly Earth's own velocity around the Sun, and
+    /// "forward" would mean along Earth's orbit.
     Vnb { body: i32 },
 }
 
-/// Один маневр.
+/// One manoeuvre.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Manoeuvre {
-    /// Момент запалення, секунди від епохи ассета. Абсолютний.
+    /// Ignition time, seconds from the asset epoch. Absolute.
     ///
-    /// Не «на третьому перицентрі»: якорі на події теж будуть, але вони
-    /// розв'язуються в абсолютний час при перерахунку й у такому вигляді
-    /// лягають у сейв. Інакше сейв означав би різне залежно від того, коли
-    /// його прочитали.
+    /// Not "at the third periapsis": event anchors will exist too, but they
+    /// resolve to absolute time on recomputation and go into the save in that
+    /// form. Otherwise a save would mean different things depending on when it
+    /// was read.
     pub t: f64,
-    /// Компоненти у [`Frame`], м/с.
+    /// Components in the [`Frame`], m/s.
     pub dv: [f64; 3],
     pub frame: Frame,
 }
 
 impl Manoeuvre {
-    /// Δv у барицентричних інерціальних координатах.
+    /// dv in barycentric inertial coordinates.
     ///
-    /// `body` — стан тіла відліку в момент маневру; для [`Frame::Inertial`]
-    /// не потрібен і не читається.
+    /// `body` is the reference body's state at the manoeuvre's instant; for
+    /// [`Frame::Inertial`] it is not needed and not read.
     pub fn dv_inertial(&self, vessel: &State, body: Option<&State>) -> [f64; 3] {
         match self.frame {
             Frame::Inertial => self.dv,
             Frame::Vnb { .. } => {
                 let Some(body) = body else {
-                    // Викликач зобов'язаний дати тіло; без нього базису немає.
-                    // Мовчки взяти інерціальний означало б виконати не той
-                    // маневр і не сказати про це.
+                    // The caller must supply a body; without one there is no
+                    // basis. Silently taking the inertial frame would mean
+                    // executing a different manoeuvre and not saying so.
                     return [0.0, 0.0, 0.0];
                 };
 
@@ -87,7 +88,8 @@ impl Manoeuvre {
 
                 let prograde = normalize(v);
                 let normal = normalize(cross(r, v));
-                // Довершує праву трійку: назовні від тіла в площині орбіти.
+                // Completes the right-handed triple: outwards from the body
+                // in the orbital plane.
                 let outward = cross(prograde, normal);
 
                 [
@@ -99,7 +101,7 @@ impl Manoeuvre {
         }
     }
 
-    /// Тіло, відносно якого заданий фрейм, якщо таке є.
+    /// The body the frame is relative to, if any.
     pub fn frame_body(&self) -> Option<i32> {
         match self.frame {
             Frame::Inertial => None,
@@ -108,11 +110,11 @@ impl Manoeuvre {
     }
 }
 
-/// Список маневрів, упорядкований за часом.
+/// A list of manoeuvres, ordered in time.
 ///
-/// Порядок — інваріант типу, а не домовленість: сегментний цикл бере
-/// наступний маневр за індексом і зупиняється на його часі, тож
-/// невпорядкований план означав би прогін у минуле.
+/// The order is an invariant of the type rather than a convention: the segment
+/// loop takes the next manoeuvre by index and stops at its time, so an
+/// unordered plan would mean a run into the past.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Plan {
     manoeuvres: Vec<Manoeuvre>,
@@ -139,30 +141,31 @@ impl Plan {
         self.manoeuvres.get(index)
     }
 
-    /// Додає маневр, зберігаючи порядок за часом.
+    /// Adds a manoeuvre, preserving time order.
     pub fn insert(&mut self, m: Manoeuvre) {
         let at = self.manoeuvres.partition_point(|other| other.t <= m.t);
         self.manoeuvres.insert(at, m);
     }
 
-    /// Найраніший момент, у якому два плани розходяться.
+    /// The earliest instant at which two plans differ.
     ///
-    /// Це і є точка, з якої треба перерахувати, і ніде більше вона не
-    /// береться: порівнювати траєкторії було б і дорожче, і пізніше — вони
-    /// розходяться вже після маневру, а не в ньому.
+    /// This is the point to recompute from, and it comes from nowhere else:
+    /// comparing trajectories would be both more expensive and later -- they
+    /// diverge after a manoeuvre rather than at it.
     pub fn diverges_from(&self, other: &Plan) -> Option<f64> {
         let mine = &self.manoeuvres;
         let theirs = &other.manoeuvres;
 
         for (a, b) in mine.iter().zip(theirs.iter()) {
             if a != b {
-                // Раніший із двох: маневр міг і зникнути, і з'явитися раніше.
+                // The earlier of the two: a manoeuvre could both disappear and
+                // appear earlier.
                 return Some(a.t.min(b.t));
             }
         }
 
-        // Однакові настільки, наскільки перекриваються; лишок — це поява або
-        // зникнення хвоста.
+        // Equal as far as they overlap; the remainder is a tail appearing or
+        // disappearing.
         match mine.len().cmp(&theirs.len()) {
             std::cmp::Ordering::Equal => None,
             std::cmp::Ordering::Less => Some(theirs[mine.len()].t),
@@ -208,11 +211,11 @@ mod tests {
         }
     }
 
-    /// Базис VNB ортонормований і орієнтований так, як обіцяно.
+    /// The VNB basis is orthonormal and oriented as promised.
     ///
-    /// Кругова орбіта в площині xy: «вперед» мусить лягти на +y, «нормаль» на
-    /// +z, «назовні» на +x. Помилка в порядку векторного добутку дала б
-    /// дзеркальний базис, і маневр «вперед» гальмував би.
+    /// A circular orbit in the xy plane: "forward" must land on +y, "normal" on
+    /// +z, "outwards" on +x. An error in the cross product's order would give a
+    /// mirrored basis, and a "forward" manoeuvre would brake.
     #[test]
     fn the_vnb_basis_points_where_it_says() {
         let vessel = state([1.0e7, 0.0, 0.0], [0.0, 3.0e3, 0.0]);
@@ -238,11 +241,11 @@ mod tests {
         assert_eq!(outward.dv_inertial(&vessel, Some(&body)), [10.0, 0.0, 0.0]);
     }
 
-    /// Фрейм рахується відносно тіла, а не барицентра.
+    /// The frame is computed relative to the body, not the barycentre.
     ///
-    /// Тіло, що само летить швидше за апарат, — це саме той випадок, у якому
-    /// різниця не косметична: у барицентричних координатах «вперед» показало б
-    /// уздовж руху тіла.
+    /// A body moving faster than the vessel is precisely the case where the
+    /// difference is not cosmetic: in barycentric coordinates "forward" would
+    /// point along the body's motion.
     #[test]
     fn the_frame_follows_the_body_not_the_barycentre() {
         let body = state([0.0, 0.0, 0.0], [3.0e4, 0.0, 0.0]);
@@ -256,7 +259,8 @@ mod tests {
         assert_eq!(along.dv_inertial(&vessel, Some(&body)), [0.0, 10.0, 0.0]);
     }
 
-    /// Розбіжність планів знаходиться в найранішій зміні, з обох боків.
+    /// The plans' divergence is found at the earliest change, from either
+    /// side.
     #[test]
     fn divergence_finds_the_earliest_change() {
         let m = |t: f64, dv: f64| Manoeuvre {
@@ -271,25 +275,25 @@ mod tests {
 
         assert_eq!(a.diverges_from(&a.clone()), None);
 
-        // Змінений другий маневр.
+        // The second manoeuvre changed.
         let mut b = a.clone();
         b.manoeuvres[1] = m(200.0, 5.0);
         assert_eq!(a.diverges_from(&b), Some(200.0));
 
-        // Зсунутий у часі — раніший із двох моментів, бо перерахувати треба
-        // від того, у якому плани вже різні.
+        // Shifted in time -- the earlier of the two instants, because the
+        // recomputation must start where the plans already differ.
         let mut c = a.clone();
         c.manoeuvres[1] = m(150.0, 2.0);
         assert_eq!(a.diverges_from(&c), Some(150.0));
 
-        // Дописаний хвіст.
+        // A tail appended.
         let mut d = a.clone();
         d.insert(m(300.0, 3.0));
         assert_eq!(a.diverges_from(&d), Some(300.0));
         assert_eq!(d.diverges_from(&a), Some(300.0));
     }
 
-    /// Вставка тримає порядок за часом, як би її не кликали.
+    /// Insertion keeps time order however it is called.
     #[test]
     fn insertion_keeps_the_order() {
         let m = |t: f64| Manoeuvre {

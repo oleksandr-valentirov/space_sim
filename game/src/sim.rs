@@ -1,33 +1,36 @@
-//! Нитка симуляції (ROADMAP J4, PROJECT.md §6).
+//! The simulation thread (ROADMAP J4, PROJECT.md §6).
 //!
-//! Світ переїжджає у власну нитку, і код світу від цього не змінюється
-//! жодним рядком: [`world::World::step`](crate::world::World::step) як була
-//! звичайною функцією, так і лишилась. Змінюється тільки те, **хто** її
-//! кличе — і саме тому J1–J3 робилися однонитково.
+//! The world moves into its own thread, and the world's code does not change
+//! by a single line: [`world::World::step`](crate::world::World::step) was an
+//! ordinary function and stayed one. Only **who** calls it changes -- which is
+//! exactly why J1-J3 were done single-threaded.
 //!
-//! ## Два примітиви, і третього немає
+//! ## Two primitives, and there is no third
 //!
-//! - **Канал** ([`Command`]) — усе, що головна нитка хоче зробити зі світом.
-//! - **Публікація** ([`arc_swap`]) — усе, що вона хоче про світ знати.
+//! - **Channel** ([`Command`]) -- everything the main thread wants to do to
+//!   the world.
+//! - **Publication** ([`arc_swap`]) -- everything it wants to know about the
+//!   world.
 //!
-//! Спільного мутабельного стану немає взагалі, тож гонка тут неможлива не
-//! тому, що ми обережні, а тому, що немає чого замикати. Читач ніколи не
-//! блокує письменника: `ArcSwap::load_full` — це атомарний обмін
-//! вказівниками, а не очікування.
+//! There is no shared mutable state at all, so a race here is impossible not
+//! because we are careful but because there is nothing to lock. A reader never
+//! blocks a writer: `ArcSwap::load_full` is an atomic pointer exchange, not a
+//! wait.
 //!
-//! ## Чому події теж каналом
+//! ## Why events also travel by channel
 //!
-//! [`Event`] — те, що сталося **один раз**: план прийнято, план відхилено,
-//! апарат уперся в межу ассета. Снапшот такого не переносить: він вибірка,
-//! і читач, який пропустив публікацію, пропустив би подію назавжди
-//! (CLAUDE.md, інваріант 8).
+//! An [`Event`] is something that happened **once**: a plan accepted, a plan
+//! rejected, a vessel hitting the asset's limit. A snapshot does not carry
+//! such things: it is a sample, and a reader that missed a publication would
+//! miss an event forever (CLAUDE.md, invariant 8).
 //!
-//! ## Що нитка НЕ змінює
+//! ## What the thread does NOT change
 //!
-//! Числа. Нитка вимірює власний `dt` і крутиться зі своїм тіком, тобто робить
-//! рівно те, що J2 уже перевірив як безпечне: міняє швидкість курсора й
-//! кількість роботи за прохід, ніколи — `t_end`. Перевірка на це є
-//! (`tests/thread.rs`): траєкторія з нитки бітово дорівнює однонитковій.
+//! The numbers. The thread measures its own `dt` and spins on its own tick,
+//! i.e. does exactly what J2 already checked as safe: it changes cursor speed
+//! and the amount of work per pass, never `t_end`. There is a check for that
+//! (`tests/thread.rs`): the threaded trajectory equals the single-threaded one
+//! bitwise.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -43,55 +46,58 @@ use crate::save;
 use crate::snapshot::WorldSnapshot;
 use crate::world::{PlanRejected, VesselId, World};
 
-/// Період тіку симуляції.
+/// The simulation tick period.
 ///
-/// Удвічі частіше за кадр при 60 Hz: снапшот не має бути свіжішим за кадр, але
-/// має бути не старішим. Це не крок фізики — його не існує (`crate::clock`), —
-/// а лише те, як часто нитка прокидається сама. Команда будить її негайно.
+/// Twice per frame at 60 Hz: a snapshot need not be fresher than a frame but
+/// must not be staler. This is not a physics step -- there is no such thing
+/// (`crate::clock`) -- only how often the thread wakes on its own. A command
+/// wakes it immediately.
 const TICK: Duration = Duration::from_millis(8);
 
-/// Скільки ланок дозволено порахувати за один тік.
+/// How many legs may be computed in one tick.
 ///
-/// Стеля затримки, не оптимізація: чим більше число, тим довше нитка не
-/// дивиться в канал команд. На числа не впливає (інваріант 9).
+/// A latency ceiling, not an optimisation: the larger the number, the longer
+/// the thread goes without looking at the command channel. Does not affect the
+/// numbers (invariant 9).
 const LEGS_PER_TICK: usize = 4;
 
-/// Стеля на `dt` одного тіку. Та сама причина, що в `app`: процес, приспаний
-/// системою на хвилину, не має прокидатися з хвилиною × warp у руках.
+/// Ceiling on one tick's `dt`. The same reason as in `app`: a process the
+/// system suspended for a minute should not wake holding a minute x warp.
 const MAX_TICK_DT: f64 = 0.25;
 
-/// Що головна нитка просить у симуляції.
+/// What the main thread asks of the simulation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     SetWarp(f64),
     ScaleWarp(f64),
     TogglePause,
-    /// Перевести курсор на вже пораховану мить (ROADMAP-UI.md, U3b).
+    /// Move the cursor to an already computed instant (ROADMAP-UI.md, U3b).
     ///
-    /// Не `t_end` і не запит на рахунок: якщо туди ще не пораховано, команду
-    /// **відхилять** (`Event::SeekRejected`). Інакше поле вводу в інтерфейсі
-    /// вирішувало б, скільки інтегрувати, — прямо проти інваріанта 9.
+    /// Not a `t_end` and not a request to compute: if nothing is computed
+    /// there yet, the command is **rejected** (`Event::SeekRejected`).
+    /// Otherwise a text field in the interface would decide how much to
+    /// integrate -- directly against invariant 9.
     SeekTo(f64),
     CommitPlan {
         vessel: VesselId,
         plan: Plan,
     },
-    /// Записати сейв. Пише **нитка симуляції**, бо світ належить їй; головна
-    /// нитка отримає [`Event::Saved`].
+    /// Write a save. The **simulation thread** writes, because the world
+    /// belongs to it; the main thread receives an [`Event::Saved`].
     Save(PathBuf),
     Shutdown,
 }
 
-/// Що симуляція повідомляє назад. Дискретне — тобто те, чого снапшот не
-/// переносить.
+/// What the simulation reports back. Discrete things -- what a snapshot does
+/// not carry.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    /// План прийнято; `from` — момент, з якого перераховано.
+    /// The plan was accepted; `from` is the instant recomputed from.
     PlanCommitted {
         vessel: VesselId,
         from: Option<f64>,
     },
-    /// Перемотування не прийнято — назад або в непораховане.
+    /// The seek was not accepted -- backwards, or into the uncomputed.
     SeekRejected {
         t: f64,
         why: crate::world::SeekRejected,
@@ -100,41 +106,41 @@ pub enum Event {
         vessel: VesselId,
         why: PlanRejected,
     },
-    /// Апарат перестав рахуватися. Найімовірніша причина — час вийшов за
-    /// проміжок ассета.
+    /// The vessel stopped being computed. The most likely cause is time
+    /// leaving the asset's span.
     VesselFailed {
         vessel: VesselId,
         error: CoreError,
     },
-    /// Сейв записано, або не записано — і тоді сказано чому.
+    /// The save was written, or was not -- and then why is stated.
     Saved {
         error: Option<String>,
     },
 }
 
-/// Ручка до нитки симуляції.
+/// A handle to the simulation thread.
 ///
-/// Володіє ниткою: [`Drop`] просить її спинитися й чекає. Без цього процес
-/// із закритим вікном лишався б із живою ниткою, яка й далі рахує.
+/// Owns the thread: [`Drop`] asks it to stop and waits. Without that a process
+/// whose window has closed would keep a live thread still computing.
 pub struct Sim {
     commands: Sender<Command>,
     events: Receiver<Event>,
     published: Arc<ArcSwap<WorldSnapshot>>,
-    /// Ассет, який світ уже завантажив.
+    /// The asset the world already loaded.
     ///
-    /// Тримається тут, щоб планувальник міг ділити його, а не читати вдруге
-    /// (`crate::planner`). `Ephemeris` — `Sync`, і це доведено читанням C у
-    /// D3, коли жодної другої нитки ще не існувало.
+    /// Kept here so the planner can share it rather than read it a second time
+    /// (`crate::planner`). `Ephemeris` is `Sync`, proved by reading the C in
+    /// D3, when no second thread existed yet.
     eph: Arc<core_rs::Ephemeris>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl Sim {
-    /// Бере готовий світ і дає йому нитку.
+    /// Takes a finished world and gives it a thread.
     ///
-    /// Світ будується **зовні**, у нитці-викликачі: помилка завантаження
-    /// ассета чи сейву має долетіти до того, хто її може показати, а не вбити
-    /// нитку, яка ще нікому не відома.
+    /// The world is built **outside**, in the calling thread: an error loading
+    /// the asset or the save must reach whoever can display it rather than
+    /// kill a thread nobody knows about yet.
     pub fn spawn(mut world: World) -> Result<Sim, String> {
         let eph = world.ephemeris();
         let published = Arc::new(ArcSwap::from_pointee(world.snapshot()));
@@ -145,7 +151,7 @@ impl Sim {
         let thread = std::thread::Builder::new()
             .name("sim".to_string())
             .spawn(move || run(&mut world, &command_rx, &event_tx, &publish))
-            .map_err(|e| format!("нитка симуляції не запустилася: {e}"))?;
+            .map_err(|e| format!("the simulation thread did not start: {e}"))?;
 
         Ok(Sim {
             commands,
@@ -156,11 +162,11 @@ impl Sim {
         })
     }
 
-    /// Поточний зріз світу.
+    /// The world's current slice.
     ///
-    /// **Один виклик на кадр, і тримати результат весь кадр.** Два виклики
-    /// підряд можуть дати два різні «зараз», і тоді камера дивитиметься на
-    /// одну мить, а траєкторія малюватиметься з іншої.
+    /// **One call per frame, and hold the result for the whole frame.** Two
+    /// calls in a row can give two different "now"s, and then the camera looks
+    /// at one instant while the trajectory is drawn from another.
     pub fn snapshot(&self) -> Arc<WorldSnapshot> {
         self.published.load_full()
     }
@@ -170,13 +176,13 @@ impl Sim {
     }
 
     pub fn send(&self, command: Command) {
-        // Канал закривається лише разом із ниткою, тобто в `Drop`. Помилка
-        // тут означала б, що нитка впала; світ від цього не псується, а
-        // повідомити нема кому — UI ще немає.
+        // The channel closes only with the thread, i.e. in `Drop`. An error
+        // here would mean the thread died; the world is not corrupted by that,
+        // and there is nobody to tell -- there is no UI yet.
         let _ = self.commands.send(command);
     }
 
-    /// Забирає всі події, що накопичилися. Не блокує.
+    /// Takes every event that has accumulated. Does not block.
     pub fn events(&self) -> Vec<Event> {
         self.events.try_iter().collect()
     }
@@ -191,10 +197,10 @@ impl Drop for Sim {
     }
 }
 
-/// Цикл нитки.
+/// The thread's loop.
 ///
-/// Прокидається або від команди, або від тіку — `select!` саме заради
-/// першого: пауза за натисканням пробілу не має чекати до кінця періоду.
+/// Wakes on either a command or a tick -- `select!` exists for the first:
+/// pausing on a space bar press should not wait for the period to end.
 fn run(
     world: &mut World,
     commands: &Receiver<Command>,
@@ -209,8 +215,8 @@ fn run(
         crossbeam_channel::select! {
             recv(commands) -> command => {
                 match command {
-                    // Відправник зник разом із `Sim` — виходимо так само, як
-                    // на Shutdown.
+                    // The sender disappeared with `Sim` -- exit exactly as on
+                    // Shutdown.
                     Err(_) => return,
                     Ok(Command::Shutdown) => return,
                     Ok(command) => apply(world, command, events),
@@ -219,8 +225,8 @@ fn run(
             recv(ticker) -> _ => {}
         }
 
-        // Решта команд, що встигли накопичитися, — щоб серія натискань не
-        // розтягувалася на серію тіків.
+        // The rest of the commands that accumulated, so a burst of key presses
+        // does not stretch across a burst of ticks.
         while let Ok(command) = commands.try_recv() {
             if command == Command::Shutdown {
                 return;
@@ -234,8 +240,8 @@ fn run(
 
         world.step(dt.min(MAX_TICK_DT), LEGS_PER_TICK);
 
-        // Про поломку доповідаємо один раз на апарат: канал не має
-        // перетворюватися на потік того самого повідомлення щотіку.
+        // A breakage is reported once per vessel: the channel must not become
+        // a stream of the same message every tick.
         reported_failure.resize(world.vessels().len(), false);
         for (index, vessel) in world.vessels().iter().enumerate() {
             if let Some(error) = vessel.failed {
@@ -276,7 +282,7 @@ fn apply(world: &mut World, command: Command, events: &Sender<Event>) {
             };
             let _ = events.send(event);
         }
-        // Оброблено вище: сюди воно не доходить.
+        // Handled above: it does not reach here.
         Command::Shutdown => {}
     }
 }
