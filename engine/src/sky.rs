@@ -46,16 +46,74 @@ const LUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// Скільки байтів займає `AirParams` у шейдері: чотири `float4`.
 const AIR_BYTES: u64 = 64;
 
-/// Скільки байтів займає `ViewParams` у шейдері: один `float4`.
-const VIEW_BYTES: u64 = 16;
+/// Скільки байтів займає `ViewParams` у шейдері: шість `float4`.
+const VIEW_BYTES: u64 = 96;
+
+/// Скільки разів яскравіше стає небо перед записом у кадр.
+///
+/// **Стала, а не автоекспозиція**, і це рішення етапу: автоекспозиція
+/// стосується всієї сцени, а не повітря, і без корабля в кадрі міряти її нема
+/// на чому (ROADMAP-ATMOSPHERE.md, «чого етап S свідомо не робить»).
+///
+/// Число виміряне, а не підібране на око: яскравість у зеніті опівдні виходить
+/// 0.048 на одиницю освітленості Сонця, і множник 8 ставить її на 0.38 —
+/// денне небо, яке не впирається в одиницю навіть біля горизонту. Правити його
+/// доведеться тоді ж, коли з'явиться автоекспозиція, і тим самим кроком.
+pub const EXPOSURE: f32 = 8.0;
 
 /// Розмір групи в `transmittance_main` — те саме, що в `[numthreads(8, 8, 1)]`.
 const GROUP: u32 = 8;
+
+/// Де стоїть камера відносно тіла з повітрям — усе, що прохід неба про неї знає.
+///
+/// Складається на CPU у `f64` і звужується один раз: віднімання центра тіла від
+/// ока — те саме camera-relative, що й скрізь (F4). Осі екрана вже одиничні,
+/// тангенси півкутів огляду приходять поруч, і разом вони дають промінь пікселя
+/// без жодної оберненої матриці.
+#[derive(Clone, Copy, Debug)]
+pub struct View {
+    /// Камера відносно центра тіла, метри, світові осі.
+    pub eye: [f64; 3],
+    /// Напрямок ДО Сонця, світові осі, одиничний.
+    pub sun: [f32; 3],
+    /// Осі екрана у світових координатах.
+    pub right: [f32; 3],
+    pub up: [f32; 3],
+    pub forward: [f32; 3],
+    /// Тангенси півкутів огляду: горизонтального й вертикального.
+    pub tan_half: [f32; 2],
+}
+
+impl View {
+    /// Відстань камери від центра тіла.
+    pub fn radius(&self) -> f64 {
+        let e = self.eye;
+        (e[0] * e[0] + e[1] * e[1] + e[2] * e[2]).sqrt()
+    }
+
+    /// Косинус зенітного кута Сонця в точці камери.
+    pub fn sun_zenith_cos(&self) -> f64 {
+        let r = self.radius().max(1.0);
+        let e = self.eye;
+        (e[0] * f64::from(self.sun[0])
+            + e[1] * f64::from(self.sun[1])
+            + e[2] * f64::from(self.sun[2]))
+            / r
+    }
+}
 
 pub struct Sky {
     transmittance_pipeline: wgpu::ComputePipeline,
     multiscatter_pipeline: wgpu::ComputePipeline,
     skyview_pipeline: wgpu::ComputePipeline,
+    /// Два пайплайни, а не гілка в шейдері: камера всередині повітря читає
+    /// таблицю, камера поза ним марширує. Вибір робить CPU — те саме рішення,
+    /// що з гладким тілом і тілом з рельєфом (R5c).
+    inside_pipeline: wgpu::RenderPipeline,
+    outside_pipeline: wgpu::RenderPipeline,
+    /// Група 0 для малювання: обидві сталі таблиці, таблиця неба й параметри
+    /// кадру, і все це видиме фрагментній стадії.
+    read_draw: wgpu::BindGroup,
 
     /// Група 0 без самої таблиці пропускання — для проходу, який її пише.
     read_min: wgpu::BindGroup,
@@ -101,10 +159,10 @@ fn storage_2d(binding: u32) -> wgpu::BindGroupLayoutEntry {
 }
 
 /// Таблиця на читання: `float4`, білінійна фільтрація.
-fn sampled_2d(binding: u32) -> wgpu::BindGroupLayoutEntry {
+fn sampled_2d_for(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
+        visibility,
         ty: wgpu::BindingType::Texture {
             sample_type: wgpu::TextureSampleType::Float { filterable: true },
             view_dimension: wgpu::TextureViewDimension::D2,
@@ -112,6 +170,10 @@ fn sampled_2d(binding: u32) -> wgpu::BindGroupLayoutEntry {
         },
         count: None,
     }
+}
+
+fn sampled_2d(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    sampled_2d_for(binding, wgpu::ShaderStages::COMPUTE)
 }
 
 /// Текстура таблиці: пишеться compute, читається шейдерами, читається назад
@@ -140,7 +202,7 @@ fn lut_texture(gpu: &Gpu, label: &str, width: u32, height: u32) -> wgpu::Texture
 }
 
 impl Sky {
-    pub fn new(gpu: &Gpu) -> Sky {
+    pub fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Sky {
         let module = gpu
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -211,6 +273,31 @@ impl Sky {
                     label: Some("sky write multiscatter"),
                     entries: &[storage_2d(1)],
                 });
+        // Малювання: та сама група 0, але видима ФРАГМЕНТНІЙ стадії й з
+        // таблицею неба замість слота, у який її пишуть.
+        let fragment = wgpu::ShaderStages::FRAGMENT;
+        let read_draw_layout =
+            gpu.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("sky read (draw)"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            visibility: fragment,
+                            ..air_entry
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            visibility: fragment,
+                            ..sampler_entry
+                        },
+                        sampled_2d_for(2, fragment),
+                        sampled_2d_for(3, fragment),
+                        wgpu::BindGroupLayoutEntry {
+                            visibility: fragment,
+                            ..view_entry
+                        },
+                        sampled_2d_for(5, fragment),
+                    ],
+                });
         let write_skyview_layout =
             gpu.device
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -257,6 +344,74 @@ impl Sky {
             &write_skyview_layout,
             "skyview_main",
         );
+
+        // Прохід неба малює повноекранний трикутник без вершинних буферів і без
+        // запису глибини: він іде першим у найдальшому діапазоні, і все, що
+        // після нього, лягає зверху за звичайним тестом глибини.
+        let draw_layout = gpu
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("sky draw"),
+                bind_group_layouts: &[Some(&read_draw_layout)],
+                immediate_size: 0,
+            });
+        let draw = |label: &str, entry: &str| {
+            gpu.device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&draw_layout),
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("vertex_sky"),
+                        compilation_options: Default::default(),
+                        buffers: &[],
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some(entry),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            // **Додавання, а не заміщення.** Повітря світиться,
+                            // а не закриває: те, що за ним, лишається видимим.
+                            // Заміщення видно було одразу — нічний край лімба
+                            // з орбіти вигризав із фону чорну дугу, бо там
+                            // розсіювати нема чого, і нуль ставав кольором.
+                            //
+                            // Повна композиція — `фон·T + L`, тобто фон іще й
+                            // гаситься повітрям. Другий множник з'явиться разом
+                            // з аеральною перспективою (S5), і саме там він
+                            // потрібен: поки за небом немає нічого, крім кольору
+                            // очищення, гасити нема чого.
+                            blend: Some(wgpu::BlendState {
+                                color: wgpu::BlendComponent {
+                                    src_factor: wgpu::BlendFactor::One,
+                                    dst_factor: wgpu::BlendFactor::One,
+                                    operation: wgpu::BlendOperation::Add,
+                                },
+                                alpha: wgpu::BlendComponent::REPLACE,
+                            }),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        cull_mode: None,
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: crate::depth::FORMAT,
+                        depth_write_enabled: Some(false),
+                        depth_compare: Some(wgpu::CompareFunction::Always),
+                        stencil: wgpu::StencilState::default(),
+                        bias: wgpu::DepthBiasState::default(),
+                    }),
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                })
+        };
+        let inside_pipeline = draw("sky inside", "fragment_sky_inside");
+        let outside_pipeline = draw("sky outside", "fragment_sky_outside");
 
         let air_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("air params"),
@@ -382,6 +537,36 @@ impl Sky {
             }],
         });
 
+        let read_draw = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("sky read (draw)"),
+            layout: &read_draw_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: air_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&transmittance_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&multiscatter_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: view_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&skyview_view),
+                },
+            ],
+        });
         let write_skyview = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("sky write skyview"),
             layout: &write_skyview_layout,
@@ -395,6 +580,9 @@ impl Sky {
             transmittance_pipeline,
             multiscatter_pipeline,
             skyview_pipeline,
+            inside_pipeline,
+            outside_pipeline,
+            read_draw,
             read_min,
             read_full,
             read_frame,
@@ -470,15 +658,9 @@ impl Sky {
     /// Різниця з [`Sky::ensure`] тут головна й видима з підпису: сталі таблиці
     /// подають роботу самі й майже ніколи, а ця йде туди ж, куди й проходи
     /// кадру, тобто щокадру. Хто прийде оптимізувати, побачить це з коду.
-    ///
-    /// `r` — відстань камери від центра тіла, `mu_s` — косинус зенітного кута
-    /// Сонця в точці камери. Обидва рахує викликач: він єдиний знає, де тіло.
-    pub fn prepare_view(&self, gpu: &Gpu, encoder: &mut wgpu::CommandEncoder, r: f64, mu_s: f64) {
-        let mut bytes = Vec::with_capacity(VIEW_BYTES as usize);
-        for value in [r as f32, mu_s as f32, 0.0, 0.0] {
-            bytes.extend_from_slice(&value.to_le_bytes());
-        }
-        gpu.queue.write_buffer(&self.view_buffer, 0, &bytes);
+    pub fn prepare_view(&self, gpu: &Gpu, encoder: &mut wgpu::CommandEncoder, view: &View) {
+        gpu.queue
+            .write_buffer(&self.view_buffer, 0, &view_bytes(view));
 
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("skyview"),
@@ -492,6 +674,21 @@ impl Sky {
             atmosphere::SKYVIEW_HEIGHT.div_ceil(GROUP),
             1,
         );
+    }
+
+    /// Намалювати небо повноекранним трикутником.
+    ///
+    /// `inside` вирішує викликач — він знає, де верхня межа повітря; вибір
+    /// пайплайна на CPU, а не гілка в шейдері, з тієї самої причини, що в
+    /// патчів (R5c).
+    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, inside: bool) {
+        pass.set_pipeline(if inside {
+            &self.inside_pipeline
+        } else {
+            &self.outside_pipeline
+        });
+        pass.set_bind_group(0, &self.read_draw, &[]);
+        pass.draw(0..3, 0..1);
     }
 
     /// Вигляд таблиці неба — для того, хто малюватиме нею кадр (S4b).
@@ -653,6 +850,38 @@ fn air_bytes(air: &Atmosphere, bottom_m: f64) -> Vec<u8> {
         bottom_m as f32,
         air.top_m as f32,
     ]);
+    bytes
+}
+
+/// Параметри камери в розкладці `ViewParams` із `sky.slang`.
+fn view_bytes(view: &View) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(VIEW_BYTES as usize);
+    let mut push = |values: [f32; 4]| {
+        for value in values {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+    };
+    push([
+        view.radius() as f32,
+        view.sun_zenith_cos() as f32,
+        EXPOSURE,
+        0.0,
+    ]);
+    push([
+        view.eye[0] as f32,
+        view.eye[1] as f32,
+        view.eye[2] as f32,
+        0.0,
+    ]);
+    push([view.sun[0], view.sun[1], view.sun[2], 0.0]);
+    push([
+        view.right[0],
+        view.right[1],
+        view.right[2],
+        view.tan_half[0],
+    ]);
+    push([view.up[0], view.up[1], view.up[2], view.tan_half[1]]);
+    push([view.forward[0], view.forward[1], view.forward[2], 0.0]);
     bytes
 }
 

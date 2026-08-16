@@ -29,6 +29,7 @@ use crate::detail;
 use crate::gpu::Gpu;
 use crate::lod;
 use crate::scene::{self, Body, Scene, TileSet};
+use crate::sky::{self, Sky};
 use crate::sphere;
 use crate::tiles;
 
@@ -304,6 +305,12 @@ pub struct Frame {
     /// змінна, щоб не виділяти вектор щокадру.
     passes: Vec<Pass>,
 
+    /// Повітря: сталі таблиці, таблиця неба на цей кадр і сам прохід (етап S).
+    ///
+    /// Полем кадру, а не окремою підсистемою поруч: небо малюється тим самим
+    /// проходом, що й усе інше, і ділить із ним і глибину, і ціль.
+    sky: Sky,
+
     /// Скільки коштував прохід по вершинах ламаних в останньому `draw`, мс.
     ///
     /// Існує заради боргу D7 і читається зондом гри (`game::perf_probe`, N1):
@@ -320,6 +327,7 @@ impl Frame {
             planet: Planet::new(gpu, format),
             depth: None,
             lines: Lines::new(gpu, format),
+            sky: Sky::new(gpu, format),
             passes: Vec::with_capacity(MAX_PASSES),
             lines_upload_ms: 0.0,
         }
@@ -553,6 +561,15 @@ impl Frame {
         let aspect = f64::from(width) / f64::from(height);
         self.plan(scene, aspect);
 
+        // Повітря (етап S). Нічого не коштує, коли його немає: тіло без
+        // атмосфери не запускає ні таблиць, ні проходу, і кадр лишається
+        // бітово тим самим, що до етапу, — на цьому стоїть правило 4.
+        let air = Frame::air_view(scene, aspect);
+        if let Some((atmosphere, bottom, view)) = &air {
+            self.sky.ensure(gpu, atmosphere, *bottom);
+            self.sky.prepare_view(gpu, encoder, view);
+        }
+
         // Планети: камера віднімається раз на патч, у `double`, а поворот
         // їде в матриці (R1d). Кількість роботи на CPU більше не залежить
         // від кількості вершин — тільки від кількості патчів і тіл.
@@ -609,9 +626,77 @@ impl Frame {
                 occlusion_query_set: None,
             });
 
+            // Небо — **першим у найдальшому діапазоні**, одразу після очищення
+            // кольору. Далі геометрія лягає зверху за звичайним тестом глибини,
+            // а ближчі діапазони домальовують поверх, бо колір вони не чистять.
+            // Власного запису глибини прохід неба не робить: воно нескінченно
+            // далеко, і сперечатися з ним нема про що.
+            if index == 0 {
+                if let Some((atmosphere, _, view)) = &air {
+                    self.sky.draw(&mut pass, view.radius() < atmosphere.top_m);
+                }
+            }
+
             self.planet.draw(&mut pass, index);
             self.lines.draw(&mut pass, scene, index);
         }
+    }
+
+    /// Тіло з повітрям, найближче до камери, і камера відносно нього.
+    ///
+    /// **Найближче, а не перше в списку.** Тіл з атмосферою в сцені сьогодні
+    /// одне (Земля, S1), але правило мусить бути назване до того, як їх стане
+    /// два: далеке повітря камери не оточує, і небо їй малює те, всередині
+    /// якого — або поруч із яким — вона стоїть.
+    ///
+    /// `None` означає «повітря в кадрі немає», і це не окремий випадок, а той
+    /// самий кадр, що був до етапу S: жодна таблиця не рахується, прохід не
+    /// подається, знімок лишається бітово тим самим.
+    fn air_view(scene: &Scene, aspect: f64) -> Option<(scene::Atmosphere, f64, sky::View)> {
+        let eye = scene.camera.position();
+        let mut best: Option<(f64, &Body)> = None;
+        for body in &scene.bodies {
+            let Some(_) = body.air else { continue };
+            let d = [
+                body.centre[0] - eye[0],
+                body.centre[1] - eye[1],
+                body.centre[2] - eye[2],
+            ];
+            let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            if best.is_none_or(|(previous, _)| distance < previous) {
+                best = Some((distance, body));
+            }
+        }
+        let (_, body) = best?;
+        let air = body.air?;
+
+        let (right, up, forward) = scene.camera.axes();
+        let sun = {
+            let l = LIGHT_DIR;
+            let length = (l[0] * l[0] + l[1] * l[1] + l[2] * l[2]).sqrt();
+            [l[0] / length, l[1] / length, l[2] / length]
+        };
+        let t = (FOV_Y / 2.0).tan();
+        let narrow = |v: [f64; 3]| [v[0] as f32, v[1] as f32, v[2] as f32];
+
+        Some((
+            air,
+            body.radius_m,
+            sky::View {
+                // Віднімання центра тіла від ока — у `f64`, як усе
+                // camera-relative (F4). Звужується воно вже в `sky`.
+                eye: [
+                    eye[0] - body.centre[0],
+                    eye[1] - body.centre[1],
+                    eye[2] - body.centre[2],
+                ],
+                sun,
+                right: narrow(right),
+                up: narrow(up),
+                forward: narrow(forward),
+                tan_half: [(t * aspect) as f32, t as f32],
+            },
+        ))
     }
 
     /// Найдальша точка сцени: дальній край найдальшого тіла.

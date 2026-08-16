@@ -44,7 +44,7 @@ fn the_transmittance_table_matches_the_oracle_everywhere() {
     let Some(gpu) = gpu() else { return };
 
     let air = Atmosphere::EARTH.with_surface(BOTTOM);
-    let mut sky = Sky::new(&gpu);
+    let mut sky = Sky::new(&gpu, engine::shot::FORMAT);
     assert!(sky.ensure(&gpu, &air, BOTTOM), "перший раз таблицю рахують");
 
     let table = sky
@@ -97,7 +97,7 @@ fn the_vertical_column_matches_the_closed_form() {
     let Some(gpu) = gpu() else { return };
 
     let air = Atmosphere::EARTH.with_surface(BOTTOM);
-    let mut sky = Sky::new(&gpu);
+    let mut sky = Sky::new(&gpu, engine::shot::FORMAT);
     sky.ensure(&gpu, &air, BOTTOM);
     let table = sky
         .read_transmittance(&gpu)
@@ -136,7 +136,7 @@ fn the_table_is_monotone_in_both_of_its_axes() {
     let Some(gpu) = gpu() else { return };
 
     let air = Atmosphere::EARTH.with_surface(BOTTOM);
-    let mut sky = Sky::new(&gpu);
+    let mut sky = Sky::new(&gpu, engine::shot::FORMAT);
     sky.ensure(&gpu, &air, BOTTOM);
     let table = sky
         .read_transmittance(&gpu)
@@ -175,7 +175,7 @@ fn the_table_is_recomputed_only_when_the_air_changes() {
     let Some(gpu) = gpu() else { return };
 
     let air = Atmosphere::EARTH.with_surface(BOTTOM);
-    let mut sky = Sky::new(&gpu);
+    let mut sky = Sky::new(&gpu, engine::shot::FORMAT);
     assert!(sky.ensure(&gpu, &air, BOTTOM), "перший раз — рахуємо");
     assert!(
         !sky.ensure(&gpu, &air, BOTTOM),
@@ -241,7 +241,7 @@ fn the_multiscatter_table_matches_the_oracle() {
     let Some(gpu) = gpu() else { return };
 
     let air = Atmosphere::EARTH.with_surface(BOTTOM);
-    let mut sky = Sky::new(&gpu);
+    let mut sky = Sky::new(&gpu, engine::shot::FORMAT);
     sky.ensure(&gpu, &air, BOTTOM);
     let table = sky
         .read_multiscatter(&gpu)
@@ -306,7 +306,7 @@ fn every_further_scattering_adds_less_than_the_one_before() {
     let Some(gpu) = gpu() else { return };
 
     let air = Atmosphere::EARTH.with_surface(BOTTOM);
-    let mut sky = Sky::new(&gpu);
+    let mut sky = Sky::new(&gpu, engine::shot::FORMAT);
     sky.ensure(&gpu, &air, BOTTOM);
     let table = sky
         .read_multiscatter(&gpu)
@@ -353,7 +353,7 @@ fn the_multiscatter_table_is_monotone_in_both_of_its_axes() {
     let Some(gpu) = gpu() else { return };
 
     let air = Atmosphere::EARTH.with_surface(BOTTOM);
-    let mut sky = Sky::new(&gpu);
+    let mut sky = Sky::new(&gpu, engine::shot::FORMAT);
     sky.ensure(&gpu, &air, BOTTOM);
     let table = sky
         .read_multiscatter(&gpu)
@@ -432,7 +432,7 @@ fn the_sky_table_matches_the_oracle_from_three_cameras() {
     let Some(gpu) = gpu() else { return };
 
     let air = Atmosphere::EARTH.with_surface(BOTTOM);
-    let mut sky = Sky::new(&gpu);
+    let mut sky = Sky::new(&gpu, engine::shot::FORMAT);
     sky.ensure(&gpu, &air, BOTTOM);
 
     // 500 кроків у таблиці пропускання — рівно стільки, скільки в шейдері:
@@ -445,15 +445,30 @@ fn the_sky_table_matches_the_oracle_from_three_cameras() {
     // Полудень з рівня моря, захід з рівня моря, полудень із двадцяти
     // кілометрів. `mu_s = 0` — Сонце рівно на геометричному горизонті.
     for (label, altitude, mu_s) in [
-        ("полудень з землі", 2.0, 1.0),
+        ("полудень з землі", 2.0, 1.0f64),
         ("захід з землі", 2.0, 0.0),
         ("полудень із 20 км", 20_000.0, 1.0),
     ] {
         let r = BOTTOM + altitude;
+        // Таблиця неба читає з камери рівно два числа — радіус і `mu_s`, — тож
+        // решта `View` тут довільна, аби була несуперечлива: Сонце в зеніті
+        // вздовж `z`, камера теж на `z`, і `mu_s` виходить сам.
+        let view = engine::sky::View {
+            eye: [0.0, 0.0, r],
+            sun: [(1.0 - mu_s * mu_s).sqrt() as f32, 0.0, mu_s as f32],
+            right: [1.0, 0.0, 0.0],
+            up: [0.0, 1.0, 0.0],
+            forward: [0.0, 0.0, -1.0],
+            tan_half: [1.0, 0.5],
+        };
+        assert!(
+            (view.sun_zenith_cos() - mu_s).abs() < 1.0e-9,
+            "фікстура не дає {mu_s}"
+        );
         let mut encoder = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        sky.prepare_view(&gpu, &mut encoder, r, mu_s);
+        sky.prepare_view(&gpu, &mut encoder, &view);
         gpu.queue.submit([encoder.finish()]);
 
         let table = sky.read_skyview(&gpu).expect("таблиця мала прочитатися");

@@ -98,9 +98,20 @@ Texture2D<float4> multiscatter_lut;
 struct ViewParams
 {
     // x — відстань камери від центра тіла, y — косинус зенітного кута Сонця
-    // в точці камери. z, w — вирівнювання: менше за `float4` constant buffer
-    // однаково не буває.
+    // в точці камери, z — експозиція (S4b), w — вирівнювання.
     float4 view;
+    // xyz — камера відносно ЦЕНТРА ТІЛА, світові осі. Віднімання зроблено на
+    // CPU у `double`; тут лишається число порядку 6·10⁶, у якому `f32` дає
+    // півметра — на висоту шкали у вісім кілометрів це шістдесят мільйонних.
+    float4 eye;
+    // xyz — напрямок ДО Сонця, світові осі.
+    float4 sun;
+    // Осі екрана у світових координатах. w несе тангенси півкутів огляду:
+    // `right.w = tan(fovy/2)·aspect`, `screen_up.w = tan(fovy/2)`. Разом вони й
+    // дають промінь пікселя — жодної оберненої матриці для цього не треба.
+    float4 right;
+    float4 screen_up;
+    float4 forward;
 };
 
 [[vk::binding(4, 0)]]
@@ -121,6 +132,12 @@ WTexture2D<float4> multiscatter_out;
 [[vk::binding(2, 1)]]
 [format("rgba16f")]
 WTexture2D<float4> skyview_out;
+
+// Таблиця неба на читання — для повноекранного проходу (S4b). Окремий слот від
+// того, у який її пишуть: одна текстура на запис і на читання в одній групі —
+// це гонка з погляду wgpu, незалежно від того, що робить шейдер.
+[[vk::binding(5, 0)]]
+Texture2D<float4> skyview_lut;
 
 // Густина трьох компонент на висоті `h` над поверхнею — двійник
 // `atmosphere::density`.
@@ -462,6 +479,36 @@ float2 skyview_uv(float r, float2 uv)
     return float2(cos(zenith), 1.0 - 2.0 * uv.x * uv.x);
 }
 
+// Координати таблиці неба за напрямком погляду — двійник
+// `atmosphere::skyview_coords`, тобто обернене до `skyview_uv`.
+//
+// Обидві сторони рахують `rho²` однаково, і саме тому запис і читання таблиці
+// сходяться бітово там, де це важливо. Точність тут другорядна: `beta` близька
+// до π/2, де `acos` майже лінійний, і 30% похибки в `rho²` дають 10⁻⁴ радіана.
+float2 skyview_coords(float bottom, float r, float mu_v, float cos_azimuth)
+{
+    float rho2 = max(0.0, r * r - bottom * bottom);
+    float beta = acos(clamp(sqrt(rho2) / r, -1.0, 1.0));
+    float zenith_horizon = PI - beta;
+    float zenith = acos(clamp(mu_v, -1.0, 1.0));
+
+    float v;
+    if (zenith <= zenith_horizon)
+    {
+        float c = zenith_horizon > 0.0
+            ? 1.0 - sqrt(max(0.0, 1.0 - zenith / zenith_horizon))
+            : 0.0;
+        v = c * 0.5;
+    }
+    else
+    {
+        float c = beta > 0.0 ? sqrt(clamp((zenith - zenith_horizon) / beta, 0.0, 1.0)) : 0.0;
+        v = 0.5 + c * 0.5;
+    }
+    float u = sqrt(max(0.0, (1.0 - cos_azimuth) * 0.5));
+    return float2(clamp(u, 0.0, 1.0), clamp(v, 0.0, 1.0));
+}
+
 // Фазова функція Релея — двійник `atmosphere::rayleigh_phase`.
 float rayleigh_phase(float cos_theta)
 {
@@ -475,40 +522,34 @@ float mie_phase(float cos_theta, float g)
     return (1.0 - g * g) / (4.0 * PI * pow(max(denominator, 1.0e-6), 1.5));
 }
 
-// Розсіяне світло вздовж променя — двійник `atmosphere::sky_view`.
+// Розсіяне світло вздовж променя — **одна реалізація на всі шляхи**.
 //
-// Система координат локальна: `up = (0, 0, 1)`, Сонце в площині `xz`. Промінь
-// зупиняється на поверхні й нічого до неї не додає — поверхню малює кадр, а не
-// таблиця неба.
-float3 raymarch_sky(float r, float mu_s, float mu_v, float cos_azimuth, uint steps)
+// Бере позицію відносно центра тіла, напрямок і вже пораховану довжину
+// відрізка в повітрі. І таблиця неба, і повноекранний прохід кличуть саме її:
+// дві копії цієї арифметики розійшлися б, і небо з поверхні перестало б
+// збігатися з небом з орбіти рівно там, де камера переходить межу.
+//
+// `rho2` — `r² − bottom²` початкової точки; хто його знає точніше, той і
+// передає (див. застереження вище).
+float3 raymarch(float3 pos, float3 dir, float3 sun, float rho2, float span, uint steps)
 {
     float bottom = air.shape.z;
-    float top = air.shape.w;
-
-    float3 sun = float3(sqrt(max(0.0, 1.0 - mu_s * mu_s)), 0.0, mu_s);
-    float sin_v = sqrt(max(0.0, 1.0 - mu_v * mu_v));
-    float sin_azimuth = sqrt(max(0.0, 1.0 - cos_azimuth * cos_azimuth));
-    float3 w = float3(sin_v * cos_azimuth, sin_v * sin_azimuth, mu_v);
+    float r = length(pos);
+    float mu = dot(pos, dir) / max(r, 1.0);
 
     // Кут розсіювання сталий уздовж променя: обидва напрямки нерухомі.
-    float cos_theta = dot(w, sun);
+    float cos_theta = dot(dir, sun);
     float phase_r = rayleigh_phase(cos_theta);
     float phase_m = mie_phase(cos_theta, air.mie.w);
 
-    float rho2 = max(0.0, r * r - bottom * bottom);
-    float shell2 = (top - bottom) * (top + bottom);
-    float span = distance_to_top(r, mu_v, rho2, shell2);
-    float ground = distance_to_ground(r, mu_v, rho2);
-    if (ground >= 0.0) { span = min(span, ground); }
     float step = span / float(steps);
-
     float3 throughput = float3(1.0, 1.0, 1.0);
     float3 light = float3(0.0, 0.0, 0.0);
     for (uint s = 0u; s < steps; ++s)
     {
         float t = (float(s) + 0.5) * step;
-        float3 point = float3(t * w.x, t * w.y, r + t * w.z);
-        float rho2_here = max(0.0, rho2 + 2.0 * t * r * mu_v + t * t);
+        float3 point = pos + t * dir;
+        float rho2_here = max(0.0, rho2 + 2.0 * t * r * mu + t * t);
         float radius = sqrt(max(0.0, rho2_here + bottom * bottom));
         float h = rho2_here / (radius + bottom);
         float mu_s_here = dot(point, sun) / max(radius, 1.0);
@@ -538,6 +579,34 @@ float3 raymarch_sky(float r, float mu_s, float mu_v, float cos_azimuth, uint ste
     return light;
 }
 
+// Те саме, але з кутів таблиці неба — двійник `atmosphere::Model::sky_view`.
+//
+// Система координат локальна: `up = (0, 0, 1)`, Сонце в площині `xz`. Погляд
+// задається парою `(mu_v, cos_azimuth)`, тобто рівно тим, що лежить в осях
+// таблиці, — і це не втрата: фізика залежить лише від `dot(погляд, Сонце)` і
+// зенітних кутів обох, а знак азимута в них не входить.
+//
+// Промінь зупиняється на поверхні й нічого до неї не додає: поверхню малює
+// кадр, а не таблиця неба.
+float3 raymarch_sky(float r, float mu_s, float mu_v, float cos_azimuth, uint steps)
+{
+    float bottom = air.shape.z;
+    float top = air.shape.w;
+
+    float3 sun = float3(sqrt(max(0.0, 1.0 - mu_s * mu_s)), 0.0, mu_s);
+    float sin_v = sqrt(max(0.0, 1.0 - mu_v * mu_v));
+    float sin_azimuth = sqrt(max(0.0, 1.0 - cos_azimuth * cos_azimuth));
+    float3 w = float3(sin_v * cos_azimuth, sin_v * sin_azimuth, mu_v);
+
+    float rho2 = max(0.0, r * r - bottom * bottom);
+    float shell2 = (top - bottom) * (top + bottom);
+    float span = distance_to_top(r, mu_v, rho2, shell2);
+    float ground = distance_to_ground(r, mu_v, rho2);
+    if (ground >= 0.0) { span = min(span, ground); }
+
+    return raymarch(float3(0.0, 0.0, r), w, sun, rho2, span, steps);
+}
+
 // Таблиця неба: 192×108, напрямок погляду → розсіяне світло.
 //
 // Рахується **раз на кадр**, бо залежить від позиції камери й напрямку на
@@ -558,4 +627,126 @@ void skyview_main(uint3 id : SV_DispatchThreadID)
 
     float3 light = raymarch_sky(r, mu_s, angles.x, angles.y, SKYVIEW_STEPS);
     skyview_out.Store(id.xy, float4(light, 1.0));
+}
+
+// ---------------------------------------------------------------------------
+// Небо в кадрі (S4b)
+// ---------------------------------------------------------------------------
+
+// Скільки кроків робить повноекранний марш, коли камера поза повітрям.
+//
+// Менше, ніж у таблиці: там один промінь обслуговує цілий сектор неба й живе
+// весь кадр, тут промінь свій на піксель. Тридцять два проти шістнадцяти —
+// різниця, яку видно в лімбі й ніде більше, а S6 її й міряє.
+static const uint SKY_OUTSIDE_STEPS = 16u;
+
+struct SkyVertex
+{
+    float4 position : SV_Position;
+    // Координати в кадрі, [−1, 1]. Із них будується промінь пікселя.
+    float2 ndc : NDC;
+};
+
+// Повноекранний трикутник — один, а не два: спільне ребро двох трикутників дає
+// шов, на якому похідні рахуються по-різному, і це вже колись коштувало
+// смужки.
+//
+// Вершинних буферів немає, як і в патчів (R6a): номер вершини дає конвеєр.
+[shader("vertex")]
+SkyVertex vertex_sky(uint id : SV_VertexID)
+{
+    float2 ndc = float2(float((id << 1u) & 2u), float(id & 2u)) * 2.0 - 1.0;
+    SkyVertex output;
+    // `z = 0` — найдальша площина в reversed-Z. Тест глибини в цього проходу
+    // однаково `Always`, а запису немає: небо малюється першим, і все, що після
+    // нього, лягає зверху.
+    output.position = float4(ndc, 0.0, 1.0);
+    output.ndc = ndc;
+    return output;
+}
+
+// Промінь пікселя у світових осях.
+float3 pixel_ray(float2 ndc)
+{
+    return normalize(frame.forward.xyz
+                   + frame.right.xyz * ndc.x * frame.right.w
+                   + frame.screen_up.xyz * ndc.y * frame.screen_up.w);
+}
+
+// Небо з таблиці — коли камера **всередині** повітря.
+//
+// Один `SampleLevel` на піксель замість марша, і саме заради цього таблиця й
+// існує: з поверхні небо коштує стільки ж, скільки текстура.
+[shader("fragment")]
+float4 fragment_sky_inside(SkyVertex input) : SV_Target
+{
+    float bottom = air.shape.z;
+    float r = frame.view.x;
+    float3 dir = pixel_ray(input.ndc);
+    float3 up = frame.eye.xyz / max(r, 1.0);
+    float3 sun = frame.sun.xyz;
+
+    float mu_v = dot(dir, up);
+    float mu_s = frame.view.y;
+
+    // Азимут між поглядом і Сонцем — уже без вертикальних складових обох.
+    // Вироджені випадки (погляд у зеніт, Сонце в зеніті) дають нульовий
+    // горизонтальний вектор; там азимут не визначений, і будь-яке значення
+    // однакове, бо `sin` зенітного кута теж нуль.
+    float3 dir_h = dir - mu_v * up;
+    float3 sun_h = sun - mu_s * up;
+    float dir_len = length(dir_h);
+    float sun_len = length(sun_h);
+    float cos_azimuth = (dir_len > 1.0e-6 && sun_len > 1.0e-6)
+        ? dot(dir_h, sun_h) / (dir_len * sun_len)
+        : 1.0;
+
+    float2 uv = skyview_coords(bottom, r, mu_v, cos_azimuth);
+    float2 coord = float2(unit_to_texture(uv.x, SKYVIEW_WIDTH),
+                          unit_to_texture(uv.y, SKYVIEW_HEIGHT));
+    float3 light = skyview_lut.SampleLevel(lut_sampler, coord, 0.0).rgb;
+    return float4(light * frame.view.z, 1.0);
+}
+
+// Небо маршем — коли камера **поза** повітрям.
+//
+// Таблиця тут не працює, і не через точність: її вісь зеніту ділить напрямки
+// горизонтом спостерігача, а поза атмосферою горизонту в цьому сенсі немає —
+// повітря займає невеликий диск у кадрі, а не півсферу. Тому промінь спершу
+// входить у шар, а вже потім марширує; поза диском атмосфери він не малює
+// нічого.
+[shader("fragment")]
+float4 fragment_sky_outside(SkyVertex input) : SV_Target
+{
+    float bottom = air.shape.z;
+    float top = air.shape.w;
+    float3 pos = frame.eye.xyz;
+    float3 dir = pixel_ray(input.ndc);
+    float3 sun = frame.sun.xyz;
+
+    float r = length(pos);
+    float mu = dot(pos, dir) / max(r, 1.0);
+    float rho2 = max(0.0, r * r - bottom * bottom);
+    float shell2 = (top - bottom) * (top + bottom);
+
+    // Чи промінь узагалі зустріне шар повітря. Дискримінант тут — до ВЕРХНЬОЇ
+    // сфери, і вона далеко від дотику, тож скорочення немає.
+    float discriminant = r * r * mu * mu + (shell2 - rho2);
+    if (discriminant < 0.0 || mu > 0.0) { discard; }
+    float root = sqrt(discriminant);
+    float entry = -r * mu - root;
+    if (entry < 0.0) { discard; }
+
+    // Далі — від входу: до поверхні або наскрізь.
+    float3 start = pos + entry * dir;
+    float start_r = length(start);
+    float start_mu = dot(start, dir) / max(start_r, 1.0);
+    // На вході радіус дорівнює верхній межі точно за побудовою, тож `rho²`
+    // там — це `shell2`, і рахувати його відніманням не треба.
+    float span = distance_to_top(start_r, start_mu, shell2, shell2);
+    float ground = distance_to_ground(start_r, start_mu, shell2);
+    if (ground >= 0.0) { span = min(span, ground); }
+
+    float3 light = raymarch(start, dir, sun, shell2, span, SKY_OUTSIDE_STEPS);
+    return float4(light * frame.view.z, 1.0);
 }
