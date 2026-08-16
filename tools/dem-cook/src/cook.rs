@@ -13,8 +13,8 @@
 //!
 //! ## Два джерела, один обхід
 //!
-//! Функція [`direction`] спільна навмисно: **вузол кольору мусить лежати рівно
-//! там, де вузол висоти**. Інакше колір і рельєф зсунулись би один відносно
+//! Обхід спільний навмисно (`tiles::node_direction`): **вузол кольору мусить
+//! лежати рівно там, де вузол висоти**. Інакше колір і рельєф зсунулись би один відносно
 //! одного на пів вузла, і виглядало б це як помилка джерела, а не як два різні
 //! обходи. Глибина пірамід при цьому різна (5 проти 6) — і саме тому вона
 //! параметр, а не константа обходу.
@@ -33,8 +33,8 @@ use crate::albedo::Albedo;
 use crate::bmng::{self, Mosaic};
 use crate::etopo::{self, Relief};
 use crate::Grid;
-use engine::cubesphere::{Edge, Patch, FACES, SIDE};
-use engine::tiles::{self, Colour, Terrain, HALO, STORED};
+use engine::cubesphere::{Patch, FACES, SIDE};
+use engine::tiles::{self, node_direction, Colour, Terrain, HALO, STORED};
 use std::path::Path;
 
 /// Чому дорівнює відлік 255 у колірному тайлі — відбивна здатність.
@@ -108,7 +108,7 @@ pub fn height_grids(grid: &Grid, levels: u32) -> Vec<Vec<i16>> {
                             // Одинична сфера: висота залежить від напрямку, а
                             // не від радіуса, і напрямок тут бітово той самий,
                             // що в сусіднього патча на спільному ребрі.
-                            let metres = match direction(&patch, a, b) {
+                            let metres = match node_direction(&patch, a, b) {
                                 Some(unit) => grid.sample_direction_m(unit),
                                 // Кут ореолу: сусіда через ребро там немає, і
                                 // ніхто його не читає (`engine::tiles`).
@@ -128,7 +128,7 @@ pub fn height_grids(grid: &Grid, levels: u32) -> Vec<Vec<i16>> {
 /// Скукувати тайлсет висот Землі з ETOPO.
 ///
 /// Окремо від [`cook`], а не прапорцем усередині: спільним у них лишається
-/// обхід ([`direction`]) і формат, а джерела різні в усьому — одиниці,
+/// обхід (`tiles::node_direction`) і формат, а джерела різні в усьому — одиниці,
 /// опорний радіус, ланцюг, реєстрація довготи.
 pub fn cook_earth(source: &Path, out: &Path, levels: u32) -> Result<String, String> {
     let relief = Relief::read(source)?;
@@ -168,7 +168,7 @@ pub fn build_earth(relief: &Relief, levels: u32) -> Terrain {
                     for a in 0..STORED as isize {
                         for b in 0..STORED as isize {
                             let (a, b) = (a - HALO as isize, b - HALO as isize);
-                            let metres = match direction(&patch, a, b) {
+                            let metres = match node_direction(&patch, a, b) {
                                 Some(unit) => source.sample_direction_m(unit),
                                 // Кут ореолу: сусіда через ребро там немає, і
                                 // ніхто його не читає (`engine::tiles`).
@@ -235,7 +235,7 @@ pub fn build_colour(map: &Albedo, levels: u32) -> (Colour, usize) {
                     for a in 0..STORED as isize {
                         for b in 0..STORED as isize {
                             let (a, b) = (a - HALO as isize, b - HALO as isize);
-                            let value = match direction(&patch, a, b) {
+                            let value = match node_direction(&patch, a, b) {
                                 Some(unit) => source.sample_direction(unit),
                                 // Кут ореолу: сусіда через ребро там немає, і
                                 // ніхто його не читає (`engine::tiles`).
@@ -321,7 +321,7 @@ pub fn build_earth_colour(map: &Mosaic, levels: u32) -> Colour {
                     for a in 0..STORED as isize {
                         for b in 0..STORED as isize {
                             let (a, b) = (a - HALO as isize, b - HALO as isize);
-                            let linear = match direction(&patch, a, b) {
+                            let linear = match node_direction(&patch, a, b) {
                                 Some(unit) => source.sample_direction(unit),
                                 // Кут ореолу: сусіда через ребро там немає, і
                                 // ніхто його не читає (`engine::tiles`).
@@ -378,38 +378,6 @@ pub fn source_for(pixel_rad: &[f64], level: u32) -> usize {
 fn quantise_colour(value: f64) -> u8 {
     let units = (value / f64::from(SCALE) * 255.0).round();
     units.clamp(0.0, 255.0) as u8
-}
-
-/// Напрямок вузла тайла, включно з ореолом (R7b).
-///
-/// Усередині сітки (`0..=SIDE`) це просто вершина патча. Поза нею — вершина
-/// **сусіда**, знайдена через [`Patch::halo_node`], а не продовження власної
-/// параметризації: за ребром куба міняється грань, а з нею й варп.
-///
-/// `None` — кут ореолу, де сусіда через ребро немає взагалі.
-fn direction(patch: &Patch, a: isize, b: isize) -> Option<[f64; 3]> {
-    let inside = |v: isize| (0..=SIDE as isize).contains(&v);
-    let edge_of = |v: isize| {
-        if v < 0 {
-            Some(true)
-        } else if v > SIDE as isize {
-            Some(false)
-        } else {
-            None
-        }
-    };
-
-    let (edge, along) = match (edge_of(a), edge_of(b)) {
-        (None, None) => return Some(patch.vertex(a as usize, b as usize, 1.0)),
-        (Some(low), None) => (if low { Edge::AMin } else { Edge::AMax }, b as usize),
-        (None, Some(low)) => (if low { Edge::BMin } else { Edge::BMax }, a as usize),
-        // Обидві координати за краєм — це кут, а не ребро.
-        (Some(_), Some(_)) => return None,
-    };
-    debug_assert!(inside(if edge_of(a).is_some() { b } else { a }));
-
-    let (there, na, nb) = patch.halo_node(edge, along);
-    Some(there.vertex(na, nb, 1.0))
 }
 
 /// Метри → одиниці зберігання, з насиченням замість загортання.

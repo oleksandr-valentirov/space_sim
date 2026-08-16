@@ -83,7 +83,7 @@
 //! міняти видиму якість на кілобайти. Стиснення кольору (BC7/BC6H) — інша
 //! задача й інший крок.
 
-use crate::cubesphere::{Patch, FACES, SIDE};
+use crate::cubesphere::{Edge, Patch, FACES, SIDE};
 
 /// Підпис файлу. Вісім байтів, щоб заголовок читався оком у hex-дампі.
 pub const MAGIC: [u8; 8] = *b"SSDEM\0\0\0";
@@ -195,6 +195,40 @@ pub fn node_step_m(reference_m: f64, level: u32) -> f64 {
     std::f64::consts::FRAC_PI_2 * reference_m / nodes
 }
 
+/// Напрямок вузла тайла на одиничній сфері, включно з ореолом (R7b).
+///
+/// Усередині сітки (`0..=SIDE`) це просто вершина патча. Поза нею — вершина
+/// **сусіда**, знайдена через [`Patch::halo_node`], а не продовження власної
+/// параметризації: за ребром куба міняється грань, а з нею й варп.
+///
+/// `None` — кут ореолу, де сусіда через ребро немає взагалі.
+///
+/// Живе тут, а не в кукері, і це переїзд етапу W: з версії 4 ореол — це
+/// **вхідний контракт** [`Terrain::build`], бо саме він рахує з нього нахил.
+/// Кукер лишається викликачем нарівні з фікстурами тестів.
+pub fn node_direction(patch: &Patch, a: isize, b: isize) -> Option<[f64; 3]> {
+    let edge_of = |v: isize| {
+        if v < 0 {
+            Some(true)
+        } else if v > SIDE as isize {
+            Some(false)
+        } else {
+            None
+        }
+    };
+
+    let (edge, along) = match (edge_of(a), edge_of(b)) {
+        (None, None) => return Some(patch.vertex(a as usize, b as usize, 1.0)),
+        (Some(low), None) => (if low { Edge::AMin } else { Edge::AMax }, b as usize),
+        (None, Some(low)) => (if low { Edge::BMin } else { Edge::BMax }, a as usize),
+        // Обидві координати за краєм — це кут, а не ребро.
+        (Some(_), Some(_)) => return None,
+    };
+
+    let (there, na, nb) = patch.halo_node(edge, along);
+    Some(there.vertex(na, nb, 1.0))
+}
+
 /// Нахил → одиниці зберігання, з насиченням замість загортання.
 ///
 /// Та сама політика, що у висот у кукері: загорнутий нахил перетворив би стіну
@@ -202,6 +236,137 @@ pub fn node_step_m(reference_m: f64, level: u32) -> f64 {
 /// невід'ємний за побудовою (це довжина градієнта).
 fn quantise_slope(slope: f64) -> i16 {
     (slope / SLOPE_UNIT).round().clamp(0.0, f64::from(i16::MAX)) as i16
+}
+
+// ── Кут куба ─────────────────────────────────────────────────────────────
+//
+// Це і є відповідь на Q3, і саме заради неї нахил переїхав у ассет.
+//
+// **Чому центральна різниця на куті не працює взагалі.** Навколо кутового
+// вузла лежать **три** сусіди на відстані вузла — по одному на кожному з трьох
+// ребер куба, що там сходяться, — а стенсил кожної грані має чотири арми. Тобто
+// дві арми кожної грані падають в один і той самий вузол (виміряно зондом на
+// куті `(1,1,1)`, грані 0, 2, 4). Кожна грань рахує `√((hᵢ−hⱼ)² + (hᵢ−h_k)²)`
+// зі своїм півотом `i`, і три відповіді різні не через похибку, а через саму
+// формулу. Розбіжність між ними виміряна на Місяці: **39%**.
+//
+// Отже усереднити три числа теж не можна: усереднювати нема чого.
+//
+// **Що працює.** Три напрямки з кута в дотичній площині лежать рівно під 120°
+// — тривісна симетрія куба навколо діагоналі точна, а не наближена, — тож
+// найменші квадрати по трьох різницях мають замкнену форму:
+//
+//     g = (2 / 3L) · Σ (hᵢ − h₀) · d̂ᵢ
+//
+// Висота самого кута тут скорочується (Σ d̂ᵢ = 0), рівно як у звичайної
+// центральної різниці, а для лінійного поля результат **точний**. Береться
+// різниця з `h₀`, а не сама `hᵢ`: на сталому полі це дає точний нуль замість
+// суми трьох майже-протилежних векторів.
+//
+// **Довжина арми — номінальна** (`node_step_m`), а не справжня. Варп кубосфери
+// робить вузли нерівними до 1.4×, і теперішня формула цим нехтує свідомо
+// скрізь; узяти на куті справжню довжину означало б зробити кут точнішим за
+// середину грані, тобто ввести нову неоднорідність замість знятої.
+
+/// Записати в усі три грані кута куба одне число — те, що вони не можуть
+/// порахувати нарізно.
+///
+/// Бітова однаковість тут **за побудовою**: це копія одного `i16`, а не збіг
+/// трьох обчислень.
+fn resolve_cube_corners(
+    levels: u32,
+    reference_m: f64,
+    scale_m: f32,
+    grids: &[Vec<i16>],
+    tiles: &mut [u8],
+) {
+    for level in 0..levels {
+        let side = 1u32 << level;
+
+        // Вісім груп по три вузли. Ключ групи — знаки координат самого кута:
+        // всі три компоненти там за модулем `1/√3`, тож знак їх і розрізняє.
+        let mut groups: [Vec<(Patch, usize, usize)>; 8] = Default::default();
+        for face in 0..FACES {
+            for (i, a) in [(0, 0), (side - 1, SIDE)] {
+                for (j, b) in [(0, 0), (side - 1, SIDE)] {
+                    let patch = Patch { face, level, i, j };
+                    let at = patch.vertex(a, b, 1.0);
+                    let key = usize::from(at[0] > 0.0)
+                        | usize::from(at[1] > 0.0) << 1
+                        | usize::from(at[2] > 0.0) << 2;
+                    groups[key].push((patch, a, b));
+                }
+            }
+        }
+
+        for group in &groups {
+            assert_eq!(
+                group.len(),
+                3,
+                "на куті куба мусять сходитись рівно три грані"
+            );
+            let (patch, a, b) = group[0];
+            let slope = corner_slope(&patch, a, b, grids, levels, reference_m, scale_m);
+            let units = quantise_slope(slope);
+            for (patch, a, b) in group {
+                let at = index(levels, patch).expect("кутовий патч у піраміді");
+                let cell = at * TILE_BYTES + 4 + (a * NODES + b) * 4 + 2;
+                tiles[cell..cell + 2].copy_from_slice(&units.to_le_bytes());
+            }
+        }
+    }
+}
+
+/// Нахил у кутовому вузлі — підгонка градієнта по трьох сусідах.
+///
+/// Усі три сусіди читаються з **одного** тайла: два лежать усередині його
+/// грані, третій — в ореолі. Що вихід за ребро по `a` й вихід за ребро по `b`
+/// дають на куті той самий вузол, — це і є та виродженість, через яку
+/// центральна різниця тут не працює.
+fn corner_slope(
+    patch: &Patch,
+    a: usize,
+    b: usize,
+    grids: &[Vec<i16>],
+    levels: u32,
+    reference_m: f64,
+    scale_m: f32,
+) -> f64 {
+    let grid = &grids[index(levels, patch).expect("кутовий патч у піраміді")];
+    let node = |a: isize, b: isize| {
+        f64::from(grid[(a + HALO as isize) as usize * STORED + (b + HALO as isize) as usize])
+    };
+    let (a, b) = (a as isize, b as isize);
+
+    // Крок усередину грані від кута: з вузла 0 — вперед, з вузла `SIDE` —
+    // назад. Протилежний крок виходить за ребро, тобто в ореол.
+    let inward = |v: isize| if v == 0 { 1 } else { -1 };
+    let (da, db) = (inward(a), inward(b));
+
+    let centre = patch.vertex(a as usize, b as usize, 1.0);
+    let dot = |u: [f64; 3], v: [f64; 3]| u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+
+    // Три сусіди: два всередині грані й один за ребром. Четвертого немає.
+    let mut gradient = [0.0f64; 3];
+    for (na, nb) in [(a + da, b), (a, b + db), (a - da, b)] {
+        let there = node_direction(patch, na, nb).expect("сусід кута — не кут ореолу");
+        // Дотична складова напрямку на сусіда, одинична.
+        let radial = dot(there, centre);
+        let mut unit = [0.0; 3];
+        for k in 0..3 {
+            unit[k] = there[k] - radial * centre[k];
+        }
+        let length = dot(unit, unit).sqrt();
+        let rise = node(na, nb) - node(a, b);
+        for k in 0..3 {
+            gradient[k] += rise * unit[k] / length;
+        }
+    }
+
+    // `2/3` — множник найменших квадратів для трьох напрямків під 120°:
+    // Σ d̂ᵢd̂ᵢᵀ = (3/2)·I у дотичній площині.
+    let step_m = node_step_m(reference_m, patch.level);
+    dot(gradient, gradient).sqrt() * 2.0 * f64::from(scale_m) / (3.0 * step_m)
 }
 
 /// Патч, чий тайл накриває цей патч: він сам або найближчий предок у піраміді.
@@ -498,6 +663,8 @@ impl Terrain {
                 }
             }
         }
+
+        resolve_cube_corners(levels, reference_m, scale_m, grids, &mut tiles);
 
         Terrain {
             levels,
@@ -947,11 +1114,23 @@ mod tests {
         let want = f64::from(quantise_slope(expected)) * SLOPE_UNIT;
 
         let mut checked = 0;
+        let mut skipped = 0;
         for level in [0, 1, 2, 3, 5] {
             let side = 1u32 << level;
             for (face, i, j) in [(0, 0, 0), (3, side / 2, side - 1), (5, side - 1, 0)] {
                 let patch = Patch { face, level, i, j };
                 for (a, b) in [(0, 0), (0, SIDE), (SIDE, 0), (SIDE, SIDE), (SIDE / 2, 7)] {
+                    // ⚠ Кутові вузли куба ця фікстура перевіряти не має права,
+                    // і це не послаблення, а межа самої фікстури: рампа лінійна
+                    // за параметрами **грані**, а на куті їх три різні — тобто
+                    // гладкого поля там немає взагалі й «правильної відповіді»
+                    // теж. Кут перевіряє `tilt`, лінійна в 3D.
+                    let span = SIDE << level;
+                    let (u, v) = (i as usize * SIDE + a, j as usize * SIDE + b);
+                    if (u == 0 || u == span) && (v == 0 || v == span) {
+                        skipped += 1;
+                        continue;
+                    }
                     let got = terrain.slope_at(&patch, a, b);
                     assert_eq!(
                         got.to_bits(),
@@ -966,8 +1145,182 @@ mod tests {
 
         println!(
             "  нахил рампи {expected:.6e} → {want:.6e} після квантування; \
-             {checked} вузлів, усі бітово однакові"
+             {checked} вузлів бітово однакові, {skipped} кутів куба пропущено"
         );
+        assert!(
+            skipped > 0,
+            "жодного кута не трапилось — фікстура здрібніла"
+        );
+    }
+
+    // ── Кут куба: фікстура, лінійна в 3D ──────────────────────────────────
+    //
+    // ⚠ **Рампа вище не годиться оракулом кута, і це не дрібниця.** Вона
+    // лінійна за параметрами **грані**, а на куті сходяться три грані з трьома
+    // різними параметризаціями — там рампа не є гладким полем узагалі, тож
+    // «правильної відповіді» в неї для кута немає.
+    //
+    // Тому друга фікстура: висота лінійна в **тривимірному просторі**,
+    // `h = A·(d·k)`. Таке поле однакове з будь-якої грані за побудовою, і його
+    // нахил на сфері відомий аналітично — `A·scale/R · sin θ`, де θ це кут між
+    // напрямком і `k`. Оракул є в кожній точці тіла, кут не виняток.
+
+    /// Вісь фікстури — навмисно не вздовж осі й не вздовж діагоналі куба.
+    ///
+    /// Симетричний напрямок дав би на куті випадково правильну відповідь — той
+    /// самий клас пастки, що камера над центром грані (D13, D14).
+    const TILT: [f64; 3] = [
+        0.267_261_241_912_424_4,
+        0.534_522_483_824_848_8,
+        0.801_783_725_737_273_2,
+    ];
+
+    /// Амплітуда фікстури в одиницях зберігання. Велика навмисно: нахил має
+    /// вийти на сотні квантів, інакше квантування з'їло б сам вимір.
+    const TILT_UNITS: f64 = 30_000.0;
+
+    /// Піраміда, у якої висота — лінійна функція напрямку.
+    fn tilt(levels: u32) -> Terrain {
+        let mut grids = Vec::with_capacity(Terrain::count(levels));
+        for level in 0..levels {
+            let side = 1u32 << level;
+            for face in 0..FACES {
+                for i in 0..side {
+                    for j in 0..side {
+                        let patch = Patch { face, level, i, j };
+                        let mut grid = Vec::with_capacity(STORED * STORED);
+                        for a in 0..STORED as isize {
+                            for b in 0..STORED as isize {
+                                let (a, b) = (a - HALO as isize, b - HALO as isize);
+                                // Кут ореолу нікому не потрібен — нуль, як у
+                                // кукера.
+                                let value = match node_direction(&patch, a, b) {
+                                    Some(d) => {
+                                        let dot = d[0] * TILT[0] + d[1] * TILT[1] + d[2] * TILT[2];
+                                        (TILT_UNITS * dot).round()
+                                    }
+                                    None => 0.0,
+                                };
+                                grid.push(value as i16);
+                            }
+                        }
+                        grids.push(grid);
+                    }
+                }
+            }
+        }
+        Terrain::build(levels, MOON_RADIUS_M, 1.0, NO_SEA, &grids)
+    }
+
+    /// Радіус тіла фікстури — Місяць, щоб числа були впізнавані.
+    const MOON_RADIUS_M: f64 = 1_737_400.0;
+
+    /// Аналітичний нахил фікстури в напрямку `d`.
+    fn tilt_slope(terrain: &Terrain, d: [f64; 3]) -> f64 {
+        let dot = d[0] * TILT[0] + d[1] * TILT[1] + d[2] * TILT[2];
+        let mut tangential = 0.0;
+        for k in 0..3 {
+            let component = TILT[k] - dot * d[k];
+            tangential += component * component;
+        }
+        TILT_UNITS * f64::from(terrain.scale_m) * tangential.sqrt() / terrain.reference_m
+    }
+
+    /// **Кут куба не гірший за середину грані** — і це вся відповідь на Q3.
+    ///
+    /// Порівнюються дві похибки проти однієї аналітики: у восьми кутових вузлах
+    /// і в сусідніх з ними звичайних вузлах, де формула нікого не питає про
+    /// третю грань. Якщо кут порахований підгонкою по трьох сусідах, обидві
+    /// похибки того самого порядку — це похибка дискретизації сфери, спільна
+    /// для всіх вузлів. Якщо ж кут лишити на центральній різниці однієї грані,
+    /// його похибка стрибає в рази, бо дві арми стенсила там падають в один
+    /// вузол.
+    #[test]
+    fn the_cube_corner_is_no_worse_than_the_middle_of_a_face() {
+        const LEVELS: u32 = 3;
+        let terrain = tilt(LEVELS);
+
+        let mut worst_corner: f64 = 0.0;
+        let mut worst_plain: f64 = 0.0;
+        let mut corners = 0;
+        for level in 0..LEVELS {
+            let side = 1u32 << level;
+            for face in 0..FACES {
+                for (i, a) in [(0, 0usize), (side - 1, SIDE)] {
+                    for (j, b) in [(0, 0usize), (side - 1, SIDE)] {
+                        let patch = Patch { face, level, i, j };
+                        let error = |a: usize, b: usize| {
+                            let want = tilt_slope(&terrain, patch.vertex(a, b, 1.0));
+                            (terrain.slope_at(&patch, a, b) - want).abs() / want
+                        };
+                        worst_corner = worst_corner.max(error(a, b));
+                        // Сусідній вузол по кожній осі: він на тому самому
+                        // ребрі куба, але кута стенсил уже не дістає.
+                        let step = |v: usize| if v == 0 { 2 } else { SIDE - 2 };
+                        worst_plain = worst_plain.max(error(step(a), b));
+                        worst_plain = worst_plain.max(error(a, step(b)));
+                        corners += 1;
+                    }
+                }
+            }
+        }
+
+        println!(
+            "  {corners} кутових вузлів: найгірша відносна похибка кута \
+             {:.2}%, звичайного вузла поруч {:.2}%",
+            worst_corner * 100.0,
+            worst_plain * 100.0
+        );
+        assert!(
+            worst_corner < 2.0 * worst_plain.max(1e-3),
+            "кут відхилився на {:.2}% проти {:.2}% у сусіда — підгонка по \
+             трьох сусідах не працює",
+            worst_corner * 100.0,
+            worst_plain * 100.0
+        );
+    }
+
+    /// **Кутовий вузол несе бітово одне число в усіх трьох гранях.**
+    ///
+    /// Це те, чого Q3 і вимагав, і воно тут не збіг обчислень, а копія: кут
+    /// рахується раз на групу з трьох, а тоді записується в усі три тайли.
+    /// Фікстура довільна — важлива не її форма, а те, що всі три грані
+    /// однакові.
+    #[test]
+    fn all_three_faces_agree_on_the_cube_corner() {
+        const LEVELS: u32 = 3;
+        let terrain = tilt(LEVELS);
+
+        // Групування те саме, що в `resolve_cube_corners`, але виведене
+        // незалежно — з напрямку вузла, а не з порядку обходу.
+        let mut checked = 0;
+        for level in 0..LEVELS {
+            let side = 1u32 << level;
+            let mut seen: std::collections::HashMap<usize, (i16, Patch)> = Default::default();
+            for face in 0..FACES {
+                for (i, a) in [(0, 0usize), (side - 1, SIDE)] {
+                    for (j, b) in [(0, 0usize), (side - 1, SIDE)] {
+                        let patch = Patch { face, level, i, j };
+                        let at = patch.vertex(a, b, 1.0);
+                        let key = usize::from(at[0] > 0.0)
+                            | usize::from(at[1] > 0.0) << 1
+                            | usize::from(at[2] > 0.0) << 2;
+                        let index = terrain.index(&patch).expect("кутовий патч у піраміді");
+                        let units = terrain.slope_node(index, a as i32, b as i32);
+                        if let Some((first, whose)) = seen.insert(key, (units, patch)) {
+                            assert_eq!(
+                                units, first,
+                                "кут {key} на рівні {level}: {patch:?} каже {units}, \
+                                 а {whose:?} — {first}"
+                            );
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        println!("  {checked} звірок між гранями на кутах — усі бітово однакові");
+        assert_eq!(checked, 2 * 8 * LEVELS as usize, "не всі кути перевірені");
     }
 
     /// Патч, глибший за піраміду, у вузлі предка дає **рівно** висоту предка.
