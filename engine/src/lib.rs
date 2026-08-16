@@ -34,6 +34,7 @@ pub use egui_wgpu;
 
 pub mod app;
 pub mod atmosphere;
+pub mod brdf;
 pub mod camera;
 pub mod camera_probe;
 pub mod chase;
