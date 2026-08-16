@@ -50,6 +50,7 @@ pub mod gpu;
 pub mod live;
 pub mod lod;
 pub mod material;
+pub mod mesh;
 pub mod moon_demo;
 pub mod orbit;
 pub mod perf_probe;
