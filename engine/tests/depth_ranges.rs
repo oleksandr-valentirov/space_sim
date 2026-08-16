@@ -36,6 +36,7 @@ fn earth() -> Body {
         radius_m: sphere::EARTH_RADIUS_M,
         orientation: [1.0, 0.0, 0.0, 0.0],
         tiles: TileSet::Smooth,
+        colour: frame::COLOUR,
         // Без повітря навмисно: фон лишається кольором очищення, тож будь-яка
         // дірка в кадрі видна як дірка. Небо накрило б її собою.
         air: None,

@@ -67,6 +67,7 @@ fn moon(direction: [f64; 3], altitude: f64, tiles: TileSet) -> Scene {
         radius_m: MOON_RADIUS_M,
         orientation: [1.0, 0.0, 0.0, 0.0],
         tiles,
+        colour: engine::frame::COLOUR,
         air: None,
     });
     scene

@@ -67,7 +67,13 @@ pub const FOV_Y: f64 = std::f64::consts::PI / 3.0;
 /// Публічний рівно тому, що на нього спирається перевірка: рельєф видно лише
 /// на освітленому боці, тож тест мусить знати, де той бік (R5c).
 pub const LIGHT_DIR: [f32; 3] = [0.4, 0.4, 0.82];
-const COLOUR: [f32; 4] = [0.2, 0.6, 0.9, 1.0];
+/// Колір тіла у фікстурах рушія — той самий, що був сталою кадру від F5 до T1.
+///
+/// Після T1 колір є полем [`scene::Body`], і кадр його більше не вигадує. Ця
+/// стала лишається рівно для зондів і тестів: вони мусять давати той самий
+/// кадр, що й до кроку, інакше `--shot` перестав би бути `30812bf2…` через
+/// зміну, яка нічого не означає.
+pub const COLOUR: [f32; 4] = [0.2, 0.6, 0.9, 1.0];
 
 /// Висота камери за замовчуванням, метри над поверхнею.
 ///
@@ -104,6 +110,7 @@ pub fn default_scene(camera: Camera) -> Scene {
         // лише додав би до кожного числа привід сумніватися.
         orientation: [1.0, 0.0, 0.0, 0.0],
         tiles: TileSet::Smooth,
+        colour: COLOUR,
         air: None,
     });
     scene
@@ -1870,7 +1877,7 @@ impl Planet {
                     projection: depth::multiply(plan.projection, view_rotation),
                     model,
                     light_dir: sun,
-                    colour: COLOUR,
+                    colour: body.colour,
                     terrain: [height_scale, 0.0, 0.0, 0.0],
                     // Процедурний детайл (R7c). Гладке тіло дістає нулі: без
                     // тайлів нахилу нема звідки взяти, а деталь без нахилу —
@@ -2532,6 +2539,7 @@ mod tests {
             radius_m: sphere::EARTH_RADIUS_M,
             orientation: [1.0, 0.0, 0.0, 0.0],
             tiles: TileSet::Smooth,
+            colour: COLOUR,
             air: None,
         });
         scene.bodies.push(Body {
@@ -2539,6 +2547,7 @@ mod tests {
             radius_m: moon_radius,
             orientation: [1.0, 0.0, 0.0, 0.0],
             tiles: TileSet::Smooth,
+            colour: COLOUR,
             air: None,
         });
 
@@ -2579,6 +2588,7 @@ mod tests {
             radius_m: radius,
             orientation: [1.0, 0.0, 0.0, 0.0],
             tiles: scene::TileSet::Smooth,
+            colour: COLOUR,
             air: None,
         });
 
@@ -2731,6 +2741,7 @@ mod tests {
                     radius_m: radius,
                     orientation: [1.0, 0.0, 0.0, 0.0],
                     tiles: TileSet::Smooth,
+                    colour: COLOUR,
                     air: None,
                 });
                 scene.ships.push(scene::Ship {

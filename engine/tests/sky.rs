@@ -59,6 +59,7 @@ fn earth(air: bool) -> Body {
         radius_m: EARTH,
         orientation: [1.0, 0.0, 0.0, 0.0],
         tiles: TileSet::Smooth,
+        colour: engine::frame::COLOUR,
         air: air.then(|| Atmosphere::EARTH.with_surface(EARTH)),
     }
 }

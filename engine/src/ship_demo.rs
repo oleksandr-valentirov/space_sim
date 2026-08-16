@@ -90,6 +90,7 @@ pub fn scene_at(k: u32, frames: u32) -> Scene {
         radius_m: sphere::EARTH_RADIUS_M,
         orientation: [1.0, 0.0, 0.0, 0.0],
         tiles: TileSet::Smooth,
+        colour: crate::frame::COLOUR,
         air: Some(Atmosphere::EARTH),
     });
     scene.ships.push(ship);

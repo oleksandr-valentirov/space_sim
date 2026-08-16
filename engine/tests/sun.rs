@@ -42,6 +42,7 @@ fn scene_lit_from(sun: [f64; 3]) -> Scene {
         radius_m: sphere::EARTH_RADIUS_M,
         orientation: [1.0, 0.0, 0.0, 0.0],
         tiles: TileSet::Smooth,
+        colour: frame::COLOUR,
         air: None,
     });
     scene.ships.push(Ship {
