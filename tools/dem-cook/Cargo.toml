@@ -28,5 +28,10 @@ engine = { path = "../../engine" }
 # продукту не треба; лишається сам Deflate.
 tiff = { version = "0.11", default-features = false, features = ["deflate"] }
 
+# Мозаїка BMNG. Тягне за собою `rayon` — інваріант 4 його дозволяє саме тут
+# («тільки для LOD, тайлів, кукера»), а детермінізму виходу це не чіпає:
+# розпаковується картинка, а не рахується сума.
+jpeg-decoder = "0.3"
+
 [lints]
 workspace = true

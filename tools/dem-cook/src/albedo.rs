@@ -214,35 +214,33 @@ impl Albedo {
         std::f64::consts::PI / 180.0 / self.per_degree
     }
 
-    /// Та сама сітка, удвічі грубіша: кожен відлік — середнє чотирьох.
+    /// Та сама сітка, грубіша на крок ланцюга: кожен відлік — середнє блоку.
     ///
-    /// Повертає `None`, коли ділити далі нема чого (непарний бік або сітка вже
-    /// дрібна). Ділення саме на два й саме середнім: це не згладжування «на
-    /// око», а прибирання того, чого на грубішій сітці вже не можна
-    /// представити.
+    /// Повертає `None`, коли ділити далі нема чого. Скільки саме разів —
+    /// каже [`crate::reduce_step`]; саме середнім, а не вибіркою: це не
+    /// згладжування «на око», а прибирання того, чого на грубішій сітці вже
+    /// не можна представити.
     pub fn reduced(&self) -> Option<Albedo> {
-        if !self.samples.is_multiple_of(2) || !self.lines.is_multiple_of(2) || self.lines < 8 {
-            return None;
-        }
-        let (samples, lines) = (self.samples / 2, self.lines / 2);
+        let step = crate::reduce_step(self.samples, self.lines)?;
+        let (samples, lines) = (self.samples / step, self.lines / step);
         let mut raw = Vec::with_capacity(samples * lines);
         for line in 0..lines {
             for sample in 0..samples {
                 let mut sum = 0.0f64;
-                for dl in 0..2 {
-                    for ds in 0..2 {
-                        let l = 2 * line + dl;
-                        let s = 2 * sample + ds;
+                for dl in 0..step {
+                    for ds in 0..step {
+                        let l = step * line + dl;
+                        let s = step * sample + ds;
                         sum += f64::from(self.raw[l * self.samples + s]);
                     }
                 }
-                raw.push((sum / 4.0) as f32);
+                raw.push((sum / (step * step) as f64) as f32);
             }
         }
         Some(Albedo {
             samples,
             lines,
-            per_degree: self.per_degree / 2.0,
+            per_degree: self.per_degree / step as f64,
             raw,
         })
     }
