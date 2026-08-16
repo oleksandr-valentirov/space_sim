@@ -19,6 +19,7 @@ fn main() {
     let mut shot_path: Option<PathBuf> = None;
     let mut ship_demo: Option<PathBuf> = None;
     let mut moon_demo: Option<PathBuf> = None;
+    let mut flyby_demo: Option<PathBuf> = None;
     let mut demo_dir: Option<PathBuf> = None;
     let mut vsync_asked = false;
     let mut depth_probe = false;
@@ -40,6 +41,7 @@ fn main() {
             "--shot" => shot_path = Some(PathBuf::from(value("--shot"))),
             "--ship-demo" => ship_demo = Some(PathBuf::from(value("--ship-demo"))),
             "--moon-demo" => moon_demo = Some(PathBuf::from(value("--moon-demo"))),
+            "--flyby-demo" => flyby_demo = Some(PathBuf::from(value("--flyby-demo"))),
             "--demo" => demo_dir = Some(PathBuf::from(value("--demo"))),
             "--frames" => options.frames = Some(parse(&value("--frames"), "--frames")),
             "--vsync" => {
@@ -90,6 +92,8 @@ fn main() {
         Ok(())
     } else if tile_probe {
         engine::tile_probe::report()
+    } else if let Some(path) = flyby_demo {
+        run_flyby_demo(&path, options.width, options.height, options.frames)
     } else if let Some(path) = moon_demo {
         run_moon_demo(&path, options.width, options.height, options.frames)
     } else if let Some(path) = ship_demo {
@@ -180,6 +184,37 @@ fn run_ship_demo(
 
 /// Анімація підльоту до Місяця (етап T). Кількість кадрів бере `--frames`,
 /// типово [`engine::moon_demo::FRAMES`] — чотири секунди при 60 fps.
+/// Проліт повз Місяць по еліптичній орбіті (зонд етапу T).
+fn run_flyby_demo(
+    path: &std::path::Path,
+    width: u32,
+    height: u32,
+    frames: Option<u32>,
+) -> Result<(), String> {
+    let gpu = Gpu::new(wgpu::Instance::default(), None)?;
+    println!("адаптер: {}", gpu.describe());
+    let frames = frames.unwrap_or(engine::flyby_demo::FRAMES);
+
+    let started = std::time::Instant::now();
+    engine::flyby_demo::render(&gpu, width, height, frames, path)?;
+    let seconds = started.elapsed().as_secs_f64();
+
+    println!(
+        "анімація: {} ({}×{}, {} кадрів, {:.1} с відео)",
+        path.display(),
+        width,
+        height,
+        frames,
+        f64::from(frames) / f64::from(engine::flyby_demo::FPS)
+    );
+    println!(
+        "малювання: {:.1} с, {:.1} мс на кадр",
+        seconds,
+        1000.0 * seconds / f64::from(frames)
+    );
+    Ok(())
+}
+
 fn run_moon_demo(
     path: &std::path::Path,
     width: u32,

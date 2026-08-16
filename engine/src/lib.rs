@@ -45,6 +45,7 @@ pub mod depth;
 pub mod depth_probe;
 pub mod detail;
 pub mod flight_probe;
+pub mod flyby_demo;
 pub mod frame;
 pub mod gpu;
 pub mod live;

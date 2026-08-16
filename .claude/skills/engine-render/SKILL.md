@@ -50,6 +50,7 @@ orbit.rs        орбітальна камера: yaw/pitch/висота в dou
 chase.rs        камера третьої особи: yaw/pitch і відстань У ГАБАРИТАХ корабля; бере позицію, не орієнтацію (V4)
 ship.rs         процедурний меш корабля одиничної висоти; форма несиметрична навмисно (V1)
 ship_demo.rs    демо-анімація корабля на орбіті в APNG, 60 fps — перший викликач `chase` (V2, V4)
+flyby_demo.rs   проліт повз Місяць по еліпсу 200×6000 км: корпус з асета, колір поверхні й сяйво разом (зонд етапу T)
 app.rs          цикл подій ЗОНДІВ рушія (у гри свій); миша й колесо → orbit
 shot.rs         кадр → текстура → буфер → PNG; take_scene() — шлях гри, read_back() — спільний з depth_probe, sphere_render
 depth.rs        reversed-Z: формат, COMPARE, CLEAR, матриці, resolvable_gap()
@@ -302,6 +303,7 @@ cargo run -p engine -- --frames 60           # вікно, 60 кадрів і в
 cargo run -p engine -- --shot build/f.png    # знімок без вікна — основний спосіб перевірки в CI
 cargo run -p engine -- --depth-probe         # таблиця роздільності глибини, reversed-Z проти звичайної
 cargo run -p engine --example f4             # camera-relative розвідка (F4)
+cargo run --release -p engine -- --flyby-demo build/flyby.apng  # проліт повз Місяць, 200×6000 км (T)
 cargo run -p engine -- --flight-probe        # проліт 10 м → 10⁷ м над сферою (F5)
 cargo run -p engine -- --trajectory-probe    # halo-орбіта з фікстури, два фрейми (F6)
 cargo run --release -p engine -- --rotating-probe # точність і ціна перетворення фрейму (U6a1)
