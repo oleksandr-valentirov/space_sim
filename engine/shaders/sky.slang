@@ -98,11 +98,13 @@ Texture2D<float4> multiscatter_lut;
 struct ViewParams
 {
     // x — відстань камери від центра тіла, y — косинус зенітного кута Сонця
-    // в точці камери, z — експозиція (S4b), w — вирівнювання.
+    // в точці камери, z — експозиція (S4b), w — ДАЛЬНІЙ край об'єму аеральної
+    // перспективи, метри вздовж променя (S5).
     float4 view;
     // xyz — камера відносно ЦЕНТРА ТІЛА, світові осі. Віднімання зроблено на
     // CPU у `double`; тут лишається число порядку 6·10⁶, у якому `f32` дає
     // півметра — на висоту шкали у вісім кілометрів це шістдесят мільйонних.
+    // w — БЛИЖНІЙ край об'єму аеральної перспективи (S5).
     float4 eye;
     // xyz — напрямок ДО Сонця, світові осі.
     float4 sun;
@@ -132,6 +134,51 @@ WTexture2D<float4> multiscatter_out;
 [[vk::binding(2, 1)]]
 [format("rgba16f")]
 WTexture2D<float4> skyview_out;
+
+// Об'єм аеральної перспективи: 32×32×32 (S5).
+static const uint AERIAL_SIZE = 32u;
+// Скільки кроків марша припадає на один шар об'єму.
+static const uint AERIAL_SLICE_STEPS = 4u;
+
+// Дві текстури, а не одна: композиція — це `фон·T + L`, тобто **множення й
+// додавання по кожному каналу окремо**. Пропускання, зведене до одного числа,
+// зробило б захід сонця крізь повітря сірим замість червоного — рівно те, що
+// S4b щойно виміряв і що варто зберегти.
+[[vk::binding(3, 1)]]
+[format("rgba16f")]
+WTexture3D<float4> aerial_inscatter_out;
+
+[[vk::binding(4, 1)]]
+[format("rgba16f")]
+WTexture3D<float4> aerial_transmittance_out;
+
+[[vk::binding(6, 0)]]
+Texture3D<float4> aerial_inscatter_lut;
+
+[[vk::binding(7, 0)]]
+Texture3D<float4> aerial_transmittance_lut;
+
+// Глибина кадру як текстура — щоб знати, доки шейдити повітря.
+//
+// Прохід композиції власного буфера глибини не має взагалі (`depth_stencil:
+// None`), і саме тому цю текстуру можна читати: та сама текстура одночасно як
+// ціль і як ресурс була б гонкою.
+[[vk::binding(8, 0)]]
+Texture2D<float> depth_texture;
+
+// Те, що відрізняє один діапазон глибини від іншого (R4a).
+//
+// `z_ndc = −A + B/z` для обох проєкцій рушія: у нескінченної `A = 0`,
+// `B = near`, у скінченної `A = near/(far−near)`, `B = near·far/(far−near)`.
+// Звідси `z = B/(z_ndc + A)`, і нуль у `z_ndc` означає «у цьому діапазоні тут
+// нічого не намалювали».
+struct PassParams
+{
+    float4 depth;  // x = A, y = B, zw — вирівнювання
+};
+
+[[vk::binding(9, 0)]]
+ConstantBuffer<PassParams> range;
 
 // Таблиця неба на читання — для повноекранного проходу (S4b). Окремий слот від
 // того, у який її пишуть: одна текстура на запис і на читання в одній групі —
@@ -749,4 +796,153 @@ float4 fragment_sky_outside(SkyVertex input) : SV_Target
 
     float3 light = raymarch(start, dir, sun, shell2, span, SKY_OUTSIDE_STEPS);
     return float4(light * frame.view.z, 1.0);
+}
+
+// ---------------------------------------------------------------------------
+// Аеральна перспектива (S5)
+// ---------------------------------------------------------------------------
+
+// Відстань шару `s` від камери.
+//
+// **Квадратично, а не рівномірно.** Об'єм тягнеться на тисячі кілометрів — це
+// найдовший промінь, який узагалі лишається в повітрі, — а цікаве в ньому
+// відбувається біля камери. Рівномірні шари дали б перший на сімдесяти
+// кілометрах, тобто нічого ближчого за нього не існувало б.
+float aerial_distance(float slice)
+{
+    float w = slice / float(AERIAL_SIZE - 1u);
+    float near = frame.eye.w;
+    return near + (frame.view.w - near) * w * w;
+}
+
+// Об'єм: по променю на стовпець, шари вздовж нього.
+//
+// Один потік на `(x, y)` і цикл по шарах, а не потік на тексель: сусідні шари
+// лежать на одному промені, і рахувати кожен від камери наново означало б
+// зробити ту саму роботу тридцять два рази.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void aerial_main(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= AERIAL_SIZE || id.y >= AERIAL_SIZE) { return; }
+
+    float bottom = air.shape.z;
+    float top = air.shape.w;
+    float3 pos = frame.eye.xyz;
+    float3 sun = frame.sun.xyz;
+
+    float2 ndc = (float2(float(id.x) + 0.5, float(id.y) + 0.5) / float(AERIAL_SIZE)) * 2.0 - 1.0;
+    float3 dir = pixel_ray(ndc);
+
+    float r = length(pos);
+    float mu = dot(pos, dir) / max(r, 1.0);
+    float rho2 = max(0.0, r * r - bottom * bottom);
+    float shell2 = (top - bottom) * (top + bottom);
+
+    // Доки взагалі є повітря: до поверхні або до верхньої межі.
+    float limit = distance_to_top(r, mu, rho2, shell2);
+    float ground = distance_to_ground(r, mu, rho2);
+    if (ground >= 0.0) { limit = min(limit, ground); }
+
+    float cos_theta = dot(dir, sun);
+    float phase_r = rayleigh_phase(cos_theta);
+    float phase_m = mie_phase(cos_theta, air.mie.w);
+
+    float3 throughput = float3(1.0, 1.0, 1.0);
+    float3 light = float3(0.0, 0.0, 0.0);
+    float previous = 0.0;
+
+    for (uint slice = 0u; slice < AERIAL_SIZE; ++slice)
+    {
+        float target = min(aerial_distance(float(slice)), limit);
+        float step = max(0.0, target - previous) / float(AERIAL_SLICE_STEPS);
+
+        for (uint k = 0u; k < AERIAL_SLICE_STEPS; ++k)
+        {
+            float t = previous + (float(k) + 0.5) * step;
+            float3 point = pos + t * dir;
+            float rho2_here = max(0.0, rho2 + 2.0 * t * r * mu + t * t);
+            float radius = sqrt(max(0.0, rho2_here + bottom * bottom));
+            float h = rho2_here / (radius + bottom);
+            float mu_s_here = dot(point, sun) / max(radius, 1.0);
+
+            bool lit = distance_to_ground(radius, mu_s_here, rho2_here) < 0.0;
+            float3 to_sun = lit ? sample_transmittance(radius, mu_s_here)
+                                : float3(0.0, 0.0, 0.0);
+            float3 psi = sample_multiscatter(radius, mu_s_here);
+
+            float3 d = density(h);
+            float3 sigma_e = extinction(h);
+            float3 sigma_r = air.rayleigh.rgb * d.x;
+            float sigma_m = air.mie.x * d.y;
+
+            for (uint c = 0u; c < 3u; ++c)
+            {
+                if (sigma_e[c] <= 0.0 || step <= 0.0) { continue; }
+                float source = (sigma_r[c] * phase_r + sigma_m * phase_m) * to_sun[c]
+                             + (sigma_r[c] + sigma_m) * psi[c];
+                float step_transmittance = exp(-sigma_e[c] * step);
+                light[c] += throughput[c] * source * (1.0 - step_transmittance) / sigma_e[c];
+                throughput[c] *= step_transmittance;
+            }
+        }
+        previous = target;
+
+        uint3 texel = uint3(id.x, id.y, slice);
+        aerial_inscatter_out.Store(texel, float4(light * frame.view.z, 1.0));
+        aerial_transmittance_out.Store(texel, float4(throughput, 1.0));
+    }
+}
+
+// Відстань до того, що намальовано в цьому пікселі, метри вздовж променя.
+//
+// Повертає −1, якщо в цьому діапазоні глибини не намальовано нічого: буфер
+// очищений нулем, а нуль у reversed-Z означає нескінченність.
+float geometry_distance(int2 pixel, float3 dir)
+{
+    float z_ndc = depth_texture.Load(int3(pixel, 0)).x;
+    if (z_ndc <= 0.0) { return -1.0; }
+    // `z` тут — уздовж осі погляду; промінь пікселя нахилений, тож ділиться на
+    // косинус між ними. Ділити на нуль нема на чому: поле огляду менше за 180°.
+    float along_axis = range.depth.y / (z_ndc + range.depth.x);
+    return along_axis / max(dot(dir, frame.forward.xyz), 1.0e-3);
+}
+
+// Координата в об'ємі за пікселем і відстанню.
+float3 aerial_coord(float2 ndc, float distance)
+{
+    float near = frame.eye.w;
+    float w = sqrt(clamp((distance - near) / max(frame.view.w - near, 1.0), 0.0, 1.0));
+    return float3(ndc.x * 0.5 + 0.5,
+                  ndc.y * 0.5 + 0.5,
+                  unit_to_texture(w, AERIAL_SIZE));
+}
+
+// Перший із двох викликів композиції: помножити кадр на пропускання.
+//
+// Два виклики, а не один, і не через лінощі: `фон·T + L` за один прохід вимагає
+// dual-source blending, тобто ще однієї фічі пристрою й `@blend_src` у WGSL,
+// якого компілятор не друкує. Два повноекранні трикутники коштують менше, ніж
+// залежність від того й того.
+[shader("fragment")]
+float4 fragment_aerial_multiply(SkyVertex input) : SV_Target
+{
+    float3 dir = pixel_ray(input.ndc);
+    float distance = geometry_distance(int2(input.position.xy), dir);
+    if (distance < 0.0) { discard; }
+    float3 t = aerial_transmittance_lut.SampleLevel(lut_sampler,
+                                                    aerial_coord(input.ndc, distance), 0.0).rgb;
+    return float4(t, 1.0);
+}
+
+// Другий: додати те, що розсіялося по дорозі.
+[shader("fragment")]
+float4 fragment_aerial_add(SkyVertex input) : SV_Target
+{
+    float3 dir = pixel_ray(input.ndc);
+    float distance = geometry_distance(int2(input.position.xy), dir);
+    if (distance < 0.0) { discard; }
+    float3 l = aerial_inscatter_lut.SampleLevel(lut_sampler,
+                                                aerial_coord(input.ndc, distance), 0.0).rgb;
+    return float4(l, 1.0);
 }

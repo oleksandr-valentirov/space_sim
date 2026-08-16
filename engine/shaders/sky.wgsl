@@ -32,6 +32,22 @@ struct ViewParams_std140_0
 
 @binding(5) @group(0) var skyview_lut_0 : texture_2d<f32>;
 
+@binding(3) @group(1) var aerial_inscatter_out_0 : texture_storage_3d<rgba16float, write>;
+
+@binding(4) @group(1) var aerial_transmittance_out_0 : texture_storage_3d<rgba16float, write>;
+
+@binding(8) @group(0) var depth_texture_0 : texture_2d<f32>;
+
+struct PassParams_std140_0
+{
+    @align(16) depth_0 : vec4<f32>,
+};
+
+@binding(9) @group(0) var<uniform> range_0 : PassParams_std140_0;
+@binding(7) @group(0) var aerial_transmittance_lut_0 : texture_3d<f32>;
+
+@binding(6) @group(0) var aerial_inscatter_lut_0 : texture_3d<f32>;
+
 fn uv_to_r_mu_0( uv_0 : vec2<f32>,  r_0 : ptr<function, f32>,  mu_0 : ptr<function, f32>,  d_0 : ptr<function, f32>)
 {
     var bottom_0 : f32 = air_0.shape_0.z;
@@ -619,5 +635,201 @@ fn fragment_sky_outside( _S55 : pixelInput_1, @builtin(position) position_2 : ve
     }
     var _S58 : pixelOutput_1 = pixelOutput_1( vec4<f32>(raymarch_0(start_0, dir_2, sun_3, shell2_1, span_8, u32(16)) * vec3<f32>(frame_0.view_0.z), 1.0f) );
     return _S58;
+}
+
+fn aerial_distance_0( slice_0 : f32) -> f32
+{
+    var w_2 : f32 = slice_0 / 31.0f;
+    var near_0 : f32 = frame_0.eye_0.w;
+    return near_0 + (frame_0.view_0.w - near_0) * w_2 * w_2;
+}
+
+@compute
+@workgroup_size(8, 8, 1)
+fn aerial_main(@builtin(global_invocation_id) id_4 : vec3<u32>)
+{
+    var _S59 : u32 = id_4.x;
+    var _S60 : bool;
+    if(_S59 >= u32(32))
+    {
+        _S60 = true;
+    }
+    else
+    {
+        _S60 = (id_4.y) >= u32(32);
+    }
+    if(_S60)
+    {
+        return;
+    }
+    var bottom_9 : f32 = air_0.shape_0.z;
+    var top_5 : f32 = air_0.shape_0.w;
+    var pos_2 : vec3<f32> = frame_0.eye_0.xyz;
+    var sun_4 : vec3<f32> = frame_0.sun_0.xyz;
+    var _S61 : u32 = id_4.y;
+    var dir_3 : vec3<f32> = pixel_ray_0(vec2<f32>(f32(_S59) + 0.5f, f32(_S61) + 0.5f) / vec2<f32>(32.0f) * vec2<f32>(2.0f) - vec2<f32>(1.0f));
+    var r_15 : f32 = length(pos_2);
+    var mu_9 : f32 = dot(pos_2, dir_3) / max(r_15, 1.0f);
+    var _S62 : f32 = bottom_9 * bottom_9;
+    var _S63 : f32 = max(0.0f, r_15 * r_15 - _S62);
+    var limit_0 : f32 = distance_to_top_0(r_15, mu_9, _S63, (top_5 - bottom_9) * (top_5 + bottom_9));
+    var ground_3 : f32 = distance_to_ground_0(r_15, mu_9, _S63);
+    var limit_1 : f32;
+    if(ground_3 >= 0.0f)
+    {
+        limit_1 = min(limit_0, ground_3);
+    }
+    else
+    {
+        limit_1 = limit_0;
+    }
+    var cos_theta_3 : f32 = dot(dir_3, sun_4);
+    var _S64 : f32 = rayleigh_phase_0(cos_theta_3);
+    var _S65 : f32 = mie_phase_0(cos_theta_3, air_0.mie_0.w);
+    var throughput_2 : vec3<f32> = vec3<f32>(1.0f, 1.0f, 1.0f);
+    const _S66 : vec3<f32> = vec3<f32>(0.0f, 0.0f, 0.0f);
+    var light_1 : vec3<f32> = _S66;
+    var previous_0 : f32 = 0.0f;
+    var slice_1 : u32 = u32(0);
+    for(;;)
+    {
+        if(slice_1 < u32(32))
+        {
+        }
+        else
+        {
+            break;
+        }
+        var _S67 : f32 = min(aerial_distance_0(f32(slice_1)), limit_1);
+        var _S68 : f32 = max(0.0f, _S67 - previous_0) / 4.0f;
+        var k_3 : u32 = u32(0);
+        for(;;)
+        {
+            if(k_3 < u32(4))
+            {
+            }
+            else
+            {
+                break;
+            }
+            var t_2 : f32 = previous_0 + (f32(k_3) + 0.5f) * _S68;
+            var _S69 : f32 = max(0.0f, _S63 + 2.0f * t_2 * r_15 * mu_9 + t_2 * t_2);
+            var radius_2 : f32 = sqrt(max(0.0f, _S69 + _S62));
+            var h_7 : f32 = _S69 / (radius_2 + bottom_9);
+            var mu_s_here_2 : f32 = dot(pos_2 + vec3<f32>(t_2) * dir_3, sun_4) / max(radius_2, 1.0f);
+            var _S70 : vec3<f32>;
+            if((distance_to_ground_0(radius_2, mu_s_here_2, _S69)) < 0.0f)
+            {
+                _S70 = sample_transmittance_0(radius_2, mu_s_here_2);
+            }
+            else
+            {
+                _S70 = _S66;
+            }
+            var _S71 : vec3<f32> = sample_multiscatter_0(radius_2, mu_s_here_2);
+            var d_6 : vec3<f32> = density_0(h_7);
+            var _S72 : vec3<f32> = extinction_0(h_7);
+            var _S73 : vec3<f32> = air_0.rayleigh_0.xyz * vec3<f32>(d_6.x);
+            var _S74 : f32 = air_0.mie_0.x * d_6.y;
+            var c_4 : u32 = u32(0);
+            for(;;)
+            {
+                if(c_4 < u32(3))
+                {
+                }
+                else
+                {
+                    break;
+                }
+                var _S75 : u32 = c_4;
+                if((_S72[c_4]) <= 0.0f)
+                {
+                    _S60 = true;
+                }
+                else
+                {
+                    _S60 = _S68 <= 0.0f;
+                }
+                if(_S60)
+                {
+                    c_4 = c_4 + u32(1);
+                    continue;
+                }
+                var step_transmittance_2 : f32 = exp(- _S72[_S75] * _S68);
+                light_1[c_4] = light_1[c_4] + throughput_2[c_4] * ((_S73[c_4] * _S64 + _S74 * _S65) * _S70[c_4] + (_S73[c_4] + _S74) * _S71[c_4]) * (1.0f - step_transmittance_2) / _S72[_S75];
+                throughput_2[c_4] = throughput_2[c_4] * step_transmittance_2;
+                c_4 = c_4 + u32(1);
+            }
+            k_3 = k_3 + u32(1);
+        }
+        var texel_0 : vec3<u32> = vec3<u32>(_S59, _S61, slice_1);
+        textureStore((aerial_inscatter_out_0), (texel_0), (vec4<f32>(light_1 * vec3<f32>(frame_0.view_0.z), 1.0f)));
+        textureStore((aerial_transmittance_out_0), (texel_0), (vec4<f32>(throughput_2, 1.0f)));
+        var slice_2 : u32 = slice_1 + u32(1);
+        previous_0 = _S67;
+        slice_1 = slice_2;
+    }
+    return;
+}
+
+fn geometry_distance_0( pixel_0 : vec2<i32>,  dir_4 : vec3<f32>) -> f32
+{
+    var _S76 : vec3<i32> = vec3<i32>(pixel_0, i32(0));
+    var _S77 : f32 = (textureLoad((depth_texture_0), ((_S76)).xy, ((_S76)).z).x);
+    if(_S77 <= 0.0f)
+    {
+        return -1.0f;
+    }
+    return range_0.depth_0.y / (_S77 + range_0.depth_0.x) / max(dot(dir_4, frame_0.forward_0.xyz), 0.00100000004749745f);
+}
+
+fn aerial_coord_0( ndc_5 : vec2<f32>,  distance_0 : f32) -> vec3<f32>
+{
+    var near_1 : f32 = frame_0.eye_0.w;
+    return vec3<f32>(ndc_5.x * 0.5f + 0.5f, ndc_5.y * 0.5f + 0.5f, unit_to_texture_0(sqrt(clamp((distance_0 - near_1) / max(frame_0.view_0.w - near_1, 1.0f), 0.0f, 1.0f)), u32(32)));
+}
+
+struct pixelOutput_2
+{
+    @location(0) output_3 : vec4<f32>,
+};
+
+struct pixelInput_2
+{
+    @location(0) ndc_6 : vec2<f32>,
+};
+
+@fragment
+fn fragment_aerial_multiply( _S78 : pixelInput_2, @builtin(position) position_3 : vec4<f32>) -> pixelOutput_2
+{
+    var distance_1 : f32 = geometry_distance_0(vec2<i32>(position_3.xy), pixel_ray_0(_S78.ndc_6));
+    if(distance_1 < 0.0f)
+    {
+        discard;
+    }
+    var _S79 : pixelOutput_2 = pixelOutput_2( vec4<f32>((textureSampleLevel((aerial_transmittance_lut_0), (lut_sampler_0), (aerial_coord_0(_S78.ndc_6, distance_1)), (0.0f))).xyz, 1.0f) );
+    return _S79;
+}
+
+struct pixelOutput_3
+{
+    @location(0) output_4 : vec4<f32>,
+};
+
+struct pixelInput_3
+{
+    @location(0) ndc_7 : vec2<f32>,
+};
+
+@fragment
+fn fragment_aerial_add( _S80 : pixelInput_3, @builtin(position) position_4 : vec4<f32>) -> pixelOutput_3
+{
+    var distance_2 : f32 = geometry_distance_0(vec2<i32>(position_4.xy), pixel_ray_0(_S80.ndc_7));
+    if(distance_2 < 0.0f)
+    {
+        discard;
+    }
+    var _S81 : pixelOutput_3 = pixelOutput_3( vec4<f32>((textureSampleLevel((aerial_inscatter_lut_0), (lut_sampler_0), (aerial_coord_0(_S80.ndc_7, distance_2)), (0.0f))).xyz, 1.0f) );
+    return _S81;
 }
 

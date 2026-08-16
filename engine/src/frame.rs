@@ -264,6 +264,11 @@ struct Pass {
     label: &'static str,
     projection: depth::Matrix,
     clear_colour: bool,
+    /// Коефіцієнти зворотного перетворення глибини: `z_ndc = −A + B/z`
+    /// (S5). Потрібні композиції аеральної перспективи, яка з глибини має
+    /// дістати метри.
+    depth_a: f64,
+    depth_b: f64,
 }
 
 /// Буфер глибини разом із розміром, під який його зроблено.
@@ -526,7 +531,10 @@ impl Frame {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: depth::FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            // `TEXTURE_BINDING` — заради композиції аеральної перспективи
+            // (S5): вона читає глибину, щоб знати, доки шейдити повітря, і
+            // робить це в окремому проході, де глибина вже не ціль.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
 
@@ -565,9 +573,20 @@ impl Frame {
         // атмосфери не запускає ні таблиць, ні проходу, і кадр лишається
         // бітово тим самим, що до етапу, — на цьому стоїть правило 4.
         let air = Frame::air_view(scene, aspect);
+        let mut aerial = false;
         if let Some((atmosphere, bottom, view)) = &air {
             self.sky.ensure(gpu, atmosphere, *bottom);
             self.sky.prepare_view(gpu, encoder, view);
+
+            // **Аеральна перспектива — не завжди** (S5). Об'єм коштує стільки
+            // ж, скільки б не було в сцені, тож пропускати його треба тоді,
+            // коли крізь повітря нема чого дивитися. Умова — товщина шару в
+            // пікселях кадру: тонший за піксель шар не змінить жодного.
+            let focal = lod::focal_px(FOV_Y, f64::from(height));
+            aerial = Frame::shell_px(atmosphere, *bottom, view, focal) >= 1.0;
+            if aerial {
+                self.sky.prepare_aerial(encoder);
+            }
         }
 
         // Планети: камера віднімається раз на патч, у `double`, а поворот
@@ -592,6 +611,14 @@ impl Frame {
         // між ним і читанням `indirect` розставляє wgpu сам: він бачить, що
         // той самий буфер щойно писали.
         self.planet.cull(encoder);
+
+        if aerial {
+            let depth = self.depth.as_ref().expect("ensure_depth щойно її створив");
+            self.sky.bind_depth(gpu, &depth.view, width, height);
+            for (index, plan) in self.passes.iter().enumerate() {
+                self.sky.set_range(gpu, index, plan.depth_a, plan.depth_b);
+            }
+        }
 
         let depth = self.depth.as_ref().expect("ensure_depth щойно її створив");
 
@@ -639,7 +666,50 @@ impl Frame {
 
             self.planet.draw(&mut pass, index);
             self.lines.draw(&mut pass, scene, index);
+            drop(pass);
+
+            // Композиція — **окремим проходом одразу після свого діапазону**, і
+            // окремим саме тому, що вона читає глибину: та сама текстура не
+            // буває одночасно ціллю й ресурсом. А після свого — бо кожен
+            // діапазон чистить глибину, тобто своя глибина є рівно тут.
+            // Пікселі, у яких цей діапазон нічого не намалював, композиція
+            // пропускає: нуль у reversed-Z означає «нескінченно далеко».
+            if aerial {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("aerial composite"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    multiview_mask: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                self.sky.composite(&mut pass, index);
+            }
         }
+    }
+
+    /// Скільки пікселів кадру займає товщина шару повітря — умова кроку S5.
+    ///
+    /// Число, а не «камера далеко»: питання не в тому, де камера, а в тому, чи
+    /// видно повітря. З 10⁹ м шар у сто кілометрів тонший за соту пікселя, і
+    /// об'єм 32×32×32 рахувався б заради нічого. Зблизька ж камера стоїть
+    /// усередині повітря, відстань до поверхні прямує до нуля, і число росте
+    /// само.
+    ///
+    /// Той самий вид критерію, що `lod::error_px`: екранна похибка, а не
+    /// відстань у метрах. Відстань у метрах довелося б підбирати на кожен
+    /// радіус тіла окремо.
+    fn shell_px(air: &scene::Atmosphere, bottom: f64, view: &sky::View, focal: f64) -> f64 {
+        let altitude = (view.radius() - bottom).max(1.0);
+        air.thickness_m(bottom) / altitude * focal
     }
 
     /// Тіло з повітрям, найближче до камери, і камера відносно нього.
@@ -763,17 +833,26 @@ impl Frame {
 
         for k in (0..count).rev() {
             let lo = near * ratio.powi(k as i32);
-            let projection = if k + 1 == count {
-                // Найдальший — нескінченний: за ним не лишається нічого, чого
-                // хтось інший намалює.
-                depth::reversed_infinite(FOV_Y, aspect, lo)
+            let last = k + 1 == count;
+            // Найдальший — нескінченний: за ним не лишається нічого, що
+            // намалює хтось інший.
+            let (projection, depth_a, depth_b) = if last {
+                (depth::reversed_infinite(FOV_Y, aspect, lo), 0.0, lo)
             } else {
-                depth::reversed_finite(FOV_Y, aspect, lo, near * ratio.powi(k as i32 + 1))
+                let hi = near * ratio.powi(k as i32 + 1);
+                let span = hi - lo;
+                (
+                    depth::reversed_finite(FOV_Y, aspect, lo, hi),
+                    lo / span,
+                    lo * hi / span,
+                )
             };
             self.passes.push(Pass {
                 label: PASS_LABELS[k],
                 projection,
-                clear_colour: k + 1 == count,
+                clear_colour: last,
+                depth_a,
+                depth_b,
             });
         }
     }
@@ -2057,5 +2136,44 @@ mod tests {
             (near - altitude / 10.0).abs() < 1.0,
             "near {near} м — це не десята частина висоти над Місяцем"
         );
+    }
+
+    /// Умова аеральної перспективи — товщина шару в пікселях (S5).
+    ///
+    /// Три точки, і кожна називає свій випадок. Зблизька число велике й об'єм
+    /// потрібен; на 10⁹ м воно менше за соту пікселя, тобто об'єм 32×32×32
+    /// рахувався б заради нічого. Між ними є висота, на якій воно рівно
+    /// одиниця, і вона виводиться з формули: `товщина · фокус`, тобто
+    /// 6.24·10⁷ м для стокілометрового шару в кадрі 1280×720.
+    ///
+    /// Виміряно, скільки це коштує: 0.49 мс проти 0.23 мс на 6·10⁷ і 6.5·10⁷ м
+    /// відповідно, тобто об'єм подвоює кадр там, де він ще потрібен, і не
+    /// коштує нічого там, де вже ні.
+    #[test]
+    fn the_aerial_volume_is_skipped_when_the_air_is_thinner_than_a_pixel() {
+        let air = scene::Atmosphere::EARTH.with_surface(sphere::EARTH_RADIUS_M);
+        let bottom = sphere::EARTH_RADIUS_M;
+        let focal = lod::focal_px(FOV_Y, 720.0);
+
+        let at = |altitude: f64| {
+            let view = sky::View {
+                eye: [bottom + altitude, 0.0, 0.0],
+                sun: [1.0, 0.0, 0.0],
+                right: [0.0, 1.0, 0.0],
+                up: [0.0, 0.0, 1.0],
+                forward: [-1.0, 0.0, 0.0],
+                tan_half: [1.0, 0.577],
+            };
+            Frame::shell_px(&air, bottom, &view, focal)
+        };
+
+        // Всередині повітря — на порядки більше за піксель.
+        assert!(at(1.0e4) > 1000.0, "{}", at(1.0e4));
+        // З 10⁹ м — соті пікселя: шейдити крізь повітря нема чого.
+        assert!(at(1.0e9) < 0.1, "{}", at(1.0e9));
+        // Межа рівно там, де каже формула.
+        let threshold = air.thickness_m(bottom) * focal;
+        assert!((at(threshold) - 1.0).abs() < 1.0e-9, "{}", at(threshold));
+        assert!(at(threshold * 1.01) < 1.0 && at(threshold * 0.99) > 1.0);
     }
 }

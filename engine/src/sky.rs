@@ -9,6 +9,7 @@
 //! | пропускання | лише параметри повітря | раз на набір параметрів |
 //! | багаторазове розсіювання | лише параметри повітря | раз на набір параметрів |
 //! | небо (sky-view) | позиція камери + напрямок на Сонце | раз на кадр |
+//! | аеральна перспектива | фрустум камери | раз на кадр, і не завжди |
 //!
 //! Решта рядків з'явиться разом зі своїми кроками; заводити їх наперед
 //! CLAUDE.md прямо забороняє.
@@ -48,6 +49,15 @@ const AIR_BYTES: u64 = 64;
 
 /// Скільки байтів займає `ViewParams` у шейдері: шість `float4`.
 const VIEW_BYTES: u64 = 96;
+
+/// Скільки байтів займає `PassParams`: один `float4`.
+const PASS_BYTES: u64 = 16;
+
+/// Крок між `PassParams` сусідніх діапазонів глибини в буфері.
+///
+/// 256 байтів — вирівнювання динамічного зсуву, якого вимагає wgpu на всіх
+/// трьох цілях. Те саме число й з тієї самої причини, що `frame::PASS_STRIDE`.
+const PASS_STRIDE: u64 = 256;
 
 /// Скільки разів яскравіше стає небо перед записом у кадр.
 ///
@@ -111,6 +121,16 @@ pub struct Sky {
     /// що з гладким тілом і тілом з рельєфом (R5c).
     inside_pipeline: wgpu::RenderPipeline,
     outside_pipeline: wgpu::RenderPipeline,
+    /// Аеральна перспектива (S5): об'єм у compute, композиція двома викликами.
+    aerial_pipeline: wgpu::ComputePipeline,
+    multiply_pipeline: wgpu::RenderPipeline,
+    add_pipeline: wgpu::RenderPipeline,
+    write_aerial: wgpu::BindGroup,
+    /// Група композиції. Перестворюється разом із буфером глибини — вона
+    /// тримає посилання на нього.
+    composite: Option<Composite>,
+    composite_layout: wgpu::BindGroupLayout,
+    pass_buffer: wgpu::Buffer,
     /// Група 0 для малювання: обидві сталі таблиці, таблиця неба й параметри
     /// кадру, і все це видиме фрагментній стадії.
     read_draw: wgpu::BindGroup,
@@ -128,11 +148,14 @@ pub struct Sky {
 
     air_buffer: wgpu::Buffer,
     view_buffer: wgpu::Buffer,
+    sampler: wgpu::Sampler,
 
     transmittance: wgpu::Texture,
     multiscatter: wgpu::Texture,
     skyview: wgpu::Texture,
     skyview_view: wgpu::TextureView,
+    aerial_inscatter_view: wgpu::TextureView,
+    aerial_transmittance_view: wgpu::TextureView,
 
     /// Параметри, під які таблиці вже пораховані: саме повітря і радіус
     /// поверхні тіла, якому воно належить.
@@ -141,6 +164,17 @@ pub struct Sky {
     /// Два тіла з однаковим повітрям і різними радіусами — різні атмосфери, і
     /// ключ мусить це бачити.
     current: Option<(Atmosphere, f64)>,
+}
+
+/// Група композиції разом із розміром буфера глибини, під який її зроблено.
+///
+/// Окремою структурою, бо вона єдина в [`Sky`] залежить від розміру цілі:
+/// глибина перестворюється при зміні розміру вікна, а bind-група тримає
+/// посилання на неї.
+struct Composite {
+    bind_group: wgpu::BindGroup,
+    width: u32,
+    height: u32,
 }
 
 /// Опис одного запису макета — щоб чотири майже однакові макети не займали
@@ -174,6 +208,52 @@ fn sampled_2d_for(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGro
 
 fn sampled_2d(binding: u32) -> wgpu::BindGroupLayoutEntry {
     sampled_2d_for(binding, wgpu::ShaderStages::COMPUTE)
+}
+
+/// Об'єм на запис.
+fn storage_3d(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::StorageTexture {
+            access: wgpu::StorageTextureAccess::WriteOnly,
+            format: LUT_FORMAT,
+            view_dimension: wgpu::TextureViewDimension::D3,
+        },
+        count: None,
+    }
+}
+
+/// Об'єм на читання, з тривимірною фільтрацією.
+fn sampled_3d(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D3,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
+
+/// Об'єм аеральної перспективи: 32×32×32.
+fn aerial_texture(gpu: &Gpu, label: &str) -> wgpu::Texture {
+    gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: atmosphere::AERIAL_SIZE,
+            height: atmosphere::AERIAL_SIZE,
+            depth_or_array_layers: atmosphere::AERIAL_SIZE,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D3,
+        format: LUT_FORMAT,
+        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    })
 }
 
 /// Текстура таблиці: пишеться compute, читається шейдерами, читається назад
@@ -304,6 +384,58 @@ impl Sky {
                     label: Some("sky write skyview"),
                     entries: &[storage_2d(2)],
                 });
+        let write_aerial_layout =
+            gpu.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("sky write aerial"),
+                    entries: &[storage_3d(3), storage_3d(4)],
+                });
+
+        // Композиція читає глибину як текстуру, обидва об'єми й параметри
+        // діапазону. Повітря їй не потрібне взагалі: вона нічого не рахує, лише
+        // вибирає з уже порахованого, і макет це показує — `air` тут немає.
+        let composite_layout =
+            gpu.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("sky composite"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            visibility: fragment,
+                            ..sampler_entry
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            visibility: fragment,
+                            ..view_entry
+                        },
+                        sampled_3d(6),
+                        sampled_3d(7),
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 8,
+                            visibility: fragment,
+                            ty: wgpu::BindingType::Texture {
+                                // Глибина читається `textureLoad`, без
+                                // фільтрації: проміжне значення між двома
+                                // поверхнями не належить жодній.
+                                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 9,
+                            visibility: fragment,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                // Зсув на діапазон глибини, а не буфер на
+                                // діапазон — те саме рішення, що в патчів (R4a).
+                                has_dynamic_offset: true,
+                                min_binding_size: std::num::NonZeroU64::new(PASS_BYTES),
+                            },
+                            count: None,
+                        },
+                    ],
+                });
 
         let compute = |label: &str,
                        read: &wgpu::BindGroupLayout,
@@ -343,6 +475,12 @@ impl Sky {
             &read_frame_layout,
             &write_skyview_layout,
             "skyview_main",
+        );
+        let aerial_pipeline = compute(
+            "aerial",
+            &read_frame_layout,
+            &write_aerial_layout,
+            "aerial_main",
         );
 
         // Прохід неба малює повноекранний трикутник без вершинних буферів і без
@@ -413,6 +551,74 @@ impl Sky {
         let inside_pipeline = draw("sky inside", "fragment_sky_inside");
         let outside_pipeline = draw("sky outside", "fragment_sky_outside");
 
+        // Композиція малює в кадр без буфера глибини взагалі: вона читає його
+        // як текстуру, а бути одночасно ціллю й ресурсом та сама текстура не
+        // може.
+        let composite_pipeline_layout =
+            gpu.device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("sky composite"),
+                    bind_group_layouts: &[Some(&composite_layout)],
+                    immediate_size: 0,
+                });
+        let composite_draw = |label: &str, entry: &str, blend: wgpu::BlendState| {
+            gpu.device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&composite_pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("vertex_sky"),
+                        compilation_options: Default::default(),
+                        buffers: &[],
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some(entry),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: Some(blend),
+                            write_mask: wgpu::ColorWrites::COLOR,
+                        })],
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        cull_mode: None,
+                        ..Default::default()
+                    },
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                })
+        };
+        // `dst · T`: джерело множиться на нуль, ціль — на джерело.
+        let multiply_pipeline = composite_draw(
+            "aerial multiply",
+            "fragment_aerial_multiply",
+            wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::Zero,
+                    dst_factor: wgpu::BlendFactor::Src,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent::REPLACE,
+            },
+        );
+        // `dst + L`.
+        let add_pipeline = composite_draw(
+            "aerial add",
+            "fragment_aerial_add",
+            wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::One,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent::REPLACE,
+            },
+        );
+
         let air_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("air params"),
             size: AIR_BYTES,
@@ -422,6 +628,12 @@ impl Sky {
         let view_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("view params"),
             size: VIEW_BYTES,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let pass_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("depth range params"),
+            size: PASS_STRIDE * crate::frame::MAX_PASSES as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -461,6 +673,12 @@ impl Sky {
         let transmittance_view = transmittance.create_view(&wgpu::TextureViewDescriptor::default());
         let multiscatter_view = multiscatter.create_view(&wgpu::TextureViewDescriptor::default());
         let skyview_view = skyview.create_view(&wgpu::TextureViewDescriptor::default());
+        let aerial_inscatter = aerial_texture(gpu, "aerial inscatter");
+        let aerial_transmittance = aerial_texture(gpu, "aerial transmittance");
+        let aerial_inscatter_view =
+            aerial_inscatter.create_view(&wgpu::TextureViewDescriptor::default());
+        let aerial_transmittance_view =
+            aerial_transmittance.create_view(&wgpu::TextureViewDescriptor::default());
 
         let read_min = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("sky read (no luts)"),
@@ -576,12 +794,34 @@ impl Sky {
             }],
         });
 
+        let write_aerial = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("sky write aerial"),
+            layout: &write_aerial_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&aerial_inscatter_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&aerial_transmittance_view),
+                },
+            ],
+        });
+
         Sky {
             transmittance_pipeline,
             multiscatter_pipeline,
             skyview_pipeline,
             inside_pipeline,
             outside_pipeline,
+            aerial_pipeline,
+            multiply_pipeline,
+            add_pipeline,
+            write_aerial,
+            composite: None,
+            composite_layout,
+            pass_buffer,
             read_draw,
             read_min,
             read_full,
@@ -591,10 +831,13 @@ impl Sky {
             write_skyview,
             air_buffer,
             view_buffer,
+            sampler,
             transmittance,
             multiscatter,
             skyview,
             skyview_view,
+            aerial_inscatter_view,
+            aerial_transmittance_view,
             current: None,
         }
     }
@@ -659,8 +902,15 @@ impl Sky {
     /// подають роботу самі й майже ніколи, а ця йде туди ж, куди й проходи
     /// кадру, тобто щокадру. Хто прийде оптимізувати, побачить це з коду.
     pub fn prepare_view(&self, gpu: &Gpu, encoder: &mut wgpu::CommandEncoder, view: &View) {
+        // Глибину об'єму аеральної перспективи рахуємо тут, а не в кадрі: вона
+        // залежить від повітря, а повітря знає лише `Sky`. Кадру довелося б
+        // тягнути ту саму формулу другим примірником.
+        let span = match self.current {
+            Some((air, bottom)) => atmosphere::aerial_span(&air, bottom, view.radius()),
+            None => (0.0, 1.0),
+        };
         gpu.queue
-            .write_buffer(&self.view_buffer, 0, &view_bytes(view));
+            .write_buffer(&self.view_buffer, 0, &view_bytes(view, span));
 
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("skyview"),
@@ -688,6 +938,109 @@ impl Sky {
             &self.outside_pipeline
         });
         pass.set_bind_group(0, &self.read_draw, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
+    /// Об'єм аеральної перспективи під цю камеру — теж у чужий encoder.
+    ///
+    /// Кличеться лише тоді, коли повітря в кадрі справді видно: умову рахує
+    /// викликач ([`crate::frame::Frame`]), бо вона про кадр, а не про повітря.
+    pub fn prepare_aerial(&self, encoder: &mut wgpu::CommandEncoder) {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("aerial"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&self.aerial_pipeline);
+        pass.set_bind_group(0, &self.read_frame, &[]);
+        pass.set_bind_group(1, &self.write_aerial, &[]);
+        // По потоку на промінь, не на тексель: шари одного стовпця лежать на
+        // одному промені й рахуються одним проходом уздовж нього.
+        let groups = atmosphere::AERIAL_SIZE.div_ceil(GROUP);
+        pass.dispatch_workgroups(groups, groups, 1);
+    }
+
+    /// Група композиції під цей буфер глибини — створити, якщо розмір змінився.
+    ///
+    /// Окремо від решти груп рівно тому, що вона єдина залежить від розміру
+    /// цілі: глибина перестворюється при зміні вікна, а група тримає посилання
+    /// на неї.
+    pub fn bind_depth(&mut self, gpu: &Gpu, depth: &wgpu::TextureView, width: u32, height: u32) {
+        if let Some(composite) = &self.composite {
+            if composite.width == width && composite.height == height {
+                return;
+            }
+        }
+        let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("sky composite"),
+            layout: &self.composite_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.view_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(&self.aerial_inscatter_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureView(&self.aerial_transmittance_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(depth),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &self.pass_buffer,
+                        offset: 0,
+                        size: std::num::NonZeroU64::new(PASS_BYTES),
+                    }),
+                },
+            ],
+        });
+        self.composite = Some(Composite {
+            bind_group,
+            width,
+            height,
+        });
+    }
+
+    /// Записати, як діапазон глибини `index` перетворює `z_ndc` назад у метри.
+    ///
+    /// `a` і `b` — коефіцієнти `z_ndc = −A + B/z`; звідки вони беруться,
+    /// написано в `crate::depth`, а рахує їх кадр: він єдиний знає межі
+    /// діапазонів.
+    pub fn set_range(&self, gpu: &Gpu, index: usize, a: f64, b: f64) {
+        let mut bytes = Vec::with_capacity(PASS_BYTES as usize);
+        for value in [a as f32, b as f32, 0.0, 0.0] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        gpu.queue
+            .write_buffer(&self.pass_buffer, index as u64 * PASS_STRIDE, &bytes);
+    }
+
+    /// Композиція: `кадр · T + L` двома викликами.
+    ///
+    /// Двома, а не одним: за один прохід це вимагало б dual-source blending —
+    /// ще однієї фічі пристрою й `@blend_src` у WGSL, якого компілятор Slang не
+    /// друкує. Два повноекранні трикутники коштують менше, ніж залежність від
+    /// того й того.
+    pub fn composite(&self, pass: &mut wgpu::RenderPass<'_>, index: usize) {
+        let Some(composite) = &self.composite else {
+            return;
+        };
+        let offset = (index as u64 * PASS_STRIDE) as u32;
+        pass.set_pipeline(&self.multiply_pipeline);
+        pass.set_bind_group(0, &composite.bind_group, &[offset]);
+        pass.draw(0..3, 0..1);
+        pass.set_pipeline(&self.add_pipeline);
+        pass.set_bind_group(0, &composite.bind_group, &[offset]);
         pass.draw(0..3, 0..1);
     }
 
@@ -854,7 +1207,7 @@ fn air_bytes(air: &Atmosphere, bottom_m: f64) -> Vec<u8> {
 }
 
 /// Параметри камери в розкладці `ViewParams` із `sky.slang`.
-fn view_bytes(view: &View) -> Vec<u8> {
+fn view_bytes(view: &View, aerial_span: (f64, f64)) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(VIEW_BYTES as usize);
     let mut push = |values: [f32; 4]| {
         for value in values {
@@ -865,13 +1218,13 @@ fn view_bytes(view: &View) -> Vec<u8> {
         view.radius() as f32,
         view.sun_zenith_cos() as f32,
         EXPOSURE,
-        0.0,
+        aerial_span.1 as f32,
     ]);
     push([
         view.eye[0] as f32,
         view.eye[1] as f32,
         view.eye[2] as f32,
-        0.0,
+        aerial_span.0 as f32,
     ]);
     push([view.sun[0], view.sun[1], view.sun[2], 0.0]);
     push([

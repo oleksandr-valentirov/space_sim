@@ -104,6 +104,33 @@ fn observer(up_dir: [f64; 3], altitude: f64, elevation: f64, air: bool) -> Scene
     scene
 }
 
+/// Спостерігач на висоті `altitude`, погляд під `depression` градусів **нижче**
+/// горизонталі: поверхня тягнеться від кількох кілометрів під ногами до
+/// горизонту, тобто той самий ґрунт видно на всіх відстанях одразу.
+fn looking_down(altitude: f64, depression: f64, air: bool) -> Scene {
+    let sun = sun_direction();
+    let side = unit(cross(sun, [0.0, 0.0, 1.0]));
+    // Не в підсонячній точці й не на термінаторі: поверхня яскраво освітлена,
+    // але Сонце не за спиною.
+    let up = unit([sun[0] + side[0], sun[1] + side[1], sun[2] + side[2]]);
+    let eye = up.map(|v| v * (EARTH + altitude));
+    let forward = unit(cross(up, side));
+    let (sin, cos) = (-depression.to_radians()).sin_cos();
+    let direction = [
+        cos * forward[0] + sin * up[0],
+        cos * forward[1] + sin * up[1],
+        cos * forward[2] + sin * up[2],
+    ];
+    let target = [
+        eye[0] + direction[0] * 1.0e4,
+        eye[1] + direction[1] * 1.0e4,
+        eye[2] + direction[2] * 1.0e4,
+    ];
+    let mut scene = Scene::new(Camera::look_at(eye, target, up));
+    scene.bodies.push(earth(air));
+    scene
+}
+
 /// Планета цілком у кадрі, з висоти 10⁷ м — та сама геометрія, що в `--shot`.
 fn from_orbit(air: bool) -> Scene {
     let eye = [EARTH + 1.0e7, 0.0, 0.0];
@@ -237,18 +264,27 @@ fn from_orbit_the_air_is_a_thin_arc_that_only_adds_light() {
     for k in 0..total {
         let a = &with_air.pixels[k * 4..k * 4 + 3];
         let b = &bare.pixels[k * 4..k * 4 + 3];
-        if a != b {
+        // Рахується **порожній простір**, а не весь кадр: диск планети змінює
+        // ще й аеральна перспектива (S5), і вона накриває його цілком — то
+        // інше твердження й інший тест.
+        if b == CLEAR_BYTES && a != b {
             changed += 1;
         }
-        if a.iter().zip(b).any(|(x, y)| x < y) {
+        // **Тільки порожній простір.** Там, де щось намальовано, повітря має
+        // повне право затемнити: аеральна перспектива (S5) множить кадр на
+        // пропускання, і диск планети крізь сто кілометрів повітря справді
+        // тьмяніший. А от порожнє небо повітря лише підсвічує — там воно
+        // нічого не заступає, і піксель, що потемнів, означав би заміщення
+        // замість додавання.
+        if b == CLEAR_BYTES && a.iter().zip(b).any(|(x, y)| x < y) {
             darker += 1;
         }
     }
 
-    assert_eq!(darker, 0, "{darker} пікселів потемніли від повітря");
-    // Виміряно: 852 пікселі з 230 400, тобто 0.37%. Шар у 100 км на радіусі
-    // 6371 км з десяти мегаметрів — це смуга завширшки два-три пікселі вздовж
-    // диска, і саме такий порядок тут і має бути.
+    assert_eq!(darker, 0, "{darker} пікселів порожнього неба потемніли");
+    // Виміряно: 852 пікселі з 230 400, тобто 0.37% кадру. Шар у 100 км на
+    // радіусі 6371 км з десяти мегаметрів — це смуга завширшки два-три пікселі
+    // вздовж диска, і саме такий порядок тут і має бути.
     let share = changed as f64 / total as f64;
     assert!(
         (0.0005..0.05).contains(&share),
@@ -278,4 +314,101 @@ fn a_body_without_air_leaves_the_frame_exactly_as_it_was() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// S5 — аеральна перспектива
+// ---------------------------------------------------------------------------
+
+/// Той самий ґрунт на різній відстані: контраст падає, серпанок росте.
+///
+/// Обидва числа з одного знімка, і це важливо — камера, освітлення й поверхня
+/// в ньому однакові скрізь, різна лише **відстань**: унизу кадру ґрунт за
+/// вісім кілометрів, під горизонтом — за сімдесят.
+///
+/// ## Чому контраст міряється в червоному
+///
+/// Бо поверхня в рушії поки що синя (`frame::COLOUR`), тобто майже того самого
+/// відтінку, що й серпанок. У синьому ослаблення й підсвітка майже
+/// компенсують одне одного, і різниця там не про повітря, а про збіг двох
+/// плейсхолдерів. У червоному вони розходяться найсильніше — там і видно те,
+/// що аеральна перспектива робить.
+///
+/// Це не підганяння: другий тест того самого знімка — **серпанок**, тобто
+/// повна різниця з кадром без повітря по всіх трьох каналах. Він росте
+/// монотонно, і в ньому синій бере участь нарівні.
+#[test]
+fn the_same_ground_loses_contrast_and_gains_haze_with_distance() {
+    let Some(gpu) = Gpu::for_tests() else { return };
+
+    let with_air = render(&gpu, &looking_down(5_000.0, 12.0, true), "ground_haze");
+    let bare = render(&gpu, &looking_down(5_000.0, 12.0, false), "ground_bare");
+
+    // Горизонт — перший зверху рядок, у якому з'явилася поверхня. Шукається,
+    // а не рахується: він залежить і від висоти, і від кута погляду, і
+    // порахований другий раз розійшовся б із першим.
+    let column = WIDTH / 2;
+    let horizon = (0..HEIGHT)
+        .find(|&y| bare.pixel(column, y)[1] > 50)
+        .expect("поверхня має бути в кадрі");
+    assert!(
+        horizon > 20 && horizon < HEIGHT - 40,
+        "горизонт у рядку {horizon}"
+    );
+    // Небо трохи вище горизонту — те, у що поверхня перетворюється з відстанню.
+    let sky = with_air.pixel(column, horizon - 3);
+
+    // Знизу вгору, тобто від близького до далекого.
+    let mut rows: Vec<u32> = (horizon + 4..HEIGHT - 4).step_by(12).collect();
+    rows.reverse();
+    assert!(
+        rows.len() >= 6,
+        "замало рядків для порівняння: {}",
+        rows.len()
+    );
+
+    let mut previous_contrast = 1000;
+    let mut previous_haze = -1000;
+    let (mut first_contrast, mut last_contrast) = (0, 0);
+    let (mut first_haze, mut last_haze) = (0, 0);
+    for (index, &y) in rows.iter().enumerate() {
+        let pixel = with_air.pixel(column, y);
+        let plain = bare.pixel(column, y);
+        let contrast = i32::from(pixel[0]) - i32::from(sky[0]);
+        let contrast = contrast.abs();
+        let haze: i32 = (0..3)
+            .map(|c| (i32::from(pixel[c]) - i32::from(plain[c])).abs())
+            .sum();
+
+        // Допуск в одиницю — це один крок восьмибітного кольору, тобто
+        // найдрібніше, що взагалі можна записати в кадр. Без нього тест ловив
+        // би не фізику, а округлення.
+        assert!(
+            contrast <= previous_contrast + 1,
+            "рядок {y}: контраст {contrast} проти {previous_contrast} ближче — з відстанню він мав би падати"
+        );
+        assert!(
+            haze >= previous_haze - 2,
+            "рядок {y}: серпанок {haze} проти {previous_haze} ближче — з відстанню він мав би рости"
+        );
+        previous_contrast = contrast;
+        previous_haze = haze;
+        if index == 0 {
+            first_contrast = contrast;
+            first_haze = haze;
+        }
+        last_contrast = contrast;
+        last_haze = haze;
+    }
+
+    // І це не «майже не змінилося». Виміряно: контраст 63 → 44, серпанок
+    // 6 → 41 між вісьмома кілометрами й сімдесятьма.
+    assert!(
+        last_contrast * 4 < first_contrast * 3,
+        "контраст упав лише з {first_contrast} до {last_contrast}"
+    );
+    assert!(
+        last_haze > first_haze * 3,
+        "серпанок виріс лише з {first_haze} до {last_haze}"
+    );
 }

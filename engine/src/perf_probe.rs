@@ -213,6 +213,53 @@ pub fn measure(
     overlay: Overlay,
     altitude_m: f64,
 ) -> Result<Stats, String> {
+    let distance = crate::sphere::EARTH_RADIUS_M + altitude_m;
+    let camera =
+        crate::camera::Camera::look_at([distance, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
+    measure_scene(
+        gpu,
+        width,
+        height,
+        frames,
+        overlay,
+        &frame::default_scene(camera),
+    )
+}
+
+/// Скільки повітря додає до кадру — і скільки коштувало б, якби його не
+/// пропускали (ROADMAP-ATMOSPHERE.md, S5).
+///
+/// Три висоти, і вони не круглі. Умова S5 — товщина шару в пікселях кадру, і
+/// вона перетинає одиницю на **6.24·10⁷ м**: сто кілометрів повітря на такій
+/// відстані займають рівно піксель. Тобто 6.0·10⁷ і 6.5·10⁷ — це та сама
+/// сцена з точністю до восьми відсотків відстані, у якій об'єм рахується й не
+/// рахується. Різниця між ними і є ціна об'єму; на 10⁹ м вона та сама, і саме
+/// її пропуск і економить.
+pub fn aerial_cost(
+    gpu: &Gpu,
+    width: u32,
+    height: u32,
+    frames: u32,
+    altitude_m: f64,
+) -> Result<Stats, String> {
+    let distance = crate::sphere::EARTH_RADIUS_M + altitude_m;
+    let camera =
+        crate::camera::Camera::look_at([distance, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
+    let mut scene = frame::default_scene(camera);
+    scene.bodies[0].air =
+        Some(crate::scene::Atmosphere::EARTH.with_surface(sphere::EARTH_RADIUS_M));
+    measure_scene(gpu, width, height, frames, Overlay::None, &scene)
+}
+
+/// Те саме для сцени, яку зібрав хтось інший.
+pub fn measure_scene(
+    gpu: &Gpu,
+    width: u32,
+    height: u32,
+    frames: u32,
+    overlay: Overlay,
+    scene: &crate::scene::Scene,
+) -> Result<Stats, String> {
     let mut frame = Frame::new(gpu, shot::FORMAT);
     let mut interface = crate::ui::Ui::new(gpu, shot::FORMAT);
     // Сцена без ламаних: вимір лишається порівнюваним із числами I3, де їх
@@ -221,11 +268,6 @@ pub fn measure(
     // Висота параметром, а не сталою (R8): від неї залежить кількість патчів,
     // тобто головне, що LOD додав до вартості кадру. Один рядок таблиці більше
     // не описує кадру — потрібні два, здалеку й з низької орбіти.
-    let distance = crate::sphere::EARTH_RADIUS_M + altitude_m;
-    let camera =
-        crate::camera::Camera::look_at([distance, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
-    let scene = frame::default_scene(camera);
-
     // COPY_SRC свідомо відсутній: цей вимір не читає пікселі назад, а
     // читання назад — окрема вартість, якої немає в реальному кадрі
     // (той іде в surface, не в буфер). Додавати її сюди означало б міряти
@@ -254,7 +296,7 @@ pub fn measure(
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("perf probe"),
             });
-        frame.draw(gpu, &mut encoder, &view, width, height, &scene);
+        frame.draw(gpu, &mut encoder, &view, width, height, scene);
 
         if overlay != Overlay::None {
             let viewport = crate::ui::Viewport::new(width, height, 1.0);
