@@ -1,29 +1,30 @@
-//! Наскільки пливе константа Якобі вздовж справжньої місії (ROADMAP-UI.md,
+//! How far the Jacobi constant drifts along a real mission (ROADMAP-UI.md,
 //! U6b1).
 //!
-//! Це вимір **до** малювання, і від нього залежить форма віджета. `C`
-//! зберігається в CR3BP — там два тіла на сталій відстані обертаються рівномірно.
-//! Гра літає в повній ефемериді: відстань Земля-Місяць гуляє на десяту частину
-//! за місяць, у моделі є Сонце, гармоніки, тиск світла. Тому крива нульової
-//! швидкості, побудована за миттєвим `C`, — **довідка, а не межа**, і питання
-//! лише в тому, наскільки вона дихає на очах.
+//! This is a measurement **before** any drawing, and the widget's shape
+//! depends on it. `C` is conserved in CR3BP -- there two bodies at a fixed
+//! distance rotate uniformly. The game flies in the full ephemeris: the
+//! Earth-Moon distance wanders by a tenth over a month, and the model holds
+//! the Sun, harmonics and radiation pressure. So a zero-velocity curve built
+//! from an instantaneous `C` is **reference, not a boundary**, and the only
+//! question is how much it breathes before the eyes.
 //!
-//! Число, яке звідси виходить, вирішує: жива крива, що переслідує апарат, чи
-//! зріз на обраний момент.
+//! The number that comes out of here decides: a live curve chasing the vessel,
+//! or a slice at a chosen instant.
 
 use core_rs::{cr3bp_jacobi, State, Vec3d};
 use game::mission;
 use game::world::{EARTH, MOON};
 
-/// Константа Якобі апарата в кожному семплі місії.
+/// The vessel's Jacobi constant at every sample of the mission.
 ///
-/// Кожен семпл бере фрейм **своєї миті** — інакше міряли б не дрейф `C`, а
-/// власне обертання пари.
+/// Every sample takes the frame of **its own instant** -- otherwise what would
+/// be measured is the pair's own rotation rather than `C`'s drift.
 fn jacobi_along_the_mission() -> Vec<(f64, f64)> {
     let eph = std::sync::Arc::new(
-        core_rs::Ephemeris::load(&mission::default_asset()).expect("ассет читається"),
+        core_rs::Ephemeris::load(&mission::default_asset()).expect("the asset reads"),
     );
-    let mut world = mission::world(&mission::default_asset()).expect("світ");
+    let mut world = mission::world(&mission::default_asset()).expect("world");
     world.run_to_end(1.0, 8);
     let snapshot = world.snapshot();
 
@@ -33,7 +34,7 @@ fn jacobi_along_the_mission() -> Vec<(f64, f64)> {
             let t = sample.state.t;
             let frame = eph
                 .synodic_frame(EARTH, MOON, t)
-                .expect("фрейм будується на кожній миті місії");
+                .expect("the frame builds at every instant of the mission");
 
             let inertial = State {
                 t,
@@ -55,19 +56,20 @@ fn jacobi_along_the_mission() -> Vec<(f64, f64)> {
     out
 }
 
-/// Розмах `C` уздовж місії — одне число, яке вирішує форму віджета.
+/// The spread of `C` along the mission -- the one number that decides the
+/// widget's shape.
 ///
-/// Друкується таблиця вікон, а не одне число: доба гри при warp 10⁵ — це
-/// десять секунд дивлення, місяць — п'ять хвилин, і «дихає на очах» означає
-/// різне на цих двох масштабах. Останній рядок (уся місія) — уже не дрейф, а
-/// розпад: апарат сходить з halo-орбіти й іде туди, де синодичний фрейм пари
-/// нічого не описує.
+/// A table of windows is printed rather than one number: a game day at warp
+/// 1e5 is ten seconds of watching, a month is five minutes, and "breathes
+/// before the eyes" means different things at those two scales. The last row
+/// (the whole mission) is no longer drift but decay: the vessel leaves the
+/// halo orbit and goes where the pair's synodic frame describes nothing.
 #[test]
 fn how_far_the_jacobi_constant_drifts_along_the_mission() {
     let series = jacobi_along_the_mission();
     assert!(
         series.len() > 1000,
-        "місія дала лише {} точок",
+        "the mission gave only {} points",
         series.len()
     );
 
@@ -84,8 +86,8 @@ fn how_far_the_jacobi_constant_drifts_along_the_mission() {
 
     let whole = spread(0, series.len());
 
-    println!("  C на старті: {c0:.6}");
-    println!("  {:>10} {:>12} {:>12}", "вікно", "розмах C", "% від C");
+    println!("  C at the start: {c0:.6}");
+    println!("  {:>10} {:>12} {:>12}", "window", "C spread", "% of C");
     for days in [1.0, 7.0, 14.0, 30.0] {
         let end = series
             .iter()
@@ -93,30 +95,31 @@ fn how_far_the_jacobi_constant_drifts_along_the_mission() {
             .unwrap_or(series.len());
         let range = spread(0, end);
         println!(
-            "  {:>8.0} діб {:>12.6} {:>11.4}%",
+            "  {:>8.0} days {:>12.6} {:>11.4}%",
             days,
             range,
             range / c0 * 100.0
         );
     }
     println!(
-        "  {:>8.0} діб {:>12.6} {:>11.4}%   (уся місія)",
+        "  {:>8.0} days {:>12.6} {:>11.4}%   (whole mission)",
         (series[series.len() - 1].0 - t0) / 86400.0,
         whole,
         whole / c0 * 100.0
     );
 
-    // Твердження навмисно широкі: тут міряється фізика, а не наш код, і
-    // завузький допуск перетворив би вимір на фіксацію числа. Ловиться інше —
-    // що `C` взагалі рахується (не NaN, не нуль) і що вона не стала.
+    // The assertions are deliberately loose: what is measured here is physics
+    // rather than our code, and too tight a tolerance would turn a measurement
+    // into pinning a number. What is caught is different -- that `C` is
+    // computed at all (not NaN, not zero) and that it is not constant.
     assert!(c0.is_finite() && (2.0..4.0).contains(&c0), "C = {c0}");
     assert!(
         whole > 0.0,
-        "константа Якобі не змінилась узагалі — це означало б, що вимір міряє \
-         не те"
+        "the Jacobi constant did not change at all -- that would mean the \
+         measurement measures the wrong thing"
     );
     assert!(
         whole < c0,
-        "розмах {whole:.6} завбільшки з саму константу {c0:.6} — це вже не дрейф"
+        "a spread of {whole:.6}, the size of the constant {c0:.6} itself -- that is no longer drift"
     );
 }

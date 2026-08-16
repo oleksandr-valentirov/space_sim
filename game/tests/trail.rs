@@ -1,12 +1,13 @@
-//! На чому тримається кеш прорідженого сліду (ROADMAP.md, N2b).
+//! What the thinned-trail cache rests on (ROADMAP.md, N2b).
 //!
-//! Кеш живе з припущення, що **позиція семпла в кадрі не залежить від часу
-//! кадру**. Для інерціального фрейму це очевидно, для обертового — ні: базис
-//! там будується з лінії Земля-Місяць, а вона обертається. Але будується він з
-//! лінії **самого семпла**, а з кадру бере лише сталий масштаб і `μ`.
+//! The cache lives off the assumption that **a sample's position in the frame
+//! does not depend on the frame's time**. For the inertial frame that is
+//! obvious; for the rotating one it is not: the basis there is built from the
+//! Earth-Moon line, and that rotates. But it is built from **the sample's
+//! own** line, taking from the frame only the constant scale and `mu`.
 //!
-//! Якщо це припущення хибне, кеш віддає вчорашню картинку — і жоден тест на
-//! кількість вершин цього не побачить. Тому воно перевіряється прямо.
+//! If that assumption is false, the cache hands back yesterday's picture --
+//! and no test of vertex counts will see it. So it is checked directly.
 
 use engine::orbit::Orbit;
 use game::frame_view::ViewFrame;
@@ -16,10 +17,10 @@ fn camera() -> engine::camera::Camera {
     Orbit::at_altitude(mission::CAMERA_ALTITUDE_M).camera()
 }
 
-/// Історія апарата — за кольором, а не «найдовша ламана».
+/// The vessel's history, by colour rather than "the longest polyline".
 ///
-/// Найдовшою на п'ятій добі є прогноз, а на двадцятій — уже історія, тож
-/// вибір за довжиною порівнював би дві різні лінії.
+/// On day five the longest is the prediction, on day twenty it is already the
+/// history, so choosing by length would compare two different lines.
 fn history(scene: &engine::scene::Scene) -> Vec<[f64; 3]> {
     scene
         .polylines
@@ -29,20 +30,20 @@ fn history(scene: &engine::scene::Scene) -> Vec<[f64; 3]> {
         .unwrap_or_default()
 }
 
-/// Історія, намальована пізніше, **бітово** продовжує ту, що була намальована
-/// раніше.
+/// History drawn later **bitwise** continues history drawn earlier.
 ///
-/// Не «майже така сама»: точки проходять `f64` до кінця, і будь-яка залежність
-/// від часу кадру зсунула б їх усі. Прогін іде в обертовому фреймі, бо саме
-/// там припущення неочевидне — за п'ятнадцять діб лінія Земля-Місяць повертає
-/// на 200°.
+/// Not "nearly the same": the points stay in `f64` throughout, and any
+/// dependence on the frame's time would shift all of them. The run happens in
+/// the rotating frame, because that is where the assumption is not obvious --
+/// over fifteen days the Earth-Moon line turns by 200 degrees.
 #[test]
 fn the_rotating_frame_does_not_move_a_sample_that_already_happened() {
-    let mut world = mission::world(&mission::default_asset()).expect("світ будується");
+    let mut world = mission::world(&mission::default_asset()).expect("the world builds");
     let start = mission::start().t;
-    // Без пенсії ланок: вона змінює **самі семпли** старої історії (N3a), тож
-    // із нею тест питав би про дві різні речі одразу. Те, що він на неї падає,
-    // до речі, і є доказом, що пенсія справді двері в один бік.
+    // No leg retirement: it changes **the samples themselves** of old history
+    // (N3a), so with it the test would ask about two different things at once.
+    // That it fails under retirement is, incidentally, the proof that
+    // retirement really is a one-way door.
     world.set_history_trimming(None);
 
     world.run_to_day(start + 5.0 * 86400.0, 1.0, 8);
@@ -56,31 +57,32 @@ fn the_rotating_frame_does_not_move_a_sample_that_already_happened() {
 
     assert!(
         early_trail.len() >= 2 && late_trail.len() > early_trail.len(),
-        "слід не виріс: {} → {}",
+        "the trail did not grow: {} -> {}",
         early_trail.len(),
         late_trail.len()
     );
     for (index, point) in early_trail.iter().enumerate() {
         assert_eq!(
             *point, late_trail[index],
-            "точка {index} поїхала: позиція семпла залежить від часу кадру, \
-             тобто кеш N2b тримати не можна"
+            "point {index} moved: a sample's position depends on the frame's \
+             time, i.e. the N2b cache cannot be kept"
         );
     }
 }
 
-/// Кеш тримає рівно ті ланки, які кадр питав, і викидає решту.
+/// The cache holds exactly the legs the frame asked for and discards the rest.
 ///
-/// Без викидання каскад після правки плану лишав би в кеші ланки, яких у світі
-/// вже немає (J3), і пам'ять росла б рівно так, як росте борг D7.
+/// Without discarding, the cascade after a plan edit would leave in the cache
+/// legs the world no longer has (J3), and memory would grow exactly the way
+/// debt D7 grows.
 #[test]
 fn the_cache_holds_what_the_frame_asked_for_and_nothing_else() {
-    let mut world = mission::world(&mission::default_asset()).expect("світ будується");
+    let mut world = mission::world(&mission::default_asset()).expect("the world builds");
     world.run_to_day(mission::start().t + 10.0 * 86400.0, 1.0, 8);
     let snapshot = world.snapshot();
 
     let legs: usize = snapshot.vessels.iter().map(|v| v.legs.len()).sum();
-    assert!(legs > 1, "для перевірки треба більше однієї ланки");
+    assert!(legs > 1, "the check needs more than one leg");
 
     let mut cache = trail::Cache::new();
     let mut thinning = view::Thinning {
@@ -91,37 +93,40 @@ fn the_cache_holds_what_the_frame_asked_for_and_nothing_else() {
     view::build_thinned(&snapshot, camera(), &[], ViewFrame::Inertial, &mut thinning);
     assert_eq!(thinning.cache.len(), legs);
 
-    // Другий кадр із тим самим снапшотом нічого не додає: якби ключ був
-    // нестабільний, кількість подвоїлася б.
+    // A second frame with the same snapshot adds nothing: if the key were
+    // unstable the count would double.
     view::build_thinned(&snapshot, camera(), &[], ViewFrame::Inertial, &mut thinning);
     assert_eq!(thinning.cache.len(), legs);
 
-    // Кадр, у якому апаратів немає, лишає кеш порожнім. Порожній світ, а не
-    // копія снапшоту з обрізаним списком: `WorldSnapshot` навмисно не
-    // клонується, і обходити це в тесті означало б перевіряти обхід.
+    // A frame with no vessels leaves the cache empty. An empty world rather
+    // than a copy of the snapshot with a trimmed list: `WorldSnapshot`
+    // deliberately does not clone, and working around that in a test would
+    // mean checking the workaround.
     let empty = game::world::World::new(
         &mission::default_asset(),
         mission::config(),
         mission::start().t,
         mission::DEFAULT_WARP,
     )
-    .expect("порожній світ будується")
+    .expect("an empty world builds")
     .snapshot();
     view::build_thinned(&empty, camera(), &[], ViewFrame::Inertial, &mut thinning);
     assert!(
         thinning.cache.is_empty(),
-        "у кеші лишилося {} ланок, яких кадр не питав",
+        "{} legs the frame did not ask for remain in the cache",
         thinning.cache.len()
     );
 }
 
-/// Той самий снапшот двічі дає ту саму сцену — теплий кеш нічого не міняє.
+/// The same snapshot twice gives the same scene -- a warm cache changes
+/// nothing.
 ///
-/// Оракул кешу, який неможливо пройти випадково: другий кадр іде цілком з
-/// кеша, і якби той віддавав щось інше, різниця була б бітовою.
+/// A cache oracle impossible to pass by accident: the second frame comes
+/// entirely from the cache, and if it handed back anything else the difference
+/// would be bitwise.
 #[test]
 fn a_warm_cache_draws_exactly_what_a_cold_one_did() {
-    let mut world = mission::world(&mission::default_asset()).expect("світ будується");
+    let mut world = mission::world(&mission::default_asset()).expect("the world builds");
     world.run_to_day(mission::start().t + 10.0 * 86400.0, 1.0, 8);
     let snapshot = world.snapshot();
 
@@ -136,6 +141,6 @@ fn a_warm_cache_draws_exactly_what_a_cold_one_did() {
 
     assert_eq!(cold.polylines.len(), warm.polylines.len());
     for (a, b) in cold.polylines.iter().zip(&warm.polylines) {
-        assert_eq!(a.points, b.points, "теплий кеш намалював інше");
+        assert_eq!(a.points, b.points, "the warm cache drew something else");
     }
 }

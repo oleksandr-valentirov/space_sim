@@ -1,37 +1,39 @@
-//! Апарат у грі справді відчуває повітря (ROADMAP K7c).
+//! A vessel in the game really does feel air (ROADMAP K7c).
 //!
-//! K7b провів опір від ассета до межі й закінчив на тому, що `cd` можна
-//! передати. Хто його передає — лишалося без відповіді, а поле, якого ніхто
-//! не задає, це рівно той мертвий код, який K4b знайшов у K4: `field.c` умів
-//! гармоніки, і ніхто їх не вмикав.
+//! K7b carried drag from the asset to the boundary and stopped at "`cd` can be
+//! passed". Who passes it was left unanswered, and a field nobody sets is
+//! exactly the dead code K4b found in K4: `field.c` could do harmonics and
+//! nobody switched them on.
 //!
-//! Тому перевірка стоїть на рівні `/game`, а не `core-rs`: світ, годинник,
-//! ланки, `Vessel::params` — увесь шлях, яким число з гри доходить до
-//! інтегратора. Нижче він уже перевірений двічі (`core/test/test_prop.c` і
-//! `core-rs/tests/ephemeris.rs`), і саме тому тут не потрібні ні допуски, ні
-//! фізика: досить показати, що два світи, які різняться **лише** `cd`,
-//! розходяться, а два з нульовим `cd` — ні.
+//! So the check sits at the `/game` level rather than `core-rs`: the world,
+//! the clock, the legs, `Vessel::params` -- the whole path by which a number
+//! from the game reaches the integrator. Below that it is already checked
+//! twice (`core/test/test_prop.c` and `core-rs/tests/ephemeris.rs`), which is
+//! exactly why neither tolerances nor physics are needed here: it suffices to
+//! show that two worlds differing **only** in `cd` diverge, while two with a
+//! zero `cd` do not.
 //!
-//! Демо-місія лишається без опору навмисно (`mission::world`), з тієї самої
-//! причини, з якої вона лишилась без вітрила в K6b: halo-орбіта підбиралася
-//! без нього, і додати силу туди означало б змінити зміст демонстрації під
-//! приводом технічного кроку. На L2 повітря все одно рівно нуль.
+//! The demo mission stays without drag deliberately (`mission::world`), for
+//! the same reason it stayed without a sail in K6b: the halo orbit was
+//! selected without it, and adding a force there would change what the
+//! demonstration shows under the pretext of a technical step. At L2 the air is
+//! exactly zero anyway.
 
 use core_rs::{State, VesselParams};
 use game::mission;
 use game::world::World;
 
-/// Земля в ассеті-фікстурі.
+/// Earth in the fixture asset.
 const EARTH: i32 = 3;
 
-/// 220 км над середнім радіусом Землі — всередині смуги таблиці USSA-76, а не
-/// на її межі (урок K7a: на межі модель розривна, і порівняння могло б впасти
-/// на будь-який бік).
+/// 220 km above Earth's mean radius -- inside a USSA-76 table band rather than
+/// on its edge (the K7a lesson: at a boundary the model is discontinuous, and
+/// a comparison could fall either way).
 const ALTITUDE: f64 = 220.0e3;
 
-/// Скільки летимо. Двадцять хвилин на такій висоті — це вже сотні метрів
-/// розбіжності, тобто величина, яку не сплутаєш із шумом інтегратора при
-/// допуску в сантиметр.
+/// How long the flight lasts. Twenty minutes at that altitude is already
+/// hundreds of metres of divergence -- a quantity not to be confused with
+/// integrator noise at a centimetre tolerance.
 const FLIGHT_S: f64 = 1200.0;
 
 fn blunt(cd: f64) -> VesselParams {
@@ -43,25 +45,26 @@ fn blunt(cd: f64) -> VesselParams {
     }
 }
 
-/// Світ з одним апаратом на низькій орбіті, з заданим `cd`.
+/// A world with one vessel in low orbit, with a given `cd`.
 ///
-/// Стан будується з ассета: положення Землі плюс радіус і колова швидкість,
-/// нахилена так, щоб жодна складова не була нулем — вітер обертової
-/// атмосфери має бути скісний до руху, інакше похибка могла б сховатися в
-/// нулі (та сама причина, що в `core/scenario/sc_dragflight.c`).
+/// The state is built from the asset: Earth's position plus a radius and
+/// circular speed, tilted so no component is zero -- the rotating atmosphere's
+/// wind must be oblique to the motion, or an error could hide in a zero (the
+/// same reason as in `core/scenario/sc_dragflight.c`).
 fn low_orbit_world(cd: f64) -> World {
-    // Курсор стартує там само, де апарат: епоха ассета — нуль часу для
-    // ефемериди, а не для місії (`mission::world` робить так само).
+    // The cursor starts where the vessel does: the asset epoch is time zero
+    // for the ephemeris rather than for the mission (`mission::world` does the
+    // same).
     let t0 = 86_400.0;
     let mut world =
-        World::new(&mission::default_asset(), mission::config(), t0, 1.0).expect("світ будується");
+        World::new(&mission::default_asset(), mission::config(), t0, 1.0).expect("the world builds");
 
     let eph = world.ephemeris();
-    let earth = eph.body_state(EARTH, t0).expect("Земля в межах ассета");
+    let earth = eph.body_state(EARTH, t0).expect("Earth is within the asset");
 
-    // Середній радіус Землі в ассеті — 6371010 м (core/cook/cook_fixture.c).
-    // Тут він потрібен лише щоб опинитися в повітрі, тож сотня метрів туди
-    // чи сюди нічого не вирішує.
+    // Earth's mean radius in the asset is 6371010 m
+    // (core/cook/cook_fixture.c). It is needed here only to end up inside the
+    // air, so a hundred metres either way decides nothing.
     let radius = 6_371_010.0 + ALTITUDE;
     let speed = (3.986_004_418e14_f64 / radius).sqrt();
 
@@ -84,7 +87,7 @@ fn flown(cd: f64) -> State {
     world.vessels()[0].tip
 }
 
-/// Той самий апарат із `cd` і без нього приходить у різні місця.
+/// The same vessel with and without `cd` arrives in different places.
 #[test]
 fn a_vessel_with_cd_flies_a_different_trajectory() {
     let with = flown(2.2);
@@ -97,20 +100,20 @@ fn a_vessel_with_cd_flies_a_different_trajectory() {
 
     assert!(
         moved > 1.0,
-        "опір мав зсунути апарат, а зсув {moved} м — це шум"
+        "drag should have moved the vessel, and a shift of {moved} m is noise"
     );
 
-    // Обидва світи дійшли до кінця місії, інакше різниця була б просто в
-    // тому, що один порахував менше.
-    assert_eq!(with.t, without.t, "порівнюються різні моменти часу");
+    // Both worlds reached the mission's end; otherwise the difference would
+    // simply be that one computed less.
+    assert_eq!(with.t, without.t, "different instants are being compared");
 
-    println!("{FLIGHT_S} с опору зсунули апарат на {moved:.4} м");
+    println!("{FLIGHT_S} s of drag moved the vessel by {moved:.4} m");
 }
 
-/// Два світи без опору — бітово однакові.
+/// Two worlds without drag are bit-identical.
 ///
-/// Контрольний дослід: без нього перший тест доводив би лише те, що два
-/// прогони взагалі різні, а не те, що їх розрізняє саме `cd`.
+/// A control experiment: without it the first test would prove only that two
+/// runs differ at all, rather than that `cd` is what distinguishes them.
 #[test]
 fn without_cd_the_two_worlds_agree_to_the_bit() {
     let a = flown(0.0);
