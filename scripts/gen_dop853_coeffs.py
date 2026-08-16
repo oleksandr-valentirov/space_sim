@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
-"""Генерує core/dop853_coeffs.h з вендореного джерела SciPy.
+"""Generate core/dop853_coeffs.h from the vendored SciPy source.
 
-Навіщо генератор замість того, щоб набрати коефіцієнти руками: їх близько
-вісімдесяти, по 27 значущих цифр. Помилка в одній цифрі не обов'язково зламає
-порядок методу — вона може лише погіршити константу похибки, і тоді тест на
-порядок пройде, а інтегратор мовчки працюватиме гірше. Механічна транскрипція
-цей клас помилок виключає.
+Generated rather than typed by hand: there are about eighty coefficients at 27
+significant digits. One wrong digit need not break the order of the method,
+only the error constant -- the order test would still pass while the
+integrator quietly did more work. Mechanical transcription rules that out.
 
-Згенерований заголовок комітиться, тож для збірки Python не потрібен.
-Перезапускати треба лише якщо змінюється джерело.
+The generated header is committed, so the build needs no Python. Rerun only
+when the source changes.
 
     python3 scripts/gen_dop853_coeffs.py
 
-numpy не потрібен: нижче мінімальна заглушка, що підтримує рівно ті операції,
-які використовує вендорений файл.
+No numpy needed: the shim below supports exactly the operations the vendored
+file uses.
 """
 
 import sys
@@ -24,7 +23,7 @@ DST = Path("core/dop853_coeffs.h")
 
 
 class Arr:
-    """Мінімальний масив: індексація, зрізи, двовимірний доступ."""
+    """Minimal array: indexing, slices, two-dimensional access."""
 
     def __init__(self, data):
         self.data = data
@@ -73,16 +72,16 @@ class NumpyShim:
 
 
 def fmt(x):
-    """17 значущих цифр — рівно стільки, скільки треба для round-trip double."""
+    """17 significant digits -- exactly what a double round-trip needs."""
     return repr(float(x)) if len(repr(float(x))) <= 24 else "%.17g" % float(x)
 
 
 def main():
     if not SRC.exists():
-        sys.exit("немає %s" % SRC)
+        sys.exit("missing %s" % SRC)
 
-    # Прибираємо import numpy: заглушка вже лежить у namespace, а справжнього
-    # numpy може не бути — і ставити його заради вісімдесяти констант не варто.
+    # Drop `import numpy`: the shim is already in the namespace, and real numpy
+    # may be absent -- not worth installing for eighty constants.
     source = "\n".join(
         line for line in SRC.read_text().splitlines()
         if line.strip() != "import numpy as np"
@@ -163,22 +162,22 @@ def main():
 
     DST.write_text("\n".join(out) + "\n")
 
-    # Структурна перевірка тут же, щоб зіпсований заголовок не потрапив у збірку.
+    # Consistency check here, so a corrupt header never reaches the build.
     worst_row = 0.0
     for i in range(n):
         row_sum = sum(a[i, j] for j in range(n))
         worst_row = max(worst_row, abs(row_sum - c[i]))
     b_sum = sum(b[i] for i in range(n))
 
-    print("записано %s" % DST)
+    print("wrote %s" % DST)
     print("  max |sum(A[i]) - C[i]| = %.3e" % worst_row)
     print("  |sum(B) - 1|           = %.3e" % abs(b_sum - 1.0))
-    # Поріг 1e-14, а не 1e-15: рядок з 12 доданків, серед яких є ~0.9 і -0.88,
-    # дає похибку сумування близько 8 ULP — виміряно 1.78e-15. Чутливості це
-    # не коштує нічого: одна зіпсована цифра аж до десятого знаку зсуває суму
-    # на 1e-10 і буде спіймана.
+    # Threshold 1e-14, not 1e-15: a row of 12 terms including ~0.9 and -0.88
+    # sums with about 8 ULP of error -- measured 1.78e-15. Costs no
+    # sensitivity: one corrupt digit even at the tenth place shifts the sum by
+    # 1e-10 and gets caught.
     if worst_row > 1e-14 or abs(b_sum - 1.0) > 1e-14:
-        sys.exit("ПОМИЛКА: коефіцієнти не проходять умови узгодженості")
+        sys.exit("ERROR: coefficients fail the consistency conditions")
 
 
 if __name__ == "__main__":

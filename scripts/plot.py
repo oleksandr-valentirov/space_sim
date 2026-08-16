@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
-"""Графіки з CSV, які виводить `make csv` — поставка Milestone 0.
+"""Plots from the CSV that `make csv` emits -- a Milestone 0 deliverable.
 
-Навіщо взагалі. Ядро міряло себе з першого дня, але лише твердженнями й
-окремими числами в тестах. Тест каже «пройдено»; він не каже, що саме
-пораховано. Траєкторія, яка вкладається в допуск і при цьому летить не туди, —
-річ, яка трапляється, і ловиться вона оком.
+Tests say "passed"; they do not say what was actually computed. A trajectory
+that stays inside tolerance while flying the wrong way is a thing that
+happens, and the eye is what catches it.
 
-Скрипт нічого не рахує. Уся фізика лишається в C; тут тільки читання CSV
-і осі. Це навмисно: якщо графік показує дурницю, дивитися треба в ядро,
-а не сюди.
+The script computes nothing. All physics stays in C; here there is only CSV
+reading and axes. Deliberate: if a plot shows nonsense, look in the core, not
+here.
 
-    make plots                      зібрати CSV і побудувати все
+    make plots                      build the CSV and plot everything
     python3 scripts/plot.py --csv build/csv --out build/plots
     python3 scripts/plot.py --only trajectory
 
-Потрібен matplotlib. Він НЕ є залежністю збірки: ядро від нього не залежить,
-і на CI його немає.
+Needs matplotlib. It is NOT a build dependency: the core does not use it, and
+CI does not have it.
+
+Plot labels and captions are Ukrainian on purpose -- see NAMES below.
 """
 
 import argparse
@@ -26,19 +27,19 @@ from pathlib import Path
 
 try:
     import matplotlib
-    matplotlib.use("Agg")          # без дисплея, працює і по ssh, і на CI
+    matplotlib.use("Agg")          # headless: works over ssh and on CI
     import matplotlib.pyplot as plt
 except ImportError:
-    sys.exit("потрібен matplotlib:  python3 -m pip install matplotlib\n"
-             "  (або: apt install python3-matplotlib)")
+    sys.exit("matplotlib required:  python3 -m pip install matplotlib\n"
+             "  (or: apt install python3-matplotlib)")
 
 
 MEGAMETRE = 1.0e6
 GIGAMETRE = 1.0e9
 YEAR_DAYS = 365.25
 
-# Ідентифікатори в CSV англійські, як і решта коду ядра; підписи на графіках —
-# ні. Тут одне перекладається в інше, і більше ніде.
+# CSV identifiers are English like the rest of the core; plot labels are not.
+# This table is the only place one becomes the other.
 NAMES = {
     "l4_region": "околиця L4",
     "close_approach": "близький проліт",
@@ -51,20 +52,20 @@ NAMES = {
 
 
 def load(path):
-    """CSV -> словник «колонка: список значень».
+    """CSV -> dict of column name to list of values.
 
-    Числові колонки стають float, решта лишається рядками. Тип визначається
-    по колонці, а не по клітинці, — щоб колонка з іменами не перетворилася
-    наполовину на числа й не поламала групування нижче.
+    Numeric columns become floats, the rest stay strings. The type is decided
+    per column, not per cell, so a column of names cannot turn half numeric
+    and break the grouping below.
     """
     if not path.is_file():
-        sys.exit("немає %s — спершу make csv" % path)
+        sys.exit("missing %s -- run make csv first" % path)
 
     with open(path, newline="", encoding="utf-8") as f:
         rows = list(csv.reader(f))
 
     if len(rows) < 2:
-        sys.exit("%s порожній — спершу make csv" % path)
+        sys.exit("%s is empty -- run make csv first" % path)
 
     header, body = rows[0], rows[1:]
     table = {}
@@ -80,8 +81,8 @@ def load(path):
 
 
 def groups(table, key):
-    """Розбиває таблицю на групи за значенням колонки key, зберігаючи порядок
-    появи. Повертає список пар (значення, підтаблиця)."""
+    """Split the table into groups by the value of column `key`, keeping order
+    of appearance. Returns a list of (value, subtable) pairs."""
     order = []
     index = {}
 
@@ -97,8 +98,8 @@ def groups(table, key):
 
 
 def label_of(value):
-    """Підпис групи: відомий ідентифікатор перекладається, ціле число йде без
-    хвоста «.0», решта як є."""
+    """Group label: a known identifier is translated, a whole number loses its
+    ".0" tail, anything else passes through."""
     if value in NAMES:
         return NAMES[value]
     if isinstance(value, float) and value == int(value):
@@ -107,24 +108,24 @@ def label_of(value):
 
 
 def log_pairs(xs, ys):
-    """Пари (x, y), у яких y додатний.
+    """Pairs (x, y) where y is positive.
 
-    Нуль на логарифмічній осі показати не можна, а нулі тут законні: похибка
-    на нульовій вибірці рівно нуль, і дрейф збереженої величини теж буває
-    рівно нуль. Підмінити їх якоюсь підлогою — намалювати число, якого не
-    міряли, і розтягнути вісь на двадцять порядків заради нього. Тому точка
-    просто не малюється.
+    A log axis cannot show zero, and zeros here are legitimate: error at the
+    zeroth sample is exactly zero, and drift of a conserved quantity can be
+    exactly zero too. Substituting some floor would draw a number nobody
+    measured and stretch the axis twenty decades for it. So the point is
+    simply not drawn.
     """
     kept = [(x, y) for x, y in zip(xs, ys) if y > 0.0]
     return [x for x, _ in kept], [y for _, y in kept]
 
 
 def caption(fig, text):
-    """Підпис під усією сторінкою.
+    """Caption under the whole page.
 
-    Під осями, а не всередині: у першій версії ці пояснення лягали поверх
-    кривих, які пояснювали. Рядки перегортаються по ширині фігури, інакше
-    bbox_inches="tight" розтягує сторінку на ширину найдовшого речення.
+    Below the axes, not inside: the first version laid these notes on top of
+    the very curves they explained. Lines wrap to the figure width, otherwise
+    bbox_inches="tight" stretches the page to the longest sentence.
     """
     width = int(fig.get_figwidth() * 11)
     wrapped = "\n".join(textwrap.fill(paragraph, width)
@@ -133,7 +134,7 @@ def caption(fig, text):
              color="0.3")
 
 
-# --- CR3BP: сімейство орбіт і точки лібрації -------------------------------
+# --- CR3BP: orbit family and libration points ------------------------------
 
 def figure_cr3bp(csv_dir, out_dir):
     family = load(csv_dir / "halo_family.csv")
@@ -155,9 +156,9 @@ def figure_cr3bp(csv_dir, out_dir):
             ax.plot(orbit[a], orbit[b], linewidth=1.2,
                     label="орбіта %s" % label_of(index))
 
-        # У проєкції з торця Місяць і обидві точки лібрації лежать на осі
-        # обертання й накладаються в одну точку. Позначаємо це чесно, одним
-        # маркером, замість трьох підписів один поверх одного.
+        # End-on, the Moon and both libration points sit on the rotation axis
+        # and collapse to one point. Marked honestly with a single marker
+        # rather than three labels stacked on each other.
         if (a, b) == ("y", "z"):
             ax.plot(0.0, 0.0, "o", color="0.35", markersize=6)
             ax.annotate("Місяць, L1, L2\n(в одній точці)", (0.0, 0.0),
@@ -190,7 +191,7 @@ def figure_cr3bp(csv_dir, out_dir):
     return save(fig, out_dir / "cr3bp.png")
 
 
-# --- Нестійкість: виміряне зростання проти lambda^n ------------------------
+# --- Instability: measured growth against lambda^n -------------------------
 
 def figure_stability(csv_dir, out_dir):
     table = load(csv_dir / "stability.csv")
@@ -229,7 +230,7 @@ def figure_stability(csv_dir, out_dir):
     return save(fig, out_dir / "stability.png")
 
 
-# --- Траєкторія в справжній ефемериді --------------------------------------
+# --- Trajectory in the real ephemeris --------------------------------------
 
 def figure_trajectory(csv_dir, out_dir):
     t = load(csv_dir / "halo_inertial.csv")
@@ -239,10 +240,10 @@ def figure_trajectory(csv_dir, out_dir):
     fig.suptitle("Halo-орбіта каталогу 1151, перенесена в поле десяти тіл: "
                  "%d діб" % round(t["days"][-1]))
 
-    # Інерціальний баріцентричний вигляд. Тут не видно нічого, крім того, що
-    # апарат летить разом із Землею навколо Сонця, — власне орбіта на цьому
-    # масштабі тонша за лінію. Панель лишається саме тому: вона задає
-    # масштаб, на тлі якого наступні три щось означають.
+    # Inertial barycentric view. Nothing is visible here beyond the craft
+    # travelling with Earth around the Sun -- at this scale the orbit itself is
+    # thinner than a line. The panel stays for exactly that reason: it sets the
+    # scale against which the next three mean anything.
     ax = axes[0][0]
     ax.plot([v / GIGAMETRE for v in t["earth_x"]],
             [v / GIGAMETRE for v in t["earth_y"]],
@@ -257,8 +258,8 @@ def figure_trajectory(csv_dir, out_dir):
     ax.grid(alpha=0.3)
     ax.legend(fontsize=8)
 
-    # Те саме з відкинутим рухом Землі. Аж тепер видно, що апарат ходить
-    # за Місяцем і зовні від нього.
+    # Same with Earth's motion removed. Only now is it visible that the craft
+    # follows the Moon, and from outside it.
     ax = axes[0][1]
     for label, kx, ky, width, color in (
             ("Місяць", "moon_x", "moon_y", 1.6, "0.5"),
@@ -276,9 +277,9 @@ def figure_trajectory(csv_dir, out_dir):
     ax.grid(alpha=0.3)
     ax.legend(fontsize=8)
 
-    # І миттєва синодична система: ось де крива замикається в ту саму halo,
-    # з якої її взяли. Це головне, що показує сторінка, — обидва твердження
-    # істинні водночас.
+    # And the instantaneous synodic frame: here the curve closes into the same
+    # halo it came from. That is the point of the page -- both statements are
+    # true at once.
     for ax, a, b, title in ((axes[1][0], "sx", "sy", "згори (x–y)"),
                             (axes[1][1], "sx", "sz", "збоку (x–z)")):
         ax.plot(t[a], t[b], linewidth=0.8, color="C0")
@@ -303,7 +304,7 @@ def figure_trajectory(csv_dir, out_dir):
     return save(fig, out_dir / "trajectory.png")
 
 
-# --- Утримання на орбіті ---------------------------------------------------
+# --- Station keeping -------------------------------------------------------
 
 def figure_station(csv_dir, out_dir):
     s = load(csv_dir / "station.csv")
@@ -359,7 +360,7 @@ def figure_station(csv_dir, out_dir):
     return save(fig, out_dir / "station.png")
 
 
-# --- Механіка невизначеності: зростання й проходи трекінгу -----------------
+# --- Uncertainty: growth and tracking passes -------------------------------
 
 def figure_uncertainty(csv_dir, out_dir):
     u = load(csv_dir / "uncertainty.csv")
@@ -408,7 +409,7 @@ def figure_uncertainty(csv_dir, out_dir):
     return save(fig, out_dir / "uncertainty.png")
 
 
-# --- Що втрачає інтегратор -------------------------------------------------
+# --- What the integrator loses ---------------------------------------------
 
 def figure_accuracy(csv_dir, out_dir):
     jacobi = load(csv_dir / "jacobi.csv")
@@ -419,10 +420,10 @@ def figure_accuracy(csv_dir, out_dir):
     fig.suptitle("Критерії приймання 1 і 2: збереження константи Якобі "
                  "та оборотність")
 
-    # Головне тут — не мала величина дрейфу, а те, що він іде за допуском
-    # майже один в один. Дрейф, який перестав меншати від затягування
-    # допуску, означав би структурну помилку — а жодне окреме вимірювання
-    # цього не розрізняє.
+    # What matters is not that drift is small but that it tracks tolerance
+    # almost one for one. Drift that stopped shrinking as tolerance tightened
+    # would mean a structural error -- and no single measurement tells the
+    # two apart.
     ax = axes[0][0]
     for name, case in groups(jacobi, "orbit"):
         x, y = log_pairs(case["tolerance"], case["drift"])
@@ -463,8 +464,8 @@ def figure_accuracy(csv_dir, out_dir):
     ax.grid(alpha=0.3, which="both")
     ax.legend(fontsize=8)
 
-    # Оборотність: похибка, що росте лінійно з прольотом, — це округлення.
-    # Похибка, що росте швидше за проліт, — це метод, який губить траєкторію.
+    # Reversibility: error growing linearly with the flight is rounding. Error
+    # growing faster than the flight is a method losing the trajectory.
     ax = axes[1][1]
     x, y = log_pairs(rev["years"], rev["error_m"])
     ax.plot(x, y, "o-", markersize=5, color="C0",
@@ -496,7 +497,7 @@ def figure_accuracy(csv_dir, out_dir):
     return save(fig, out_dir / "accuracy.png")
 
 
-# --- Регресія на JPL Horizons ----------------------------------------------
+# --- Regression against JPL Horizons ---------------------------------------
 
 def figure_horizons(csv_dir, out_dir):
     h = load(csv_dir / "horizons.csv")
@@ -545,34 +546,34 @@ def figure_horizons(csv_dir, out_dir):
     return save(fig, out_dir / "horizons.png")
 
 
-# --- Довжина спану ефемериди -----------------------------------------------
+# --- Ephemeris span length -------------------------------------------------
 
 def figure_ephspan(csv_dir, out_dir):
     e = load(csv_dir / "ephspan.csv")
     cases = dict(groups(e, "source"))
 
-    # Кінці коротших спанів — з самих даних, а не окремим списком: вони й так
-    # там є, останнім днем кожної групи asset_*.
+    # Shorter span ends come from the data, not a separate list: they are
+    # already there, as the last day of each asset_* group.
     ends = sorted(max(case["days"]) for name, case in cases.items()
                   if name.startswith("asset_"))
 
-    # Малюються лише повний ассет і два контролі. Коротші спани не пропущені —
-    # ex_ephspan довів, що вони бітово збігаються з повним, тож окремими
-    # кривими вони лягли б рівно на неї. Замість шести однакових ліній —
-    # шість точок на одній.
+    # Only the full asset and two controls are drawn. Shorter spans are not
+    # omitted -- ex_ephspan proved they match the full one bitwise, so separate
+    # curves would land exactly on it. Six identical lines become six points on
+    # one.
     #
-    # Ассет малюється ОСТАННІМ і товщою пунктирною лінією. У першій версії він
-    # ішов першим суцільним, і контроль лягав рівно поверх нього — тобто
-    # найголовніший результат цієї сторінки («ассет збігається з контролем»)
-    # виглядав як «кривої ассета немає».
+    # The asset is drawn LAST and with a thicker dashed line. In the first
+    # version it went first and solid, and the control landed exactly on top --
+    # so the main result of this page ("asset matches control") looked like
+    # "the asset curve is missing".
     shown = ("raw_tol_1m", "raw_fixture_tol", "asset_3630d")
     styles = {"asset_3630d": {"linewidth": 2.6, "linestyle": "--",
                               "zorder": 4}}
 
-    # Обидві осі логарифмічні, і це не косметика: похибка тут росте лінійно
-    # з часом, а лінійний ріст на log-log — пряма з нахилом 1. Поруч
-    # намальована саме така пряма, тож твердження «росте лінійно» читається
-    # з картинки, а не приймається на віру з тексту.
+    # Both axes are logarithmic, and that is not cosmetic: error here grows
+    # linearly with time, and linear growth on log-log is a line of slope 1.
+    # Such a line is drawn alongside, so "grows linearly" is read off the
+    # picture rather than taken on trust from the text.
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
     fig.suptitle("Чи тримає ассет ефемериди довший спан: 120 діб → 10 років")
 
@@ -586,8 +587,8 @@ def figure_ephspan(csv_dir, out_dir):
             case = cases.get(name)
             if case is None:
                 continue
-            # Нуль і від'ємних тут немає, але перша епоха — сама початкова
-            # умова, тобто x = 0, а її на логарифмічній осі не показати.
+            # No zeros or negatives here, but the first epoch is the initial
+            # condition itself, i.e. x = 0, which a log axis cannot show.
             pairs = [(d / YEAR_DAYS, v)
                      for d, v in zip(case["days"], case[key])
                      if d > 0.0 and v > 0.0]
@@ -603,11 +604,11 @@ def figure_ephspan(csv_dir, out_dir):
                     "o", markersize=6, color="0.15", zorder=5,
                     label="кінці спанів")
 
-            # Пряма нахилу 1 через останню точку ассета — суто лінійка для
-            # ока: крутіше за неї чи полого. Сам нахил тут НЕ підганяється,
-            # його рахує ex_ephspan і друкує числом (k у error ~ t^k); цей
-            # скрипт нічого не рахує, і заводити тут МНК заради зручності
-            # означало б почати.
+            # A slope-1 line through the asset's last point, purely a ruler
+            # for the eye: steeper than it or shallower. The slope is NOT
+            # fitted here -- ex_ephspan computes it and prints the number
+            # (k in error ~ t^k). This script computes nothing, and adding a
+            # least-squares fit for convenience would be the start of that.
             if marks:
                 x_end, y_end = marks[-1]
                 xs = [x for x, _ in marks]
@@ -671,20 +672,20 @@ def main():
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--csv", type=Path, default=Path("build/csv"),
-                        help="каталог із CSV від `make csv`")
+                        help="directory of CSV from `make csv`")
     parser.add_argument("--out", type=Path, default=Path("build/plots"),
-                        help="куди складати PNG")
+                        help="where to put the PNG")
     parser.add_argument("--only", action="append", metavar="NAME",
-                        help="побудувати лише названі: %s" % names)
+                        help="build only the named: %s" % names)
     args = parser.parse_args()
 
     if not args.csv.is_dir():
-        sys.exit("немає каталогу %s — спершу make csv" % args.csv)
+        sys.exit("missing directory %s -- run make csv first" % args.csv)
 
     wanted = [(name, build) for name, build in FIGURES
               if args.only is None or name in args.only]
     if not wanted:
-        sys.exit("нічого будувати: --only %s, а є лише %s"
+        sys.exit("nothing to build: --only %s, but only %s exist"
                  % (", ".join(args.only), names))
 
     args.out.mkdir(parents=True, exist_ok=True)

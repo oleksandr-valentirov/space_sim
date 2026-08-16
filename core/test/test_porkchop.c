@@ -149,8 +149,8 @@ int main(void)
     {
         EphemerisCtx *eph = NULL;
         if (eph_load("data/fixture/earth_moon.eph", &eph) != CORE_OK) {
-            fprintf(stderr, "test_porkchop: фікстура не читається; "
-                            "запускати з кореня репозиторію\n");
+            fprintf(stderr, "test_porkchop: cannot read fixture; "
+                            "run from the repository root\n");
             return 1;
         }
 
