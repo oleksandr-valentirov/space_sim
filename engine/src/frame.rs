@@ -28,6 +28,7 @@ use crate::depth;
 use crate::detail;
 use crate::gpu::Gpu;
 use crate::lod;
+use crate::planetshine;
 use crate::scene::{self, Body, Scene, TileSet};
 use crate::sky::{self, Sky};
 use crate::sphere;
@@ -898,7 +899,8 @@ impl Frame {
 
         // Кораблі: та сама дорога, що в ламаних, і той самий порядок —
         // віднімання в `double`, звуження останнім кроком.
-        self.ships.upload(gpu, scene, &self.passes);
+        self.ships
+            .upload(gpu, scene, &self.passes, &self.planet.terrains);
 
         // Відбір — до проходів кадру, окремим compute-проходом (R6b). Бар'єри
         // між ним і читанням `indirect` розставляє wgpu сам: він бачить, що
@@ -2262,6 +2264,47 @@ impl Planet {
     }
 }
 
+/// Сяйво найближчої планети на точку — з тим самим альбедо, яким кадр малює
+/// поверхню під нею (T6c).
+///
+/// Живе тут, а не в `engine::planetshine`, з однієї причини: альбедо тіла з
+/// тайлсетом лежить **у кадрі**, а не в сцені. `TileSet::Loaded` — це хендл,
+/// і рушій свідомо не дає грі знати, що за ним (R5c); отже поєднати «яке
+/// тіло найближче» з «який у нього асет» може лише той, хто тримає слоти.
+fn shine_of(scene: &Scene, surfaces: &[TerrainSlot], point: [f64; 3]) -> planetshine::Shine {
+    let Some(k) = planetshine::nearest_body(scene, point) else {
+        return planetshine::Shine::none();
+    };
+    let body = &scene.bodies[k];
+
+    // Тайлсет прибитий до поверхні, тож напрямок треба перевести в систему
+    // тіла — тобто повернути **назад**. Транспонована матриця повороту й є
+    // оберненою: вона ортогональна.
+    let colour = match body.tiles {
+        TileSet::Loaded(id) => surfaces.get(id.0).and_then(|slot| slot.colour.as_ref()),
+        TileSet::Smooth => None,
+    };
+    let Some(colour) = colour else {
+        return planetshine::from_body(body, point, scene.sun);
+    };
+
+    let r = rotation(body.orientation);
+    let out = [
+        point[0] - body.centre[0],
+        point[1] - body.centre[1],
+        point[2] - body.centre[2],
+    ];
+    let local = [
+        r[0][0] * out[0] + r[1][0] * out[1] + r[2][0] * out[2],
+        r[0][1] * out[0] + r[1][1] * out[1] + r[2][1] * out[2],
+        r[0][2] * out[0] + r[1][2] * out[1] + r[2][2] * out[2],
+    ];
+    // Один канал — сірий, як і сама поверхня в кадрі: `surface_albedo`
+    // повертає `float3(unit · scale)`, а не колір тіла (T3b).
+    let unit = colour.under(local, 0);
+    planetshine::from_body_albedo(body, point, scene.sun, [unit; 3])
+}
+
 impl Ships {
     fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Ships {
         let module = gpu
@@ -2492,7 +2535,7 @@ impl Ships {
     /// Світова позиція вершини будується як `центр + R·(h·s)`, тобто в тому
     /// самому порядку, що початок патча (R1d): множення на висоту йде **до**
     /// віднімання камери, і жодне мале число не додається до великого двічі.
-    fn upload(&mut self, gpu: &Gpu, scene: &Scene, passes: &[Pass]) {
+    fn upload(&mut self, gpu: &Gpu, scene: &Scene, passes: &[Pass], surfaces: &[TerrainSlot]) {
         if scene.ships.is_empty() {
             return;
         }
@@ -2530,7 +2573,7 @@ impl Ships {
             // Сяйво планети рахується **раз на корабель** (T6): воно залежить
             // від того, де корабель висить, а не від того, де його вершина.
             // Напрямок — у камерні осі, як усе інше в цьому пайплайні.
-            let shine = crate::planetshine::nearest(scene, ship.centre);
+            let shine = shine_of(scene, surfaces, ship.centre);
             let shine_dir = scene.camera.rotate(shine.direction);
             let shine_rgb = shine.irradiance.map(|v| v as f32);
 

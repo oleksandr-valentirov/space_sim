@@ -33,10 +33,14 @@
 //! рівно над термінатором і ніде більше.
 //!
 //! Усі три знімає одна й та сама робота — SH-проба з інтегруванням по шапці,
-//! як і написано в PROJECT.md §7. Сьогодні її нема на чому перевіряти:
-//! **колір поверхні під кораблем береться з `Body::colour`**, бо дістати його
-//! з колірного тайлсета нема чим — оберненого відображення «напрямок →
-//! патч» у `cubesphere` не існує. Це і є те, чого крок свідомо не робить.
+//! як і написано в PROJECT.md §7. Спільне в них те, що кожне видно лише на
+//! **формі** диска, тобто там, де сьогодні нема чого міряти: сяйво входить у
+//! кадр одним напрямком і трьома числами.
+//!
+//! А от **альбедо під кораблем більше не спрощене**: тіло з колірним
+//! тайлсетом віддає відлік асета (`Colour::under`, T6c), тобто над морем
+//! корабель підсвічений слабше, ніж над материком, і це виміряне число, а не
+//! правдоподібність.
 
 use crate::scene::{Body, Scene};
 
@@ -58,8 +62,34 @@ impl Shine {
     }
 }
 
-/// Скільки світить тіло `body` на точку `point`.
+/// Скільки світить тіло `body` на точку `point` своїм кольором.
+///
+/// Для тіла з колірним тайлсетом правильна відповідь інша — там альбедо
+/// різне в різних місцях, і його бере [`from_body_albedo`]. Кадр викликає
+/// саме її, бо тайлсет лежить у нього; ця лишається для тіл без асета й для
+/// перевірок самої геометрії.
 pub fn from_body(body: &Body, point: [f64; 3], sun: [f64; 3]) -> Shine {
+    let albedo = [
+        f64::from(body.colour[0]),
+        f64::from(body.colour[1]),
+        f64::from(body.colour[2]),
+    ];
+    from_body_albedo(body, point, sun, albedo)
+}
+
+/// Те саме, але альбедо поверхні під точкою задане ззовні.
+///
+/// Розділено рівно тому, що **альбедо в кадрі береться з двох різних місць**:
+/// тіло без тайлсета малюється своїм `Body::colour`, тіло з тайлсетом —
+/// відліком асета, і `Body::colour` у нього тоді не бере участі взагалі
+/// (`surface_albedo` у `patch.slang`). Сяйво мусить нести те саме альбедо,
+/// яким пофарбована поверхня, інакше корабель світився б від планети одного
+/// кольору над планетою іншого.
+///
+/// ⚠ Правило матеріалу (`engine::material`) сюди не входить: воно множить
+/// яскравість на нахил і шорсткість у межах ±80%, а вибірка тут іде з
+/// найгрубішого рівня піраміди, де нахилу такого масштабу вже немає.
+pub fn from_body_albedo(body: &Body, point: [f64; 3], sun: [f64; 3], albedo: [f64; 3]) -> Shine {
     let to_centre = [
         body.centre[0] - point[0],
         body.centre[1] - point[1],
@@ -89,9 +119,9 @@ pub fn from_body(body: &Body, point: [f64; 3], sun: [f64; 3]) -> Shine {
     Shine {
         direction: down,
         irradiance: [
-            f64::from(body.colour[0]) * lit * form,
-            f64::from(body.colour[1]) * lit * form,
-            f64::from(body.colour[2]) * lit * form,
+            albedo[0] * lit * form,
+            albedo[1] * lit * form,
+            albedo[2] * lit * form,
         ],
     }
 }
@@ -104,8 +134,21 @@ pub fn from_body(body: &Body, point: [f64; 3], sun: [f64; 3]) -> Shine {
 /// не видно взагалі. Сума знадобиться тоді, коли з'явиться сцена з двома
 /// тілами на порівнянній відстані.
 pub fn nearest(scene: &Scene, point: [f64; 3]) -> Shine {
-    let mut best: Option<(f64, &Body)> = None;
-    for body in &scene.bodies {
+    match nearest_body(scene, point) {
+        Some(k) => from_body(&scene.bodies[k], point, scene.sun),
+        None => Shine::none(),
+    }
+}
+
+/// Яке тіло сцени найближче до точки — індексом, а не посиланням.
+///
+/// Індекс потрібен саме кадру: тайлсет лежить не в `Body`, а в слоті кадру
+/// (`TileSet::Loaded` — це хендл, рушій не знає про формат асета), тож
+/// відповідь «ось тіло» ще не дає альбедо. Індексом, а не посиланням, —
+/// правило стилю проєкту (CLAUDE.md).
+pub fn nearest_body(scene: &Scene, point: [f64; 3]) -> Option<usize> {
+    let mut best: Option<(f64, usize)> = None;
+    for (k, body) in scene.bodies.iter().enumerate() {
         let d = [
             body.centre[0] - point[0],
             body.centre[1] - point[1],
@@ -113,13 +156,10 @@ pub fn nearest(scene: &Scene, point: [f64; 3]) -> Shine {
         ];
         let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() - body.radius_m;
         if best.is_none_or(|(previous, _)| distance < previous) {
-            best = Some((distance, body));
+            best = Some((distance, k));
         }
     }
-    match best {
-        Some((_, body)) => from_body(body, point, scene.sun),
-        None => Shine::none(),
-    }
+    best.map(|(_, k)| k)
 }
 
 #[cfg(test)]

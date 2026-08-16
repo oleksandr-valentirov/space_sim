@@ -595,6 +595,40 @@ impl Colour {
         f64::from(self.node(index, a, b, channel)) * f64::from(self.scale) / 255.0
     }
 
+    /// Відбивна здатність у напрямку `direction` від центра тіла (T6c).
+    ///
+    /// Напрямок у **системі тіла**: обертання планети знімає викликач, бо
+    /// тайлсет прибитий до поверхні, а не до світу.
+    ///
+    /// ## Чому найгрубіший рівень, а не найдрібніший
+    ///
+    /// Питання, заради якого ця вибірка існує, — «яким світлом планета
+    /// підсвічує корабель». Джерело там **диск у сотні кілометрів**, а не
+    /// точка: з висоти 100 км над Місяцем видима шапка має понад 800 км
+    /// упоперек. Найдрібніший рівень піраміди відповів би з роздільністю
+    /// 1.3 км — тобто пообіцяв би точність, якої в самій задачі немає, і
+    /// сяйво мигтіло б від кожного кратера під кораблем.
+    ///
+    /// Нульовий рівень же **усереднений за побудовою**: його вузли зібрані
+    /// ланцюгом удвічі грубіших сіток (T3c), а не проріджені. Вузол там —
+    /// 85 км на Місяці, тобто якраз масштаб, на якому море відрізняється від
+    /// материка, і саме це число крок T6 і міряє.
+    pub fn under(&self, direction: [f64; 3], channel: u32) -> f64 {
+        let at = crate::cubesphere::locate(direction);
+        let tile = index(
+            self.levels,
+            &Patch {
+                face: at.face,
+                level: 0,
+                i: 0,
+                j: 0,
+            },
+        )
+        .expect("нульовий рівень є в будь-якій піраміді");
+        let node = |v: f64| (v * SIDE as f64).round().clamp(0.0, SIDE as f64) as i32;
+        self.reflectance(tile, node(at.s), node(at.t), channel)
+    }
+
     /// Байти файлу.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(COLOUR_HEADER_BYTES + self.tiles.len());
@@ -949,5 +983,68 @@ mod tests {
 
         assert_eq!(height_step, 0.5, "висоту той самий патч бере в предка");
         assert_eq!(height_origin, [16.0, 16.0], "і дивиться в його половину");
+    }
+
+    /// Вибірка за напрямком потрапляє в ту грань і той вузол, які видно.
+    ///
+    /// Фікстура — **мітка на грань**: усі вузли тайла нульового рівня несуть
+    /// номер своєї грані, тож відповідь однозначно називає грань, а не
+    /// «щось схоже». Напрямки беруться вздовж осей, де правильна грань відома
+    /// без обчислень.
+    #[test]
+    fn a_direction_reads_the_face_it_points_at() {
+        let levels = 2;
+        let mut grids = Vec::with_capacity(count(levels));
+        for tile in 0..count(levels) {
+            // Тайли нульового рівня йдуть перші й по одному на грань.
+            let mark = if tile < FACES { 40 * tile + 10 } else { 0 };
+            grids.push(vec![mark as u8; Colour::tile_len(1)]);
+        }
+        let colour = Colour::build(levels, 1, 1.0, &grids);
+
+        let axis = [
+            ([1.0, 0.0, 0.0], 0),
+            ([-1.0, 0.0, 0.0], 1),
+            ([0.0, 1.0, 0.0], 2),
+            ([0.0, -1.0, 0.0], 3),
+            ([0.0, 0.0, 1.0], 4),
+            ([0.0, 0.0, -1.0], 5),
+        ];
+        for (direction, face) in axis {
+            let expected = f64::from(40 * face as u8 + 10) / 255.0;
+            let got = colour.under(direction, 0);
+            assert!(
+                (got - expected).abs() < 1e-12,
+                "напрямок {direction:?} прочитав {got} замість грані {face} ({expected})"
+            );
+        }
+    }
+
+    /// Усередині грані вибірка розрізняє місця, а не віддає одне число.
+    ///
+    /// Це і є те, заради чого `under` існує: над темним місцем сяйво мусить
+    /// бути іншим, ніж над світлим. Фікстура — рампа по вузлу `a` в межах
+    /// однієї грані, і два напрямки на її протилежних краях мусять дати
+    /// краї рампи.
+    #[test]
+    fn inside_one_face_the_sample_moves_with_the_direction() {
+        let levels = 1;
+        let mut grid = vec![0u8; Colour::tile_len(1)];
+        for a in 0..STORED {
+            for b in 0..STORED {
+                grid[a * STORED + b] = (a * 255 / (STORED - 1)) as u8;
+            }
+        }
+        let mut grids = vec![vec![0u8; Colour::tile_len(1)]; count(levels)];
+        grids[4] = grid; // грань +Z
+        let colour = Colour::build(levels, 1, 1.0, &grids);
+
+        // Грань +Z: `u → x`, `v → y`. Отже рампа йде по `x`.
+        let low = colour.under([-0.9, 0.0, 1.0], 0);
+        let high = colour.under([0.9, 0.0, 1.0], 0);
+        let middle = colour.under([0.0, 0.0, 1.0], 0);
+        println!("  рампа: {low:.3} … {middle:.3} … {high:.3}");
+        assert!(low < middle && middle < high, "рампа не читається");
+        assert!(high - low > 0.5, "розмах рампи з'їхав: {low} … {high}");
     }
 }
