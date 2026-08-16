@@ -99,7 +99,8 @@ fn every_node_is_the_source_read_a_second_way() {
 
                         // Другий шлях: напрямок → кути → сітка, без жодного
                         // виклику з кукера.
-                        let source = &chain[source_for(&chain, level)];
+                        let rads = chain.iter().map(Albedo::pixel_rad).collect::<Vec<f64>>();
+                        let source = &chain[source_for(&rads, level)];
                         let [x, y, z] = patch.vertex(a, b, 1.0);
                         let flat = (x * x + y * y).sqrt();
                         let want = source.sample(z.atan2(flat), y.atan2(x));

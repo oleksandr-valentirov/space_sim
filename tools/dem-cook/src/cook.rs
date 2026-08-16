@@ -30,6 +30,7 @@
 //! і CPU поза інтегратором.
 
 use crate::albedo::Albedo;
+use crate::etopo::{self, Relief};
 use crate::Grid;
 use engine::cubesphere::{Edge, Patch, FACES, SIDE};
 use engine::tiles::{self, Colour, Terrain, HALO, STORED};
@@ -106,6 +107,69 @@ pub fn build(grid: &Grid, levels: u32) -> Terrain {
     Terrain::build(levels, grid.reference_m, scale, &grids)
 }
 
+/// Скукувати тайлсет висот Землі з ETOPO.
+///
+/// Окремо від [`cook`], а не прапорцем усередині: спільним у них лишається
+/// обхід ([`direction`]) і формат, а джерела різні в усьому — одиниці,
+/// опорний радіус, ланцюг, реєстрація довготи.
+pub fn cook_earth(source: &Path, out: &Path, levels: u32) -> Result<String, String> {
+    let relief = Relief::read(source)?;
+    let terrain = build_earth(&relief, levels);
+    let bytes = terrain.to_bytes();
+
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(out, &bytes).map_err(|e| format!("{}: {e}", out.display()))?;
+
+    Ok(format!(
+        "{} — {} рівнів, {} тайлів, {:.1} МіБ; найнижча точка {:.1} м, суші {:.2}%",
+        out.display(),
+        levels,
+        Terrain::count(levels),
+        bytes.len() as f64 / (1024.0 * 1024.0),
+        terrain.lowest_m(),
+        100.0 * relief.land_fraction(),
+    ))
+}
+
+/// Піраміда висот Землі — без запису на диск, щоб тест міг звірити двічі.
+pub fn build_earth(relief: &Relief, levels: u32) -> Terrain {
+    let chain = relief.chain();
+    let rads = chain.iter().map(Relief::pixel_rad).collect::<Vec<f64>>();
+
+    let mut grids = Vec::with_capacity(Terrain::count(levels));
+    for level in 0..levels {
+        let source = &chain[source_for(&rads, level)];
+        let side = 1u32 << level;
+        for face in 0..FACES {
+            for i in 0..side {
+                for j in 0..side {
+                    let patch = Patch { face, level, i, j };
+                    let mut tile = Vec::with_capacity(STORED * STORED);
+                    for a in 0..STORED as isize {
+                        for b in 0..STORED as isize {
+                            let (a, b) = (a - HALO as isize, b - HALO as isize);
+                            let metres = match direction(&patch, a, b) {
+                                Some(unit) => source.sample_direction_m(unit),
+                                // Кут ореолу: сусіда через ребро там немає, і
+                                // ніхто його не читає (`engine::tiles`).
+                                None => 0.0,
+                            };
+                            // Одиниця зберігання — метр, тобто та сама, у якій
+                            // сітка вже лежить; округлення тут друге й останнє.
+                            tile.push(quantise(metres, 1.0));
+                        }
+                    }
+                    grids.push(tile);
+                }
+            }
+        }
+    }
+
+    Terrain::build(levels, etopo::REFERENCE_M, 1.0, &grids)
+}
+
 /// Скукувати колірний тайлсет із мозаїки WAC.
 pub fn cook_colour(source: &Path, out: &Path, levels: u32) -> Result<String, String> {
     let map = Albedo::read(source)?;
@@ -134,10 +198,11 @@ pub fn cook_colour(source: &Path, out: &Path, levels: u32) -> Result<String, Str
 /// шкали, і платиться вона в тих самих байтах, що й сам ассет.
 pub fn build_colour(map: &Albedo, levels: u32) -> (Colour, usize) {
     let chain = map.chain();
+    let rads = chain.iter().map(Albedo::pixel_rad).collect::<Vec<f64>>();
     let mut saturated = 0usize;
     let mut grids = Vec::with_capacity(tiles::count(levels));
     for level in 0..levels {
-        let source = &chain[source_for(&chain, level)];
+        let source = &chain[source_for(&rads, level)];
         let side = 1u32 << level;
         for face in 0..FACES {
             for i in 0..side {
@@ -178,11 +243,14 @@ pub fn build_colour(map: &Albedo, levels: u32) -> (Colour, usize) {
 /// Дрібніша сітка дала б точкову вибірку там, де вузол накриває тисячі
 /// пікселів (плямистий шум замість карти); грубіша викинула б деталь, яку
 /// вузол ще здатен нести.
-pub fn source_for(chain: &[Albedo], level: u32) -> usize {
+///
+/// Параметр — самі кути, а не ланцюг: сіток тепер три різні типи (висоти
+/// Місяця, мозаїка Місяця, висоти й колір Землі), а питання до них одне.
+pub fn source_for(pixel_rad: &[f64], level: u32) -> usize {
     let node_rad = std::f64::consts::FRAC_PI_2 / f64::from(SIDE as u32 * (1u32 << level));
     let mut best = 0;
-    for (index, map) in chain.iter().enumerate() {
-        if map.pixel_rad() <= node_rad {
+    for (index, rad) in pixel_rad.iter().enumerate() {
+        if *rad <= node_rad {
             best = index;
         }
     }

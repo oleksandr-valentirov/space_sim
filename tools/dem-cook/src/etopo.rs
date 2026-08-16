@@ -315,6 +315,51 @@ impl Relief {
     pub fn pixel_rad(&self) -> f64 {
         std::f64::consts::PI / (180.0 * self.per_degree)
     }
+
+    /// Та сама сітка, грубіша на крок ланцюга: кожен відлік — середнє блоку.
+    ///
+    /// ⚠ **Висоти теж потребують ланцюга, і це відмінність від Місяця.** Там
+    /// джерело (7.6 км) грубіше за вузол найглибшого рівня (5.3 км), тож
+    /// точкова вибірка чесна на всіх рівнях. Тут джерело вп'ятеро дрібніше за
+    /// вузол, а на рівні 0 — у тридцять тисяч разів, і без усереднення
+    /// далекий силует Землі складався б із випадкових пікселів джерела: то
+    /// западина, то гора.
+    ///
+    /// Середнє береться в `f64` і округлюється один раз — інакше сім кроків
+    /// ланцюга внесли б сім округлень по пів метра кожне.
+    pub fn reduced(&self) -> Option<Relief> {
+        let step = crate::reduce_step(self.samples, self.lines)?;
+        let (samples, lines) = (self.samples / step, self.lines / step);
+        let mut raw = Vec::with_capacity(samples * lines);
+        for line in 0..lines {
+            for sample in 0..samples {
+                let mut sum = 0.0f64;
+                for dl in 0..step {
+                    for ds in 0..step {
+                        let l = step * line + dl;
+                        let s = step * sample + ds;
+                        sum += f64::from(self.raw[l * self.samples + s]);
+                    }
+                }
+                raw.push(quantise(sum / (step * step) as f64));
+            }
+        }
+        Some(Relief {
+            samples,
+            lines,
+            per_degree: self.per_degree / step as f64,
+            raw,
+        })
+    }
+
+    /// Ланцюг сіток, кожна грубіша за попередню; нульова — ця сама (T3c).
+    pub fn chain(&self) -> Vec<Relief> {
+        let mut out = vec![self.clone()];
+        while let Some(next) = out.last().expect("ланцюг не порожній").reduced() {
+            out.push(next);
+        }
+        out
+    }
 }
 
 /// Метри з плаваючою комою → цілі метри, з насиченням замість загортання.
