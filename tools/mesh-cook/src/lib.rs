@@ -51,7 +51,7 @@ pub fn cook(path: &Path) -> Result<Cooked, String> {
         }
     }
 
-    let model = Model::from_metres(loaded.mesh)?;
+    let model = Model::from_metres(loaded.mesh, loaded.paint)?;
     Ok(Cooked {
         model,
         published: loaded.published,

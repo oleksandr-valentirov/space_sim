@@ -39,10 +39,13 @@ use crate::sphere::Mesh;
 pub const MAGIC: [u8; 8] = *b"SSMSH\0\0\0";
 
 /// Версія формату. Росте при будь-якій зміні розкладки.
-pub const VERSION: u32 = 1;
+///
+/// Версія 2 (T9b) додала фарбу: три `f32` на вершину після нормалей, і слово
+/// у заголовку про те, є вона взагалі чи ні.
+pub const VERSION: u32 = 2;
 
-/// Підпис, версія, дві кількості й два числа моделі.
-const HEADER_BYTES: usize = 8 + 4 + 4 + 4 + 4 + 4;
+/// Підпис, версія, дві кількості, прапорець фарби й два числа моделі.
+const HEADER_BYTES: usize = 8 + 4 + 4 + 4 + 4 + 4 + 4;
 
 /// Меш моделі разом з тим, що про неї треба знати.
 #[derive(Clone, Debug)]
@@ -53,6 +56,18 @@ pub struct Model {
     pub extent: f64,
     /// Геометрія, нормалізована до одиничної висоти.
     pub mesh: Mesh,
+    /// Базовий колір на вершину, **лінійне світло**; порожньо — фарби немає.
+    ///
+    /// На вершину, а не діапазонами за матеріалами: у glTF це `COLOR_0`, і
+    /// модель лишається **одним примітивом**, тобто одним викликом малювання
+    /// і жодного нового поняття у форматі. Ціна відома й заплачена — розриви
+    /// кольору розщеплюють вершини так само, як розриви нормалі.
+    ///
+    /// ⚠ Тільки колір. Шорсткість і метал лишаються сталими на корабель:
+    /// `COLOR_0` їх не везе, а другий шлях для них — це вже діапазони за
+    /// матеріалами, тобто рішення формату, і воно чекає на першу деталь, якій
+    /// цього справді бракує (скло ілюмінатора поки що обходиться кольором).
+    pub paint: Vec<[f32; 3]>,
 }
 
 impl Model {
@@ -60,9 +75,16 @@ impl Model {
     ///
     /// Один код на кукер і на будь-якого іншого викликача: два способи
     /// поділити на довжину дали б два різні кораблі.
-    pub fn from_metres(mesh: Mesh) -> Result<Model, String> {
+    pub fn from_metres(mesh: Mesh, paint: Vec<[f32; 3]>) -> Result<Model, String> {
         if mesh.positions.is_empty() {
             return Err("меш без вершин".to_string());
+        }
+        if !paint.is_empty() && paint.len() != mesh.positions.len() {
+            return Err(format!(
+                "фарби на {} вершин при {} вершинах геометрії",
+                paint.len(),
+                mesh.positions.len()
+            ));
         }
         let mut low = f64::INFINITY;
         let mut high = f64::NEG_INFINITY;
@@ -95,18 +117,21 @@ impl Model {
             height_m,
             extent,
             mesh,
+            paint,
         })
     }
 
     /// Байти файлу.
     pub fn to_bytes(&self) -> Vec<u8> {
         let vertices = self.mesh.positions.len();
+        let stride = if self.paint.is_empty() { 24 } else { 36 };
         let mut out =
-            Vec::with_capacity(HEADER_BYTES + vertices * 24 + self.mesh.indices.len() * 4);
+            Vec::with_capacity(HEADER_BYTES + vertices * stride + self.mesh.indices.len() * 4);
         out.extend_from_slice(&MAGIC);
         out.extend_from_slice(&VERSION.to_le_bytes());
         out.extend_from_slice(&(vertices as u32).to_le_bytes());
         out.extend_from_slice(&(self.mesh.indices.len() as u32).to_le_bytes());
+        out.extend_from_slice(&u32::from(!self.paint.is_empty()).to_le_bytes());
         out.extend_from_slice(&(self.height_m as f32).to_le_bytes());
         out.extend_from_slice(&(self.extent as f32).to_le_bytes());
         for p in &self.mesh.positions {
@@ -116,6 +141,11 @@ impl Model {
         }
         for n in &self.mesh.normals {
             for v in n {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        for c in &self.paint {
+            for v in c {
                 out.extend_from_slice(&v.to_le_bytes());
             }
         }
@@ -149,10 +179,12 @@ impl Model {
         }
         let vertices = word(12) as usize;
         let indices = word(16) as usize;
-        let height_m = f64::from(float(20));
-        let extent = f64::from(float(24));
+        let painted = word(20) == 1;
+        let height_m = f64::from(float(24));
+        let extent = f64::from(float(28));
 
-        let need = HEADER_BYTES + vertices * 24 + indices * 4;
+        let stride = if painted { 36 } else { 24 };
+        let need = HEADER_BYTES + vertices * stride + indices * 4;
         if bytes.len() != need {
             return Err(format!(
                 "файл на {} байтів, а {vertices} вершин і {indices} індексів вимагають {need}",
@@ -172,6 +204,14 @@ impl Model {
             normals.push([float(at), float(at + 4), float(at + 8)]);
             at += 12;
         }
+        let mut paint = Vec::new();
+        if painted {
+            paint.reserve(vertices);
+            for _ in 0..vertices {
+                paint.push([float(at), float(at + 4), float(at + 8)]);
+                at += 12;
+            }
+        }
         let mut list = Vec::with_capacity(indices);
         for _ in 0..indices {
             let index = word(at);
@@ -185,6 +225,7 @@ impl Model {
         Ok(Model {
             height_m,
             extent,
+            paint,
             mesh: Mesh {
                 positions,
                 normals,
@@ -271,7 +312,7 @@ mod tests {
     /// Нормалізація ділить на довжину вздовж `+Z` і більше ні на що.
     #[test]
     fn a_model_comes_out_one_unit_long() {
-        let model = Model::from_metres(cube(6.0)).expect("куб — це модель");
+        let model = Model::from_metres(cube(6.0), Vec::new()).expect("куб — це модель");
         assert!((model.height_m - 6.0).abs() < 1e-12);
         let low = model
             .mesh
@@ -298,7 +339,7 @@ mod tests {
     /// Файл повертає рівно те, що в нього поклали.
     #[test]
     fn a_model_survives_the_round_trip() {
-        let model = Model::from_metres(cube(6.0)).expect("куб — це модель");
+        let model = Model::from_metres(cube(6.0), Vec::new()).expect("куб — це модель");
         let read = Model::from_bytes(&model.to_bytes()).expect("свій же файл має читатися");
 
         assert_eq!(read.height_m as f32, model.height_m as f32);
@@ -312,10 +353,46 @@ mod tests {
         }
     }
 
+    /// Фарбована модель теж повертає рівно те, що в неї поклали, — і
+    /// нефарбована лишається нефарбованою.
+    ///
+    /// Дві половини одного питання: у файлі про фарбу є **слово в заголовку**,
+    /// і саме воно вирішує, скільки байтів на вершину читати далі. Помилка тут
+    /// не дала б помилки читання — вона зсунула б індекси, тобто віддала б
+    /// правдоподібний меш з переплутаною геометрією.
+    #[test]
+    fn paint_survives_the_round_trip() {
+        let mesh = cube(6.0);
+        let paint: Vec<[f32; 3]> = (0..mesh.positions.len())
+            .map(|k| [k as f32 / 16.0, 0.25, 0.5])
+            .collect();
+        let model = Model::from_metres(mesh, paint.clone()).expect("куб — це модель");
+        let read = Model::from_bytes(&model.to_bytes()).expect("свій же файл має читатися");
+        assert_eq!(read.paint, paint);
+        assert_eq!(read.mesh.indices, model.mesh.indices);
+        assert_eq!(read.mesh.normals, model.mesh.normals);
+
+        let plain = Model::from_metres(cube(6.0), Vec::new()).expect("куб — це модель");
+        let read = Model::from_bytes(&plain.to_bytes()).expect("свій же файл має читатися");
+        assert!(read.paint.is_empty(), "фарба взялася нізвідки");
+        assert!(
+            plain.to_bytes().len() < model.to_bytes().len(),
+            "нефарбований файл не став коротшим"
+        );
+    }
+
+    /// Фарба не на ту кількість вершин — помилка, а не мовчазна обрізка.
+    #[test]
+    fn paint_of_the_wrong_length_is_an_error() {
+        let message = Model::from_metres(cube(6.0), vec![[1.0, 0.0, 0.0]; 3])
+            .expect_err("трьох кольорів на куб мало");
+        assert!(message.contains("фарби"), "не те повідомлення: {message}");
+    }
+
     /// Чужий файл, чужа версія й обрізаний файл — це помилки, а не сміття.
     #[test]
     fn a_wrong_file_says_what_is_wrong() {
-        let model = Model::from_metres(cube(6.0)).expect("куб — це модель");
+        let model = Model::from_metres(cube(6.0), Vec::new()).expect("куб — це модель");
         let bytes = model.to_bytes();
 
         let message = Model::from_bytes(&bytes[..HEADER_BYTES - 1]).expect_err("короткий файл");

@@ -440,6 +440,9 @@ struct Ships {
     /// Корабель одиничної висоти в системі корабля — те, що масштабується й
     /// повертається на CPU.
     mesh: crate::sphere::Mesh,
+    /// Фарба меша, вершина в вершину з `mesh`; порожньо — модель нефарбована,
+    /// і тоді корпус має рівно той колір, який дала сцена (заглушка V1).
+    paint: Vec<[f32; 3]>,
 
     position_buffer: wgpu::Buffer,
     normal_buffer: wgpu::Buffer,
@@ -552,7 +555,7 @@ impl Frame {
     /// Масштаб лишається за грою: у файлі меш одиничної висоти, а `height_m`
     /// і `extent` з нього гра кладе у `Scene::Ship` сама.
     pub fn load_ship(&mut self, gpu: &Gpu, model: &crate::mesh::Model) {
-        self.ships.load(gpu, &model.mesh);
+        self.ships.load(gpu, &model.mesh, &model.paint);
     }
 
     /// Рельєф **і колір** одним хендлом (етап T, T3b).
@@ -2523,6 +2526,9 @@ impl Ships {
             index_buffer,
             index_count,
             vertices_per_ship,
+            // Заглушка V1 фарби не має: її колір — це `Ship::colour`, і саме
+            // тому кадр без ассета лишається бітово тим, чим був до T9b.
+            paint: Vec::new(),
             mesh,
             position_buffer,
             normal_buffer,
@@ -2545,7 +2551,7 @@ impl Ships {
     /// викликача, гірша за свою відсутність (CLAUDE.md). Другий тип корпусу
     /// приведе за собою і хендл у `Scene::Ship`, як `TileSet::Loaded` — але
     /// разом із собою, а не наперед.
-    fn load(&mut self, gpu: &Gpu, mesh: &crate::sphere::Mesh) {
+    fn load(&mut self, gpu: &Gpu, mesh: &crate::sphere::Mesh, paint: &[[f32; 3]]) {
         let index_bytes: Vec<u8> = mesh.indices.iter().flat_map(|i| i.to_le_bytes()).collect();
         self.index_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("ship indices"),
@@ -2557,6 +2563,7 @@ impl Ships {
         self.index_count = mesh.indices.len() as u32;
         self.vertices_per_ship = mesh.positions.len();
         self.mesh = mesh.clone();
+        self.paint = paint.to_vec();
 
         // Вершинні буфери перевиділяються тут, а не при першому `upload`:
         // їхній розмір рахується з `vertices_per_ship`, і лишити старий
@@ -2653,7 +2660,13 @@ impl Ships {
                 ]
             };
 
-            for (local, normal) in self.mesh.positions.iter().zip(&self.mesh.normals) {
+            for (index, (local, normal)) in self
+                .mesh
+                .positions
+                .iter()
+                .zip(&self.mesh.normals)
+                .enumerate()
+            {
                 let offset = turn([
                     local[0] * ship.height_m,
                     local[1] * ship.height_m,
@@ -2679,7 +2692,18 @@ impl Ships {
                     self.normal_bytes.extend_from_slice(&value.to_le_bytes());
                 }
 
-                for value in ship.colour {
+                // Фарба моделі **множиться** на колір зі сцени, а не заміняє
+                // його: так `Ship::colour` лишається тим, чим був, — тоном на
+                // корабель, — і гра може підфарбувати борт, не переписуючи
+                // ассет. Білий тон (одиниця) віддає фарбу як є.
+                let paint = self.paint.get(index).copied().unwrap_or([1.0; 3]);
+                let base = [
+                    ship.colour[0] * paint[0],
+                    ship.colour[1] * paint[1],
+                    ship.colour[2] * paint[2],
+                    ship.colour[3],
+                ];
+                for value in base {
                     self.colour_bytes.extend_from_slice(&value.to_le_bytes());
                 }
                 for value in [ship.roughness, ship.metallic] {

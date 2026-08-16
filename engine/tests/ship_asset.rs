@@ -76,7 +76,7 @@ fn wedge(length_m: f64) -> Mesh {
 }
 
 fn model() -> Model {
-    Model::from_metres(wedge(MODEL_M)).expect("клин — це модель")
+    Model::from_metres(wedge(MODEL_M), Vec::new()).expect("клин — це модель")
 }
 
 fn scene_with(orientation: [f64; 4], extent: f64) -> Scene {

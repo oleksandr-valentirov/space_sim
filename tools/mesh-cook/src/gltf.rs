@@ -26,6 +26,7 @@ use std::path::Path;
 
 /// Типи компонентів glTF, які тут щось означають.
 const FLOAT: u64 = 5126;
+const UNSIGNED_BYTE: u64 = 5121;
 const UNSIGNED_SHORT: u64 = 5123;
 const UNSIGNED_INT: u64 = 5125;
 
@@ -47,6 +48,8 @@ pub struct Loaded {
     pub published: Published,
     /// Тип індексів у файлі — щоб кукер міг сказати, що саме прочитав.
     pub index_component: u64,
+    /// `COLOR_0`, якщо він у файлі є; порожньо — модель нефарбована.
+    pub paint: Vec<[f32; 3]>,
 }
 
 /// Прочитати `.gltf` разом із його `.bin`.
@@ -99,6 +102,23 @@ pub fn load(path: &Path) -> Result<Loaded, String> {
         return Err(format!("{} індексів — це не трикутники", list.len()));
     }
 
+    // Фарба необов'язкова: модель без неї — це модель до T9b, і читач мусить
+    // прочитати її так само, як читав тоді.
+    let paint = match accessor_index(primitive, "/attributes/COLOR_0") {
+        Ok(colour) => {
+            let read = read_colour(&root, &buffers, colour)?;
+            if read.len() != positions.len() {
+                return Err(format!(
+                    "{} кольорів проти {} позицій",
+                    read.len(),
+                    positions.len()
+                ));
+            }
+            read
+        }
+        Err(_) => Vec::new(),
+    };
+
     let published = published_bounds(&root, position)?;
     Ok(Loaded {
         mesh: Mesh {
@@ -111,6 +131,7 @@ pub fn load(path: &Path) -> Result<Loaded, String> {
         },
         published,
         index_component,
+        paint,
     })
 }
 
@@ -214,6 +235,74 @@ fn view<'a>(
         count,
         component,
     })
+}
+
+/// `COLOR_0` — базовий колір на вершину, **лінійне світло** за специфікацією
+/// glTF, тобто рівно те, чим фарбує кадр; перетворювати його нікуди не треба.
+///
+/// Три подання замість одного тут не примха читача: Blender сам вибирає, чим
+/// писати колір, і на цій моделі вибрав нормалізований `UNSIGNED_SHORT`.
+/// Прийняти лише `float` означало б читач, який ламається від того, що хтось
+/// перемкнув тип атрибута в `.blend`.
+///
+/// Альфа відкидається: у моделі вона одиниця скрізь, а прозорість корпусу —
+/// це окремий прохід рендера, а не канал у кольорі.
+fn read_colour(
+    root: &Value,
+    buffers: &[Vec<u8>],
+    accessor: usize,
+) -> Result<Vec<[f32; 3]>, String> {
+    let a = root
+        .pointer(&format!("/accessors/{accessor}"))
+        .ok_or_else(|| format!("немає акесора {accessor}"))?;
+    let channels = match a.get("type").and_then(Value::as_str) {
+        Some("VEC3") => 3,
+        Some("VEC4") => 4,
+        other => return Err(format!("COLOR_0 типу {other:?}, а буває VEC3 або VEC4")),
+    };
+    let normalized = a
+        .get("normalized")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let component = a
+        .get("componentType")
+        .and_then(Value::as_u64)
+        .ok_or("акесор без componentType")?;
+    let (size, scale) = match component {
+        FLOAT => (4, 1.0),
+        UNSIGNED_SHORT if normalized => (2, 1.0 / 65535.0),
+        UNSIGNED_BYTE if normalized => (1, 1.0 / 255.0),
+        other => {
+            return Err(format!(
+                "COLOR_0: componentType {other}, normalized {normalized} — \
+                 читач розуміє float і нормалізовані ushort/ubyte"
+            ))
+        }
+    };
+
+    let v = view(root, buffers, accessor, channels * size)?;
+    let mut out = Vec::with_capacity(v.count);
+    for k in 0..v.count {
+        let at = k * v.stride;
+        let mut colour = [0.0f32; 3];
+        for (c, value) in colour.iter_mut().enumerate() {
+            let byte = at + c * size;
+            *value = match component {
+                FLOAT => f32::from_le_bytes([
+                    v.bytes[byte],
+                    v.bytes[byte + 1],
+                    v.bytes[byte + 2],
+                    v.bytes[byte + 3],
+                ]),
+                UNSIGNED_SHORT => {
+                    f32::from(u16::from_le_bytes([v.bytes[byte], v.bytes[byte + 1]])) * scale
+                }
+                _ => f32::from(v.bytes[byte]) * scale,
+            };
+        }
+        out.push(colour);
+    }
+    Ok(out)
 }
 
 fn read_vec3(root: &Value, buffers: &[Vec<u8>], accessor: usize) -> Result<Vec<[f64; 3]>, String> {

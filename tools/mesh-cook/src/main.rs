@@ -41,6 +41,15 @@ fn main() {
     println!("  вершин: {}", cooked.model.mesh.positions.len());
     println!("  трикутників: {}", cooked.model.mesh.indices.len() / 3);
     println!("  індекси: componentType {}", cooked.index_component);
+    let mut palette: Vec<[u32; 3]> = cooked
+        .model
+        .paint
+        .iter()
+        .map(|c| c.map(f32::to_bits))
+        .collect();
+    palette.sort_unstable();
+    palette.dedup();
+    println!("  фарба: {} кольорів у палітрі", palette.len());
     println!("  довжина: {:.6} м", cooked.model.height_m);
     println!("  extent: {:.6} висоти", cooked.model.extent);
     println!("  об'єм: {:.6} м³", cooked.volume_m3);
