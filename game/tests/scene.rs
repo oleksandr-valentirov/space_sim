@@ -813,9 +813,19 @@ fn the_moon_stands_still_in_the_rotating_frame_and_leaves_the_inertial_one() {
         let first = shoot(&before, camera);
         let second = shoot(&after, aim(frame));
 
+        // Порівнюється **силует**, а не колір, і це рішення V5: напрямок на
+        // світило тепер приходить з ефемериди, тож за три доби термінатор
+        // Місяця встигає переповзти диск. Тінь, що поїхала, — це правильно;
+        // диск, що поїхав, — ні, і плутати їх оракулу не можна. До V5
+        // порівняння пікселів це саме й робило: 686 змінених пікселів на
+        // нерухомому диску.
+        let drawn = |shot: &Shot, x, y| {
+            let p = shot.pixel(x, y);
+            [p[0], p[1], p[2]] != frame::CLEAR_BYTES
+        };
         let differing = (0..SIDE)
             .flat_map(|y| (0..SIDE).map(move |x| (x, y)))
-            .filter(|&(x, y)| first.pixel(x, y) != second.pixel(x, y))
+            .filter(|&(x, y)| drawn(&first, x, y) != drawn(&second, x, y))
             .count();
         let (lit_first, lit_second) = (lit(&first), lit(&second));
 
@@ -982,5 +992,69 @@ fn the_earth_carries_air_and_the_moon_does_not() {
         "шар {} м над радіусом {}",
         air.thickness_m(earth.radius_m),
         earth.radius_m
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Світло з ефемериди (борг D16, крок V5)
+
+/// Напрямок на світило приходить із ефемериди й міняється з датою місії.
+///
+/// Два твердження, і кожне закриває свою половину боргу D16:
+///
+/// - **звідки.** Напрямок мусить збігтися з тим, що дає сам снапшот:
+///   одиничний вектор із Землі на Сонце. Стала, зашита в рушій, збіглася б
+///   хіба випадково;
+/// - **коли.** За сто діб місії Земля проходить майже третину оберту, і
+///   напрямок мусить піти за нею. Саме це означає «пора доби в грі залежить
+///   від дати», і саме цього не було до кроку.
+///
+/// Сто діб, а не пів року, — межа ассета: фікстура вкриває 120 діб
+/// (`core/cook/cook_fixture.c`), і за них Сонце йде на 98°, тобто скалярний
+/// добуток падає нижче 0.2. Пів року дало б −1, але поза ассетом.
+#[test]
+fn the_sun_comes_from_the_ephemeris_and_moves_with_the_date() {
+    use game::world::EARTH;
+
+    let geocentric_sun = |snapshot: &game::snapshot::WorldSnapshot| {
+        let earth = snapshot
+            .bodies
+            .iter()
+            .find(|b| b.body == EARTH)
+            .expect("Земля у снапшоті");
+        let sun = snapshot.sun.expect("Сонце в ассеті є");
+        let d = [
+            sun[0] - earth.position[0],
+            sun[1] - earth.position[1],
+            sun[2] - earth.position[2],
+        ];
+        let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        [d[0] / n, d[1] / n, d[2] / n]
+    };
+
+    let mut world = mission::world(&mission::default_asset()).expect("світ");
+    world.tick(16);
+    let before = world.snapshot();
+    let first = view::build(&before, Orbit::at_altitude(1.0e9).camera());
+
+    // Сцена інерціальна, тож напрямок у ній — рівно геоцентричний.
+    let want = geocentric_sun(&before);
+    for k in 0..3 {
+        assert!(
+            (first.sun[k] - want[k]).abs() < 1.0e-12,
+            "світло сцени {:?} не з ефемериди ({want:?})",
+            first.sun
+        );
+    }
+
+    let days = 100.0;
+    world.run_to_day(before.t + days * 86400.0, mission::DEFAULT_WARP, 64);
+    let after = world.snapshot();
+    let second = view::build(&after, Orbit::at_altitude(1.0e9).camera());
+
+    let moved: f64 = (0..3).map(|k| first.sun[k] * second.sun[k]).sum();
+    assert!(
+        moved < 0.5,
+        "за {days} діб напрямок на Сонце майже не змінився: cos = {moved}"
     );
 }

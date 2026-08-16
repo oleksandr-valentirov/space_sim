@@ -814,10 +814,16 @@ impl Frame {
         let air = body.air?;
 
         let (right, up, forward) = scene.camera.axes();
+        // Небо нормалізує напрямок саме — воно єдине, кому довжина завадила б
+        // (`Scene::sun`).
         let sun = {
-            let l = LIGHT_DIR;
+            let l = scene.sun;
             let length = (l[0] * l[0] + l[1] * l[1] + l[2] * l[2]).sqrt();
-            [l[0] / length, l[1] / length, l[2] / length]
+            [
+                (l[0] / length) as f32,
+                (l[1] / length) as f32,
+                (l[2] / length) as f32,
+            ]
         };
         let t = (FOV_Y / 2.0).tan();
         let narrow = |v: [f64; 3]| [v[0] as f32, v[1] as f32, v[2] as f32];
@@ -960,6 +966,20 @@ impl Frame {
             });
         }
     }
+}
+
+/// Напрямок на світило так, як його бачить шейдер: четвертий компонент —
+/// набивка до `float4`, не частина вектора.
+///
+/// Не нормалізує навмисно: довжина зараз масштабує дифузний член, і зміна
+/// цього — робота матеріалів M5, а не плюмбінгу V5 (`Scene::sun`).
+fn narrow_sun(scene: &Scene) -> [f32; 4] {
+    [
+        scene.sun[0] as f32,
+        scene.sun[1] as f32,
+        scene.sun[2] as f32,
+        0.0,
+    ]
 }
 
 /// Планети патчами кубосфери (ROADMAP-PLANETS.md, R1d, R1e, R2c).
@@ -1636,6 +1656,7 @@ impl Planet {
     /// Оце і є прохід планети: вибір рівня на тіло, звіряння з кешем і
     /// віднімання камери від початку кожного патча, у `double`.
     fn upload(&mut self, gpu: &Gpu, scene: &Scene, passes: &[Pass], width_px: f64, height_px: f64) {
+        let sun = narrow_sun(scene);
         let aspect = width_px / height_px;
         let camera = &scene.camera;
         let eye = camera.position();
@@ -1848,7 +1869,7 @@ impl Planet {
                 let uniforms = Uniforms {
                     projection: depth::multiply(plan.projection, view_rotation),
                     model,
-                    light_dir: [LIGHT_DIR[0], LIGHT_DIR[1], LIGHT_DIR[2], 0.0],
+                    light_dir: sun,
                     colour: COLOUR,
                     terrain: [height_scale, 0.0, 0.0, 0.0],
                     // Процедурний детайл (R7c). Гладке тіло дістає нулі: без
@@ -2105,6 +2126,7 @@ impl Ships {
         if scene.ships.is_empty() {
             return;
         }
+        let sun = narrow_sun(scene);
 
         let needed = scene.ships.len() * self.vertices_per_ship;
         if needed > self.capacity {
@@ -2168,7 +2190,7 @@ impl Ships {
                     uniform_bytes.extend_from_slice(&value.to_le_bytes());
                 }
             }
-            for value in [LIGHT_DIR[0], LIGHT_DIR[1], LIGHT_DIR[2], 0.0] {
+            for value in sun {
                 uniform_bytes.extend_from_slice(&value.to_le_bytes());
             }
             gpu.queue

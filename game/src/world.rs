@@ -29,6 +29,7 @@ use crate::plan::Plan;
 use crate::snapshot::{BodySnapshot, VesselSnapshot, WorldSnapshot};
 
 /// Індекси тіл у порядку кукера (`core/cook/cook_fixture.c`).
+pub const SUN: i32 = 0;
 pub const EARTH: i32 = 3;
 pub const MOON: i32 = 4;
 
@@ -691,6 +692,12 @@ impl World {
             warp: self.clock.warp(),
             stall: self.clock.stall(),
             bodies: self.bodies_at(t),
+            // Сонце — окремим полем, а не серед тіл: див. `WorldSnapshot::sun`.
+            sun: self
+                .eph
+                .body_state(SUN, t)
+                .ok()
+                .map(|state| [state.r.x, state.r.y, state.r.z]),
             vessels: self
                 .vessels
                 .iter()

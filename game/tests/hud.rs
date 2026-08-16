@@ -31,6 +31,8 @@ fn snapshot(warp: f64, stall: Option<Stall>) -> WorldSnapshot {
         // Тіл у цій панелі немає: час і warp від них не залежать, а порожній
         // список — законний стан сцени, а не заглушка.
         bodies: Vec::new(),
+        // Ні тіл, ні світила: панель не малює ні того, ні того.
+        sun: None,
         vessels: Vec::new(),
     }
 }
