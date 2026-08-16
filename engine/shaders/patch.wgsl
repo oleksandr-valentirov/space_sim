@@ -50,6 +50,11 @@ struct Uniforms_std140_0
 
 @binding(1) @group(1) var colours_0 : binding_array<texture_2d<f32>>;
 
+fn rsqrt_0( x_0 : f32) -> f32
+{
+    return 1.0f / sqrt(x_0);
+}
+
 struct Node_0
 {
      grid_0 : vec2<u32>,
@@ -169,9 +174,10 @@ struct VertexOutput_0
     @builtin(position) position_0 : vec4<f32>,
     @location(0) normal_1 : vec3<f32>,
     @location(1) world_0 : vec3<f32>,
-    @interpolate(flat) @location(2) colour_tile_1 : u32,
-    @location(3) colour_node_0 : vec2<f32>,
-    @location(4) tint_0 : f32,
+    @location(2) base_0 : vec3<f32>,
+    @interpolate(flat) @location(3) colour_tile_1 : u32,
+    @location(4) colour_node_0 : vec2<f32>,
+    @location(5) tint_0 : f32,
 };
 
 fn place_0( slot_2 : u32,  vertex_1 : ptr<function, PatchVertex_std430_0>,  grid_1 : vec2<u32>,  offset_1 : vec3<f32>) -> VertexOutput_0
@@ -185,6 +191,7 @@ fn place_0( slot_2 : u32,  vertex_1 : ptr<function, PatchVertex_std430_0>,  grid
     output_0.position_0 = (((vec4<f32>(world_1, 1.0f)) * (mat4x4<f32>(uniforms_0.projection_0.data_0[i32(0)][i32(0)], uniforms_0.projection_0.data_0[i32(1)][i32(0)], uniforms_0.projection_0.data_0[i32(2)][i32(0)], uniforms_0.projection_0.data_0[i32(3)][i32(0)], uniforms_0.projection_0.data_0[i32(0)][i32(1)], uniforms_0.projection_0.data_0[i32(1)][i32(1)], uniforms_0.projection_0.data_0[i32(2)][i32(1)], uniforms_0.projection_0.data_0[i32(3)][i32(1)], uniforms_0.projection_0.data_0[i32(0)][i32(2)], uniforms_0.projection_0.data_0[i32(1)][i32(2)], uniforms_0.projection_0.data_0[i32(2)][i32(2)], uniforms_0.projection_0.data_0[i32(3)][i32(2)], uniforms_0.projection_0.data_0[i32(0)][i32(3)], uniforms_0.projection_0.data_0[i32(1)][i32(3)], uniforms_0.projection_0.data_0[i32(2)][i32(3)], uniforms_0.projection_0.data_0[i32(3)][i32(3)]))));
     output_0.normal_1 = (((vec4<f32>((*vertex_1).normal_0, 0.0f)) * (mat4x4<f32>(uniforms_0.model_0.data_0[i32(0)][i32(0)], uniforms_0.model_0.data_0[i32(1)][i32(0)], uniforms_0.model_0.data_0[i32(2)][i32(0)], uniforms_0.model_0.data_0[i32(3)][i32(0)], uniforms_0.model_0.data_0[i32(0)][i32(1)], uniforms_0.model_0.data_0[i32(1)][i32(1)], uniforms_0.model_0.data_0[i32(2)][i32(1)], uniforms_0.model_0.data_0[i32(3)][i32(1)], uniforms_0.model_0.data_0[i32(0)][i32(2)], uniforms_0.model_0.data_0[i32(1)][i32(2)], uniforms_0.model_0.data_0[i32(2)][i32(2)], uniforms_0.model_0.data_0[i32(3)][i32(2)], uniforms_0.model_0.data_0[i32(0)][i32(3)], uniforms_0.model_0.data_0[i32(1)][i32(3)], uniforms_0.model_0.data_0[i32(2)][i32(3)], uniforms_0.model_0.data_0[i32(3)][i32(3)])))).xyz;
     output_0.world_0 = world_1;
+    output_0.base_0 = patch_0.origin_0 + (((vec4<f32>((*vertex_1).offset_0, 0.0f)) * (mat4x4<f32>(uniforms_0.model_0.data_0[i32(0)][i32(0)], uniforms_0.model_0.data_0[i32(1)][i32(0)], uniforms_0.model_0.data_0[i32(2)][i32(0)], uniforms_0.model_0.data_0[i32(3)][i32(0)], uniforms_0.model_0.data_0[i32(0)][i32(1)], uniforms_0.model_0.data_0[i32(1)][i32(1)], uniforms_0.model_0.data_0[i32(2)][i32(1)], uniforms_0.model_0.data_0[i32(3)][i32(1)], uniforms_0.model_0.data_0[i32(0)][i32(2)], uniforms_0.model_0.data_0[i32(1)][i32(2)], uniforms_0.model_0.data_0[i32(2)][i32(2)], uniforms_0.model_0.data_0[i32(3)][i32(2)], uniforms_0.model_0.data_0[i32(0)][i32(3)], uniforms_0.model_0.data_0[i32(1)][i32(3)], uniforms_0.model_0.data_0[i32(2)][i32(3)], uniforms_0.model_0.data_0[i32(3)][i32(3)])))).xyz;
     return output_0;
 }
 
@@ -200,11 +207,11 @@ fn vertex_smooth(@builtin(vertex_index) vertex_2 : u32, @builtin(instance_index)
 
 fn sample_height_0( patch_1 : ptr<function, PatchData_std430_0>,  grid_2 : vec2<u32>) -> f32
 {
-    var x_0 : f32 = (*patch_1).window_origin_0.x + f32(grid_2.x) * (*patch_1).window_step_0;
+    var x_1 : f32 = (*patch_1).window_origin_0.x + f32(grid_2.x) * (*patch_1).window_step_0;
     var y_0 : f32 = (*patch_1).window_origin_0.y + f32(grid_2.y) * (*patch_1).window_step_0;
-    var x0_0 : f32 = floor(x_0);
+    var x0_0 : f32 = floor(x_1);
     var y0_0 : f32 = floor(y_0);
-    var tx_0 : f32 = x_0 - x0_0;
+    var tx_0 : f32 = x_1 - x0_0;
     var ty_0 : f32 = y_0 - y0_0;
     var _S5 : i32 = i32(x0_0) + i32(1);
     var _S6 : i32 = i32(y0_0) + i32(1);
@@ -218,11 +225,11 @@ fn sample_height_0( patch_1 : ptr<function, PatchData_std430_0>,  grid_2 : vec2<
     return (f32((textureLoad((tiles_0[(*patch_1).tile_0]), ((_S7)).xy, ((_S7)).z).x)) * _S13 + f32((textureLoad((tiles_0[(*patch_1).tile_0]), ((_S9)).xy, ((_S9)).z).x)) * ty_0) * (1.0f - tx_0) + (f32((textureLoad((tiles_0[(*patch_1).tile_0]), ((_S11)).xy, ((_S11)).z).x)) * _S13 + f32((textureLoad((tiles_0[(*patch_1).tile_0]), ((_S12)).xy, ((_S12)).z).x)) * ty_0) * tx_0;
 }
 
-fn units_at_0( patch_2 : ptr<function, PatchData_std430_0>,  x_1 : f32,  y_1 : f32) -> f32
+fn units_at_0( patch_2 : ptr<function, PatchData_std430_0>,  x_2 : f32,  y_1 : f32) -> f32
 {
-    var x0_1 : f32 = floor(x_1);
+    var x0_1 : f32 = floor(x_2);
     var y0_1 : f32 = floor(y_1);
-    var tx_1 : f32 = x_1 - x0_1;
+    var tx_1 : f32 = x_2 - x0_1;
     var ty_1 : f32 = y_1 - y0_1;
     var _S14 : i32 = i32(x0_1) + i32(1);
     var _S15 : i32 = i32(y0_1) + i32(1);
@@ -238,14 +245,14 @@ fn units_at_0( patch_2 : ptr<function, PatchData_std430_0>,  x_1 : f32,  y_1 : f
 
 fn sample_slope_0( patch_3 : ptr<function, PatchData_std430_0>,  grid_3 : vec2<u32>) -> f32
 {
-    var x_2 : f32 = (*patch_3).window_origin_0.x + f32(grid_3.x) * (*patch_3).window_step_0;
+    var x_3 : f32 = (*patch_3).window_origin_0.x + f32(grid_3.x) * (*patch_3).window_step_0;
     var y_2 : f32 = (*patch_3).window_origin_0.y + f32(grid_3.y) * (*patch_3).window_step_0;
     var _S23 : f32 = (*patch_3).window_delta_0;
-    var _S24 : f32 = units_at_0(&((*patch_3)), x_2 + (*patch_3).window_delta_0, y_2);
-    var _S25 : f32 = units_at_0(&((*patch_3)), x_2 - _S23, y_2);
+    var _S24 : f32 = units_at_0(&((*patch_3)), x_3 + (*patch_3).window_delta_0, y_2);
+    var _S25 : f32 = units_at_0(&((*patch_3)), x_3 - _S23, y_2);
     var du_0 : f32 = _S24 - _S25;
-    var _S26 : f32 = units_at_0(&((*patch_3)), x_2, y_2 + _S23);
-    var _S27 : f32 = units_at_0(&((*patch_3)), x_2, y_2 - _S23);
+    var _S26 : f32 = units_at_0(&((*patch_3)), x_3, y_2 + _S23);
+    var _S27 : f32 = units_at_0(&((*patch_3)), x_3, y_2 - _S23);
     var dv_0 : f32 = _S26 - _S27;
     var rise_0 : f32 = uniforms_0.detail_0.y;
     return sqrt(du_0 * du_0 * rise_0 * rise_0 + dv_0 * dv_0 * rise_0 * rise_0);
@@ -270,9 +277,9 @@ fn octave_weight_0( wavelength_0 : f32,  distance_0 : f32,  focal_0 : f32) -> f3
     return detail_smooth_0((px_0 - 4.0f) / 12.0f);
 }
 
-fn detail_hash_0( x_3 : i32,  y_3 : i32,  z_0 : i32) -> f32
+fn detail_hash_0( x_4 : i32,  y_3 : i32,  z_0 : i32) -> f32
 {
-    var h_0 : u32 = ((((u32(x_3) * u32(2654435761)) ^ ((u32(y_3) * u32(2246822507))))) ^ ((u32(z_0) * u32(3266489909))));
+    var h_0 : u32 = ((((u32(x_4) * u32(2654435761)) ^ ((u32(y_3) * u32(2246822507))))) ^ ((u32(z_0) * u32(3266489909))));
     var h_1 : u32 = ((h_0 ^ (((h_0 >> (u32(15))))))) * u32(625341585);
     var h_2 : u32 = ((h_1 ^ (((h_1 >> (u32(13))))))) * u32(668265263);
     return f32((((h_2 ^ (((h_2 >> (u32(16))))))) >> (u32(8)))) / 1.6777216e+07f;
@@ -430,9 +437,10 @@ struct pixelInput_0
 {
     @location(0) normal_3 : vec3<f32>,
     @location(1) world_2 : vec3<f32>,
-    @interpolate(flat) @location(2) colour_tile_2 : u32,
-    @location(3) colour_node_1 : vec2<f32>,
-    @location(4) tint_1 : f32,
+    @location(2) base_1 : vec3<f32>,
+    @interpolate(flat) @location(3) colour_tile_2 : u32,
+    @location(4) colour_node_1 : vec2<f32>,
+    @location(5) tint_1 : f32,
 };
 
 @fragment
@@ -442,23 +450,43 @@ fn fragment_smooth( _S47 : pixelInput_0, @builtin(position) position_1 : vec4<f3
     return _S48;
 }
 
+fn outward_0( cross_product_0 : vec3<f32>,  sphere_0 : vec3<f32>) -> vec3<f32>
+{
+    var length_squared_0 : f32 = dot(cross_product_0, cross_product_0);
+    if(length_squared_0 < 1.00000000317107685e-30f)
+    {
+        return sphere_0;
+    }
+    var unit_1 : vec3<f32> = cross_product_0 * vec3<f32>(rsqrt_0(length_squared_0));
+    var _S49 : vec3<f32>;
+    if((dot(unit_1, sphere_0)) < 0.0f)
+    {
+        _S49 = (vec3<f32>(0) - unit_1);
+    }
+    else
+    {
+        _S49 = unit_1;
+    }
+    return _S49;
+}
+
 fn sample_colour_0( tile_1 : u32,  node_2 : vec2<f32>) -> vec3<f32>
 {
-    var x_4 : f32 = clamp(node_2.x, 0.0f, 34.0f);
+    var x_5 : f32 = clamp(node_2.x, 0.0f, 34.0f);
     var y_4 : f32 = clamp(node_2.y, 0.0f, 34.0f);
-    var xi_0 : i32 = i32(floor(x_4));
+    var xi_0 : i32 = i32(floor(x_5));
     var yi_0 : i32 = i32(floor(y_4));
-    var tx_2 : f32 = x_4 - f32(xi_0);
+    var tx_2 : f32 = x_5 - f32(xi_0);
     var ty_2 : f32 = y_4 - f32(yi_0);
-    var _S49 : i32 = min(xi_0 + i32(1), i32(34));
-    var _S50 : i32 = min(yi_0 + i32(1), i32(34));
-    var _S51 : vec3<i32> = vec3<i32>(yi_0, xi_0, i32(0));
-    var _S52 : vec3<i32> = vec3<i32>(_S50, xi_0, i32(0));
-    var _S53 : vec3<i32> = vec3<i32>(yi_0, _S49, i32(0));
-    var _S54 : vec3<i32> = vec3<i32>(_S50, _S49, i32(0));
-    var _S55 : vec3<f32> = vec3<f32>((1.0f - ty_2));
-    var _S56 : vec3<f32> = vec3<f32>(ty_2);
-    return ((textureLoad((colours_0[tile_1]), ((_S51)).xy, ((_S51)).z)).xyz * _S55 + (textureLoad((colours_0[tile_1]), ((_S52)).xy, ((_S52)).z)).xyz * _S56) * vec3<f32>((1.0f - tx_2)) + ((textureLoad((colours_0[tile_1]), ((_S53)).xy, ((_S53)).z)).xyz * _S55 + (textureLoad((colours_0[tile_1]), ((_S54)).xy, ((_S54)).z)).xyz * _S56) * vec3<f32>(tx_2);
+    var _S50 : i32 = min(xi_0 + i32(1), i32(34));
+    var _S51 : i32 = min(yi_0 + i32(1), i32(34));
+    var _S52 : vec3<i32> = vec3<i32>(yi_0, xi_0, i32(0));
+    var _S53 : vec3<i32> = vec3<i32>(_S51, xi_0, i32(0));
+    var _S54 : vec3<i32> = vec3<i32>(yi_0, _S50, i32(0));
+    var _S55 : vec3<i32> = vec3<i32>(_S51, _S50, i32(0));
+    var _S56 : vec3<f32> = vec3<f32>((1.0f - ty_2));
+    var _S57 : vec3<f32> = vec3<f32>(ty_2);
+    return ((textureLoad((colours_0[tile_1]), ((_S52)).xy, ((_S52)).z)).xyz * _S56 + (textureLoad((colours_0[tile_1]), ((_S53)).xy, ((_S53)).z)).xyz * _S57) * vec3<f32>((1.0f - tx_2)) + ((textureLoad((colours_0[tile_1]), ((_S54)).xy, ((_S54)).z)).xyz * _S56 + (textureLoad((colours_0[tile_1]), ((_S55)).xy, ((_S55)).z)).xyz * _S57) * vec3<f32>(tx_2);
 }
 
 fn surface_albedo_0( input_0 : VertexOutput_0) -> vec3<f32>
@@ -467,15 +495,15 @@ fn surface_albedo_0( input_0 : VertexOutput_0) -> vec3<f32>
     {
         return uniforms_0.colour_0.xyz * vec3<f32>(input_0.tint_0);
     }
-    var unit_1 : vec3<f32> = sample_colour_0(input_0.colour_tile_1, input_0.colour_node_0);
+    var unit_2 : vec3<f32> = sample_colour_0(input_0.colour_tile_1, input_0.colour_node_0);
     var albedo_1 : vec3<f32>;
     if((uniforms_0.terrain_0.z) >= 2.0f)
     {
-        albedo_1 = unit_1;
+        albedo_1 = unit_2;
     }
     else
     {
-        albedo_1 = unit_1.xxx;
+        albedo_1 = unit_2.xxx;
     }
     return albedo_1 * vec3<f32>(uniforms_0.terrain_0.y) * vec3<f32>(input_0.tint_0);
 }
@@ -489,25 +517,17 @@ struct pixelInput_1
 {
     @location(0) normal_4 : vec3<f32>,
     @location(1) world_3 : vec3<f32>,
-    @interpolate(flat) @location(2) colour_tile_3 : u32,
-    @location(3) colour_node_2 : vec2<f32>,
-    @location(4) tint_2 : f32,
+    @location(2) base_2 : vec3<f32>,
+    @interpolate(flat) @location(3) colour_tile_3 : u32,
+    @location(4) colour_node_2 : vec2<f32>,
+    @location(5) tint_2 : f32,
 };
 
 @fragment
-fn fragment_terrain( _S57 : pixelInput_1, @builtin(position) position_2 : vec4<f32>) -> pixelOutput_1
+fn fragment_terrain( _S58 : pixelInput_1, @builtin(position) position_2 : vec4<f32>) -> pixelOutput_1
 {
-    var _S58 : VertexOutput_0 = VertexOutput_0( position_2, _S57.normal_4, _S57.world_3, _S57.colour_tile_3, _S57.colour_node_2, _S57.tint_2 );
-    var facet_0 : vec3<f32> = normalize(cross(dpdx(_S57.world_3), dpdy(_S57.world_3)));
-    var facet_1 : vec3<f32>;
-    if((dot(facet_0, _S57.normal_4)) < 0.0f)
-    {
-        facet_1 = (vec3<f32>(0) - facet_0);
-    }
-    else
-    {
-        facet_1 = facet_0;
-    }
-    var _S59 : pixelOutput_1 = pixelOutput_1( vec4<f32>(shade_0(facet_1, surface_albedo_0(_S58)), 1.0f) );
-    return _S59;
+    var _S59 : VertexOutput_0 = VertexOutput_0( position_2, _S58.normal_4, _S58.world_3, _S58.base_2, _S58.colour_tile_3, _S58.colour_node_2, _S58.tint_2 );
+    var sphere_1 : vec3<f32> = normalize(_S58.normal_4);
+    var _S60 : pixelOutput_1 = pixelOutput_1( vec4<f32>(shade_0(normalize(sphere_1 + outward_0(cross(dpdx(_S58.world_3), dpdy(_S58.world_3)), sphere_1) - outward_0(cross(dpdx(_S58.base_2), dpdy(_S58.base_2)), sphere_1)), surface_albedo_0(_S59)), 1.0f) );
+    return _S60;
 }
