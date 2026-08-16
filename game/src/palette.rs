@@ -1,75 +1,78 @@
-//! Приладова палітра (ROADMAP-UI.md, U7c).
+//! The instrument palette (ROADMAP-UI.md, U7c).
 //!
-//! PROJECT.md §2 називає естетику центру керування польотами **стилем, а не
-//! компромісом**. Отже це не «зробити гарніше», а рішення про те, що кольори
-//! в цій грі **означають**, і воно одне на сцену й на інтерфейс.
+//! PROJECT.md §2 calls mission-control aesthetics **a style, not a
+//! compromise**. So this is not "make it prettier" but a decision about what
+//! colours **mean** in this game, and it is one decision for the scene and the
+//! interface alike.
 //!
-//! ## Головне рішення: палітра виводиться з траєкторій, а не навпаки
+//! ## The main decision: the palette derives from the trajectories
 //!
-//! Кольори ліній існували до цього кроку (`view.rs`, H5), і вони вже несли
-//! зміст: помаранчевий — прогноз, приглушений синій — історія, зелений —
-//! непідтверджене прев'ю, білий — сам апарат. Інтерфейс, пофарбований окремо,
-//! почав би говорити **другою** мовою кольору поверх першої: кнопка «летіти
-//! цим» синя, а прев'ю, яке вона підтверджує, зелене.
+//! The line colours existed before this step (`view.rs`, H5) and already
+//! carried meaning: orange for prediction, muted blue for history, green for
+//! an unconfirmed preview, white for the vessel itself. An interface coloured
+//! separately would start speaking a **second** language of colour over the
+//! first: a "fly this" button in blue while the preview it confirms is green.
 //!
-//! Тому акценти інтерфейсу — це ті самі чотири кольори, і жодного нового:
+//! So the interface's accents are those same four colours, and no new one:
 //!
-//! | колір | у сцені | в інтерфейсі |
+//! | colour | in the scene | in the interface |
 //! |---|---|---|
-//! | бурштин | прогноз, майбутнє | активне, те, що коштує |
-//! | синій | історія, минуле | довідка, вимкнене |
-//! | зелений | прев'ю плану | дія, яку ще не підтвердили |
-//! | білий | апарат | те, на чому фокус |
+//! | amber | prediction, the future | active, what it costs |
+//! | blue | history, the past | reference, disabled |
+//! | green | plan preview | an action not yet confirmed |
+//! | white | the vessel | what is in focus |
 //!
-//! Перевіряється це числом, а не оком: [`ACCENT`] зобов'язаний дорівнювати
-//! кольору прогнозу, і тест валиться, якщо їх розвести.
+//! That is checked by a number rather than by eye: [`ACCENT`] must equal the
+//! prediction's colour, and the test fails if they are separated.
 //!
-//! ## Один колірний простір, одне перетворення
+//! ## One colour space, one conversion
 //!
-//! Палітра підібрана оком, тобто живе в **sRGB**, і тримає вісім біт на канал.
-//! Кадр працює в **лінійному світлі**, а ціль кодує гамму апаратно (T5a). Отже
-//! на шляху в сцену колір мусить бути декодований рівно один раз:
-//! [`Colour::scene`] кличе `srgb::to_linear`, [`Colour::egui`] віддає ті самі
-//! байти, бо egui сам знає формат цілі й кодує їх у себе.
+//! The palette was chosen by eye, i.e. lives in **sRGB**, and holds eight bits
+//! per channel. The frame works in **linear light**, and the target encodes
+//! gamma in hardware (T5a). So on the way into the scene a colour must be
+//! decoded exactly once: [`Colour::scene`] calls `srgb::to_linear`, while
+//! [`Colour::egui`] returns the same bytes, because egui knows the target's
+//! format and encodes them itself.
 //!
-//! ⚠ **До T5a тут стояло «без перетворень», і це було правдою рівно для
-//! знімка.** Вікно вибирає поверхню фільтром `is_srgb()` від F1, тобто
-//! кодувало гамму завжди — і байт 200 у сцені виходив на екрані байтом 229,
-//! тоді як та сама панель інтерфейсу лишалась 200. Тобто акцент панелі не був
-//! кольором лінії прогнозу **у вікні**, хоч і був у PNG, і перевірка U7c2
-//! цього не бачила, бо дивилась у PNG. Змінити формат знімка означало
-//! перевести цю розбіжність із вікна в тест — що вона й зробила, першим же
-//! прогоном.
+//! WARNING: **before T5a this said "no conversions", and that was true exactly
+//! for the capture.** The window picks its surface with F1's `is_srgb()`
+//! filter, i.e. always encoded gamma -- and byte 200 in the scene came out on
+//! screen as byte 229, while the same interface panel stayed 200. So the
+//! panel's accent was not the prediction line's colour **in the window**,
+//! though it was in the PNG, and the U7c2 check did not see it because it
+//! looked at the PNG. Changing the capture's format moved that discrepancy
+//! from the window into the test -- which it did, on the first run.
 
 use engine::egui;
 
-/// Колір палітри: вісім біт на канал, sRGB.
+/// A palette colour: eight bits per channel, sRGB.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Colour(pub u8, pub u8, pub u8);
 
 impl Colour {
-    /// Для сцени: `[f32; 4]` у **лінійному світлі**, як хоче `Polyline`.
+    /// For the scene: `[f32; 4]` in **linear light**, as `Polyline` wants.
     ///
-    /// Декодування тут, а не в рушії, і це межа: рушій працює в лінійному
-    /// світлі й не має знати, що хтось підбирав кольори оком. Обернено —
-    /// [`Colour::egui`]: інтерфейс лишається в sRGB, бо egui сам кодує під
-    /// формат цілі.
+    /// The decoding is here rather than in the engine, and that is the
+    /// boundary: the engine works in linear light and need not know that
+    /// someone chose colours by eye. The converse is [`Colour::egui`]: the
+    /// interface stays in sRGB, because egui encodes for the target's format
+    /// itself.
     pub fn scene(self) -> [f32; 4] {
         let linear = |c: u8| engine::srgb::byte_to_linear(c) as f32;
         [linear(self.0), linear(self.1), linear(self.2), 1.0]
     }
 
-    /// Для інтерфейсу: ті самі байти, без перетворення.
+    /// For the interface: the same bytes, unconverted.
     pub fn egui(self) -> egui::Color32 {
         egui::Color32::from_rgb(self.0, self.1, self.2)
     }
 
-    /// Той самий колір, притлумлений до частки `k` від повної яскравості.
+    /// The same colour dimmed to a fraction `k` of full brightness.
     ///
-    /// Потрібен там, де відтінок мусить лишитись тим самим, а вага — впасти:
-    /// рамка проти заливки, вимкнена кнопка проти живої. Окремий колір у
-    /// таблиці для цього завів би другий бурштин, який згодом розійшовся б з
-    /// першим.
+    /// Needed where the hue must stay the same while the weight drops: a
+    /// border against a fill, a disabled button against a live one. A separate
+    /// colour in the table for this would introduce a second amber that would
+    /// eventually diverge from the first.
     pub fn dim(self, k: f32) -> Colour {
         let scale = |c: u8| (c as f32 * k).round().clamp(0.0, 255.0) as u8;
         Colour(scale(self.0), scale(self.1), scale(self.2))
@@ -77,117 +80,122 @@ impl Colour {
 }
 
 // ---------------------------------------------------------------------------
-// Чотири кольори, що несуть зміст. Решта палітри — тло для них.
+// The four colours that carry meaning. The rest of the palette is their
+// background.
 
-/// Прогноз: те, що попереду. Він же акцент інтерфейсу — [`ACCENT`].
+/// Prediction: what lies ahead. Also the interface's accent -- [`ACCENT`].
 pub const PREDICTION: Colour = Colour(229, 153, 51);
 
-/// Історія: те, що вже пролетіли. Навмисно тихіший за прогноз — минуле не
-/// має перетягувати око з того місця, де рухається межа.
+/// History: what has already been flown. Deliberately quieter than the
+/// prediction -- the past should not pull the eye from where the boundary
+/// moves.
 pub const HISTORY: Colour = Colour(89, 115, 153);
 
-/// Прев'ю плану: пораховане, але не підтверджене.
+/// A plan preview: computed but not confirmed.
 pub const PREVIEW: Colour = Colour(102, 229, 128);
 
-/// Сам апарат.
+/// The vessel itself.
 pub const VESSEL: Colour = Colour(255, 255, 255);
 
-/// Акцент інтерфейсу — **той самий колір, що прогноз**, і це перевіряється.
+/// The interface's accent -- **the same colour as the prediction**, and that
+/// is checked.
 pub const ACCENT: Colour = PREDICTION;
 
-/// Дія, яку ще не підтвердили, — той самий колір, що прев'ю.
+/// An action not yet confirmed -- the same colour as a preview.
 pub const ACTION: Colour = PREVIEW;
 
 // ---------------------------------------------------------------------------
-// Тло. Темніше за небо кадру, щоб панель читалася поверх нього.
+// Background. Darker than the frame's sky so the panel reads over it.
 
-/// Небо кадру в тих самих одиницях — `engine::frame::CLEAR_BYTES`.
+/// The frame's sky in the same units -- `engine::frame::CLEAR_BYTES`.
 ///
-/// Копія тут не для використання, а для перевірки: панель мусить бути
-/// **темнішою** за небо, інакше вона світиться на тлі космосу замість лежати
-/// на ньому. Тест звіряє це з рушієм, тож розбіжність не проживе.
+/// The copy here is for checking rather than use: the panel must be **darker**
+/// than the sky, or it glows against space instead of lying on it. The test
+/// compares it against the engine, so a divergence will not survive.
 pub const SKY: Colour = Colour(5, 8, 20);
 
-/// Заливка панелі.
+/// The panel's fill.
 ///
-/// Темніша за небо по кожному каналу, і це не смак: у кадрі під панеллю буває
-/// не тільки космос, а й освітлений диск планети. Панель, розрахована на
-/// темне тло, поверх нього перестала б читатися — тож вона щільна й темна, а
-/// проти самого неба через це читається як провал. Так і задумано; перевіряє
-/// це `the_panel_is_darker_than_the_sky_behind_it`, і перша його редакція
-/// впала саме тут.
+/// Darker than the sky on every channel, and that is not a taste: under the
+/// panel the frame holds not only space but also a lit planetary disc. A panel
+/// designed for a dark background would stop reading over that -- so it is
+/// dense and dark, and against the bare sky it therefore reads as a well. That
+/// is intended; `the_panel_is_darker_than_the_sky_behind_it` checks it, and
+/// its first edition failed exactly here.
 pub const PANEL: Colour = Colour(4, 6, 12);
 
-/// Поверхня віджета в спокої.
+/// A widget's surface at rest.
 pub const SURFACE: Colour = Colour(24, 31, 43);
 
-/// Те саме під курсором.
+/// The same under the cursor.
 pub const SURFACE_HOVER: Colour = Colour(38, 48, 65);
 
-/// І натиснуте.
+/// And pressed.
 pub const SURFACE_ACTIVE: Colour = Colour(52, 65, 86);
 
-/// Лінії: рамки, розділювачі.
+/// Lines: borders, separators.
 pub const LINE: Colour = Colour(48, 60, 78);
 
-/// Основний текст.
+/// Primary text.
 pub const TEXT: Colour = Colour(201, 211, 223);
 
-/// Другорядний текст: одиниці, підказки, те, що не число.
+/// Secondary text: units, hints, whatever is not a number.
 pub const TEXT_DIM: Colour = Colour(124, 136, 152);
 
-/// Відмова: план відхилено, апарат зупинився помилкою.
+/// A refusal: a plan rejected, a vessel stopped by an error.
 ///
-/// Єдиний колір поза чотирма змістовними, і він заслужив окремий рядок:
-/// «щось пішло не так» не можна сказати жодним із них, не збрехавши про
-/// зміст. Червоний тут приглушений — панель не має кричати.
+/// The only colour outside the four meaningful ones, and it earned its own
+/// line: "something went wrong" cannot be said in any of them without lying
+/// about meaning. The red here is muted -- a panel should not shout.
 pub const ALARM: Colour = Colour(214, 97, 85);
 
 // ---------------------------------------------------------------------------
-// Шкала porkchop. Кінці — з тієї ж палітри, і це не оформлення.
+// The porkchop scale. Its ends come from the same palette, and that is not
+// styling.
 
-/// Дешевий кінець шкали вікон.
+/// The cheap end of the window scale.
 ///
-/// Споріднений з [`HISTORY`], а не новий синій: обидва означають «спокійне,
-/// на що не треба дивитись».
+/// Kin to [`HISTORY`] rather than a new blue: both mean "calm, nothing to look
+/// at".
 pub const CHEAP: Colour = Colour(30, 70, 160);
 
-/// Дорогий кінець — [`PREDICTION`], бо бурштин у цій грі скрізь означає «те,
-/// що коштує».
+/// The expensive end is [`PREDICTION`], because amber in this game always
+/// means "what it costs".
 pub const COSTLY: Colour = PREDICTION;
 
-/// Ставить палітру в контекст: тема, стиль, обидві гілки теми.
+/// Installs the palette into a context: theme, style, both theme branches.
 ///
-/// Живе тут, а не в `app`, бо той самий виклик потрібен кожному, хто малює
-/// інтерфейс без вікна — тестам і знімкам. Панель, знята з типовим стилем,
-/// показувала б не те, що бачить гравець, і як оракул була б гіршою за
-/// відсутню.
+/// It lives here rather than in `app`, because everyone drawing the interface
+/// without a window needs the same call -- tests and captures. A panel
+/// captured with the default style would show something other than what the
+/// player sees, and as an oracle would be worse than none.
 pub fn apply(context: &egui::Context) {
     let style = style();
     context.set_theme(egui::ThemePreference::Dark);
-    // Обом темам той самий стиль: світлої теми в цій грі немає, і приладова
-    // панель, що побіліла від системної налаштовки, — це зламаний кадр, а не
-    // варіант оформлення.
+    // The same style for both themes: this game has no light theme, and an
+    // instrument panel gone white from a system setting is a broken frame
+    // rather than a styling variant.
     context.set_style_of(egui::Theme::Dark, style.clone());
     context.set_style_of(egui::Theme::Light, style);
 }
 
-/// Стиль egui цілком (ROADMAP-UI.md, U7c).
+/// The whole egui style (ROADMAP-UI.md, U7c).
 ///
-/// ## Чому все моноширинне
+/// ## Why everything is monospaced
 ///
-/// Приладова панель — це стовпчики чисел, які око порівнює зверху вниз.
-/// Пропорційний шрифт робить «7» вужчою за «0», тобто зсуває розряди, і
-/// висота 412 км стає ширшою за 400 км. U7b виміряв, що моноширинне сімейство
-/// egui несе кирилицю **власними гліфами тієї самої ширини**, тож ціна цього
-/// рішення — нуль, і воно доступне лише тому, що той крок пройшов першим.
+/// An instrument panel is columns of numbers the eye compares top to bottom. A
+/// proportional font makes "7" narrower than "0", i.e. shifts the digits, and
+/// an altitude of 412 km becomes wider than 400 km. U7b measured that egui's
+/// monospace family carries Cyrillic in **its own glyphs of the same width**,
+/// so this decision costs zero, and it is available only because that step
+/// went first.
 ///
-/// ## Щільність
+/// ## Density
 ///
-/// Відступи скупіші за типові egui: панель ліворуч має 220 точок ширини
-/// (`app::draw`), і типові 8 точок між елементами з'їдають екран рядками
-/// повітря. Приладова щільність — це не косметика, а кількість рядків, які
-/// видно одночасно.
+/// The spacing is meaner than egui's default: the left panel is 220 points
+/// wide (`app::draw`), and the default 8 points between elements eat the
+/// screen in rows of air. Instrument density is not cosmetic but the number of
+/// rows visible at once.
 pub fn style() -> egui::Style {
     let mut style = egui::Style {
         visuals: visuals(),
@@ -199,8 +207,9 @@ pub fn style() -> egui::Style {
     style.spacing.indent = 12.0;
     style.spacing.interact_size.y = 18.0;
 
-    // Усе моноширинне, крім заголовка панелі: він і так один рядок, а трохи
-    // більший кегль відділяє його від чисел без жодної лінії.
+    // Everything monospaced except the panel's heading: it is one line anyway,
+    // and a slightly larger size separates it from the numbers without a
+    // rule.
     use egui::{FontFamily, FontId, TextStyle};
     style.text_styles = [
         (TextStyle::Heading, FontId::new(15.0, FontFamily::Monospace)),
@@ -226,8 +235,8 @@ fn visuals() -> egui::Visuals {
     visuals.override_text_color = Some(TEXT.egui());
     visuals.window_stroke = egui::Stroke::new(1.0, LINE.egui());
 
-    // Виділене — бурштином, тобто тим самим, чим прогноз. Текст на ньому
-    // темний: бурштин світлий, і світлий текст на ньому не читається.
+    // Selection in amber, i.e. the same as the prediction. The text on it is
+    // dark: amber is light, and light text does not read on it.
     visuals.selection.bg_fill = ACCENT.dim(0.55).egui();
     visuals.selection.stroke = egui::Stroke::new(1.0, ACCENT.egui());
 
@@ -240,9 +249,9 @@ fn visuals() -> egui::Visuals {
         expansion: 0.0,
     };
 
-    // Прямі кути навмисно: заокруглення — мова м'якого інтерфейсу, а тут
-    // приладова панель. Це рівно те місце, де «стиль, а не компроміс» видно
-    // одним полем.
+    // Square corners deliberately: rounding is the language of a soft
+    // interface, and this is an instrument panel. Exactly the place where "a
+    // style, not a compromise" shows in a single field.
     visuals.widgets.noninteractive = widget(PANEL, LINE.dim(0.6), TEXT_DIM);
     visuals.widgets.inactive = widget(SURFACE, LINE, TEXT);
     visuals.widgets.hovered = widget(SURFACE_HOVER, ACCENT.dim(0.7), TEXT);
@@ -256,11 +265,12 @@ fn visuals() -> egui::Visuals {
 mod tests {
     use super::*;
 
-    /// Акцент інтерфейсу — це колір прогнозу, а не схожий на нього.
+    /// The interface's accent is the prediction's colour, not one like it.
     ///
-    /// Уся ідея палітри тримається на цьому рядку: інтерфейс і сцена говорять
-    /// однією мовою кольору. Два «майже однакові» бурштини — це та сама
-    /// помилка, тільки непомітна, тож перевіряється рівність, а не близькість.
+    /// The whole idea of the palette rests on this line: interface and scene
+    /// speak one language of colour. Two "nearly identical" ambers are the
+    /// same error, merely invisible, so equality is checked rather than
+    /// closeness.
     #[test]
     fn the_accent_is_the_colour_of_the_forecast() {
         assert_eq!(ACCENT, PREDICTION);
@@ -268,34 +278,36 @@ mod tests {
         assert_eq!(COSTLY, PREDICTION);
     }
 
-    /// Панель темніша за небо кадру.
+    /// The panel is darker than the frame's sky.
     ///
-    /// Інакше вона світиться на тлі космосу замість лежати на ньому — і це та
-    /// помилка, яку на чорному моніторі не видно, а на яскравому видно одразу.
-    /// Небо береться з рушія, а не з копії поруч: копія розійшлася б мовчки.
+    /// Otherwise it glows against space instead of lying on it -- the kind of
+    /// error invisible on a black monitor and obvious on a bright one. The sky
+    /// comes from the engine rather than the copy beside it: the copy would
+    /// diverge silently.
     #[test]
     fn the_panel_is_darker_than_the_sky_behind_it() {
         assert_eq!(
             [SKY.0, SKY.1, SKY.2],
             engine::frame::CLEAR_BYTES,
-            "копія кольору неба розійшлася з рушієм"
+            "the copy of the sky colour diverged from the engine"
         );
 
         let weight = |c: Colour| c.0 as u32 + c.1 as u32 + c.2 as u32;
         assert!(
             weight(PANEL) < weight(SKY),
-            "панель {PANEL:?} не темніша за небо {SKY:?}"
+            "panel {PANEL:?} is not darker than sky {SKY:?}"
         );
     }
 
-    /// Текст читається на тому, на чому лежить.
+    /// Text reads against what it lies on.
     ///
-    /// Контраст — це формула, а не смак: WCAG рахує відношення відносних
-    /// яскравостей, і 4.5:1 — межа для основного тексту. Перевірка тут саме
-    /// тому, що «мені видно» на одному моніторі нічого не доводить про інший.
+    /// Contrast is a formula rather than a taste: WCAG computes a ratio of
+    /// relative luminances, and 4.5:1 is the bound for primary text. The check
+    /// is here precisely because "I can see it" on one monitor proves nothing
+    /// about another.
     #[test]
     fn the_text_has_enough_contrast_against_its_background() {
-        // Відносна яскравість sRGB за означенням WCAG.
+        // sRGB relative luminance per the WCAG definition.
         fn luminance(c: Colour) -> f64 {
             let channel = |v: u8| {
                 let v = v as f64 / 255.0;
@@ -315,31 +327,31 @@ mod tests {
         }
 
         for (text, background, floor, what) in [
-            (TEXT, PANEL, 4.5, "основний текст на панелі"),
-            (TEXT, SURFACE, 4.5, "основний текст на кнопці"),
-            (TEXT, SURFACE_HOVER, 4.5, "текст на кнопці під курсором"),
-            // Другорядний — це підказки й одиниці, для них WCAG дозволяє 3:1
-            // як для великого тексту; нижче цього він перестає бути текстом.
-            (TEXT_DIM, PANEL, 3.0, "другорядний текст"),
-            (ACCENT, PANEL, 4.5, "акцент на панелі"),
-            (ALARM, PANEL, 4.5, "відмова на панелі"),
-            (PREVIEW, PANEL, 4.5, "дія на панелі"),
+            (TEXT, PANEL, 4.5, "primary text on the panel"),
+            (TEXT, SURFACE, 4.5, "primary text on a button"),
+            (TEXT, SURFACE_HOVER, 4.5, "text on a hovered button"),
+            // Secondary is hints and units; WCAG allows 3:1 for those as for
+            // large text, and below that it stops being text.
+            (TEXT_DIM, PANEL, 3.0, "secondary text"),
+            (ACCENT, PANEL, 4.5, "accent on the panel"),
+            (ALARM, PANEL, 4.5, "a refusal on the panel"),
+            (PREVIEW, PANEL, 4.5, "an action on the panel"),
         ] {
             let ratio = contrast(text, background);
             assert!(
                 ratio >= floor,
-                "{what}: контраст {ratio:.2} проти потрібних {floor} \
-                 ({text:?} на {background:?})"
+                "{what}: contrast {ratio:.2} against the required {floor} \
+                 ({text:?} on {background:?})"
             );
         }
     }
 
-    /// [`apply`] справді доходить до контексту — і міняє те, що було.
+    /// [`apply`] really does reach the context -- and changes what was there.
     ///
-    /// Друга половина не дає тесту бути тавтологією: перевірити, що
-    /// `style().visuals.panel_fill == PANEL`, означало б перевірити знак
-    /// присвоєння. Значення має те, що типовий egui дає **інше**, тобто
-    /// палітра щось насправді робить.
+    /// The second half keeps the test from being a tautology: checking that
+    /// `style().visuals.panel_fill == PANEL` would check the assignment
+    /// operator. What matters is that default egui gives something **else**,
+    /// i.e. the palette actually does something.
     #[test]
     fn the_style_reaches_the_context_and_differs_from_the_default() {
         let plain = egui::Context::default();
@@ -351,24 +363,25 @@ mod tests {
         assert_ne!(
             fill(&plain),
             fill(&styled),
-            "палітра дала те саме, що типовий egui — тобто не дала нічого"
+            "the palette gave what default egui gives -- i.e. gave nothing"
         );
 
-        // Обом темам, а не лише активній: світлої теми в цій грі немає.
+        // Both themes rather than only the active one: this game has no light
+        // theme.
         for theme in [egui::Theme::Dark, egui::Theme::Light] {
             assert_eq!(
                 styled.style_of(theme).visuals.panel_fill,
                 PANEL.egui(),
-                "{theme:?} лишилась із типовим стилем"
+                "{theme:?} kept the default style"
             );
         }
     }
 
-    /// Панель набрана моноширинним — усе, крім нічого.
+    /// The panel is set in monospace -- everything, without exception.
     ///
-    /// Рішення легко втратити при першому ж «поправлю кегль», а коштує воно
-    /// стовпчиків чисел, які перестають шикуватися. U7b довів, що кирилиця в
-    /// цьому сімействі своя й тієї самої ширини, тож ціна рішення — нуль.
+    /// A decision easily lost at the first "let me fix the size", and it costs
+    /// columns of numbers that stop lining up. U7b proved the Cyrillic in this
+    /// family is its own and of the same width, so the decision costs zero.
     #[test]
     fn every_text_style_is_monospace() {
         let style = style();
@@ -376,21 +389,21 @@ mod tests {
             assert_eq!(
                 font.family,
                 egui::FontFamily::Monospace,
-                "{which:?} набраний не моноширинним — стовпчик чисел роз'їдеться"
+                "{which:?} is not set in monospace -- a column of numbers will spread"
             );
         }
         assert!(
             style.text_styles.len() >= 5,
-            "стилі тексту зникли з таблиці"
+            "the text styles disappeared from the table"
         );
     }
 
-    /// Притлумлення не міняє відтінку — воно міняє вагу.
+    /// Dimming does not change the hue -- it changes the weight.
     #[test]
     fn dimming_keeps_the_hue() {
         let dim = ACCENT.dim(0.5);
         assert!(dim.0 < ACCENT.0 && dim.1 < ACCENT.1 && dim.2 < ACCENT.2);
-        // Відношення каналів збережене з точністю до округлення байта.
+        // The channel ratio is preserved to within byte rounding.
         let ratio = |c: Colour| c.0 as f32 / c.1 as f32;
         assert!((ratio(dim) - ratio(ACCENT)).abs() < 0.05);
     }
