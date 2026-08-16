@@ -58,6 +58,32 @@
 //! текстури влазять у вже взятий блок), а на рівні 7 подвоює рахунок:
 //! 128 МіБ алокацій → **256 МіБ зарезервованих**. Час створення лінійний за
 //! кількістю тайлів: ~11 мс на 2046, ~38 мс на 8190, ~165 мс на 32 766.
+//!
+//! ## Що виміряно для W1: ціна запеченого нахилу (2026-08-16)
+//!
+//! **Ореол не коштує нічого.** 33×33 і 35×35 дають той самий байт на тайл — у
+//! кожному форматі, на кожній глибині, на обох вендорах. Тобто 12.5%, які
+//! ореол важить у файлі, у пам'яті GPU не існують узагалі: обидві сітки
+//! потрапляють в один блок гранулярності. Викидати ореол з формату можна
+//! заради простоти й диска, але **не заради пам'яті** — там купувати нічого.
+//!
+//! **Другий канал коштує рівно один крок гранулярності, і вендори різні:**
+//!
+//! | формат | NVIDIA | RADV |
+//! |---|---|---|
+//! | `R16Sint` (висоти нині) | 8192 | 8192 |
+//! | `Rg16Sint` (висоти + нахил) | **12 288** | **16 384** |
+//!
+//! Тобто ×1.5 на дискретній карті й ×2 на інтегрованій, і саме інтегрована
+//! платить із тієї ж пам'яті, з якої живе гра. У числах сцени: Місяць
+//! 16 → 24/32 МіБ, Земля 64 → 96/128 МіБ, разом **+40 МіБ (NVIDIA)** і
+//! **+80 МіБ (RADV)**. Це і є ціна відповіді на Q3, названа до того, як
+//! формат змінився.
+//!
+//! ⚠ **Час прив'язки масиву від формату не залежить взагалі** — 1.0–1.1 мс на
+//! 8190 текстур у всіх сімох рядків. Це саме те, що каже борг D19: платить
+//! драйвер за **кількість** текстур, а не за їхній розмір, тож запечений нахил
+//! D19 не погіршує ні на мікросекунду.
 
 use std::time::Instant;
 
@@ -67,19 +93,65 @@ use crate::tiles;
 /// колір (3.8 км і 1.9 км на вузол Місяця).
 const LEVELS: [u32; 3] = [5, 6, 7];
 
-/// Формати, між якими вибирає T2.
+/// Формати й сітки, між якими вибирають T2 і W1.
 ///
-/// `R16Sint` — те, що вже несуть висоти, і воно тут заради масштабу порівняння.
-/// `R8Unorm` — один канал: глобальна мозаїка LROC WAC монохромна, тобто для
-/// Місяця це не спрощення, а рівно те, що є в джерелі. `Rgba8Unorm` — чотири,
-/// бо трибайтового формату текстури в wgpu **немає взагалі**: `Rgb8` не існує
-/// ні в WebGPU, ні в Vulkan як формат, який можна семплювати без розширень.
-/// Тобто «35²·3» з роадмапу — це розмір у файлі, а не в пам'яті GPU, і різницю
-/// в 33% треба або платити, або не заводити зайвий канал.
-const FORMATS: [(&str, wgpu::TextureFormat, usize); 3] = [
-    ("R16Sint (висоти)", wgpu::TextureFormat::R16Sint, 2),
-    ("R8Unorm (один канал)", wgpu::TextureFormat::R8Unorm, 1),
-    ("Rgba8Unorm (колір)", wgpu::TextureFormat::Rgba8Unorm, 4),
+/// `R16Sint` — те, що несуть висоти сьогодні, і воно тут заради масштабу
+/// порівняння. `R8Unorm` — один канал: глобальна мозаїка LROC WAC монохромна,
+/// тобто для Місяця це не спрощення, а рівно те, що є в джерелі. `Rgba8Unorm` —
+/// чотири, бо трибайтового формату текстури в wgpu **немає взагалі**: `Rgb8` не
+/// існує ні в WebGPU, ні в Vulkan як формат, який можна семплювати без
+/// розширень. Тобто «35²·3» з роадмапу — це розмір у файлі, а не в пам'яті GPU.
+///
+/// `Rg16Sint` додано для W1: запечений нахил (Q3, варіант 1) кладе в той самий
+/// тексель другий `i16`, і питання рівно одне — чи подвоює це пам'ять, чи
+/// гранулярність з'їдає різницю так само, як вона з'їдає ореол.
+///
+/// **Сітка — вимір таблиці, а не константа**, і теж через W1: після запікання
+/// нахилу ореол не читає ніхто, тож 33×33 стає можливим. Чи варте воно версії
+/// обох форматів — вирішує рядок «байт на тайл», а не арифметика над файлом.
+const FORMATS: [(&str, wgpu::TextureFormat, usize, usize); 7] = [
+    (
+        "R16Sint 35² (висоти нині)",
+        wgpu::TextureFormat::R16Sint,
+        2,
+        tiles::STORED,
+    ),
+    (
+        "R16Sint 33² (без ореолу)",
+        wgpu::TextureFormat::R16Sint,
+        2,
+        tiles::NODES,
+    ),
+    (
+        "Rg16Sint 35² (з нахилом)",
+        wgpu::TextureFormat::Rg16Sint,
+        4,
+        tiles::STORED,
+    ),
+    (
+        "Rg16Sint 33² (нахил, без ореолу)",
+        wgpu::TextureFormat::Rg16Sint,
+        4,
+        tiles::NODES,
+    ),
+    (
+        "R8Unorm 35² (колір Місяця)",
+        wgpu::TextureFormat::R8Unorm,
+        1,
+        tiles::STORED,
+    ),
+    (
+        "Rgba8Unorm 35² (колір Землі)",
+        wgpu::TextureFormat::Rgba8Unorm,
+        4,
+        tiles::STORED,
+    ),
+    (
+        "Rgba8Unorm 33² (без ореолу)",
+        wgpu::TextureFormat::Rgba8Unorm,
+        4,
+        tiles::NODES,
+    ),
 ];
 
 struct Row {
@@ -153,7 +225,7 @@ fn one_adapter(adapter: &wgpu::Adapter) -> Result<(), String> {
     .map_err(|e| format!("пристрій не створюється: {e}"))?;
 
     let mut rows = Vec::new();
-    for (name, format, bytes_per_texel) in FORMATS {
+    for (name, format, bytes_per_texel, side) in FORMATS {
         for levels in LEVELS {
             rows.push(measure(
                 &device,
@@ -161,6 +233,7 @@ fn one_adapter(adapter: &wgpu::Adapter) -> Result<(), String> {
                 name,
                 format,
                 bytes_per_texel,
+                side,
                 levels,
             ));
         }
@@ -183,12 +256,13 @@ fn measure(
     format_name: &'static str,
     format: wgpu::TextureFormat,
     bytes_per_texel: usize,
+    nodes: usize,
     levels: u32,
 ) -> Row {
     let tiles_count = tiles::Terrain::count(levels);
-    let side = tiles::STORED as u32;
-    let data_bytes = tiles_count * tiles::STORED * tiles::STORED * bytes_per_texel;
-    let pixels = vec![0u8; tiles::STORED * tiles::STORED * bytes_per_texel];
+    let side = nodes as u32;
+    let data_bytes = tiles_count * nodes * nodes * bytes_per_texel;
+    let pixels = vec![0u8; nodes * nodes * bytes_per_texel];
 
     let before = memory(device);
     let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
@@ -293,7 +367,9 @@ fn wait() -> wgpu::PollType {
 
 fn sample_type(format: wgpu::TextureFormat) -> wgpu::TextureSampleType {
     match format {
-        wgpu::TextureFormat::R16Sint => wgpu::TextureSampleType::Sint,
+        wgpu::TextureFormat::R16Sint | wgpu::TextureFormat::Rg16Sint => {
+            wgpu::TextureSampleType::Sint
+        }
         _ => wgpu::TextureSampleType::Float { filterable: true },
     }
 }
@@ -322,11 +398,11 @@ fn memory(device: &wgpu::Device) -> (u64, u64) {
 fn print_table(rows: &[Row]) {
     println!();
     println!(
-        "формат                 рівнів  тайлів   дані, МіБ  алок., МіБ  резерв, МіБ  ств., мс  масив, мс"
+        "формат                           рівнів  тайлів   дані, МіБ  алок., МіБ  резерв, МіБ  ств., мс  масив, мс"
     );
     for row in rows {
         println!(
-            "{:22} {:6}  {:6}   {:9.2}  {:10.2}  {:11.2}  {:8.1}  {:9.1}{}",
+            "{:32} {:6}  {:6}   {:9.2}  {:10.2}  {:11.2}  {:8.1}  {:9.1}{}",
             row.format,
             row.levels,
             row.tiles,
