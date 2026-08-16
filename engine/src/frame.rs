@@ -58,6 +58,7 @@ const CULL_WGSL: &str = include_str!("../shaders/cull.wgsl");
 
 /// Те саме для ламаних (ROADMAP J1).
 const LINE_WGSL: &str = include_str!("../shaders/line.wgsl");
+const SHIP_WGSL: &str = include_str!("../shaders/ship.wgsl");
 
 pub const FOV_Y: f64 = std::f64::consts::PI / 3.0;
 
@@ -230,6 +231,12 @@ const PASS_LABELS: [&str; MAX_PASSES] = [
 /// Скільки байтів займає матриця проєкції ламаних.
 const LINE_UNIFORM_BYTES: u64 = 64;
 
+/// Проєкція плюс напрямок на світило: 64 + 16 байтів. Колір сюди не входить
+/// і не входитиме — він атрибут вершини, з тієї самої причини, що в ламаних
+/// (записи в чергу відбуваються ДО проходу, тож із uniform виграв би
+/// останній корабель).
+const SHIP_UNIFORM_BYTES: u64 = 80;
+
 /// Крок між uniform-ами сусідніх проходів у буфері.
 ///
 /// 256 байтів — вирівнювання динамічного зсуву, якого вимагає wgpu на всіх
@@ -295,6 +302,44 @@ struct Lines {
     colour_bytes: Vec<u8>,
 }
 
+/// Пайплайн кораблів і буфери під них (етап V, крок V2).
+///
+/// Побудований за зразком [`Lines`], а не [`Planet`], і це вибір за розміром
+/// задачі: у корабля півтори тисячі вершин, а не мільйони, тож camera-relative
+/// на кожну щокадру коштує мікросекунди — рівно те, від чого планету довелося
+/// рятувати зсувом по патчах (R1d), і рівно те, що для корабля дешевше за
+/// другий uniform із динамічним зсувом.
+///
+/// **Геометрія — корабель одиничної висоти, спільний для всіх** — те саме
+/// рішення, що «одинична сфера, спільна для всіх тіл» (R1e). Висота, поворот
+/// і позиція конкретного корабля прикладаються на CPU у `f64`.
+struct Ships {
+    pipeline: wgpu::RenderPipeline,
+    bind_group: wgpu::BindGroup,
+    uniform_buffer: wgpu::Buffer,
+
+    /// Індекси меша — сталі, тож завантажуються один раз. Вершини (позиції,
+    /// нормалі, колір) переписуються щокадру: позиція камери, поворот корабля
+    /// й колір усі змінні.
+    index_buffer: wgpu::Buffer,
+    index_count: u32,
+    /// Вершин в одному кораблі. Виклик малювання на корабель зсуває
+    /// `base_vertex` на цю величину.
+    vertices_per_ship: usize,
+    /// Корабель одиничної висоти в системі корабля — те, що масштабується й
+    /// повертається на CPU.
+    mesh: crate::sphere::Mesh,
+
+    position_buffer: wgpu::Buffer,
+    normal_buffer: wgpu::Buffer,
+    colour_buffer: wgpu::Buffer,
+    capacity: usize,
+
+    position_bytes: Vec<u8>,
+    normal_bytes: Vec<u8>,
+    colour_bytes: Vec<u8>,
+}
+
 pub struct Frame {
     /// Планета патчами (ROADMAP-PLANETS.md, R1d).
     planet: Planet,
@@ -305,6 +350,11 @@ pub struct Frame {
     depth: Option<Depth>,
 
     lines: Lines,
+
+    /// Кораблі (етап V). Порожній список кораблів у сцені не коштує нічого:
+    /// ні завантаження, ні виклику малювання — саме на цьому стоїть те, що
+    /// знімок зондів рушія лишився бітово тим самим.
+    ships: Ships,
 
     /// План цього кадру: проходи в порядку малювання (R4a). Поле, а не
     /// змінна, щоб не виділяти вектор щокадру.
@@ -332,6 +382,7 @@ impl Frame {
             planet: Planet::new(gpu, format),
             depth: None,
             lines: Lines::new(gpu, format),
+            ships: Ships::new(gpu, format),
             sky: Sky::new(gpu, format),
             passes: Vec::with_capacity(MAX_PASSES),
             lines_upload_ms: 0.0,
@@ -504,6 +555,19 @@ impl Frame {
             altitude = altitude.min(length(d) - body.radius_m);
         }
 
+        // Корабель — та сама арифметика, і саме заради неї крок існує (V2).
+        // Без цього рядка `near` виводилася з висоти над тілом: на орбіті
+        // 400 км це 40 км, тобто корпус за десять метрів від камери
+        // відсікався цілком, і кадр від третьої особи був порожнім.
+        for ship in &scene.ships {
+            let d = [
+                ship.centre[0] - eye[0],
+                ship.centre[1] - eye[1],
+                ship.centre[2] - eye[2],
+            ];
+            altitude = altitude.min(length(d) - ship.extent_m);
+        }
+
         // Порожнє небо: міряти висоту нема над чим, лишається відстань до
         // початку координат — там-таки й ламані, якщо вони є.
         if !altitude.is_finite() {
@@ -611,6 +675,10 @@ impl Frame {
         self.lines.upload(gpu, scene, &self.passes);
         self.lines_upload_ms = upload_start.elapsed().as_secs_f64() * 1000.0;
 
+        // Кораблі: та сама дорога, що в ламаних, і той самий порядок —
+        // віднімання в `double`, звуження останнім кроком.
+        self.ships.upload(gpu, scene, &self.passes);
+
         // Відбір — до проходів кадру, окремим compute-проходом (R6b). Бар'єри
         // між ним і читанням `indirect` розставляє wgpu сам: він бачить, що
         // той самий буфер щойно писали.
@@ -669,6 +737,7 @@ impl Frame {
             }
 
             self.planet.draw(&mut pass, index);
+            self.ships.draw(&mut pass, scene, index);
             self.lines.draw(&mut pass, scene, index);
             drop(pass);
 
@@ -1818,6 +1887,291 @@ impl Planet {
     }
 }
 
+impl Ships {
+    fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Ships {
+        let module = gpu
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("ship"),
+                source: wgpu::ShaderSource::Wgsl(SHIP_WGSL.into()),
+            });
+
+        let bind_layout = gpu
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("ship"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        // Зсув на прохід, як у ламаних і патчів.
+                        has_dynamic_offset: true,
+                        min_binding_size: std::num::NonZeroU64::new(SHIP_UNIFORM_BYTES),
+                    },
+                    count: None,
+                }],
+            });
+
+        let layout = gpu
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("ship"),
+                bind_group_layouts: &[Some(&bind_layout)],
+                immediate_size: 0,
+            });
+
+        let position_attrs = [wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: 0,
+            shader_location: 0,
+        }];
+        let normal_attrs = [wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: 0,
+            shader_location: 1,
+        }];
+        let colour_attrs = [wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x4,
+            offset: 0,
+            shader_location: 2,
+        }];
+
+        let pipeline = gpu
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("ship"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vertex_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: 12,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &position_attrs,
+                        }),
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: 12,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &normal_attrs,
+                        }),
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: 16,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &colour_attrs,
+                        }),
+                    ],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fragment_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                // Без відсікання граней, з тієї самої причини, що у сфери:
+                // корпус замкнений, і найближчу поверхню вибирає тест
+                // глибини. Оболонки корабля до того ж перетинаються
+                // (стабілізатор входить у корпус), тож правильного «зовні»
+                // для спільного об'єму не існує взагалі.
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: depth::FORMAT,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(depth::COMPARE),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+
+        let uniform_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ship uniforms"),
+            size: PASS_STRIDE * MAX_PASSES as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ship"),
+            layout: &bind_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &uniform_buffer,
+                    offset: 0,
+                    size: std::num::NonZeroU64::new(SHIP_UNIFORM_BYTES),
+                }),
+            }],
+        });
+
+        // Одинична висота: масштаб прикладає CPU разом із поворотом.
+        let mesh = crate::ship::generate(1.0);
+        let index_bytes: Vec<u8> = mesh.indices.iter().flat_map(|i| i.to_le_bytes()).collect();
+        let index_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ship indices"),
+            size: index_bytes.len() as u64,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        gpu.queue.write_buffer(&index_buffer, 0, &index_bytes);
+
+        let index_count = mesh.indices.len() as u32;
+        let vertices_per_ship = mesh.positions.len();
+        let (position_buffer, normal_buffer, colour_buffer) =
+            Ships::buffers(gpu, vertices_per_ship);
+
+        Ships {
+            pipeline,
+            bind_group,
+            uniform_buffer,
+            index_buffer,
+            index_count,
+            vertices_per_ship,
+            mesh,
+            position_buffer,
+            normal_buffer,
+            colour_buffer,
+            capacity: vertices_per_ship,
+            position_bytes: Vec::new(),
+            normal_bytes: Vec::new(),
+            colour_bytes: Vec::new(),
+        }
+    }
+
+    fn buffers(gpu: &Gpu, vertices: usize) -> (wgpu::Buffer, wgpu::Buffer, wgpu::Buffer) {
+        let make = |label: &str, stride: usize| {
+            gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: (vertices * stride) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        };
+        (
+            make("ship positions", 12),
+            make("ship normals", 12),
+            make("ship colours", 16),
+        )
+    }
+
+    /// Позиції — camera-relative у `f64`, нормалі — повернуті в світ.
+    ///
+    /// Світова позиція вершини будується як `центр + R·(h·s)`, тобто в тому
+    /// самому порядку, що початок патча (R1d): множення на висоту йде **до**
+    /// віднімання камери, і жодне мале число не додається до великого двічі.
+    fn upload(&mut self, gpu: &Gpu, scene: &Scene, passes: &[Pass]) {
+        if scene.ships.is_empty() {
+            return;
+        }
+
+        let needed = scene.ships.len() * self.vertices_per_ship;
+        if needed > self.capacity {
+            self.capacity = needed.next_power_of_two();
+            let (position, normal, colour) = Ships::buffers(gpu, self.capacity);
+            self.position_buffer = position;
+            self.normal_buffer = normal;
+            self.colour_buffer = colour;
+        }
+
+        self.position_bytes.clear();
+        self.normal_bytes.clear();
+        self.colour_bytes.clear();
+
+        for ship in &scene.ships {
+            let r = rotation(ship.orientation);
+            let turn = |v: [f64; 3]| {
+                [
+                    r[0][0] * v[0] + r[0][1] * v[1] + r[0][2] * v[2],
+                    r[1][0] * v[0] + r[1][1] * v[1] + r[1][2] * v[2],
+                    r[2][0] * v[0] + r[2][1] * v[1] + r[2][2] * v[2],
+                ]
+            };
+
+            for (local, normal) in self.mesh.positions.iter().zip(&self.mesh.normals) {
+                let offset = turn([
+                    local[0] * ship.height_m,
+                    local[1] * ship.height_m,
+                    local[2] * ship.height_m,
+                ]);
+                let world = [
+                    ship.centre[0] + offset[0],
+                    ship.centre[1] + offset[1],
+                    ship.centre[2] + offset[2],
+                ];
+                for value in scene.camera.relative(world) {
+                    self.position_bytes.extend_from_slice(&value.to_le_bytes());
+                }
+
+                let n = turn([
+                    f64::from(normal[0]),
+                    f64::from(normal[1]),
+                    f64::from(normal[2]),
+                ]);
+                for value in n {
+                    self.normal_bytes
+                        .extend_from_slice(&(value as f32).to_le_bytes());
+                }
+
+                for value in ship.colour {
+                    self.colour_bytes.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+        }
+
+        let mut uniform_bytes = Vec::with_capacity(SHIP_UNIFORM_BYTES as usize);
+        for (k, plan) in passes.iter().enumerate() {
+            uniform_bytes.clear();
+            for column in plan.projection {
+                for value in column {
+                    uniform_bytes.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+            for value in [LIGHT_DIR[0], LIGHT_DIR[1], LIGHT_DIR[2], 0.0] {
+                uniform_bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            gpu.queue
+                .write_buffer(&self.uniform_buffer, k as u64 * PASS_STRIDE, &uniform_bytes);
+        }
+
+        gpu.queue
+            .write_buffer(&self.position_buffer, 0, &self.position_bytes);
+        gpu.queue
+            .write_buffer(&self.normal_buffer, 0, &self.normal_bytes);
+        gpu.queue
+            .write_buffer(&self.colour_buffer, 0, &self.colour_bytes);
+    }
+
+    fn draw(&self, pass: &mut wgpu::RenderPass<'_>, scene: &Scene, index: usize) {
+        if scene.ships.is_empty() {
+            return;
+        }
+
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.bind_group, &[(index as u64 * PASS_STRIDE) as u32]);
+        pass.set_vertex_buffer(0, self.position_buffer.slice(..));
+        pass.set_vertex_buffer(1, self.normal_buffer.slice(..));
+        pass.set_vertex_buffer(2, self.colour_buffer.slice(..));
+        pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+
+        // Виклик на корабель: індекси спільні, зсуває їх `base_vertex`.
+        for k in 0..scene.ships.len() {
+            let base = (k * self.vertices_per_ship) as i32;
+            pass.draw_indexed(0..self.index_count, base, 0..1);
+        }
+    }
+}
+
 impl Lines {
     fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Lines {
         let module = gpu
@@ -2153,6 +2507,52 @@ mod tests {
     /// Виміряно, скільки це коштує: 0.49 мс проти 0.23 мс на 6·10⁷ і 6.5·10⁷ м
     /// відповідно, тобто об'єм подвоює кадр там, де він ще потрібен, і не
     /// коштує нічого там, де вже ні.
+    /// Ближня площина відходить від корабля, а не від тіла під ним.
+    ///
+    /// Це і є весь крок V2 одним числом. До нього `near` виводилася з висоти
+    /// над найближчим тілом: на орбіті 400 км вона ставала 40 км, тобто все,
+    /// що ближче за сорок кілометрів, зникало з кадру — а корабель стоїть за
+    /// п'ятнадцять метрів.
+    #[test]
+    fn the_near_plane_lets_the_ship_in() {
+        let altitude = 400_000.0;
+        let radius = sphere::EARTH_RADIUS_M;
+        let eye = [radius + altitude, 0.0, 0.0];
+        let camera = Camera::look_at(eye, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
+
+        let mut scene = Scene::new(camera);
+        scene.bodies.push(scene::Body {
+            centre: [0.0, 0.0, 0.0],
+            radius_m: radius,
+            orientation: [1.0, 0.0, 0.0, 0.0],
+            tiles: scene::TileSet::Smooth,
+            air: None,
+        });
+
+        let without = Frame::near_for(&scene);
+        assert!(
+            without > 1000.0,
+            "без корабля near мала лишитись величиною висоти: {without}"
+        );
+
+        // Корабель за п'ятнадцять метрів перед камерою, тобто трохи нижче.
+        let distance = 15.0;
+        scene.ships.push(scene::Ship {
+            centre: [eye[0] - distance, 0.0, 0.0],
+            orientation: [1.0, 0.0, 0.0, 0.0],
+            height_m: crate::ship::DEFAULT_HEIGHT_M,
+            extent_m: 0.5 * crate::ship::DEFAULT_HEIGHT_M,
+            colour: [0.7, 0.7, 0.75, 1.0],
+        });
+
+        let with = Frame::near_for(&scene);
+        let hull = distance - 0.5 * crate::ship::DEFAULT_HEIGHT_M;
+        assert!(
+            with < hull,
+            "near {with} не пропускає корпус, найближча точка якого за {hull} м"
+        );
+    }
+
     #[test]
     fn the_aerial_volume_is_skipped_when_the_air_is_thinner_than_a_pixel() {
         let air = scene::Atmosphere::EARTH.with_surface(sphere::EARTH_RADIUS_M);
