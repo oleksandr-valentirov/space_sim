@@ -160,6 +160,14 @@ static const float STEEPNESS = 0.5;
 static const float FADE_LO_PX = 4.0;
 static const float FADE_HI_PX = 16.0;
 
+// Правило матеріалу (T4). Числа — дослівно `engine::material`; звіряє їх
+// `engine::tests::material`, бо константа тут і константа там — два місця.
+static const float SLOPE_GAIN = 0.30;
+static const float SLOPE_REF = 0.30;
+static const float RELIEF_GAIN = 0.45;
+static const float MIN_TINT = 0.35;
+static const float MAX_TINT = 1.80;
+
 struct VertexInput
 {
     uint vertex : SV_VertexID;
@@ -227,6 +235,13 @@ struct VertexOutput
     // робить колір неперервним усередині клітинки.
     nointerpolation uint colour_tile : COLOURTILE;
     float2 colour_node : COLOURNODE;
+    // Множник альбедо від нахилу й процедурного рельєфу (T4).
+    //
+    // Рахується у ВЕРШИНІ, і це рішення, а не зручність: обидва його аргументи
+    // на спільному вузлі двох патчів різних рівнів бітово одні, тож колір на
+    // межі рівнів неперервний за побудовою. Порахований у фрагменті з
+    // `ddx/ddy`, він був би функцією трикутника, тобто рівня патча.
+    float tint : TINT;
 };
 
 // Спільна частина: зсув вершини всередині патча, вже повернутий і масштабований.
@@ -237,6 +252,9 @@ VertexOutput place(uint slot, PatchVertex vertex, uint2 grid, float3 offset)
     float3 world = origin + mul(uniforms.model, float4(offset, 0.0)).xyz;
 
     VertexOutput output;
+    // Одиниця — «правило нічого не робить». Гладке тіло лишає її як є, а
+    // рельєф перезаписує; на рівнині рельєф теж дає рівно одиницю.
+    output.tint = 1.0;
     output.colour_tile = patch.colour_tile;
     // Вузол патча → тексель колірного тайла, тим самим вікном, що й у висоти,
     // але **своїм**. Ореол додається тут, як і в `sample_height`.
@@ -405,28 +423,48 @@ float octave_weight(float wavelength, float distance, float focal)
     return detail_smooth((px - FADE_LO_PX) / (FADE_HI_PX - FADE_LO_PX));
 }
 
-// Процедурна деталь у вузлі, метри — двійник `engine::detail::height_m`.
+// Процедурна деталь у вузлі — двійник `engine::detail::sample`.
+//
+// Повертає два числа з одного проходу: `x` — висота в метрах для форми,
+// `y` — шорсткість без розмірності для матеріалу (T4). Шум, точки вибірки й
+// затухання спільні; різниця лише у вазі октави — висота множить кожну на її
+// довжину хвилі, шорсткість не множить ні на що. Другий прохід коштував би
+// стільки ж, скільки перший: усе дороге тут — це хеші.
 //
 // `unit` — одиничний напрямок вузла з центра тіла, тобто нормаль з буфера
 // геометрії. Саме вона, а не позиція відносно патча: на спільному ребрі
 // нормаль бітово одна (R2b), тож деталь неперервна не за домовленістю, а за
 // побудовою.
-float detail_m(float3 unit, float slope, float distance)
+float2 detail_sample(float3 unit, float slope, float distance)
 {
     float radius = uniforms.detail.x;
     float base = uniforms.detail.z;
     float focal = uniforms.detail.w;
 
-    float out = 0.0;
+    float height = 0.0;
+    float roughness = 0.0;
     for (uint octave = 0u; octave < OCTAVES; ++octave)
     {
         float wavelength = base / float(1u << octave);
         float weight = octave_weight(wavelength, distance, focal);
         if (weight <= 0.0) { break; }
         float scale = radius / wavelength;
-        out += (value_noise(unit * scale) - 0.5) * STEEPNESS * slope * wavelength * weight;
+        float signed_noise = value_noise(unit * scale) - 0.5;
+        height += signed_noise * STEEPNESS * slope * wavelength * weight;
+        roughness += 2.0 * signed_noise * weight;
     }
-    return out;
+    return float2(height, roughness);
+}
+
+// Множник альбедо у вузлі — двійник `engine::material::tint`.
+//
+// Жоден з двох аргументів не походить від ассета: нахил — величина в метрах
+// на метр, шорсткість — шум за позицією на тілі. Крокові піраміди сюди немає
+// куди зайти, і саме тому перекукування ассета не перефарбовує схили.
+float material_tint(float slope, float roughness)
+{
+    float steep = clamp(slope / SLOPE_REF, 0.0, 1.0);
+    return clamp(1.0 + steep * (SLOPE_GAIN + RELIEF_GAIN * roughness), MIN_TINT, MAX_TINT);
 }
 
 [shader("vertex")]
@@ -451,15 +489,19 @@ VertexOutput vertex_terrain(VertexInput input)
     float distance = length(base_world);
 
     float slope = sample_slope(patch, node.grid);
-    float detail = detail_m(vertex.normal, slope, distance);
+    float2 detail = detail_sample(vertex.normal, slope, distance);
 
     // Обидві висоти зсувають вершину вздовж нормалі патча — на ОДИНИЧНІЙ
     // сфері, бо радіус і поворот застосовує та сама матриця, що й до самого
     // зсуву. Множник `terrain.x` і є `scale_m / radius_m`; деталь приходить
     // одразу в метрах, тож ділиться на радіус.
-    float lift = height * uniforms.terrain.x + detail / uniforms.detail.x;
+    float lift = height * uniforms.terrain.x + detail.x / uniforms.detail.x;
     float3 offset = vertex.offset + vertex.normal * lift;
-    return place(draw.slot, vertex, node.grid, offset);
+    VertexOutput output = place(draw.slot, vertex, node.grid, offset);
+    // Ті самі два числа, якими щойно зсунуто вершину, — інших правило не
+    // читає. Тобто колір не може розійтися з формою: він виведений з неї.
+    output.tint = material_tint(slope, detail.y);
+    return output;
 }
 
 float3 shade(float3 normal, float3 albedo)
@@ -510,14 +552,18 @@ float sample_colour(uint tile, float2 node)
 // а фрагментна читала його коректно — це перевірялося виводом значення в
 // колір. Друга точка входу тут не потрібна: гладке тіло малюється своїм
 // пайплайном і в цю функцію не заходить.
+// Множник матеріалу застосовується в **обох** гілках, і це навмисно: правило
+// описує поверхню, а не наявність мозаїки. Тіло з рельєфом, але без кольору,
+// дістає той самий рельєфний контраст — інакше поява ассета міняла б не лише
+// відтінок, а й саму присутність деталі.
 float3 surface_albedo(VertexOutput input)
 {
     if (uniforms.terrain.y <= 0.0)
     {
-        return uniforms.colour.rgb;
+        return uniforms.colour.rgb * input.tint;
     }
     float unit = sample_colour(input.colour_tile, input.colour_node);
-    return float3(unit * uniforms.terrain.y);
+    return float3(unit * uniforms.terrain.y * input.tint);
 }
 
 [shader("fragment")]

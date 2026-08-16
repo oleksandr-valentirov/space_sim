@@ -171,6 +171,7 @@ struct VertexOutput_0
     @location(1) world_0 : vec3<f32>,
     @interpolate(flat) @location(2) colour_tile_1 : u32,
     @location(3) colour_node_0 : vec2<f32>,
+    @location(4) tint_0 : f32,
 };
 
 fn place_0( slot_2 : u32,  vertex_1 : ptr<function, PatchVertex_std430_0>,  grid_1 : vec2<u32>,  offset_1 : vec3<f32>) -> VertexOutput_0
@@ -178,6 +179,7 @@ fn place_0( slot_2 : u32,  vertex_1 : ptr<function, PatchVertex_std430_0>,  grid
     var patch_0 : PatchData_std430_0 = patches_0[slot_2];
     var world_1 : vec3<f32> = patch_0.origin_0 + (((vec4<f32>(offset_1, 0.0f)) * (mat4x4<f32>(uniforms_0.model_0.data_0[i32(0)][i32(0)], uniforms_0.model_0.data_0[i32(1)][i32(0)], uniforms_0.model_0.data_0[i32(2)][i32(0)], uniforms_0.model_0.data_0[i32(3)][i32(0)], uniforms_0.model_0.data_0[i32(0)][i32(1)], uniforms_0.model_0.data_0[i32(1)][i32(1)], uniforms_0.model_0.data_0[i32(2)][i32(1)], uniforms_0.model_0.data_0[i32(3)][i32(1)], uniforms_0.model_0.data_0[i32(0)][i32(2)], uniforms_0.model_0.data_0[i32(1)][i32(2)], uniforms_0.model_0.data_0[i32(2)][i32(2)], uniforms_0.model_0.data_0[i32(3)][i32(2)], uniforms_0.model_0.data_0[i32(0)][i32(3)], uniforms_0.model_0.data_0[i32(1)][i32(3)], uniforms_0.model_0.data_0[i32(2)][i32(3)], uniforms_0.model_0.data_0[i32(3)][i32(3)])))).xyz;
     var output_0 : VertexOutput_0;
+    output_0.tint_0 = 1.0f;
     output_0.colour_tile_1 = patch_0.colour_tile_0;
     output_0.colour_node_0 = patch_0.colour_origin_0 + vec2<f32>(grid_1) * vec2<f32>(patch_0.colour_step_0) + vec2<f32>(1.0f);
     output_0.position_0 = (((vec4<f32>(world_1, 1.0f)) * (mat4x4<f32>(uniforms_0.projection_0.data_0[i32(0)][i32(0)], uniforms_0.projection_0.data_0[i32(1)][i32(0)], uniforms_0.projection_0.data_0[i32(2)][i32(0)], uniforms_0.projection_0.data_0[i32(3)][i32(0)], uniforms_0.projection_0.data_0[i32(0)][i32(1)], uniforms_0.projection_0.data_0[i32(1)][i32(1)], uniforms_0.projection_0.data_0[i32(2)][i32(1)], uniforms_0.projection_0.data_0[i32(3)][i32(1)], uniforms_0.projection_0.data_0[i32(0)][i32(2)], uniforms_0.projection_0.data_0[i32(1)][i32(2)], uniforms_0.projection_0.data_0[i32(2)][i32(2)], uniforms_0.projection_0.data_0[i32(3)][i32(2)], uniforms_0.projection_0.data_0[i32(0)][i32(3)], uniforms_0.projection_0.data_0[i32(1)][i32(3)], uniforms_0.projection_0.data_0[i32(2)][i32(3)], uniforms_0.projection_0.data_0[i32(3)][i32(3)]))));
@@ -359,13 +361,14 @@ fn value_noise_0( p_0 : vec3<f32>) -> f32
     return out_1;
 }
 
-fn detail_m_0( unit_0 : vec3<f32>,  slope_0 : f32,  distance_1 : f32) -> f32
+fn detail_sample_0( unit_0 : vec3<f32>,  slope_0 : f32,  distance_1 : f32) -> vec2<f32>
 {
     var _S39 : f32 = uniforms_0.detail_0.x;
     var _S40 : f32 = uniforms_0.detail_0.z;
     var _S41 : f32 = uniforms_0.detail_0.w;
     var octave_0 : u32 = u32(0);
-    var out_4 : f32 = 0.0f;
+    var height_0 : f32 = 0.0f;
+    var roughness_0 : f32 = 0.0f;
     for(;;)
     {
         if(octave_0 < u32(6))
@@ -381,11 +384,19 @@ fn detail_m_0( unit_0 : vec3<f32>,  slope_0 : f32,  distance_1 : f32) -> f32
         {
             break;
         }
-        var out_5 : f32 = out_4 + (value_noise_0(unit_0 * vec3<f32>((_S39 / wavelength_1))) - 0.5f) * 0.5f * slope_0 * wavelength_1 * weight_0;
+        var signed_noise_0 : f32 = value_noise_0(unit_0 * vec3<f32>((_S39 / wavelength_1))) - 0.5f;
+        var height_1 : f32 = height_0 + signed_noise_0 * 0.5f * slope_0 * wavelength_1 * weight_0;
+        var roughness_1 : f32 = roughness_0 + 2.0f * signed_noise_0 * weight_0;
         octave_0 = octave_0 + u32(1);
-        out_4 = out_5;
+        height_0 = height_1;
+        roughness_0 = roughness_1;
     }
-    return out_4;
+    return vec2<f32>(height_0, roughness_0);
+}
+
+fn material_tint_0( slope_1 : f32,  roughness_2 : f32) -> f32
+{
+    return clamp(1.0f + clamp(slope_1 / 0.30000001192092896f, 0.0f, 1.0f) * (0.30000001192092896f + 0.44999998807907104f * roughness_2), 0.34999999403953552f, 1.79999995231628418f);
 }
 
 @vertex
@@ -398,8 +409,11 @@ fn vertex_terrain(@builtin(vertex_index) vertex_3 : u32, @builtin(instance_index
     var _S44 : f32 = sample_height_0(&(_S43), node_1.grid_0);
     var distance_2 : f32 = length(_S43.origin_0 + (((vec4<f32>(_S42.offset_0, 0.0f)) * (mat4x4<f32>(uniforms_0.model_0.data_0[i32(0)][i32(0)], uniforms_0.model_0.data_0[i32(1)][i32(0)], uniforms_0.model_0.data_0[i32(2)][i32(0)], uniforms_0.model_0.data_0[i32(3)][i32(0)], uniforms_0.model_0.data_0[i32(0)][i32(1)], uniforms_0.model_0.data_0[i32(1)][i32(1)], uniforms_0.model_0.data_0[i32(2)][i32(1)], uniforms_0.model_0.data_0[i32(3)][i32(1)], uniforms_0.model_0.data_0[i32(0)][i32(2)], uniforms_0.model_0.data_0[i32(1)][i32(2)], uniforms_0.model_0.data_0[i32(2)][i32(2)], uniforms_0.model_0.data_0[i32(3)][i32(2)], uniforms_0.model_0.data_0[i32(0)][i32(3)], uniforms_0.model_0.data_0[i32(1)][i32(3)], uniforms_0.model_0.data_0[i32(2)][i32(3)], uniforms_0.model_0.data_0[i32(3)][i32(3)])))).xyz);
     var _S45 : f32 = sample_slope_0(&(_S43), node_1.grid_0);
-    var _S46 : VertexOutput_0 = place_0(draw_1.slot_0, &(_S42), node_1.grid_0, _S42.offset_0 + _S42.normal_0 * vec3<f32>((_S44 * uniforms_0.terrain_0.x + detail_m_0(_S42.normal_0, _S45, distance_2) / uniforms_0.detail_0.x)));
-    return _S46;
+    var detail_1 : vec2<f32> = detail_sample_0(_S42.normal_0, _S45, distance_2);
+    var _S46 : VertexOutput_0 = place_0(draw_1.slot_0, &(_S42), node_1.grid_0, _S42.offset_0 + _S42.normal_0 * vec3<f32>((_S44 * uniforms_0.terrain_0.x + detail_1.x / uniforms_0.detail_0.x)));
+    var output_1 : VertexOutput_0 = _S46;
+    output_1.tint_0 = material_tint_0(_S45, detail_1.y);
+    return output_1;
 }
 
 fn shade_0( normal_2 : vec3<f32>,  albedo_0 : vec3<f32>) -> vec3<f32>
@@ -409,7 +423,7 @@ fn shade_0( normal_2 : vec3<f32>,  albedo_0 : vec3<f32>) -> vec3<f32>
 
 struct pixelOutput_0
 {
-    @location(0) output_1 : vec4<f32>,
+    @location(0) output_2 : vec4<f32>,
 };
 
 struct pixelInput_0
@@ -418,6 +432,7 @@ struct pixelInput_0
     @location(1) world_2 : vec3<f32>,
     @interpolate(flat) @location(2) colour_tile_2 : u32,
     @location(3) colour_node_1 : vec2<f32>,
+    @location(4) tint_1 : f32,
 };
 
 @fragment
@@ -449,14 +464,14 @@ fn surface_albedo_0( input_0 : VertexOutput_0) -> vec3<f32>
 {
     if((uniforms_0.terrain_0.y) <= 0.0f)
     {
-        return uniforms_0.colour_0.xyz;
+        return uniforms_0.colour_0.xyz * vec3<f32>(input_0.tint_0);
     }
-    return vec3<f32>((sample_colour_0(input_0.colour_tile_1, input_0.colour_node_0) * uniforms_0.terrain_0.y));
+    return vec3<f32>((sample_colour_0(input_0.colour_tile_1, input_0.colour_node_0) * uniforms_0.terrain_0.y * input_0.tint_0));
 }
 
 struct pixelOutput_1
 {
-    @location(0) output_2 : vec4<f32>,
+    @location(0) output_3 : vec4<f32>,
 };
 
 struct pixelInput_1
@@ -465,12 +480,13 @@ struct pixelInput_1
     @location(1) world_3 : vec3<f32>,
     @interpolate(flat) @location(2) colour_tile_3 : u32,
     @location(3) colour_node_2 : vec2<f32>,
+    @location(4) tint_2 : f32,
 };
 
 @fragment
 fn fragment_terrain( _S56 : pixelInput_1, @builtin(position) position_2 : vec4<f32>) -> pixelOutput_1
 {
-    var _S57 : VertexOutput_0 = VertexOutput_0( position_2, _S56.normal_4, _S56.world_3, _S56.colour_tile_3, _S56.colour_node_2 );
+    var _S57 : VertexOutput_0 = VertexOutput_0( position_2, _S56.normal_4, _S56.world_3, _S56.colour_tile_3, _S56.colour_node_2, _S56.tint_2 );
     var facet_0 : vec3<f32> = normalize(cross(dpdx(_S56.world_3), dpdy(_S56.world_3)));
     var facet_1 : vec3<f32>;
     if((dot(facet_0, _S56.normal_4)) < 0.0f)
