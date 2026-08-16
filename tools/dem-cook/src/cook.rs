@@ -133,9 +133,11 @@ pub fn cook_colour(source: &Path, out: &Path, levels: u32) -> Result<String, Str
 /// Разом із нею — скільки вузлів упритул до [`SCALE`]: це і є ціна вибору
 /// шкали, і платиться вона в тих самих байтах, що й сам ассет.
 pub fn build_colour(map: &Albedo, levels: u32) -> (Colour, usize) {
+    let chain = map.chain();
     let mut saturated = 0usize;
     let mut grids = Vec::with_capacity(tiles::count(levels));
     for level in 0..levels {
+        let source = &chain[source_for(&chain, level)];
         let side = 1u32 << level;
         for face in 0..FACES {
             for i in 0..side {
@@ -146,7 +148,7 @@ pub fn build_colour(map: &Albedo, levels: u32) -> (Colour, usize) {
                         for b in 0..STORED as isize {
                             let (a, b) = (a - HALO as isize, b - HALO as isize);
                             let value = match direction(&patch, a, b) {
-                                Some(unit) => map.sample_direction(unit),
+                                Some(unit) => source.sample_direction(unit),
                                 // Кут ореолу: сусіда через ребро там немає, і
                                 // ніхто його не читає (`engine::tiles`).
                                 None => 0.0,
@@ -164,6 +166,27 @@ pub fn build_colour(map: &Albedo, levels: u32) -> (Colour, usize) {
         }
     }
     (Colour::build(levels, 1, SCALE, &grids), saturated)
+}
+
+/// Яку сітку ланцюга читає рівень піраміди.
+///
+/// Найгрубішу з тих, чий піксель ще не більший за вузол цього рівня. Кут, а
+/// не метри: вузол рівня `L` — це `(π/2) / (SIDE·2^L)` радіана незалежно від
+/// радіуса тіла, а піксель сітки — `π/(180·per_degree)`. Радіус скорочується,
+/// тож те саме число працює і для Місяця, і для Землі.
+///
+/// Дрібніша сітка дала б точкову вибірку там, де вузол накриває тисячі
+/// пікселів (плямистий шум замість карти); грубіша викинула б деталь, яку
+/// вузол ще здатен нести.
+pub fn source_for(chain: &[Albedo], level: u32) -> usize {
+    let node_rad = std::f64::consts::FRAC_PI_2 / f64::from(SIDE as u32 * (1u32 << level));
+    let mut best = 0;
+    for (index, map) in chain.iter().enumerate() {
+        if map.pixel_rad() <= node_rad {
+            best = index;
+        }
+    }
+    best
 }
 
 /// Відбивна здатність → один байт.

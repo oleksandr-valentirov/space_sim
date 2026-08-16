@@ -21,7 +21,7 @@
 //!    одиниць з 255.
 
 use dem_cook::albedo::Albedo;
-use dem_cook::cook::{build_colour, SCALE};
+use dem_cook::cook::{build_colour, source_for, SCALE};
 use engine::cubesphere::{Patch, FACES, SIDE};
 use engine::tiles;
 
@@ -75,9 +75,15 @@ fn cooking_twice_gives_the_same_bytes() {
 }
 
 /// Колір у тайлі дорівнює кольору джерела в тому самому напрямку.
+///
+/// ⚠ Джерело тут — **та сітка ланцюга, яку взяв би сам рівень** (T3c), а не
+/// завжди найдрібніша. Порівняння з найдрібнішою пройшло б і зараз, і саме це
+/// й було до T3c: плавна фікстура після усереднення й квантування дає ті самі
+/// байти, тож тест мовчки перестав би питати про грубі рівні.
 #[test]
 fn every_node_is_the_source_read_a_second_way() {
     let map = painted();
+    let chain = map.chain();
     let (colour, _) = build_colour(&map, LEVELS);
 
     let mut checked = 0;
@@ -93,9 +99,10 @@ fn every_node_is_the_source_read_a_second_way() {
 
                         // Другий шлях: напрямок → кути → сітка, без жодного
                         // виклику з кукера.
+                        let source = &chain[source_for(&chain, level)];
                         let [x, y, z] = patch.vertex(a, b, 1.0);
                         let flat = (x * x + y * y).sqrt();
-                        let want = map.sample(z.atan2(flat), y.atan2(x));
+                        let want = source.sample(z.atan2(flat), y.atan2(x));
                         let want = (want / f64::from(SCALE) * 255.0).round() as u8;
 
                         assert_eq!(
@@ -209,5 +216,58 @@ fn the_moon_keeps_its_contrast_through_the_quantisation() {
     assert!(
         high - low > 60,
         "діапазон вузлів {low}…{high} — шкала з'їла контраст поверхні"
+    );
+}
+
+/// Грубий рівень усереднює джерело, а не обирає з нього один піксель (T3c).
+///
+/// Джерело — шахівниця з періодом у два пікселі, тобто деталь, якої вузол
+/// рівня 0 не здатен нести взагалі: він накриває сотні клітинок. Правильна
+/// відповідь там одна — **середнє**, і воно те саме в кожному вузлі.
+///
+/// Точкова вибірка дала б замість цього 0 або 255 навмання, тобто плямистий
+/// шум. Саме таким і виглядав далекий Місяць у демо до цього кроку, і саме це
+/// й привело до ланцюга сіток: інваріанти всі трималися, а картинка була не
+/// та.
+#[test]
+fn a_coarse_level_averages_the_source_instead_of_picking_a_pixel() {
+    let (samples, lines) = (720usize, 360usize);
+    let mut raw = Vec::with_capacity(samples * lines);
+    for line in 0..lines {
+        for sample in 0..samples {
+            // Період два пікселі по обох осях: середнє рівно посередині.
+            let dark = (line + sample).is_multiple_of(2);
+            raw.push(if dark { 0.05f32 } else { 0.15 });
+        }
+    }
+    let map = Albedo {
+        samples,
+        lines,
+        per_degree: 2.0,
+        raw,
+    };
+
+    let (colour, _) = build_colour(&map, 2);
+    let middle = (0.1 / f64::from(SCALE) * 255.0).round();
+
+    let (mut low, mut high) = (u8::MAX, u8::MIN);
+    for index in 0..tiles::count(1) {
+        for a in 0..=SIDE as i32 {
+            for b in 0..=SIDE as i32 {
+                let unit = colour.node(index, a, b, 0);
+                low = low.min(unit);
+                high = high.max(unit);
+            }
+        }
+    }
+    println!("  рівень 0: вузли {low} … {high}, середнє джерела {middle}");
+
+    // Допуск у чотири одиниці: сітка ланцюга не потрапляє в клітинку
+    // шахівниці рівно, тож середнє злегка гуляє. Точкова вибірка дала б
+    // розкид від 51 до 153 — на два порядки більший.
+    assert!(
+        f64::from(low) > middle - 4.0 && f64::from(high) < middle + 4.0,
+        "вузли рівня 0 розкидані {low}…{high} навколо {middle} — це точкова \
+         вибірка, а не середнє"
     );
 }
