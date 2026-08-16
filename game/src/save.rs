@@ -1,31 +1,33 @@
-//! Сейв: стан, план і крок інтегратора (ROADMAP J6, PROJECT.md §4).
+//! Saving: state, plan and integrator step (ROADMAP J6, PROJECT.md §4).
 //!
-//! Правило 4 з §4 звучить так: **стан інтегратора входить у сейв.** Адаптивний
-//! крок означає, що послідовність кроків залежить від історії; якщо після
-//! завантаження почати зі «свіжого» кроку, траєкторія розійдеться з тією, що
-//! була до збереження, а в N-body розбіжність росте експоненційно.
+//! Rule 4 of §4 reads: **the integrator's state goes into the save.** An
+//! adaptive step means the step sequence depends on history; starting from a
+//! "fresh" step after loading makes the trajectory diverge from the one before
+//! saving, and in N-body the divergence grows exponentially.
 //!
-//! H1 виміряв, скільки це коштує на одному прогоні: 7148 семплів замість 101 і
-//! розбіжність 1.9 мм. J3 виміряв на маневрі: 1.4% зайвої роботи. Тут ціна
-//! інша й найгірша — сейв, який дає **іншу гру**.
+//! H1 measured the cost on one run: 7148 samples instead of 101, and a 1.9 mm
+//! divergence. J3 measured it on a manoeuvre: 1.4% of wasted work. Here the
+//! price is different and worst of all -- a save that gives **a different
+//! game**.
 //!
-//! ## Чого в сейві немає
+//! ## What the save does not hold
 //!
-//! Траєкторії. §4: «сейв = стан + план маневрів + стан інтегратора (не вся
-//! траєкторія)». Наслідок, який варто знати наперед: після завантаження
-//! намальованої історії немає — вона відновлюється лише вперед, від точки
-//! збереження. Це рішення дизайну, а не економія місця; якщо історія колись
-//! знадобиться, вона піде окремим (і викидним) файлом.
+//! The trajectory. §4: "a save = state + manoeuvre plan + integrator state
+//! (not the whole trajectory)". A consequence worth knowing in advance: after
+//! loading there is no drawn history -- it is restored only forwards, from the
+//! save point. That is a design decision rather than a space saving; if
+//! history is ever needed it goes in a separate (and disposable) file.
 //!
-//! ## Чому шістнадцяткові біти, а не числа
+//! ## Why hexadecimal bits rather than numbers
 //!
-//! Сейв мусить відтворювати гру **бітово**, а десятковий друк — це домовленість
-//! між форматувальником і парсером. У Rust вона надійна (найкоротший запис, що
-//! читається назад точно), але C6 уже фіксував протилежний випадок: друк
-//! `double` у десятковий текст — справа libc, і саме тому CSV не входять у
-//! звірку детермінізму. Тут ціна помилки вища за читабельність, тож у файл іде
-//! `to_bits`, а десяткове значення лишається поруч **коментарем** — для ока, і
-//! парсер його не читає.
+//! A save must reproduce the game **bitwise**, and decimal printing is an
+//! agreement between formatter and parser. In Rust it is reliable (the
+//! shortest representation that reads back exactly), but C6 already recorded
+//! the opposite case: printing a `double` as decimal text is libc's business,
+//! which is exactly why CSV are not part of the determinism comparison. Here
+//! the cost of an error exceeds readability, so `to_bits` goes into the file
+//! and the decimal value stays beside it as a **comment** -- for the eye, and
+//! the parser does not read it.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -35,43 +37,45 @@ use core_rs::{State, Vec3d};
 use crate::plan::{Frame, Manoeuvre, Plan};
 use crate::world::World;
 
-/// Версія формату. Зміниться — старі сейви мусять голосно не читатися, а не
-/// тихо читатися не так.
+/// Format version. When it changes, old saves must loudly fail to read rather
+/// than quietly read wrongly.
 const MAGIC: &str = "space_sim save v1";
 
 pub struct SavedVessel {
     pub name: String,
-    /// Стан, з якого продовжувати: остання **межа ланки не пізніша за
-    /// курсор**, а не кінець порахованого.
+    /// The state to continue from: the last **leg boundary not later than the
+    /// cursor**, not the end of what is computed.
     ///
-    /// Не кінець — бо прогноз попереду курсора в сейв не входить, і
-    /// відновлювати гру з нього означало б стрибнути на тижні вперед. Не сам
-    /// курсор — бо з довільної точки продовжити бітово неможливо: крок
-    /// інтегратора зберігається на межах ланок, і тільки там (`core/prop.h`).
+    /// Not the end, because the prediction ahead of the cursor is not part of
+    /// the save, and restoring the game from it would jump weeks forward. Not
+    /// the cursor itself, because continuing bitwise from an arbitrary point
+    /// is impossible: the integrator step is preserved at leg boundaries and
+    /// only there (`core/prop.h`).
     ///
-    /// Отже зерно сейву — ланка. Скільки це часу, залежить від траєкторії, і
-    /// зменшується разом із `world::LEG`.
+    /// So the save's granularity is a leg. How much time that is depends on
+    /// the trajectory, and shrinks along with `world::LEG`.
     pub tip: State,
-    /// Крок інтегратора. Без нього сейв дає іншу траєкторію.
+    /// The integrator step. Without it the save gives a different
+    /// trajectory.
     pub step: f64,
     pub horizon_end: f64,
     pub plan: Plan,
-    /// Скільки маневрів плану вже вшито в `tip`.
+    /// How many of the plan's manoeuvres are already baked into `tip`.
     ///
-    /// Зберігається явно, хоч і виводиться з часів: стан до й після імпульсу
-    /// мають **однаковий час**, тож правило «застосувати все, що не пізніше»
-    /// виконало б маневр удвічі, а «все, що раніше» — жодного разу, якби
-    /// точка перезапуску колись стала пост-імпульсною. Число в файлі знімає
-    /// це питання назавжди.
+    /// Stored explicitly although it follows from the times: the states before
+    /// and after an impulse share **the same time**, so a rule of "apply
+    /// everything not later" would execute the manoeuvre twice, and
+    /// "everything earlier" not at all, if the restart point ever became
+    /// post-impulse. The number in the file settles that question forever.
     pub applied: usize,
 
-    /// Площа, маса й коефіцієнт відбиття (ROADMAP K6b).
+    /// Area, mass and reflectivity coefficient (ROADMAP K6b).
     ///
-    /// У сейві не для повноти опису, а тому що без них завантажений апарат
-    /// летів би крізь іншу модель сил, ніж збережений, і траєкторія після
-    /// завантаження розійшлася б з тією, що була до нього — рівно те, чого
-    /// PROJECT.md §4 вимагає не допустити для кроку інтегратора, з тієї ж
-    /// причини й того ж масштабу.
+    /// In the save not for descriptive completeness but because without them a
+    /// loaded vessel would fly through a different force model than the saved
+    /// one, and the trajectory after loading would diverge from the one before
+    /// -- exactly what PROJECT.md §4 requires be prevented for the integrator
+    /// step, for the same reason and at the same scale.
     pub params: Option<core_rs::VesselParams>,
 }
 
@@ -82,12 +86,12 @@ pub struct Save {
 }
 
 impl Save {
-    /// Знімає сейв зі світу.
+    /// Takes a save from the world.
     ///
-    /// Курсор зберігається як є, а стан кожного апарата — з останньої межі
-    /// ланки не пізнішої за нього. Після завантаження горизонт наздоганяє
-    /// курсор сам (годинник назад не ходить, `crate::clock`), і рахує він при
-    /// цьому рівно ті самі ланки, що були.
+    /// The cursor is stored as is, and each vessel's state comes from the last
+    /// leg boundary not later than it. After loading the horizon catches the
+    /// cursor up on its own (the clock does not go backwards,
+    /// `crate::clock`), computing exactly the same legs that were there.
     pub fn of(world: &World) -> Save {
         let cursor = world.clock().t();
 
@@ -107,9 +111,9 @@ impl Save {
                         step: resume.step,
                         horizon_end: v.horizon_end,
                         plan: v.plan.clone(),
-                        // Точка перезапуску — це завжди стан ДО імпульсу
-                        // (ланка закінчується перед ним), тож маневр рівно в
-                        // цей момент іще не застосований.
+                        // The restart point is always the state BEFORE the
+                        // impulse (the leg ends before it), so a manoeuvre at
+                        // exactly this instant is not yet applied.
                         applied: v
                             .plan
                             .manoeuvres()
@@ -123,15 +127,16 @@ impl Save {
         }
     }
 
-    /// Будує світ із сейву на вже завантаженій ефемериді.
+    /// Builds a world from a save on an already loaded ephemeris.
     pub fn into_world(
         self,
         eph: std::sync::Arc<core_rs::Ephemeris>,
         cfg: core_rs::PropConfig,
     ) -> Result<World, core_rs::CoreError> {
-        // Годинник ставиться на збережений курсор, хоч траєкторії там ще
-        // немає: горизонт наздожене його першими ж тіками, а назад курсор не
-        // ходить (`crate::clock`). Доти снапшот чесно каже `Stall::Horizon`.
+        // The clock is set to the saved cursor although there is no
+        // trajectory there yet: the horizon catches it up in the first few
+        // ticks, and the cursor does not go backwards (`crate::clock`). Until
+        // then the snapshot honestly says `Stall::Horizon`.
         let mut world = World::with_ephemeris(eph, cfg, self.t, self.warp)?;
 
         for vessel in self.vessels {
@@ -212,7 +217,7 @@ impl Save {
 
         match lines.next().map(str::trim) {
             Some(MAGIC) => {}
-            other => return Err(format!("це не сейв цього формату: {other:?}")),
+            other => return Err(format!("not a save of this format: {other:?}")),
         }
 
         let mut t = None;
@@ -220,8 +225,8 @@ impl Save {
         let mut vessels: Vec<SavedVessel> = Vec::new();
 
         for line in lines {
-            // Коментар — усе після `#`. Саме там лежать десяткові значення
-            // для ока, і парсер про них не знає нічого.
+            // A comment is everything after `#`. That is where the decimal
+            // values for the eye live, and the parser knows nothing of them.
             let line = line.split('#').next().unwrap_or("").trim();
             if line.is_empty() {
                 continue;
@@ -245,7 +250,7 @@ impl Save {
                 _ => {
                     let vessel = vessels
                         .last_mut()
-                        .ok_or_else(|| format!("'{key}' до першого 'vessel'"))?;
+                        .ok_or_else(|| format!("'{key}' before the first 'vessel'"))?;
 
                     match key {
                         "tip" => {
@@ -269,17 +274,17 @@ impl Save {
                         }
                         "step" => vessel.step = number(&mut words, "step")?,
                         "horizon_end" => vessel.horizon_end = number(&mut words, "horizon_end")?,
-                        // Відсутній рядок — це `None`, безмасова пробна
-                        // частинка: сейви, написані до K6b, читаються далі
-                        // й означають рівно те, що означали.
+                        // A missing line is `None`, a massless test particle:
+                        // saves written before K6b still read and mean exactly
+                        // what they meant.
                         "params" => {
                             let mass_kg = number(&mut words, "params[mass]")?;
                             let area_m2 = number(&mut words, "params[area]")?;
                             let cr = number(&mut words, "params[cr]")?;
-                            // Відсутнє — нуль, тобто «цей апарат не відчуває
-                            // повітря»: сейви, написані до K7b, читаються далі
-                            // й означають рівно те, що означали. Той самий
-                            // договір, що й для всього рядка `params` вище.
+                            // Missing means zero, i.e. "this vessel does not
+                            // feel air": saves written before K7b still read
+                            // and mean exactly what they meant. The same
+                            // contract as for the whole `params` line above.
                             let cd = match words.clone().next() {
                                 Some(w) if !w.starts_with('#') => number(&mut words, "params[cd]")?,
                                 _ => 0.0,
@@ -294,9 +299,9 @@ impl Save {
                         "applied" => {
                             vessel.applied = words
                                 .next()
-                                .ok_or("applied без значення")?
+                                .ok_or("applied without a value")?
                                 .parse()
-                                .map_err(|_| "applied не число".to_string())?;
+                                .map_err(|_| "applied is not a number".to_string())?;
                         }
                         "manoeuvre" => {
                             let t = number(&mut words, "manoeuvre.t")?;
@@ -305,36 +310,36 @@ impl Save {
                                 number(&mut words, "manoeuvre.dv1")?,
                                 number(&mut words, "manoeuvre.dv2")?,
                             ];
-                            let frame = words.next().ok_or("маневр без фрейму")?;
+                            let frame = words.next().ok_or("manoeuvre without a frame")?;
                             let frame = match frame {
                                 "inertial" => Frame::Inertial,
                                 other => match other.strip_prefix("vnb:") {
                                     Some(body) => Frame::Vnb {
                                         body: body
                                             .parse()
-                                            .map_err(|_| format!("фрейм '{other}'"))?,
+                                            .map_err(|_| format!("frame '{other}'"))?,
                                     },
-                                    None => return Err(format!("невідомий фрейм '{other}'")),
+                                    None => return Err(format!("unknown frame '{other}'")),
                                 },
                             };
                             vessel.plan.insert(Manoeuvre { t, dv, frame });
                         }
-                        other => return Err(format!("невідомий ключ '{other}'")),
+                        other => return Err(format!("unknown key '{other}'")),
                     }
                 }
             }
         }
 
         Ok(Save {
-            t: t.ok_or("у сейві немає 't'")?,
-            warp: warp.ok_or("у сейві немає 'warp'")?,
+            t: t.ok_or("the save has no 't'")?,
+            warp: warp.ok_or("the save has no 'warp'")?,
             vessels,
         })
     }
 }
 
-/// Число як біти. Коментар для ока дописує той, хто пише рядок, — **один**
-/// на рядок і в кінці: `#` з'їдає все, що після нього.
+/// A number as bits. Whoever writes the line appends the comment for the eye
+/// -- **one** per line and at the end: `#` eats everything after it.
 fn hex(value: f64) -> String {
     format!("{:016x}", value.to_bits())
 }
@@ -358,17 +363,17 @@ fn state_line(state: &State) -> String {
 }
 
 fn number<'a>(words: &mut impl Iterator<Item = &'a str>, what: &str) -> Result<f64, String> {
-    let word = words.next().ok_or_else(|| format!("{what} без значення"))?;
-    let raw = u64::from_str_radix(word, 16).map_err(|_| format!("{what}: '{word}' не біти"))?;
+    let word = words.next().ok_or_else(|| format!("{what} without a value"))?;
+    let raw = u64::from_str_radix(word, 16).map_err(|_| format!("{what}: '{word}' is not bits"))?;
     Ok(f64::from_bits(raw))
 }
 
-/// Куди пише гра за замовчуванням.
+/// Where the game writes by default.
 pub fn default_path() -> std::path::PathBuf {
     std::path::PathBuf::from("build/save.txt")
 }
 
-/// Зручність для того, хто зберігає світ у нитці симуляції.
+/// A convenience for whoever saves the world in the simulation thread.
 pub fn write_world(world: &World, path: &Path) -> Result<(), String> {
     Save::of(world).write(path)
 }
