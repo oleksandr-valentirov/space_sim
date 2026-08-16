@@ -27,6 +27,7 @@
 
 pub mod albedo;
 pub mod cook;
+pub mod etopo;
 
 use std::collections::HashMap;
 use std::path::Path;
