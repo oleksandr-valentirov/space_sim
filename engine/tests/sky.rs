@@ -131,6 +131,63 @@ fn looking_down(altitude: f64, depression: f64, air: bool) -> Scene {
     scene
 }
 
+/// Погляд на лімб: камера на висоті `altitude` над термінатором, дивиться
+/// точно на горизонт — у бік Сонця (`towards_sun`) або від нього.
+///
+/// Над **термінатором**, бо там Сонце горизонтальне: той самий погляд уперед
+/// дає освітлений лімб, той самий назад — нічний. Дві сцени з одного числа.
+fn limb(altitude: f64, towards_sun: bool) -> Scene {
+    let sun = sun_direction();
+    let up = unit(cross(sun, [0.0, 0.0, 1.0]));
+    let distance = EARTH + altitude;
+    let eye = up.map(|v| v * distance);
+
+    // Кут западання горизонту з цієї висоти — точно, а не приблизно: саме він
+    // ставить лімб у центр кадру, а не десь.
+    let (sin, cos) = (EARTH / distance).acos().sin_cos();
+    let sign = if towards_sun { 1.0 } else { -1.0 };
+    let direction = [
+        cos * sun[0] * sign - sin * up[0],
+        cos * sun[1] * sign - sin * up[1],
+        cos * sun[2] * sign - sin * up[2],
+    ];
+    let target = [
+        eye[0] + direction[0] * 1.0e6,
+        eye[1] + direction[1] * 1.0e6,
+        eye[2] + direction[2] * 1.0e6,
+    ];
+
+    let mut scene = Scene::new(Camera::look_at(eye, target, up));
+    scene.bodies.push(earth(true));
+    scene
+}
+
+/// Висота, на якій промінь пікселя проходить найближче до центра тіла.
+///
+/// Це і є та висота, якій належить світло лімба: промінь дотичний, тож увесь
+/// його шлях проходить біля неї. Рахується точно — `√(|eye|² − (eye·w)²)`, —
+/// а не через кути в кадрі: другий спосіб мав би власну похибку, і вона
+/// увійшла б у виміряну висоту шкали.
+fn tangent_altitude(scene: &Scene, size: u32, column: u32, row: u32) -> f64 {
+    let eye = scene.camera.position();
+    let (right, up, forward) = scene.camera.axes();
+    // Кадр квадратний, тож тангенс півкута однаковий по обох осях.
+    let t = (engine::frame::FOV_Y / 2.0).tan();
+    let ndc_x = 2.0 * (f64::from(column) + 0.5) / f64::from(size) - 1.0;
+    let ndc_y = 1.0 - 2.0 * (f64::from(row) + 0.5) / f64::from(size);
+    // Стовпець входить нарівні з рядком, і це не педантизм: лімб у кадрі
+    // вигнутий, тож на краю кадру той самий рядок дотикається шару значно
+    // нижче. Формула лише по рядку давала б висоту, якої в тому пікселі немає.
+    let w = unit([
+        forward[0] + right[0] * ndc_x * t + up[0] * ndc_y * t,
+        forward[1] + right[1] * ndc_x * t + up[1] * ndc_y * t,
+        forward[2] + right[2] * ndc_x * t + up[2] * ndc_y * t,
+    ]);
+    let along = eye[0] * w[0] + eye[1] * w[1] + eye[2] * w[2];
+    let radius = eye[0] * eye[0] + eye[1] * eye[1] + eye[2] * eye[2];
+    (radius - along * along).max(0.0).sqrt() - EARTH
+}
+
 /// Планета цілком у кадрі, з висоти 10⁷ м — та сама геометрія, що в `--shot`.
 fn from_orbit(air: bool) -> Scene {
     let eye = [EARTH + 1.0e7, 0.0, 0.0];
@@ -410,5 +467,192 @@ fn the_same_ground_loses_contrast_and_gains_haze_with_distance() {
     assert!(
         last_haze > first_haze * 3,
         "серпанок виріс лише з {first_haze} до {last_haze}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// S6 — лімб і тінь планети
+// ---------------------------------------------------------------------------
+
+/// Світна смуга на краю диска спадає з висотою шкали Релея.
+///
+/// Це і є оракул кроку, названий у ROADMAP-ATMOSPHERE.md: **товщина смуги
+/// проти висоти шкали**, а не «схоже на фото з орбіти». Промінь, дотичний до
+/// шару на висоті `h`, проходить майже весь шлях біля цієї висоти, тож у
+/// прозорій частині атмосфери його яскравість пропорційна густині, тобто
+/// `exp(−h/H)`. Отже e-складання смуги мусить дорівнювати `H` — 8 км, і жодне
+/// інше число сюди не підходить.
+///
+/// Міряється у **прозорій** частині, від 35 до 55 км. Нижче смуга насичена:
+/// дотичний промінь на десяти кілометрах має оптичну товщу в одиниці, і там
+/// яскравість уже не пропорційна густині. Виміряно: у прозорій частині
+/// e-складання 8.1 км, біля поверхні — 12.5 км, і друге число — це насичення,
+/// а не інша фізика.
+#[test]
+fn the_limb_glow_falls_off_with_the_scale_height() {
+    let Some(gpu) = Gpu::for_tests() else { return };
+
+    // 1600 пікселів заради роздільності: стокілометровий шар на лімбі з 500 км
+    // займає 2.2°, тобто при 60° поля огляду близько 54 рядків. Вісім
+    // кілометрів висоти шкали — чотири рядки з них.
+    const SIZE: u32 = 1600;
+    let scene = limb(500_000.0, true);
+    let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene).expect("кадр мав намалюватися");
+    shot.write_png(std::path::Path::new("build/s6_limb_day.png"))
+        .expect("знімок мав записатися");
+
+    // Профіль: висота дотику проти яскравості понад фоном. Тільки над
+    // поверхнею — нижче лімба вже поверхня, а не повітря.
+    let mut profile: Vec<(f64, f64)> = Vec::new();
+    for row in 0..SIZE {
+        let altitude = tangent_altitude(&scene, SIZE, SIZE / 2, row);
+        if altitude <= 5_000.0 || altitude > 120_000.0 {
+            continue;
+        }
+        let blue = f64::from(shot.pixel(SIZE / 2, row)[2]) - f64::from(CLEAR_BYTES[2]);
+        profile.push((altitude, blue.max(0.0)));
+    }
+    assert!(profile.len() > 30, "профіль замалий: {}", profile.len());
+    // Знизу вгору.
+    profile.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    // Висоти, на яких яскравість перетинає два рівні, що відрізняються рівно
+    // вдесятеро. Десять разів — це `ln 10 = 2.303` e-складань, тобто відстань
+    // між ними ділиться на це число й дає висоту шкали.
+    let crossing = |level: f64| -> Option<f64> {
+        profile.windows(2).find_map(|pair| {
+            let ((h0, v0), (h1, v1)) = (pair[0], pair[1]);
+            (v0 >= level && v1 < level).then(|| h0 + (h1 - h0) * (v0 - level) / (v0 - v1))
+        })
+    };
+    let high = crossing(50.0).expect("смуга ніде не яскравіша за 50");
+    let low = crossing(5.0).expect("смуга ніде не тьмяніша за 5");
+    assert!(low > high, "яскравість не спадає з висотою: {high} → {low}");
+
+    let scale_height = (low - high) / 10.0f64.ln();
+    let expected = f64::from(Atmosphere::EARTH.rayleigh_height_m);
+    // Виміряно 8.1 км проти 8.0 в параметрах повітря. Допуск у півтора раза —
+    // не через невпевненість у фізиці, а тому, що рівні 50 і 5 не строго в
+    // прозорій частині: нижній край тягне насичення вгору.
+    assert!(
+        scale_height > expected / 1.5 && scale_height < expected * 1.5,
+        "e-складання смуги {scale_height} м проти висоти шкали {expected} м \
+         (перетини на {high} і {low} м)"
+    );
+}
+
+/// Нічний бік лімба темний: над поверхнею не світиться нічого.
+///
+/// Тінь планети тут ніхто не малює окремо — вона виходить сама з того, що
+/// промінь до Сонця з кожної точки повітря перевіряється на зустріч із
+/// поверхнею (S3). Тест ловить рівно ту помилку, яка зробила б цю перевірку
+/// зайвою: повітря, освітлене крізь планету.
+#[test]
+fn the_night_side_of_the_limb_does_not_glow() {
+    let Some(gpu) = Gpu::for_tests() else { return };
+
+    const SIZE: u32 = 800;
+    let scene = limb(500_000.0, false);
+    let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene).expect("кадр мав намалюватися");
+    shot.write_png(std::path::Path::new("build/s6_limb_night.png"))
+        .expect("знімок мав записатися");
+
+    let mut checked = 0;
+    for row in 0..SIZE {
+        let altitude = tangent_altitude(&scene, SIZE, SIZE / 2, row);
+        if !(1_000.0..100_000.0).contains(&altitude) {
+            continue;
+        }
+        checked += 1;
+        let pixel = shot.pixel(SIZE / 2, row);
+        assert_eq!(
+            &pixel[..3],
+            &CLEAR_BYTES,
+            "рядок {row} (висота {altitude:.0} м): {pixel:?} — нічне повітря світиться"
+        );
+    }
+    assert!(checked > 10, "перевірено лише {checked} рядків шару");
+
+    // І для контрасту — той самий лімб із того ж боку, але з Сонцем: там
+    // світиться. Без цього тест вище пройшов би й на кадрі, де немає нічого.
+    let day =
+        shot::take_scene(&gpu, SIZE, SIZE, &limb(500_000.0, true)).expect("кадр мав намалюватися");
+    let brightest = (0..SIZE)
+        .filter(|&row| {
+            (1_000.0..100_000.0).contains(&tangent_altitude(&scene, SIZE, SIZE / 2, row))
+        })
+        .map(|row| day.pixel(SIZE / 2, row)[2])
+        .max()
+        .expect("рядки є");
+    assert!(
+        brightest > CLEAR_BYTES[2] * 4,
+        "денний лімб теж не світиться: {brightest}"
+    );
+}
+
+/// Один шейдер з поверхні й з орбіти: на межі повітря обидва шляхи сходяться.
+///
+/// Правило 3 етапу S — «один шейдер з поверхні й з орбіти», — і це його
+/// найгостріша перевірка. Камера всередині повітря читає таблицю неба, камера
+/// поза ним марширує промінь; це два різні пайплайни, і межа між ними — рівно
+/// верхня межа атмосфери. Кілометр по обидва боки від неї мусить дати той
+/// самий кадр, інакше в грі на цій висоті блимне шов.
+///
+/// Виміряно: **8 одиниць з 255**, тобто 3%, і причина в них названа. Це не
+/// крок марша — піднімати його з 16 до 48 не міняє нічого взагалі; це кутова
+/// роздільність таблиці неба, у якої біля горизонту один тексель накриває
+/// помітну дугу. Тобто шов не зникне від точнішого інтегрування, і зменшити
+/// його можна лише більшою таблицею — а це вже питання ціни, не правильності.
+#[test]
+fn the_two_paths_meet_at_the_top_of_the_air() {
+    let Some(gpu) = Gpu::for_tests() else { return };
+
+    // Десять метрів по обидва боки, а не кілометр, і це не перестраховка.
+    // Камери на різній висоті бачать лімб трохи по-різному — кут западання
+    // горизонту та масштаб висот у кадрі залежать від неї, — і на кілометрі ця
+    // геометрія дає більше, ніж могла б дати різниця шляхів. На десяти метрах
+    // вона зникає: горизонт зсувається на чотири тисячні пікселя.
+    const SIZE: u32 = 320;
+    let thickness = Atmosphere::EARTH_THICKNESS_M;
+    let inside = shot::take_scene(&gpu, SIZE, SIZE, &limb(thickness - 10.0, true))
+        .expect("кадр мав намалюватися");
+    let outside = shot::take_scene(&gpu, SIZE, SIZE, &limb(thickness + 10.0, true))
+        .expect("кадр мав намалюватися");
+
+    // Порівнюється **небо**, а не весь кадр: рядки, у яких промінь проходить
+    // повітрям над поверхнею. Нижче лімба видно ґрунт, і там обидві камери
+    // малюють його тим самим шляхом (аеральна перспектива, S5) — різниця в
+    // кілька одиниць є, але вона про те, що камери таки на різній висоті, а не
+    // про шов між шляхами. Тут перевіряється шов.
+    let scene = limb(thickness, true);
+    let mut worst = 0i32;
+    let mut worst_at = (0u32, 0u32);
+    let mut rows = 0;
+    for row in 0..SIZE {
+        if !(5_000.0..90_000.0).contains(&tangent_altitude(&scene, SIZE, SIZE / 2, row)) {
+            continue;
+        }
+        rows += 1;
+        for column in 0..SIZE {
+            // Висота — за самим пікселем, а не за рядком: на краю кадру лімб
+            // вигнутий, і той самий рядок там уже в поверхні.
+            if !(5_000.0..90_000.0).contains(&tangent_altitude(&scene, SIZE, column, row)) {
+                continue;
+            }
+            for c in 0..3 {
+                let difference = (i32::from(inside.pixel(column, row)[c])
+                    - i32::from(outside.pixel(column, row)[c]))
+                .abs();
+                if difference > worst {
+                    worst = difference;
+                    worst_at = (column, row);
+                }
+            }
+        }
+    }
+    assert!(rows > 5, "перевірено лише {rows} рядків неба");
+    assert!(
+        worst <= 12,
+        "шов на межі повітря: {worst} одиниць у пікселі {worst_at:?}"
     );
 }
