@@ -64,6 +64,7 @@ pub mod sphere_render;
 pub mod srgb;
 pub mod tile_probe;
 pub mod tiles;
+pub mod tonemap;
 pub mod trajectory;
 pub mod trajectory_render;
 pub mod ui;

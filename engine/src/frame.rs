@@ -68,6 +68,19 @@ const CULL_WGSL: &str = include_str!("../shaders/cull.wgsl");
 const LINE_WGSL: &str = include_str!("../shaders/line.wgsl");
 const SHIP_WGSL: &str = include_str!("../shaders/ship.wgsl");
 
+/// Тонмапер (T5c3).
+const TONEMAP_WGSL: &str = include_str!("../shaders/tonemap.wgsl");
+
+/// Формат, у який малюється сцена, — **до** стиснення яскравостей.
+///
+/// ⚠ Не формат цілі, і це суть кроку T5c3. З матеріалами в кадрі з'явилися
+/// значення понад одиницю (відблиск корпусу при `roughness = 0.35` — близько
+/// 3.7), а композиція аеральної перспективи **читає** вже намальоване (`дст·T`
+/// і `дст + L`, S5). Стискати в кожному шейдері означало б множити й додавати
+/// вже стиснуті числа, тобто зіпсувати повітря; стискати після — означає мати
+/// проміжну ціль, у якій одиниця не є стелею.
+pub const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
 pub const FOV_Y: f64 = std::f64::consts::PI / 3.0;
 
 /// Напрямок ДО джерела світла, світові осі. Тимчасовий, як і саме освітлення.
@@ -304,6 +317,84 @@ struct Depth {
     height: u32,
 }
 
+/// Проміжна ціль сцени й прив'язка до неї для тонмапера.
+struct Hdr {
+    view: wgpu::TextureView,
+    bind_group: wgpu::BindGroup,
+    width: u32,
+    height: u32,
+}
+
+/// Прохід стиснення: повноекранний трикутник, який читає [`Hdr`].
+struct Tonemap {
+    pipeline: wgpu::RenderPipeline,
+    layout: wgpu::BindGroupLayout,
+}
+
+impl Tonemap {
+    fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Tonemap {
+        let module = gpu
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("tonemap"),
+                source: wgpu::ShaderSource::Wgsl(TONEMAP_WGSL.into()),
+            });
+        let layout = gpu
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("tonemap"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        // Нефільтрована: прохід один в один по пікселях, тож
+                        // семплера немає взагалі, а `Load` фільтрації не
+                        // потребує.
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                }],
+            });
+        let pipeline_layout = gpu
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("tonemap"),
+                bind_group_layouts: &[Some(&layout)],
+                immediate_size: 0,
+            });
+        let pipeline = gpu
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("tonemap"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vertex_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fragment_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+        Tonemap { pipeline, layout }
+    }
+}
+
 /// Пайплайн ламаних і буфери під них (ROADMAP J1).
 ///
 /// Місткість росте за потребою й не спадає: прогноз довшає з кожним тіком, і
@@ -370,6 +461,12 @@ pub struct Frame {
     /// логіка була б і в [`crate::shot`], а два місця розходяться.
     depth: Option<Depth>,
 
+    /// Проміжна ціль сцени й прохід стиснення (T5c3). Живуть поруч із
+    /// глибиною й з тієї ж причини: інакше кожен викликач кадру мусив би
+    /// створювати їх сам.
+    hdr: Option<Hdr>,
+    tonemap: Tonemap,
+
     lines: Lines,
 
     /// Кораблі (етап V). Порожній список кораблів у сцені не коштує нічого:
@@ -399,12 +496,17 @@ pub struct Frame {
 
 impl Frame {
     pub fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Frame {
+        // Сцена малюється у **HDR**, і лише останній прохід — у ціль, яку
+        // дав викликач (T5c3). Тому всі пайплайни сцени будуються з
+        // [`HDR_FORMAT`], а `format` бачить тільки тонмапер.
         Frame {
-            planet: Planet::new(gpu, format),
+            planet: Planet::new(gpu, HDR_FORMAT),
             depth: None,
-            lines: Lines::new(gpu, format),
-            ships: Ships::new(gpu, format),
-            sky: Sky::new(gpu, format),
+            hdr: None,
+            tonemap: Tonemap::new(gpu, format),
+            lines: Lines::new(gpu, HDR_FORMAT),
+            ships: Ships::new(gpu, HDR_FORMAT),
+            sky: Sky::new(gpu, HDR_FORMAT),
             passes: Vec::with_capacity(MAX_PASSES),
             lines_upload_ms: 0.0,
         }
@@ -685,6 +787,46 @@ impl Frame {
         });
     }
 
+    /// Проміжна ціль сцени під поточний розмір кадру.
+    fn ensure_hdr(&mut self, gpu: &Gpu, width: u32, height: u32) {
+        if let Some(hdr) = &self.hdr {
+            if hdr.width == width && hdr.height == height {
+                return;
+            }
+        }
+
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("frame hdr"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: HDR_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("tonemap"),
+            layout: &self.tonemap.layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            }],
+        });
+
+        self.hdr = Some(Hdr {
+            view,
+            bind_group,
+            width,
+            height,
+        });
+    }
+
     /// Записує в `encoder` усе, що складає кадр.
     ///
     /// Один метод, а не пара «оновити / записати»: розділені, вони дають
@@ -705,6 +847,7 @@ impl Frame {
         scene: &Scene,
     ) {
         self.ensure_depth(gpu, width, height);
+        self.ensure_hdr(gpu, width, height);
 
         let aspect = f64::from(width) / f64::from(height);
         Frame::plan(&mut self.passes, scene, aspect);
@@ -769,12 +912,13 @@ impl Frame {
         }
 
         let depth = self.depth.as_ref().expect("ensure_depth щойно її створив");
+        let hdr = self.hdr.as_ref().expect("ensure_hdr щойно її створив");
 
         for (index, plan) in self.passes.iter().enumerate() {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some(plan.label),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
+                    view: &hdr.view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -827,7 +971,7 @@ impl Frame {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("aerial composite"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view,
+                        view: &hdr.view,
                         depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
@@ -843,6 +987,30 @@ impl Frame {
                 self.sky.composite(&mut pass, index);
             }
         }
+
+        // Стиснення — **один раз, після всієї сцени**. Саме тут кадр уперше
+        // дізнається про формат цілі: усе, що вище, малювалося в HDR.
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("tonemap"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    // Не `Load`: прохід накриває кожен піксель цілі, тож
+                    // читати те, що там лежало, нема сенсу.
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            multiview_mask: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(&self.tonemap.pipeline);
+        pass.set_bind_group(0, &hdr.bind_group, &[]);
+        pass.draw(0..3, 0..1);
     }
 
     /// Скільки пікселів кадру займає товщина шару повітря — умова кроку S5.

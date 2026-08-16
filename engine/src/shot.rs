@@ -101,7 +101,13 @@ pub fn take_scene(gpu: &Gpu, width: u32, height: u32, scene: &Scene) -> Result<S
             label: Some("shot"),
         });
 
-    Frame::new(gpu, FORMAT).draw(gpu, &mut encoder, &view, width, height, scene);
+    // ⚠ Кадр живе **до кінця функції**, а не до кінця виразу. З T5c3 у нього
+    // з'явилася власна проміжна текстура, і тимчасовий `Frame::new(…).draw(…)`
+    // віддавав її разом із собою ще до того, як команди подано на пристрій.
+    // Виглядало це не як помилка, а як «тонмапер не працює»: кадр малювався
+    // правильно, тільки прохід стиснення читав уже не ту текстуру.
+    let mut frame = Frame::new(gpu, FORMAT);
+    frame.draw(gpu, &mut encoder, &view, width, height, scene);
 
     read_back(gpu, encoder, &texture, width, height)
 }
