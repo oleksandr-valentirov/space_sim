@@ -1,42 +1,45 @@
 #!/bin/sh
-# Вивантаження компілятора Slang (ROADMAP P1).
+# Download the Slang compiler (ROADMAP P1).
 #
-# На відміну від даних JPL, це НЕ комітиться: 24 МБ бінарників, які
-# оновлюються щомісяця. Тому скрипт, а не файл у репозиторії, і тому ж
-# tools/slang/ у .gitignore.
+# Unlike the JPL data this is NOT committed: 24 MB of binaries updated monthly.
+# Hence a script rather than a file in the repository, and hence tools/slang/
+# in .gitignore.
 #
-# Навіщо взагалі Slang — PROJECT.md §7: модулі, дженерики й один вихідний
-# текст на кілька цілей замість трьох копій WGSL. Питання P1 у тому, чи
-# доїжджає його вихід до wgpu, і яким саме шляхом:
+# Why Slang at all -- PROJECT.md section 7: modules, generics and one source
+# text for several targets instead of three copies of WGSL. Question P1 is
+# whether its output reaches wgpu, and by which route:
 #
-#   через WGSL     slangc -target wgsl    → naga розбирає як звичайний шейдер
-#   через SPIR-V   slangc -target spirv   → passthrough, лише де бекенд уміє
+#   via WGSL     slangc -target wgsl    -> naga parses it as a normal shader
+#   via SPIR-V   slangc -target spirv   -> passthrough, only where the backend
+#                                          supports it
 #
-# Обидва перевіряє tools/slang-probe.
+# tools/slang-probe checks both.
 #
-#   sh scripts/fetch_slang.sh            останній реліз
-#   sh scripts/fetch_slang.sh v2026.14.1 конкретний
+#   sh scripts/fetch_slang.sh            latest release
+#   sh scripts/fetch_slang.sh v2026.14.1 a specific one
 #
-# Запускати з кореня репозиторію.
+# Run from the repository root.
 
 set -eu
 
 OUT_DIR="tools/slang"
 TAG="${1:-}"
 
-# Тег закріплюється у виводі, а не лише в аргументі: інакше «у мене працює»
-# й «у CI не працює» неможливо звести, бо версії різні й ніде не записані.
+# The tag is pinned in the output, not just in the argument: otherwise "works
+# on mine" and "fails in CI" cannot be reconciled, because the versions differ
+# and are recorded nowhere.
 #
-# Тег беремо з редиректу releases/latest, а НЕ з api.github.com. У API без
-# токена — 60 запитів на годину на IP, і раннери macOS ділять між усіма
-# джобами кілька NAT-адрес, тобто квота там регулярно вичерпана чужими
-# збірками. Виглядало це як падіння рівно цього кроку за пів секунди, тоді
-# як linux у тому самому прогоні проходив, а macOS за двадцять хвилин до
-# того — теж. Редирект живе на github.com і такої квоти не має.
+# The tag comes from the releases/latest redirect, NOT from api.github.com.
+# The API without a token allows 60 requests per hour per IP, and macOS runners
+# share a few NAT addresses across all jobs, so the quota there is regularly
+# spent by other people's builds. It looked like this exact step failing in
+# half a second while linux in the same run passed, as had macOS twenty minutes
+# earlier. The redirect lives on github.com and has no such quota.
 if [ -z "$TAG" ]; then
-    # Статус лишається у виводі помилки навмисно. Попередня версія ловила
-    # лише «тег порожній» і мовчала про причину: `curl -sS` без --fail не
-    # каже про 403 нічого, тіло відповіді просто не має потрібного поля.
+    # The status stays in the error output deliberately. The previous version
+    # caught only "tag is empty" and said nothing about why: `curl -sS` without
+    # --fail reports nothing about a 403, the response body simply lacks the
+    # field.
     RESOLVED=$(curl -sSL -o /dev/null \
                -w '%{http_code} %{url_effective}' \
                "https://github.com/shader-slang/slang/releases/latest" || true)
@@ -44,8 +47,8 @@ if [ -z "$TAG" ]; then
     case "$RESOLVED" in
         "200 "*"/releases/tag/"*) TAG=${RESOLVED##*/} ;;
         *)
-            echo "не вдалося дізнатись останній тег: ${RESOLVED:-curl не відповів}" >&2
-            echo "вкажіть явно, напр.: sh scripts/fetch_slang.sh v2026.14.1" >&2
+            echo "could not resolve the latest tag: ${RESOLVED:-curl did not answer}" >&2
+            echo "pass one explicitly, e.g.: sh scripts/fetch_slang.sh v2026.14.1" >&2
             exit 1 ;;
     esac
 fi
@@ -55,14 +58,14 @@ VERSION=${TAG#v}
 case "$(uname -s)" in
     Linux)  OS=linux ;;
     Darwin) OS=macos ;;
-    *)      echo "непідтримана ОС: $(uname -s). Windows — beрiть zip вручну" >&2
+    *)      echo "unsupported OS: $(uname -s). On Windows take the zip by hand" >&2
             exit 1 ;;
 esac
 
 case "$(uname -m)" in
     x86_64|amd64)  ARCH=x86_64 ;;
     arm64|aarch64) ARCH=aarch64 ;;
-    *)             echo "непідтримана архітектура: $(uname -m)" >&2; exit 1 ;;
+    *)             echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
 ASSET="slang-${VERSION}-${OS}-${ARCH}.tar.gz"
@@ -77,15 +80,15 @@ mkdir -p "$OUT_DIR"
 curl -sSL --fail "$URL" | tar -xz -C "$OUT_DIR"
 
 if [ ! -x "$OUT_DIR/bin/slangc" ]; then
-    echo "у архіві немає bin/slangc — змінилась розкладка релізу?" >&2
+    echo "no bin/slangc in the archive -- did the release layout change?" >&2
     exit 1
 fi
 
-# Версію на диск: probe читає її й друкує в таблицю, щоб результат P1 був
-# прив'язаний до конкретного компілятора, а не до «того, що стояло».
+# Version to disk: the probe reads it and prints it in the table, so the P1
+# result is tied to a specific compiler rather than "whatever was installed".
 echo "$TAG" > "$OUT_DIR/VERSION"
 
 echo ""
 "$OUT_DIR/bin/slangc" -v 2>&1 | head -2 || true
 echo ""
-echo "Готово: $OUT_DIR/bin/slangc"
+echo "Done: $OUT_DIR/bin/slangc"

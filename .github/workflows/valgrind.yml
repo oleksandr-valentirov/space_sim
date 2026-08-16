@@ -1,29 +1,30 @@
-# Valgrind — окремий workflow, і окремий він заради ОДНІЄЇ речі: `paths`.
+# Valgrind is a separate workflow, and it is separate for ONE thing: `paths`.
 #
-# Кроки жили в determinism.yml і коштували там 8м25с з 17м10с загального
-# часу — рівно половину гейта, на кожному пуші, включно з тими, що не
-# торкались жодного рядка C. Умову «лише коли змінився C» можна було
-# поставити трьома способами; обраний — найменш крихкий:
+# The steps used to live in determinism.yml and cost 8m25s of a 17m10s total --
+# half the gate, on every push, including those touching no line of C. The
+# "only when C changed" condition could be expressed three ways; the least
+# fragile was chosen:
 #
-#   - `if:` з обчисленням `git diff` у кроці вимагає fetch-depth: 0 і окремої
-#     обробки `github.event.before`, який на новій гілці дорівнює нулям;
-#   - сторонній paths-filter додає залежність заради того, що GitHub уміє сам;
-#   - `on: push: paths:` фільтрує на рівні тригера. Джоб просто не
-#     створюється, і жодного коду, який міг би збрехати, тут немає.
+#   - an `if:` computing `git diff` in a step needs fetch-depth: 0 and special
+#     handling of `github.event.before`, which is all zeros on a new branch;
+#   - a third-party paths-filter adds a dependency for what GitHub does itself;
+#   - `on: push: paths:` filters at the trigger. The job simply is not created,
+#     and there is no code here that could lie.
 #
-# Побічний виграш, більший за очікуваний: у determinism.yml valgrind біг
-# ПОСЛІДОВНО всередині linux-gcc, тобто додавав свої хвилини до найдовшого
-# джоба. Тут він біжить паралельно, і навіть коли C змінився, загальний час
-# — це максимум, а не сума.
+# A larger side benefit than expected: in determinism.yml valgrind ran
+# SEQUENTIALLY inside linux-gcc, adding its minutes to the longest job. Here it
+# runs in parallel, so even when C did change the total is a maximum, not a
+# sum.
 #
-# ⚠ Фільтр обов'язково включає САМ ЦЕЙ ФАЙЛ. Інакше правка умови не
-#   перевіряється тією самою правкою, і помилку в ній видно лише наступного
-#   разу, коли хтось торкнеться C.
+# WARNING: the filter must include THIS FILE ITSELF. Otherwise an edit to the
+#   condition is not checked by that same edit, and a mistake in it shows only
+#   the next time someone touches C.
 #
-# ⚠ Якщо на main колись з'явиться branch protection з required checks —
-#   workflow з `paths` НЕ створює джоб, а не створює зелений, тож required
-#   check зависне назавжди. Тоді ставити його required не можна; правильний
-#   шлях — окремий always-джоб-заглушка, і це рішення приймати тоді.
+# WARNING: if branch protection with required checks ever appears on main, a
+#   workflow with `paths` creates NO job rather than a green one, so a required
+#   check would hang forever. It cannot be made required then; the right route
+#   is a separate always-running stub job, and that decision belongs to that
+#   moment.
 
 name: valgrind
 
@@ -55,71 +56,69 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Один раз на весь джоб. У determinism.yml той самий apt-get стояв у
-      # двох кроках підряд — обидва valgrind-кроки ставили пакет самі, бо
-      # кожен мусив працювати, якщо другий вимкнуть.
+      # Once for the whole job. In determinism.yml the same apt-get sat in two
+      # consecutive steps -- both valgrind steps installed the package
+      # themselves, because each had to work if the other were disabled.
       - name: Valgrind
         run: |
           sudo apt-get update
           sudo apt-get install -y valgrind
 
-      # Юніт-тести на C під valgrind.
+      # C unit tests under valgrind.
       #
-      # ASan не бачить читання неініціалізованої пам'яті — взагалі. Помилка
-      # K7b була саме такою: `test_target` збирав FieldCtx руками й лишав
-      # більшу частину структури тим, що було на стеку. `make test` зелений,
-      # `make asan` зелений, обидва лінукси зелені — і сегфолт на
-      # windows-mingw, за три кроки від причини. Valgrind називає її першим
-      # рядком: «Conditional jump depends on uninitialised value(s) at
-      # accel_field (field.c:303)».
+      # ASan does not see reads of uninitialised memory at all. Bug K7b was
+      # exactly that: `test_target` built a FieldCtx by hand and left most of
+      # the struct as whatever was on the stack. `make test` green, `make asan`
+      # green, both Linuxes green -- and a segfault on windows-mingw, three
+      # steps from the cause. Valgrind names it on the first line: "Conditional
+      # jump depends on uninitialised value(s) at accel_field (field.c:303)".
       #
-      # Одна платформа достатня: чи проявиться така помилка, залежить від
-      # того, що лежало на стеку, а valgrind цього не питає.
+      # One platform is enough: whether such a bug manifests depends on what
+      # was on the stack, and valgrind does not ask.
       #
-      # ЦЕ Й Є `make valgrind` З ЛОКАЛЬНОГО ГЕЙТА, той самий рецепт. Дубль
-      # свідомий: локальний гейт — дисципліна, CI — механізм, і коли C
-      # змінився, платити за обидва варто. Коли не змінився — не біжить
-      # ніде, і саме це закриває Q1.
+      # THIS IS `make valgrind` FROM THE LOCAL GATE, the same recipe. The
+      # duplication is deliberate: the local gate is discipline, CI is
+      # mechanism, and when C changed both are worth paying for. When it did
+      # not, it runs nowhere -- and that is what closes Q1.
       - name: C unit tests
         run: make valgrind
 
-      # Пам'ять межі C↔Rust (ROADMAP D3).
+      # C-Rust boundary memory (ROADMAP D3).
       #
-      # ⚠ ЛОКАЛЬНОГО ЕКВІВАЛЕНТА В ЦЬОГО КРОКУ НЕМАЄ. `make valgrind` вище —
-      #   це юніт-тести на C; межу не перевіряє ніхто, крім цього джоба.
-      #   Саме тому Q1 не вирішується як «або CI, або локально»: половина
-      #   перевірки існує рівно в одному місці.
+      # WARNING: THIS STEP HAS NO LOCAL EQUIVALENT. `make valgrind` above is
+      #   the C unit tests; nobody checks the boundary except this job. That is
+      #   why Q1 is not settled as "either CI or local": half the check exists
+      #   in exactly one place.
       #
-      # Роадмап казав «Miri, або хоча б ASan». Тут valgrind, і це не відступ
-      # через брак інструмента, а правильніший інструмент для випадку:
-      # алокації живуть у C (`malloc` в ephemeris.c), Miri в C не бачить
-      # узагалі, а ASan вимагав би перезібрати ядро з -fsanitize=address —
-      # тобто з прапорцями, відмінними від core/cflags.txt.
+      # The roadmap said "Miri, or at least ASan". This is valgrind, and not as
+      # a retreat for want of a tool but as the better tool for the case: the
+      # allocations live in C (`malloc` in ephemeris.c), Miri does not see C at
+      # all, and ASan would require rebuilding the core with
+      # -fsanitize=address, i.e. with flags differing from core/cflags.txt.
       #
-      # Що це ловить, чого не ловить компілятор: `compile_fail`-доктести
-      # доводять, що подвійне звільнення й використання після звільнення
-      # неможливі за конструкцією типів. Вони НЕ доводять, що звільнення
-      # взагалі відбувається. Витік — це не помилка типів, і побачити його
-      # можна тільки так.
+      # What this catches that the compiler does not: `compile_fail` doctests
+      # prove that double free and use after free are impossible by the
+      # construction of the types. They do NOT prove that freeing happens at
+      # all. A leak is not a type error, and this is the only way to see it.
       #
-      # ⚠ ТІЛЬКИ core-sys і core-rs, і це не економія часу.
+      # WARNING: ONLY core-sys and core-rs, and not to save time.
       #
-      # Перша версія ганяла valgrind по всіх тестових бінарниках, і на F3
-      # вона впала: тести рушія створюють пристрій wgpu, той тягне програмний
-      # Vulkan від Mesa, а Mesa губить 56 байт у стеку без жодного символу
-      # (`???` — усередині dlopen-нутого драйвера). Це не наш код, ми його не
-      # полагодимо, і робити з нього червоний гейт означає привчити себе
-      # ігнорувати червоне.
+      # The first version ran valgrind over every test binary, and at F3 it
+      # failed: engine tests create a wgpu device, that pulls in Mesa's
+      # software Vulkan, and Mesa loses 56 bytes in the stack with no symbols
+      # at all (`???`, inside a dlopen'd driver). That is not our code, we will
+      # not fix it, and making a red gate out of it would train us to ignore
+      # red.
       #
-      # Межа C↔Rust — єдине місце, де пам'ять справді наша: там `malloc` у
-      # ephemeris.c і `Drop` у core-rs. Рушій власної пам'яті не виділяє
-      # взагалі, тож перевіряти в ньому нічого.
+      # The C-Rust boundary is the only place the memory is genuinely ours:
+      # `malloc` in ephemeris.c and `Drop` in core-rs. The engine allocates no
+      # memory of its own, so there is nothing in it to check.
       #
-      # `-p core-sys -p core-rs` у `--no-run` — не те саме, що фільтр jq
-      # нижче, і потрібні обидва. Прапорці кажуть, ЩО ЗБИРАТИ: без них
-      # cargo зібрав би весь workspace разом із wgpu, тобто джоб платив би
-      # хвилини за код, який потім відкинув би фільтр. Фільтр же лишається
-      # сторожем: у вивід потрапляють і тестові бінарники залежностей.
+      # `-p core-sys -p core-rs` on `--no-run` is not the same as the jq filter
+      # below, and both are needed. The flags say WHAT TO BUILD: without them
+      # cargo would build the whole workspace including wgpu, so the job would
+      # pay minutes for code the filter then discarded. The filter stays as the
+      # guard: dependency test binaries also reach the output.
       - name: C↔Rust boundary
         run: |
           binaries=$(cargo test --no-run --message-format=json \
@@ -128,8 +127,8 @@ jobs:
                      | select(.package_id | test("core-sys|core-rs"))
                      | .executable')
           if [ -z "$binaries" ]; then
-            echo "не знайдено жодного тестового бінарника core-sys/core-rs;"
-            echo "порожня перевірка мовчки 'проходить', тому це провал"
+            echo "no core-sys/core-rs test binary found;"
+            echo "an empty check would silently 'pass', so this is a failure"
             exit 1
           fi
           echo "$binaries" | while read -r binary; do

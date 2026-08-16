@@ -1,14 +1,16 @@
-# Розвідка P1: чи доїжджає вихід Slang до wgpu (ROADMAP, етап E).
+# P1 reconnaissance: does Slang's output reach wgpu (ROADMAP, stage E).
 #
-# Окремо від gpu-probe.yml, бо це окреме питання й окремі залежності: тут
-# треба качати компілятор Slang, там — ні. Тригери ті самі: вручну й на
-# зміни самого зонда. Розвідка потрібна кілька разів за проєкт, а не на пуш.
+# Separate from gpu-probe.yml, because it is a separate question with separate
+# dependencies: this one has to download the Slang compiler, that one does not.
+# Same triggers: manual, and on changes to the probe itself. Reconnaissance is
+# needed a few times per project, not per push.
 #
-# ⚠ Windows тут немає, і це свідомо. scripts/fetch_slang.sh вміє tar.gz для
-#   Linux і macOS; під Windows реліз лежить у zip і шлях до slangc інший.
-#   Додавати цю гілку заради розвідки, відповідь якої не залежить від
-#   платформи (naga розбирає WGSL однаково на всіх бекендах), — робота без
-#   інформації. Якщо колись знадобиться — це чверть години.
+# WARNING: there is no Windows here, deliberately. scripts/fetch_slang.sh
+#   handles tar.gz for Linux and macOS; on Windows the release is a zip and the
+#   path to slangc differs. Adding that branch for a reconnaissance whose
+#   answer does not depend on the platform (naga parses WGSL the same on every
+#   backend) is work without information. If it is ever needed, it is a quarter
+#   of an hour.
 
 name: slang-probe
 
@@ -37,8 +39,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Без програмного Vulkan на раннері Linux немає жодного адаптера, а
-      # зонд має саме малювати, не лише компілювати.
+      # Without software Vulkan the Linux runner has no adapter, and the probe
+      # is meant to draw, not merely compile.
       - name: Mesa
         if: runner.os == 'Linux'
         run: |
@@ -51,20 +53,20 @@ jobs:
       - name: Probe
         run: cargo run -p slang-probe
 
-      # Згенерований WGSL закомічений (ROADMAP F2), тож може протухнути:
-      # хтось править .slang і забуває перезібрати. Тут слангc уже є, тож
-      # перевірка коштує секунду — перезібрати й подивитися на різницю.
+      # The generated WGSL is committed (ROADMAP F2), so it can go stale:
+      # someone edits a .slang and forgets to rebuild. slangc is already here,
+      # so the check costs a second -- rebuild and look at the difference.
       #
-      # Лише на linux: два джоби перезбирали б те саме й другий бачив би
-      # чужий діф.
+      # Linux only: two jobs would rebuild the same thing and the second would
+      # see the other's diff.
       - name: Shaders are up to date
         if: matrix.name == 'linux'
         run: |
           sh scripts/build_shaders.sh
           if ! git diff --exit-code -- engine/shaders; then
             echo ""
-            echo "Закомічений WGSL не збігається з тим, що дає slangc."
-            echo "Перезберіть і закомітьте: sh scripts/build_shaders.sh"
+            echo "The committed WGSL does not match what slangc produces."
+            echo "Rebuild and commit: sh scripts/build_shaders.sh"
             exit 1
           fi
 

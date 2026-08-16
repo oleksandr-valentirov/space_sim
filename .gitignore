@@ -1,54 +1,54 @@
-# Артефакти збірки C (Makefile, M0)
+# C build artefacts (Makefile, M0)
 /build/
 
 # Rust
 /target/
 **/target/
 
-# Скуковані ассети — генеруються кукером, у git не тримаємо (PROJECT.md §3)
+# Cooked assets -- produced by the cooker, not kept in git (PROJECT.md section 3)
 /assets/
 
-# Ефемерида та інші згенеровані дані
+# Ephemeris and other generated data
 *.eph
 
-# Сирі джерела контенту — на диску, не в git (відповідь на Q5, 2026-08-16).
-# Межа проведена за роллю, а не за розміром: у git лишається те, що є входом
-# для перевірки. Тому мозаїка WAC (66 МБ) сюди не потрапляє, а її **етикетка**
-# — потрапляє: на ній стоїть тест читача. Походження й SHA-256 — data/wac/README.md.
+# Raw content sources -- on disk, not in git (answer to Q5, 2026-08-16).
+# The line is drawn by role, not by size: git keeps whatever is an input to a
+# check. So the WAC mosaic (66 MB) stays out while its *label* stays in -- the
+# reader test stands on it. Provenance and SHA-256: data/wac/README.md.
 /data/wac/*.img
 
-# Земля, те саме правило (T7a): у git етикетка ETOPO — увесь TIFF-заголовок,
-# на якому стоїть тест нашого читача GeoTIFF. Мозаїка BMNG етикетки не має
-# навмисно: JPEG розбирає чужий крейт, і входом перевірки той заголовок не є.
-# Походження й SHA-256 — data/etopo/README.md і data/bmng/README.md.
+# Earth, same rule (T7a): git holds the ETOPO label, the whole TIFF header our
+# GeoTIFF reader is tested against. The BMNG mosaic deliberately has no label:
+# a third-party crate parses the JPEG, and that header is no check's input.
+# Provenance and SHA-256: data/etopo/README.md and data/bmng/README.md.
 /data/etopo/*.tif
 /data/bmng/*.jpg
 
-# ...крім ассета-фікстури. Він НАВМИСНО в git: крос-платформна звірка хешів
-# (ROADMAP C5) має порівнювати рантайм, а не кукер. Кукер використовує cos()
-# у чебишевській підгонці, тож на іншій машині коефіцієнти вийшли б інші
-# й перевірка падала б не там, де треба. Готуємо один раз — `make cook`.
+# ...except the fixture asset. It is DELIBERATELY in git: the cross-platform
+# hash comparison (ROADMAP C5) must compare the runtime, not the cooker. The
+# cooker uses cos() in its Chebyshev fit, so another machine would produce
+# different coefficients and the check would fail in the wrong place. Cook it
+# once -- `make cook`.
 !/data/fixture/*.eph
 
-# Python: scripts/ — допоміжні утиліти, байткод не тримаємо
+# Python: scripts/ are helper utilities, no bytecode kept
 __pycache__/
 *.pyc
 
-# Віртуальне середовище для matplotlib — шлях, який описує
-# scripts/requirements.txt. Потрібне лише для make plots; ядро від нього
-# не залежить, на CI його немає.
+# Virtualenv for matplotlib -- the path scripts/requirements.txt describes.
+# Needed only for make plots; the core does not depend on it and CI lacks it.
 /.venv/
 
-# Редактори, ОС
+# Editors, OS
 .vscode/
 .idea/
 *.swp
 .DS_Store
 
-# Компілятор Slang — 24 МБ бінарників, оновлюються щомісяця.
-# Ставиться scripts/fetch_slang.sh (ROADMAP P1).
+# The Slang compiler -- 24 MB of binaries, updated monthly.
+# Installed by scripts/fetch_slang.sh (ROADMAP P1).
 /tools/slang/
 engine/build/
 
-# Резервна копія Blender: пише її він сам при кожному збереженні.
+# Blender backup: it writes this itself on every save.
 assets-src/*.blend1

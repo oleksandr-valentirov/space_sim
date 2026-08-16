@@ -1,39 +1,42 @@
-# Крос-платформна перевірка детермінізму — гейт M0 (ROADMAP C5).
+# Cross-platform determinism check -- the M0 gate (ROADMAP C5).
 #
-# Що саме перевіряється: `make determinism` звіряє хеші сценаріїв з
-# core/scenario/golden.txt, закоміченим один раз. Якщо джоб зелений на всіх
-# платформах — значить усі порахували БІТОВО однакові числа. Окремого кроку
-# «порівняти платформи між собою» не треба: еталон один на всіх.
+# What is checked: `make determinism` compares scenario hashes against
+# core/scenario/golden.txt, committed once. If the job is green on every
+# platform, they all computed BIT-identical numbers. No separate "compare the
+# platforms" step is needed: there is one golden file for all of them.
 #
-# Матриця навмисно містить два компілятори на Linux. Розбіжність gcc/clang
-# на одній машині шукається набагато дешевше за розбіжність Linux/Windows,
-# і ловить ту саму причину — тож нехай падає раніше й ближче.
+# The matrix deliberately holds two compilers on Linux. A gcc/clang divergence
+# on one machine is far cheaper to chase than a Linux/Windows one, and it
+# catches the same cause -- so let it fail earlier and closer.
 #
-# Windows іде через MSYS2, а не MSVC. Збірка тут — це Makefile, `nm` і `sh`,
-# і MSYS2 дає їх усі; той самий UCRT64-gcc збирає ядро й під `cargo`. MSVC не
-# підтримується свідомо: core/cflags.txt написаний під gcc, і
-# `core-sys/build.rs` на MSVC падає з поясненням, а не збирає щось інше мовчки.
-# Тому на Windows тулчейн Rust — x86_64-pc-windows-gnu, і ставить його крок
-# «Rust (windows-gnu)» нижче.
+# Windows goes through MSYS2, not MSVC. The build here is a Makefile, `nm` and
+# `sh`, and MSYS2 provides all of them; the same UCRT64 gcc builds the core
+# under `cargo` too. MSVC is deliberately unsupported: core/cflags.txt is
+# written for gcc, and `core-sys/build.rs` fails on MSVC with an explanation
+# rather than silently building something else. Hence the Rust toolchain on
+# Windows is x86_64-pc-windows-gnu, installed by the "Rust (windows-gnu)" step
+# below.
 #
-# Якщо перший запуск розійдеться, порядок пошуку — у ROADMAP C5:
-#   1. прапорці справді однакові (`make flags` у логах нижче);
-#   2. «поліція libm» відпрацювала на всіх платформах;
-#   3. ділити сценарій навпіл, поки не локалізується перша розбіжна операція.
-# Крок 3 уже підготовлено: сценаріїв одинадцять, і кожен покриває свій шар.
+# If a first run diverges, the search order is in ROADMAP C5:
+#   1. the flags really are identical (`make flags` in the logs below);
+#   2. the "libm police" ran on every platform;
+#   3. bisect the scenario until the first divergent operation is located.
+# Step 3 is already prepared: the scenarios are split by layer, so a bisection
+# has somewhere to land.
 
 name: determinism
 
-# `paths-ignore` знімає рівно те, що дратувало: правка одного рядка в ROADMAP
-# коштувала повного гейта. Жоден .md не бере участі в збірці, тож пропуск тут
-# нічого не послаблює. Семантика саме та, що потрібна: коміт, який чіпає і
-# документ, і код, під фільтр НЕ підпадає й запускає все.
+# `paths-ignore` removes exactly what was annoying: a one-line ROADMAP edit
+# cost a full gate. No .md takes part in the build, so skipping weakens
+# nothing. The semantics are the ones wanted: a commit touching both a document
+# and code does NOT match the filter and runs everything.
 #
-# Valgrind живе окремо — .github/workflows/valgrind.yml, з власним `paths`.
+# Valgrind lives separately -- .github/workflows/valgrind.yml, with its own
+# `paths`.
 #
-# ⚠ Та сама засторога, що й там: workflow з фільтром не створює джоб, а не
-#   створює зелений. Ставити його required check у branch protection можна
-#   тільки разом із джобом-заглушкою.
+# WARNING, same as there: a filtered workflow creates no job rather than a
+#   green one. Making it a required check in branch protection is only safe
+#   alongside a stub job.
 on:
   push:
     paths-ignore:
@@ -48,20 +51,21 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
 
-    # Оболонка задається саме тут, а не в кроках. `steps[*].shell` не приймає
-    # ЖОДНОГО контексту — ні matrix, ні будь-якого іншого, — тож `${{ matrix.shell }}`
-    # у кроці не просто не спрацює, а зламає весь файл: GitHub відхиляє його
-    # цілком, джоби не створюються, і в UI workflow називається шляхом до файлу
-    # замість свого імені. `defaults.run.shell` matrix підтримує.
+    # The shell is set here, not in the steps. `steps[*].shell` accepts NO
+    # context at all -- not matrix, not any other -- so `${{ matrix.shell }}`
+    # in a step does not merely fail to work, it breaks the whole file: GitHub
+    # rejects it entirely, no jobs are created, and the UI names the workflow
+    # by its file path instead of its name. `defaults.run.shell` does support
+    # matrix.
     #
-    # Перевіряти локально перед пушем: actionlint (github.com/rhysd/actionlint).
+    # Check locally before pushing: actionlint (github.com/rhysd/actionlint).
     defaults:
       run:
         shell: ${{ matrix.shell }}
 
-    # Без fail-fast: коли платформи розходяться, потрібні ВСІ результати,
-    # а не перший провалений. Дві збіжні платформи проти однієї — це вже
-    # напівдіагноз.
+    # No fail-fast: when platforms diverge, ALL results are needed, not the
+    # first failure. Two agreeing platforms against one is already half a
+    # diagnosis.
     strategy:
       fail-fast: false
       matrix:
@@ -94,15 +98,16 @@ jobs:
           msystem: UCRT64
           update: false
 
-          # Не тягнути базову інсталяцію з GitHub Releases, а взяти ту, що вже
-          # є на образі раннера. Перший запуск упав саме тут — 503 від
-          # роздачі. Мережа лишається в грі через pacman нижче, але це
-          # набагато менший і дешевший шлях, ніж викачувати весь MSYS2.
+          # Do not pull the base installation from GitHub Releases; take the
+          # one already on the runner image. The first run failed exactly here
+          # -- a 503 from the download. The network is still in play via pacman
+          # below, but that is a much smaller and cheaper path than fetching
+          # all of MSYS2.
           release: false
-          # Явно все, чим користується Makefile і scripts/check_no_libm.sh:
-          # sed і tr читають cflags.txt, diff звіряє хеші, awk і find працюють
-          # у «поліції libm», nm — з binutils саме під UCRT64, щоб формат
-          # об'єктних файлів збігався з тим, що видає цей gcc.
+          # Everything the Makefile and scripts/check_no_libm.sh use, spelled
+          # out: sed and tr read cflags.txt, diff compares hashes, awk and find
+          # work in the "libm police", and nm comes from UCRT64 binutils so the
+          # object file format matches what this gcc emits.
           install: >-
             make
             diffutils
@@ -114,28 +119,29 @@ jobs:
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-binutils
 
-      # Тулчейн Rust для Windows — gnu, не MSVC. Той самий рецепт, яким борг
-      # D1 закривали на реальній машині розробника; тут він лише переїхав
-      # у раннер.
+      # The Rust toolchain for Windows is gnu, not MSVC. The same recipe that
+      # closed debt D1 on the developer's own machine, moved into the runner.
       #
-      # Тулчейн вибирається через RUSTUP_TOOLCHAIN, а не `rustup default` і
-      # не `rustup override set`. Причина — старшинство: `default` програє
-      # rust-toolchain.toml (той каже `channel = "stable"`, що на Windows
-      # розгорнеться в msvc), а каталожний override і файл змагаються за
-      # правилом, яке доводиться пам'ятати. Змінна оточення старша за обидва,
-      # тож тут нічого пам'ятати не треба. Помилка в цьому виборі не була б
-      # тихою — build.rs упав би повідомленням про MSVC, — але впала б за три
-      # кроки від причини.
+      # The toolchain is selected through RUSTUP_TOOLCHAIN, not `rustup
+      # default` and not `rustup override set`. The reason is precedence:
+      # `default` loses to rust-toolchain.toml (which says `channel =
+      # "stable"`, resolving to msvc on Windows), while a directory override
+      # and the file compete by a rule one has to remember. The environment
+      # variable outranks both, so there is nothing to remember here. Getting
+      # this wrong would not be silent -- build.rs would fail with a message
+      # about MSVC -- but it would fail three steps from the cause.
       #
-      # ucrt64\bin у PATH — щоб `cc` і лінкер gnu-цілі взяли ТОЙ САМИЙ gcc,
-      # яким збирає `make` двома кроками нижче. Інакше звірялися б хеші двох
-      # різних збірок ядра, і їхній збіг не доводив би нічого про cargo.
+      # ucrt64\bin on PATH so that `cc` and the gnu-target linker pick THE
+      # SAME gcc that `make` uses two steps below. Otherwise the hashes of two
+      # different core builds would be compared, and their agreement would
+      # prove nothing about cargo.
       #
-      # ⚠ Оболонка тут pwsh, а не msys2: rustup і cargo — рідні для Windows,
-      #   і тягнути їх у msys2-шелл довелося б через path-type: inherit, що
-      #   міняє PATH усім крокам, включно з тими, які зараз працюють.
-      #   Літерал у `shell:` дозволений — не дозволений там КОНТЕКСТ
-      #   (`${{ matrix.shell }}`), про що сказано вище коло defaults.
+      # WARNING: the shell here is pwsh, not msys2: rustup and cargo are
+      #   native Windows tools, and dragging them into the msys2 shell would
+      #   require path-type: inherit, which changes PATH for every step,
+      #   including those that currently work. A literal in `shell:` is
+      #   allowed -- what is not allowed there is CONTEXT
+      #   (`${{ matrix.shell }}`), as noted above near defaults.
       - name: Rust (windows-gnu)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -143,21 +149,22 @@ jobs:
           RUSTUP_TOOLCHAIN: stable-x86_64-pc-windows-gnu
         run: |
           $ucrt = "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin"
-          # GITHUB_PATH діє на НАСТУПНІ кроки, тож для власного `gcc --version`
-          # нижче PATH треба поправити ще й тут.
+          # GITHUB_PATH affects SUBSEQUENT steps, so PATH must also be fixed
+          # here for this step's own `gcc --version` below.
           $ucrt | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
           $env:PATH = "$ucrt;$env:PATH"
           rustup toolchain install stable-x86_64-pc-windows-gnu
           rustc -vV
           gcc --version
 
-      # Прапорці в лог, до будь-якої збірки. Розбіжність хешів починають
-      # шукати саме тут, і мати їх у логах кожного джоба економить один цикл.
+      # Flags into the log before any build. A hash divergence is investigated
+      # starting here, and having them in every job's log saves one cycle.
       #
-      # uname -m тут не для повноти: воно фіксує, що macOS-раннер — arm64,
-      # тобто гейт порівнює дві РІЗНІ архітектури, а не лише три компілятори.
-      # Це найсильніша частина твердження про детермінізм, і вона має бути
-      # підтверджена логом, а не припущенням про образи GitHub.
+      # `uname -m` is not for completeness: it records that the macOS runner is
+      # arm64, i.e. the gate compares two DIFFERENT architectures, not merely
+      # three compilers. That is the strongest part of the determinism claim,
+      # and it should be confirmed by a log rather than by an assumption about
+      # GitHub's images.
       - name: Flags
         run: |
           uname -srm
@@ -170,66 +177,69 @@ jobs:
           CC: ${{ matrix.cc }}
         run: make test
 
-      # Юніт-тести на C під ASan+UBSan (`make asan` пояснює прапорці).
+      # C unit tests under ASan+UBSan (`make asan` explains the flags).
       #
-      # Дірку, яку це закриває, знайшов не CI, а macOS — сегфолтом у
-      # test_prop, за два кроки від причини. Valgrind (тепер у
-      # .github/workflows/valgrind.yml) свідомо дивиться лише на core-sys і
-      # core-rs, тобто на пам'ять, яку виділяє межа; сотню юніт-тестів на C не
-      # перевіряв ніхто, і в одному з них блок пропагував через звільнений
-      # контекст. На glibc це «працює» — звільнений блок лишається
-      # змапленим, — тож обидва лінукси були зелені, а впала та платформа,
-      # яка повертає пам'ять ОС одразу.
+      # The hole this closes was found not by CI but by macOS -- a segfault in
+      # test_prop, two steps from the cause. Valgrind (now in
+      # .github/workflows/valgrind.yml) deliberately looks only at core-sys and
+      # core-rs, i.e. memory the boundary allocates; nobody checked the hundred
+      # C unit tests, and in one of them a block propagated through a freed
+      # context. On glibc that "works" -- the freed block stays mapped -- so
+      # both Linuxes were green and the platform that returns memory to the OS
+      # immediately was the one that fell over.
       #
-      # ASan лишається ТУТ, а не переїжджає до valgrind: він біжить на кожен
-      # пуш свідомо. Ціна — хвилини, а не вісім із половиною, і ловить він
-      # клас, який зачіпає й Rust-правки теж (звільнений контекст живе в
-      # тестах C, але приходить туди з межі).
+      # ASan stays HERE rather than moving to valgrind: it runs on every push
+      # deliberately. The cost is minutes, not eight and a half, and it catches
+      # a class that touches Rust edits too (the freed context lives in the C
+      # tests but arrives there from the boundary).
       #
-      # Одна платформа тут достатня, і саме тому це не матриця: помилка
-      # пам'яті не залежить від того, хто її знайшов, а від алокатора
-      # залежить лише те, чи вона проявиться. Санітайзер не питає алокатора.
+      # One platform is enough, which is why this is not a matrix: a memory bug
+      # does not depend on who found it, and the allocator affects only whether
+      # it manifests. A sanitizer does not ask the allocator.
       #
-      # Чому окремим кроком, а не всередині `make test`: перезбирає ядро
-      # заново з іншими прапорцями, і в червоному логу має бути видно, що
-      # впала саме перевірка пам'яті, а не числа.
+      # Why a separate step rather than inside `make test`: it rebuilds the
+      # core with different flags, and a red log should show that the memory
+      # check failed, not the numbers.
       - name: ASan + UBSan
         if: matrix.name == 'linux-gcc'
         env:
           CC: ${{ matrix.cc }}
         run: make asan
 
-      # Експортери CSV — тільки зібрати й запустити, і ЦЕ НЕ ЧАСТИНА ГЕЙТА.
-      # Їхній вивід між платформами не звіряється й звірятися не може: друк
-      # double у десятковий текст — справа libc, а не IEEE (core/export/csv.h).
-      # Перевіряється рівно одне — що вони компілюються й доходять до кінця,
-      # бо інакше вони тихо згниють: тести їх не чіпають, а руками їх ганяють
-      # лише коли треба подивитися на графік. Коштує пів секунди.
+      # CSV exporters -- build and run only, and THIS IS NOT PART OF THE GATE.
+      # Their output is not compared across platforms and cannot be: printing a
+      # double as decimal text is libc's business, not IEEE's
+      # (core/export/csv.h). Exactly one thing is checked -- that they compile
+      # and run to completion -- because otherwise they rot silently: no test
+      # touches them, and they are run by hand only when someone wants a plot.
+      # Costs half a second.
       - name: Export CSV
         env:
           CC: ${{ matrix.cc }}
         run: make csv
 
-      # matplotlib на раннерах немає й ставити його заради цього не варто, але
-      # синтаксичну помилку в скрипті ловити десь треба.
+      # The runners have no matplotlib and installing it for this is not worth
+      # it, but a syntax error in the script has to be caught somewhere.
       - name: Check plot script
         if: matrix.name == 'linux-gcc'
         run: python3 -m py_compile scripts/plot.py
 
-      # ЦЕ ЧАСТИНА ГЕЙТА (ROADMAP D1). core-sys/build.rs збирає ті самі .c
-      # крейтом `cc`, і тест звіряє хеші з тим самим core/scenario/golden.txt.
-      # Тобто перевіряється не «cargo дає те саме, що make на цій машині», а
-      # «cargo дає те саме, що еталон» — еталон один на всіх, і саме тому
-      # окремого кроку «порівняти дві збірки» тут немає.
+      # THIS IS PART OF THE GATE (ROADMAP D1). core-sys/build.rs builds the
+      # same .c files with the `cc` crate, and the test compares hashes against
+      # the same core/scenario/golden.txt. So what is checked is not "cargo
+      # agrees with make on this machine" but "cargo agrees with the golden
+      # file" -- one golden file for all, which is why there is no separate
+      # "compare the two builds" step.
       #
-      # CC передається той самий, що і в make: на linux-clang ядро для cargo
-      # теж збере clang, і розбіжність gcc/clang усередині cargo впаде тут.
+      # CC is the same as for make: on linux-clang cargo's core is built by
+      # clang too, so a gcc/clang divergence inside cargo fails here.
       #
-      # Windows має власну пару кроків нижче — інша оболонка й вужчий набір
-      # крейтів. Чому саме так, сказано там.
-      # Програмний Vulkan для тестів рушія: без адаптера вони пропускаються,
-      # а мовчазний пропуск — це зелений тест, який нічого не перевіряє.
-      # macOS має Metal сам.
+      # Windows has its own pair of steps below -- different shell, narrower
+      # set of crates. The reason is given there.
+
+      # Software Vulkan for the engine tests: without an adapter they are
+      # skipped, and a silent skip is a green test that checks nothing. macOS
+      # has Metal of its own.
       - name: Mesa
         if: runner.os == 'Linux'
         run: |
@@ -244,30 +254,31 @@ jobs:
           cargo run -q --example flags
           cargo test
 
-      # Профіль cargo не має протікати в C: прапорці ядра задає
-      # core/cflags.txt, а не рівень оптимізації Rust. Release-прогін і є
-      # перевіркою цього твердження — хеші мусять лишитись ті самі.
+      # The cargo profile must not leak into C: core flags come from
+      # core/cflags.txt, not from Rust's optimisation level. The release run is
+      # the check of that claim -- the hashes must stay the same.
       - name: Cargo determinism (release)
         if: runner.os != 'Windows'
         env:
           CC: ${{ matrix.cc }}
         run: cargo test --release
 
-      # Те саме на Windows — але ТІЛЬКИ core-sys і core-rs, і це не економія
-      # часу.
+      # The same on Windows -- but ONLY core-sys and core-rs, and not to save
+      # time.
       #
-      # Перевіряється рівно одне твердження, і воно живе в цих двох крейтах:
-      # ядро, зібране крейтом `cc` на Windows, дає ті самі хеші, що еталон.
-      # `game` притягнув би `engine`, тобто wgpu і winit, а тести рушія без
-      # адаптера мовчки пропускаються — зелений тест, який нічого не
-      # перевіряє, гірший за свою відсутність (та сама причина, з якої вище
-      # ставиться Mesa). Програмний D3D12 сюди — окреме рішення, не це.
+      # Exactly one claim is checked, and it lives in these two crates: the
+      # core built by the `cc` crate on Windows produces the same hashes as the
+      # golden file. `game` would pull in `engine`, i.e. wgpu and winit, and
+      # engine tests without an adapter are silently skipped -- a green test
+      # that checks nothing is worse than no test (the same reason Mesa is
+      # installed above). Software D3D12 here is a separate decision, below.
       #
-      # Той самий поділ, що у workflow valgrind.yml, і з тієї ж причини: межа
-      # C↔Rust — єдине, що на цій платформі ще не було перевірене під cargo.
+      # The same split as in valgrind.yml, for the same reason: the C-Rust
+      # boundary is the only thing on this platform not yet checked under
+      # cargo.
       #
-      # Двома кроками, а не одним, як і на решті платформ: у червоному логу
-      # має бути видно, debug чи release.
+      # Two steps rather than one, as on the other platforms: a red log should
+      # show whether it was debug or release.
       - name: Cargo determinism (windows-gnu)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -286,23 +297,24 @@ jobs:
           RUSTUP_TOOLCHAIN: stable-x86_64-pc-windows-gnu
         run: cargo test --release -p core-sys -p core-rs
 
-      # Пікселеві тести на Windows, через WARP (ROADMAP-UI.md, U6c).
+      # Pixel tests on Windows, through WARP (ROADMAP-UI.md, U6c).
       #
-      # Це те «окреме рішення», яке крок вище відкладав. Діра, яку воно
-      # закриває, дорога: `Gpu::for_tests` без адаптера друкує «ПРОПУЩЕНО» й
-      # повертає зелене, тож увесь пікселевий доказ (силует планети R1e,
-      # нерухомий Місяць U6a3, панелі U1c) на Windows не виконувався взагалі —
-      # а саме Windows колись спіймав UB, якого не бачила жодна інша
-      # платформа (K7b).
+      # This is the "separate decision" the step above deferred. The hole it
+      # closes is expensive: `Gpu::for_tests` without an adapter prints
+      # "SKIPPED" and returns green, so the whole pixel proof (planet
+      # silhouette R1e, stationary Moon U6a3, panels U1c) did not run on
+      # Windows at all -- and Windows is precisely the platform that once
+      # caught UB no other platform saw (K7b).
       #
-      # WARP — програмний растеризатор D3D12, він є в системі за
-      # замовчуванням. `Gpu::new` бере його сам: апаратного адаптера на
-      # раннері немає, і другий запит іде з `force_fallback_adapter`.
+      # WARP is the D3D12 software rasteriser, present in the system by
+      # default. `Gpu::new` picks it up itself: there is no hardware adapter on
+      # the runner, so the second request goes with
+      # `force_fallback_adapter`.
       #
-      # SPACE_SIM_REQUIRE_GPU перетворює пропуск на помилку: без цього крок
-      # був би зеленим і тоді, коли WARP не знайшовся, тобто перевіряв би
-      # рівно нічого. Назву адаптера кожен тест друкує в лог — саме за нею
-      # видно, що це WARP, а не щось інше.
+      # SPACE_SIM_REQUIRE_GPU turns a skip into an error: without it the step
+      # would be green even when WARP was not found, i.e. it would check
+      # exactly nothing. Every test prints the adapter name into the log --
+      # that is how one sees it is WARP and not something else.
       - name: GPU tests (WARP)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -319,19 +331,19 @@ jobs:
           CC: ${{ matrix.cc }}
         run: cargo clippy --all-targets -- -D warnings
 
-      # Форматування — це не смак, а відсутність суперечки про смак. Приймаємо
-      # rustfmt як є, включно з тими місцями, де він розбиває читабельний
-      # однорядковий виклик на чотири.
+      # Formatting is not taste, it is the absence of an argument about taste.
+      # We take rustfmt as it comes, including where it splits a readable
+      # one-line call across four.
       - name: Rustfmt
         if: matrix.name == 'linux-gcc'
         run: cargo fmt --check
 
-      # Обидва valgrind-кроки — юніт-тести на C і пам'ять межі C↔Rust (D3) —
-      # переїхали у .github/workflows/valgrind.yml, з фільтром `paths`.
-      # Причини й застороги записані там; тут лишається сам факт, щоб їх не
-      # шукали в цьому файлі.
+      # Both valgrind steps -- C unit tests and C-Rust boundary memory (D3) --
+      # moved to .github/workflows/valgrind.yml, with a `paths` filter. The
+      # reasons and warnings are recorded there; only the fact stays here so
+      # nobody looks for them in this file.
 
-      # Завжди, навіть коли впало: у провалі саме хеші й потрібні.
+      # Always, even on failure: the hashes are exactly what a failure needs.
       - name: Hashes
         if: always()
         run: cat build/scenario/actual.txt || true

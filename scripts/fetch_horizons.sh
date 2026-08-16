@@ -1,23 +1,24 @@
 #!/bin/sh
-# Вивантаження еталонних даних з JPL Horizons (ROADMAP B1).
+# Download reference data from JPL Horizons (ROADMAP B1).
 #
-# Ці дані — оракул, відносно якого вимірюється власний інтегратор. Писати
-# інтегратор, не маючи з чим порівняти, — найдорожчий спосіб рухатись, тому
-# крок іде до B3, а не після нього.
+# This data is the oracle our own integrator is measured against. Writing an
+# integrator with nothing to compare against is the most expensive way to move,
+# so this step comes before B3, not after it.
 #
-# Результат комітиться в репозиторій: дані статичні, повторно вивантажувати
-# не треба. Скрипт існує заради відтворюваності й документування запиту,
-# а не для регулярного запуску.
+# The result is committed: the data is static and need not be fetched again.
+# The script exists for reproducibility and to document the query, not for
+# regular runs.
 #
-# ВАЖЛИВО — параметри запиту є частиною контракту даних:
-#   CENTER='500@0'   барицентр Сонячної системи
-#   REF_PLANE='FRAME' + REF_SYSTEM='ICRF'   екваторіальна ICRF, НЕ екліптика
-#   OUT_UNITS='KM-S' км і км/с — у метри конвертуємо при імпорті (vec3.h)
-#   VEC_CORR='NONE'  геометричні вектори, без світлової затримки й аберації
-#   Час — JDTDB (барицентричний динамічний), не UTC: без високосних секунд.
+# IMPORTANT -- the query parameters are part of the data contract:
+#   CENTER='500@0'   solar system barycentre
+#   REF_PLANE='FRAME' + REF_SYSTEM='ICRF'   equatorial ICRF, NOT ecliptic
+#   OUT_UNITS='KM-S' km and km/s -- converted to metres on import (vec3.h)
+#   VEC_CORR='NONE'  geometric vectors, no light-time or aberration
+#   Time is JDTDB (barycentric dynamical), not UTC: no leap seconds.
 #
-# Зміна будь-чого з цього робить дані несумісними з попередніми. Саме тут
-# народжується більшість розбіжностей у чисельних задачах — не у фізиці.
+# Changing any of these makes the data incompatible with what came before.
+# This is where most discrepancies in numerical work are born -- not in the
+# physics.
 
 set -eu
 
@@ -28,18 +29,19 @@ START="2000-01-01 12:00"
 STOP="2010-01-01 12:00"
 STEP="30d"
 
-# id:назва:obj_id
-#   id     — для векторів
-#   obj_id — для параметрів тіла; відрізняється у барицентрів, бо барицентр
-#            це динамічна точка й GM у нього не публікується
+# id:name:obj_id
+#   id     -- for vectors
+#   obj_id -- for body parameters; differs for barycentres, because a
+#             barycentre is a dynamical point and has no published GM
 #
-# Усі великі тіла Сонячної системи.
+# All the major solar system bodies.
 #
-# Спокуса взяти лише Сонце, Землю й Місяць існує, але B5 виміряв, чим вона
-# коштує: підсистема з кількох тіл несе лише частину імпульсу Сонячної
-# системи, тож її спільний барицентр лінійно дрейфує крізь систему SSB —
-# 4.96·10⁹ м за 10 років для трьох тіл. Цей дрейф запікся б у ассет ефемериди.
-# Лікується не інтегратором, а повнотою набору тіл.
+# The temptation to take only the Sun, Earth and Moon exists, but B5 measured
+# its cost: a subsystem of a few bodies carries only part of the solar system's
+# momentum, so its shared barycentre drifts linearly through the SSB frame --
+# 4.96e9 m over 10 years for three bodies. That drift would bake into the
+# ephemeris asset. The cure is a complete set of bodies, not a better
+# integrator.
 BODIES="10:sun:10 199:mercury:199 299:venus:299 399:earth:399 301:moon:301 \
 4:mars_bary:499 5:jupiter_bary:599 6:saturn_bary:699 7:uranus_bary:799 \
 8:neptune_bary:899"
@@ -48,7 +50,7 @@ mkdir -p "$OUT_DIR"
 
 fetch_vectors() {
     id="$1"; name="$2"
-    echo "  вектори: $name ($id)"
+    echo "  vectors: $name ($id)"
     curl -sS -G "$API" \
         --data-urlencode "format=text" \
         --data-urlencode "COMMAND='$id'" \
@@ -69,7 +71,7 @@ fetch_vectors() {
         > "$OUT_DIR/.raw_$name.txt"
 
     if ! grep -q '\$\$SOE' "$OUT_DIR/.raw_$name.txt"; then
-        echo "ПОМИЛКА: Horizons не повернув таблицю для $name ($id)" >&2
+        echo "ERROR: Horizons returned no table for $name ($id)" >&2
         head -20 "$OUT_DIR/.raw_$name.txt" >&2
         exit 1
     fi
@@ -86,12 +88,12 @@ fetch_vectors() {
     rm -f "$OUT_DIR/.raw_$name.txt"
 }
 
-# Гравітаційні параметри беремо з того самого джерела, що й вектори, а не
-# з пам'яті чи підручника: інакше сила й еталон рахуються за різними GM,
-# і розбіжність спишеться на інтегратор.
+# Gravitational parameters come from the same source as the vectors, not from
+# memory or a textbook: otherwise the force and the reference use different GM,
+# and the discrepancy gets blamed on the integrator.
 fetch_object_data() {
     id="$1"; name="$2"
-    echo "  параметри тіла: $name ($id)"
+    echo "  body parameters: $name ($id)"
     curl -sS -G "$API" \
         --data-urlencode "format=text" \
         --data-urlencode "COMMAND='$id'" \
@@ -101,8 +103,8 @@ fetch_object_data() {
         > "$OUT_DIR/obj_$name.txt"
 }
 
-echo "Вивантаження з JPL Horizons -> $OUT_DIR"
-echo "  інтервал: $START .. $STOP, крок $STEP"
+echo "Fetching from JPL Horizons -> $OUT_DIR"
+echo "  interval: $START .. $STOP, step $STEP"
 
 for entry in $BODIES; do
     id=$(echo "$entry" | cut -d: -f1)
@@ -112,20 +114,20 @@ for entry in $BODIES; do
     fetch_object_data "$obj_id" "$name"
 done
 
-# Витягуємо GM у машиночитний вигляд.
+# Extract GM in machine-readable form.
 #
-# Витягуємо саме присвоєння «GM ... = число», а не рядок, у якому воно
-# трапилось. Причина конкретна: у Місяця GM стоїть посеред рядка з радіусом
-#   «Radius (IAU), km = 1737.4    GM, km^3/s^2 = 4902.800066»
-# і будь-яка обробка «взяти число після першого =» дала б радіус.
+# We match the assignment "GM ... = number", not the line it occurs on. The
+# reason is concrete: for the Moon, GM sits mid-line next to the radius
+#   "Radius (IAU), km = 1737.4    GM, km^3/s^2 = 4902.800066"
+# and any "take the number after the first =" would yield the radius.
 #
-# Рядок «GM 1-sigma» відсіюється самою формою шаблону: після GM має йти
-# одиниця виміру, а не «1-sigma».
+# The "GM 1-sigma" line is filtered by the shape of the pattern itself: GM must
+# be followed by a unit, not by "1-sigma".
 {
-    echo "# Гравітаційні параметри з JPL Horizons, км^3/с^2."
-    echo "# Джерело — obj_<name>.txt у цьому ж каталозі."
-    echo "# УВАГА: у mars_bary і jupiter_bary це GM ПЛАНЕТИ, не системи."
-    echo "# Див. README.md, розділ про GM барицентрів."
+    echo "# Gravitational parameters from JPL Horizons, km^3/s^2."
+    echo "# Source: obj_<name>.txt in this same directory."
+    echo "# NOTE: for mars_bary and jupiter_bary this is the GM of the PLANET,"
+    echo "# not of the system. See README.md, the section on barycentre GM."
     echo "# name,gm_km3_s2"
     for entry in $BODIES; do
         name=$(echo "$entry" | cut -d: -f2)
@@ -134,14 +136,14 @@ done
              | head -1 \
              | sed -E 's/.*=[[:space:]]*//')
         if [ -z "$gm" ]; then
-            echo "ПОМИЛКА: не знайдено GM для $name" >&2
+            echo "ERROR: no GM found for $name" >&2
             exit 1
         fi
         echo "$name,$gm"
     done
 } > "$OUT_DIR/gm.csv"
 
-echo "Готово. Рядків у таблицях:"
+echo "Done. Rows per table:"
 for entry in $BODIES; do
     name=$(echo "$entry" | cut -d: -f2)
     printf "  %-14s %s\n" "$name" "$(grep -vc '^#' "$OUT_DIR/vec_$name.csv")"

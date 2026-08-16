@@ -1,39 +1,38 @@
-# Прапорці компіляції ядра. ЄДИНЕ місце, де вони задані.
+# Core compilation flags. The ONLY place they are defined.
 #
-# Читає і Makefile (M0), і core-sys/build.rs (з M1, крок D1 у ROADMAP.md).
-# Розбіжність між двома збірками тихо ламає детермінізм — PROJECT.md §4.
-# Рядки з # ігноруються.
+# Read by both the Makefile (M0) and core-sys/build.rs (from M1, step D1 in
+# ROADMAP.md). A mismatch between the two builds silently breaks determinism --
+# PROJECT.md section 4. Lines starting with # are ignored.
 
 -std=c11
 
-# Попередження = помилки. PROJECT.md §9.
+# Warnings are errors. PROJECT.md section 9.
 -Wall
 -Wextra
 -Werror
 
-# Не нижче -O1. При -O0 gcc кличе sqrt як функцію libm замість апаратної
-# інструкції, і сценарії детермінізму, які свідомо лінкуються без -lm,
-# не злінкуються. Тобто «зібрати без оптимізації для дебагу» тут не працює —
-# беріть -O1 -g, результат бітово той самий (виміряно, ROADMAP C5).
+# Not below -O1. At -O0 gcc calls sqrt as a libm function instead of the
+# hardware instruction, and the determinism scenarios, which deliberately link
+# without -lm, fail to link. So "build unoptimised for debugging" does not work
+# here -- use -O1 -g, the result is bit-identical (measured, ROADMAP C5).
 -O2
 -g
 
-# Детермінізм. Забороняємо компілятору зливати множення й додавання в FMA:
-# інакше той самий вихідний код дає різні біти на різних платформах.
-# -ffast-math НІКОЛИ, за жодних обставин. PROJECT.md §4.
+# Determinism. Forbids the compiler from fusing multiply and add into FMA:
+# otherwise the same source gives different bits on different platforms.
+# -ffast-math NEVER, under any circumstances. PROJECT.md section 4.
 -ffp-contract=off
 
-# Дозволяє компілятору не викликати libm заради errno і брати апаратну
-# інструкцію sqrt напряму. Без цього sqrt не злінкується (ми свідомо не
-# лінкуємо -lm), а з -lm у ядро просочився б увесь libm.
+# Lets the compiler skip the libm call made for errno and take the hardware
+# sqrt directly. Without it sqrt does not link (we deliberately do not link
+# -lm), and with -lm all of libm would seep into the core.
 #
-# На бітову точність НЕ впливає: IEEE-754 вимагає коректного заокруглення
-# sqrt, тож значення те саме, зникає лише запис у errno. Це окремий прапорець,
-# а не частина -ffast-math у сенсі переупорядкування — реасоціації він
-# не дозволяє.
+# Does NOT affect bitwise accuracy: IEEE-754 requires correctly rounded sqrt,
+# so the value is the same and only the errno write disappears. This is its own
+# flag, not part of -ffast-math in the reassociation sense -- it permits none.
 -fno-math-errno
 
-# Виміряно (ROADMAP C5): хеші всіх сценаріїв БІТОВО однакові при -O1, -O2,
-# -O3, -Os, -march=native і -funroll-loops. Тобто в ядрі немає нічого, що
-# компілятор міг би переасоціювати, — а з -ffast-math хеші розходяться,
-# отже перевірка має зуби, а не просто «щось збігається».
+# Measured (ROADMAP C5): every scenario hash is BIT-identical at -O1, -O2, -O3,
+# -Os, -march=native and -funroll-loops. That is, the core holds nothing the
+# compiler could reassociate -- and with -ffast-math the hashes do diverge, so
+# the check has teeth rather than merely agreeing with itself.

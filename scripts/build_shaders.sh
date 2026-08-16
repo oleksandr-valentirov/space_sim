@@ -1,21 +1,21 @@
 #!/bin/sh
-# Компіляція шейдерів Slang → WGSL (ROADMAP F2).
+# Compile Slang shaders to WGSL (ROADMAP F2).
 #
-# Результат КОМІТИТЬСЯ, і це не лінощі, а та сама архітектура, що й з
-# ассетами: кукер працює один раз на машині розробника, у білд їде результат
-# (PROJECT.md §4). Інакше кожна збірка рушія вимагала б 24 МБ компілятора
-# Slang, і CI теж.
+# The output IS COMMITTED, on the same architecture as the assets: the cooker
+# runs once on the developer's machine and the build ships the result
+# (PROJECT.md section 4). Otherwise every engine build, and CI too, would need
+# 24 MB of Slang compiler.
 #
-# Побічна користь: згенерований WGSL видно в діфі. Коли дженерик розгорнеться
-# не в те, це буде помітно в рев'ю, а не в кадрі.
+# Side benefit: the generated WGSL shows up in the diff. When a generic expands
+# into the wrong thing, it is visible in review rather than in the frame.
 #
-# Що вихід не протух, перевіряє workflow slang-probe: він качає slangc,
-# перезбирає й дивиться, чи є різниця.
+# The slang-probe workflow checks the output has not gone stale: it downloads
+# slangc, rebuilds and looks for a difference.
 #
-#   sh scripts/fetch_slang.sh      один раз
+#   sh scripts/fetch_slang.sh      once
 #   sh scripts/build_shaders.sh
 #
-# Запускати з кореня репозиторію.
+# Run from the repository root.
 
 set -eu
 
@@ -23,7 +23,7 @@ SLANGC="${SLANGC:-tools/slang/bin/slangc}"
 DIR="${1:-engine/shaders}"
 
 if [ ! -x "$SLANGC" ]; then
-    echo "немає $SLANGC — спершу: sh scripts/fetch_slang.sh" >&2
+    echo "missing $SLANGC -- run first: sh scripts/fetch_slang.sh" >&2
     exit 1
 fi
 
@@ -35,27 +35,27 @@ for source in "$DIR"/*.slang; do
     echo "  $source -> $out"
     "$SLANGC" "$source" -target wgsl -o "$out"
 
-    # ⚠ Одна виправка після компілятора, і вона не косметична.
+    # A single post-compiler fixup, and not a cosmetic one.
     #
-    # Slang друкує bindless-масив текстур як `array<texture_2d<...>>`, а
-    # `naga` такого не приймає взагалі: масив ресурсів у WGSL має власне
-    # ключове слово `binding_array`, і без нього модуль падає на
-    # `create_shader_module` з «Base type for the array is invalid».
+    # Slang prints a bindless texture array as `array<texture_2d<...>>`, which
+    # `naga` does not accept at all: a resource array in WGSL has its own
+    # keyword, `binding_array`, and without it the module fails
+    # `create_shader_module` with "Base type for the array is invalid".
     #
-    # Це той самий клас розбіжності, що вже змусив брати WGSL замість SPIR-V
-    # (capability DrawParameters, ROADMAP F2): два інструменти розуміють одну
-    # специфікацію трохи по-різному. Заміна вузька навмисно — вона чіпає лише
-    # оголошення `var ... : array<texture_...>`, тобто рівно ту конструкцію,
-    # якої в WGSL не існує в такому вигляді.
+    # Same class of divergence that already forced WGSL over SPIR-V (capability
+    # DrawParameters, ROADMAP F2): two tools read one spec slightly
+    # differently. The substitution is deliberately narrow -- it touches only
+    # `var ... : array<texture_...>` declarations, exactly the construct that
+    # does not exist in WGSL in that form.
     sed -i.bak -E \
         's/(var [A-Za-z0-9_]+ : )array<(texture_[a-z0-9_]+<[^>]*>)>/\1binding_array<\2>/' \
         "$out"
     rm -f "$out.bak"
 
-    # І, якщо масив таки з'явився, — вмикач розширення першим рядком файлу.
-    # `binding_array` у WGSL це розширення wgpu, а не сама специфікація, тож
-    # без `enable` модуль падає з прямою вказівкою, чого бракує. Дописується
-    # тут, а не руками у .wgsl: згенерований файл ніхто не редагує.
+    # And if an array did appear, the extension switch goes on the first line.
+    # `binding_array` is a wgpu extension, not the WGSL spec itself, so without
+    # `enable` the module fails saying exactly what is missing. Added here
+    # rather than by hand in the .wgsl: nobody edits a generated file.
     if grep -q "binding_array<" "$out"; then
         printf 'enable wgpu_binding_array;\n\n%s' "$(cat "$out")" > "$out.tmp"
         mv "$out.tmp" "$out"
@@ -63,8 +63,8 @@ for source in "$DIR"/*.slang; do
 done
 
 if [ "$found" -eq 0 ]; then
-    echo "у $DIR немає жодного .slang — нічого робити, і це підозріло" >&2
+    echo "no .slang in $DIR -- nothing to do, which is suspicious" >&2
     exit 1
 fi
 
-echo "Готово. Версія компілятора: $(cat tools/slang/VERSION 2>/dev/null || echo невідома)"
+echo "Done. Compiler version: $(cat tools/slang/VERSION 2>/dev/null || echo unknown)"

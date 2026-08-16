@@ -1,23 +1,24 @@
-# Розвідка P0: таблиця «платформа × бекенд × фіча» (ROADMAP, етап E).
+# P0 reconnaissance: the "platform x backend x feature" table (ROADMAP, stage
+# E).
 #
-# Окремий workflow, а не крок у гейті детермінізму, і це навмисно. Гейт
-# відповідає на питання «чи не зламалося»; цей — на питання «що взагалі є»,
-# і відповідь потрібна кілька разів за проєкт, а не на кожен пуш. Тому
-# workflow_dispatch плюс зміни самого зонда.
+# A separate workflow rather than a step in the determinism gate, deliberately.
+# The gate answers "is it broken"; this answers "what exists at all", and that
+# answer is needed a few times per project, not on every push. Hence
+# workflow_dispatch plus changes to the probe itself.
 #
-# ⚠ Раннери GitHub — не ігрові машини, і жоден із трьох не виняток. На
-#   Windows це майже напевно WARP (програмний D3D12), на Linux — lavapipe, а
-#   на macOS — `Apple Paravirtual`, бо раннери там віртуальні машини й на
-#   arm64 теж. Перша версія цього коментаря казала, що macOS дає «справжній»
-#   GPU; це неправда, і саме на ній тримався борг D3.
+# WARNING: GitHub runners are not gaming machines, and none of the three is an
+#   exception. On Windows it is almost certainly WARP (software D3D12), on
+#   Linux lavapipe, and on macOS `Apple Paravirtual`, because those runners are
+#   virtual machines on arm64 too. The first version of this comment claimed
+#   macOS gave a "real" GPU; that was false, and debt D3 rested on it.
 #
-#   Тобто ця таблиця відповідає на питання «чи підтримує wgpu bindless на
-#   цьому API», а не «чи потягне його машина гравця». Друге питання
-#   закривається залізом розробника (див. ROADMAP P0) і згодом телеметрією.
+#   So this table answers "does wgpu support bindless on this API", not "will a
+#   player's machine run it". The second question is settled by the developer's
+#   hardware (see ROADMAP P0) and later by telemetry.
 #
-#   Перезапускати цей workflow заради D3 безглуздо — рядок Metal вийде той
-#   самий. Що саме його закриє й які два числа за цим дивитись, записано в
-#   ROADMAP, «Відкриті борги», D3.
+#   Re-running this workflow for D3 is pointless -- the Metal row will come out
+#   the same. What will close it, and which two numbers to watch, is recorded
+#   in ROADMAP, "Відкриті борги", D3.
 
 name: gpu-probe
 
@@ -47,17 +48,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Mesa з програмним Vulkan: без нього на раннері Linux немає жодного
-      # адаптера, і зонд не мав би що показати.
+      # Mesa with software Vulkan: without it the Linux runner has no adapter
+      # at all and the probe would have nothing to show.
       - name: Mesa
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
 
-      # Тільки -p gpu-probe. Складання всієї робочої області тут ні до чого:
-      # core-sys збирає ядро на C, а на Windows тулчейн за замовчуванням
-      # MSVC, і build.rs свідомо на ньому падає (ROADMAP D1).
+      # Only -p gpu-probe. Building the whole workspace is beside the point
+      # here: core-sys builds the C core, and on Windows the default toolchain
+      # is MSVC, on which build.rs deliberately fails (ROADMAP D1).
       - name: Probe
         run: cargo run -p gpu-probe
 

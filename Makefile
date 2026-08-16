@@ -1,137 +1,138 @@
-# Збірка числового ядра на C.
+# Build of the C numeric core.
 #
-# З M1 ті самі .c збирає ще й `cargo` через core-sys/build.rs (ROADMAP D1).
-# Прапорці обидві збірки читають з core/cflags.txt і більше нізвідки, а що
-# вони дають однакові числа — перевіряє core-sys/tests/determinism.rs проти
-# того самого core/scenario/golden.txt. Звірити руками:
+# Since M1 the same .c files are also built by `cargo` via core-sys/build.rs
+# (ROADMAP D1). Both builds read their flags from core/cflags.txt and nowhere
+# else; that they produce identical numbers is checked by
+# core-sys/tests/determinism.rs against the same core/scenario/golden.txt.
+# To compare by hand:
 #
 #     make flags
 #     cargo run -q --example flags
 #
-# Послідовність робіт: ROADMAP.md.
+# Order of work: ROADMAP.md.
 #
-#   make                  зібрати статичну бібліотеку
-#   make test             усі перевірки: libm, юніт-тести, детермінізм
-#   make unit             лише юніт-тести
-#   make asan             ті самі юніт-тести під ASan+UBSan (помилки пам'яті)
-#   make valgrind         ті самі юніт-тести під valgrind (неініціалізована
-#                         пам'ять — того ASan не бачить)
-#   make check-libm       лише «поліція libm» (ROADMAP A2)
-#   make determinism      звірити хеші сценаріїв з еталонними
-#   make determinism-bless оновити еталонні хеші (робити свідомо!)
-#   make hashes           показати фактичні хеші сценаріїв
-#   make flags            показати фактичні прапорці (звірка з build.rs на M1)
-#   make cook             перегенерувати ассет-фікстуру (робити свідомо!)
-#   make cook-dem         скукувати тайли рельєфу з data/lola у /assets/
-#   make cook-colour      скукувати колірні тайли з data/wac у /assets/
-#   make model-ship       перебудувати модель корабля в Blender (пише в git!)
-#   make cook-ship        скукувати корабель з assets-src/ у /assets/
-#   make cook ANCHOR_BARYCENTRE=0   те саме, без закріплення баріцентру —
-#                         лише щоб зміряти ефект, у гру їде анкерований ассет
-#   make csv              вивести результати ядра у build/csv/*.csv
-#   make plots            побудувати графіки з CSV у build/plots/*.png
-#   make bench            пропускна здатність DOP853 (скіл perf-probe)
+#   make                  build the static library
+#   make test             all checks: libm, unit tests, determinism
+#   make unit             unit tests only
+#   make asan             the same unit tests under ASan+UBSan (memory errors)
+#   make valgrind         the same unit tests under valgrind (uninitialised
+#                         memory -- which ASan does not see)
+#   make check-libm       the "libm police" only (ROADMAP A2)
+#   make determinism      compare scenario hashes against the golden file
+#   make determinism-bless update the golden hashes (do this deliberately!)
+#   make hashes           print the actual scenario hashes
+#   make flags            print the actual flags (compare with build.rs on M1)
+#   make cook             regenerate the asset fixture (do this deliberately!)
+#   make cook-dem         cook terrain tiles from data/lola into /assets/
+#   make cook-colour      cook colour tiles from data/wac into /assets/
+#   make model-ship       rebuild the ship model in Blender (writes to git!)
+#   make cook-ship        cook the ship from assets-src/ into /assets/
+#   make cook ANCHOR_BARYCENTRE=0   the same without barycentre anchoring --
+#                         only to measure the effect; the game ships anchored
+#   make csv              export core results to build/csv/*.csv
+#   make plots            plot the CSV into build/plots/*.png
+#   make bench            DOP853 throughput (skill perf-probe)
 #   make clean
 
 CC ?= cc
 AR ?= ar
 
-# Прапорці беруться з core/cflags.txt і НІДЕ більше не задаються.
+# Flags come from core/cflags.txt and are set NOWHERE else.
 #
-# HASH виглядає безглуздо, але без нього Makefile залежить від версії make.
-# Коментарі знімаються ДО розбору функцій, тож `#` усередині sed-програми
-# make бачить як початок коментаря й обрізає рядок — `$(shell` лишається
-# незакритим. GNU make 4.3 це пробачає, 3.81 (той, що на macOS) падає з
-# "unterminated call to function `shell'". Через змінну `#` доходить до
-# оболонки вже після розбору.
+# HASH looks pointless but without it the Makefile depends on the make version.
+# Comments are stripped BEFORE functions are parsed, so a `#` inside the sed
+# program reads as the start of a comment and truncates the line, leaving
+# `$(shell` unclosed. GNU make 4.3 forgives that, 3.81 (the one on macOS) dies
+# with "unterminated call to function `shell'". Through a variable the `#`
+# reaches the shell after parsing.
 HASH := \#
 
-# LC_ALL=C не для краси: cflags.txt має коментарі українською, а BSD sed
-# (macOS) у не-UTF-8 локалі падає на багатобайтових послідовностях з
-# "illegal byte sequence". У локалі C він працює з байтами і йому байдуже.
+# LC_ALL=C keeps sed byte-oriented whatever lands in cflags.txt: BSD sed
+# (macOS) in a non-UTF-8 locale dies on multibyte sequences with "illegal byte
+# sequence". In the C locale it does not care.
 CFLAGS := $(shell LC_ALL=C sed -e 's/$(HASH).*//' core/cflags.txt | tr '\n' ' ')
 
-# А це — те, чого бракувало. $(shell) не повідомляє про помилку: якщо sed
-# впав, CFLAGS просто порожні, і збірка тихо піде з дефолтними прапорцями
-# компілятора. Тобто БЕЗ -ffp-contract=off — і детермінізм зламається без
-# жодного повідомлення, а впаде потім звірка хешів, за кілометр від причини.
+# $(shell) reports no error: if sed fails, CFLAGS is simply empty and the
+# build quietly proceeds with the compiler's default flags -- that is, WITHOUT
+# -ffp-contract=off, so determinism breaks silently and the hash comparison
+# fails later, a mile from the cause.
 #
-# Перевіряємо не лише «щось є», а конкретний прапорець: порожній рядок ловить
-# зламаний sed, а відсутність саме -ffp-contract=off ловить ще й правку
-# cflags.txt, яка забирає його не подумавши.
+# We check not just "something is there" but the specific flag: an empty string
+# catches broken sed, and a missing -ffp-contract=off also catches an edit to
+# cflags.txt that drops it without thinking.
 ifeq ($(strip $(CFLAGS)),)
-$(error Прапорці не витягнулися з core/cflags.txt. Збірка з дефолтними \
-прапорцями порушила б детермінізм, тому це помилка, а не попередження.)
+$(error Could not extract flags from core/cflags.txt. Building with default \
+flags would break determinism, so this is an error, not a warning.)
 endif
 ifeq (,$(findstring -ffp-contract=off,$(CFLAGS)))
-$(error У прапорцях немає -ffp-contract=off. Без нього компілятор зливає \
-множення й додавання у FMA, і той самий код дає різні біти на різних \
-платформах — PROJECT.md §4.)
+$(error Flags do not contain -ffp-contract=off. Without it the compiler \
+fuses multiply and add into FMA, and the same code gives different bits on \
+different platforms -- PROJECT.md section 4.)
 endif
 
-# Залежності від заголовків. НЕ впливають на арифметику: -MMD -MP лише
-# просять компілятор виписати побічний файл .d зі списком включених
-# заголовків, кодогенерацію вони не чіпають. Тому їх тут, а не в
-# core/cflags.txt — той файл лишається єдиним джерелом прапорців, які
-# визначають числа.
+# Header dependencies. They do NOT affect arithmetic: -MMD -MP only ask the
+# compiler to write a side .d file listing included headers, leaving codegen
+# alone. Hence they live here, not in core/cflags.txt -- that file stays the
+# single source of the flags that determine numbers.
 #
-# Навіщо: без цього зміна .h не перезбирала нічого, бо в правилах стояли
-# лише .c. Спіймано на ROADMAP K4 — у FieldCtx додалося поле, field.c
-# перезібрався, prop.c ні, і два об'єктні файли розійшлися в sizeof тієї
-# самої структури. Це не дало неправильних чисел, це зруйнувало купу
-# (malloc(): invalid size), тобто найгучніший з можливих проявів; тихий
-# прояв тієї ж помилки — трохи інші числа — був би незрівнянно гіршим.
+# Without this, editing a .h rebuilt nothing, because the rules named only .c.
+# Caught at ROADMAP K4: a field was added to FieldCtx, field.c rebuilt, prop.c
+# did not, and two object files disagreed on sizeof the same struct. That did
+# not give wrong numbers, it corrupted the heap (malloc(): invalid size) -- the
+# loudest possible symptom; the quiet form of the same bug, slightly different
+# numbers, would have been incomparably worse.
 #
-# Той самий клас діри, що вже описаний у ROADMAP D1 для watch() у
-# build.rs, і з тією ж мораллю: перевірка, яка існує заради ловіння тихих
-# змін, сама мусить бачити всі свої входи.
+# Same class of hole as ROADMAP D1 describes for watch() in build.rs, with the
+# same moral: a check that exists to catch silent changes must itself see all
+# of its inputs.
 DEPFLAGS := -MMD -MP
 
-# Три бібліотеки — це і є межа детермінізму, виражена в графі збірки:
+# The three libraries are the determinism boundary expressed in the build
+# graph:
 #
-#   libcore.a           core/*.c          РАНТАЙМ, пропагація. libm
-#                                         заборонений, -lm не лінкується
-#                                         взагалі. Другий рубіж захисту
-#                                         після make check-libm.
-#   libcore_offline.a   core/offline/*.c  КУКЕР. libm дозволений, лінкується
-#                                         з -lm. Не рантайм: рахується раз на
-#                                         машині розробника, у гру їде ассет.
-#   libcore_planning.a  core/planning/*.c РАНТАЙМ, планування. libm
-#                                         дозволений (PROJECT.md §4: межа
-#                                         детермінізму — по пропагації, не по
-#                                         плануванню). scripts/check_no_libm.sh
-#                                         свідомо перевіряє лише build/core
-#                                         верхнього рівня, тому цей підкаталог
-#                                         під поліцію libm не підпадає.
+#   libcore.a           core/*.c          RUNTIME, propagation. libm forbidden,
+#                                         -lm not linked at all. Second line of
+#                                         defence after make check-libm.
+#   libcore_offline.a   core/offline/*.c  COOKER. libm allowed, links with -lm.
+#                                         Not runtime: computed once on the
+#                                         developer's machine, the game ships
+#                                         the asset.
+#   libcore_planning.a  core/planning/*.c RUNTIME, planning. libm allowed
+#                                         (PROJECT.md section 4: the
+#                                         determinism boundary runs along
+#                                         propagation, not planning).
+#                                         scripts/check_no_libm.sh deliberately
+#                                         checks only top-level build/core, so
+#                                         this subdirectory is outside the libm
+#                                         police.
 #
-# Сценарії детермінізму лінкуються ТІЛЬКИ з libcore.a і без -lm: якщо туди
-# просочиться тригонометрія, лінкування впаде. Тести лінкуються з усіма
-# трьома.
+# Determinism scenarios link with libcore.a ONLY and without -lm: if
+# trigonometry seeps in, the link fails. Tests link with all three.
 LDLIBS :=
 LDLIBS_OFFLINE := -lm
 LDLIBS_PLANNING := -lm
 
-# MinGW дописує .exe до виконуваних файлів незалежно від -o, тож без цього
-# make вважав би цілі непобудованими й перезбирав усе щоразу. MSYS2 успадковує
-# OS=Windows_NT з Windows, тож перевірка надійна (ROADMAP C5).
+# MinGW appends .exe to executables regardless of -o, so without this make
+# would consider the targets unbuilt and rebuild everything every time. MSYS2
+# inherits OS=Windows_NT from Windows, so the test is reliable (ROADMAP C5).
 EXE :=
 ifeq ($(OS),Windows_NT)
 EXE := .exe
 endif
 
-# Прибирання залишкового імпульсу в кукері (nbody_anchor_barycentre).
-# Типово увімкнено; вимикається лише щоб зміряти власний ефект:
+# Residual momentum removal in the cooker (nbody_anchor_barycentre). On by
+# default; turned off only to measure its own effect:
 #
-#     make cook                        як їде в гру
-#     make cook ANCHOR_BARYCENTRE=0    без прибирання, для порівняння
+#     make cook                        as it ships
+#     make cook ANCHOR_BARYCENTRE=0    without removal, for comparison
 #
-# Це ЄДИНЕ, що цією змінною можна передати в компілятор, і значення
-# перевіряється нижче. Загального EXTRA_CFLAGS тут немає навмисно: він був би
-# дірою, крізь яку в збірку заходить -ffast-math, а прапорці мають лишатися
-# в core/cflags.txt і більше ніде.
+# This is the ONLY thing this variable can pass to the compiler, and the value
+# is validated below. There is deliberately no general EXTRA_CFLAGS: it would
+# be the hole through which -ffast-math enters the build, and flags must stay
+# in core/cflags.txt and nowhere else.
 ANCHOR_BARYCENTRE ?= 1
 ifeq (,$(filter 0 1,$(ANCHOR_BARYCENTRE)))
-$(error ANCHOR_BARYCENTRE має бути 0 або 1, а не «$(ANCHOR_BARYCENTRE)»)
+$(error ANCHOR_BARYCENTRE must be 0 or 1, not "$(ANCHOR_BARYCENTRE)")
 endif
 OFFLINE_DEFS := -DEPH_ANCHOR_BARYCENTRE=$(ANCHOR_BARYCENTRE)
 
@@ -150,9 +151,9 @@ ANCHOR_STAMP := $(BUILD)/core/offline/.anchor-$(ANCHOR_BARYCENTRE)
 PLANNING_SRC := $(sort $(wildcard core/planning/*.c))
 PLANNING_OBJ := $(patsubst core/planning/%.c,$(BUILD)/core/planning/%.o,$(PLANNING_SRC))
 
-# $(sort) не для краси: порядок сценаріїв визначає порядок рядків у actual.txt,
-# а $(wildcard) не гарантує сталого порядку. Без сортування звірка з еталоном
-# могла б падати через перестановку рядків.
+# $(sort) matters: scenario order sets the line order in actual.txt, and
+# $(wildcard) guarantees no stable order. Without sorting, the golden
+# comparison could fail merely because lines were permuted.
 TEST_SRC := $(sort $(wildcard core/test/*.c))
 TEST_BIN := $(patsubst core/test/%.c,$(BUILD)/test/%$(EXE),$(TEST_SRC))
 
@@ -176,17 +177,17 @@ SCEN_BIN := $(patsubst core/scenario/%.c,$(BUILD)/scenario/%$(EXE),$(SCEN_SRC))
 GOLDEN   := core/scenario/golden.txt
 ACTUAL   := $(BUILD)/scenario/actual.txt
 
-# Ассет — такий самий вхід сценаріїв, як їхній власний код: sc_ephemeris
-# і sc_trajectory читають його в рантаймі. Без цієї залежності `make cook`
-# змінював ассет, а наступний `make test` звіряв СТАРИЙ actual.txt і мовчки
-# проходив — тобто перевірка, яка існує заради ловіння тихих змін, сама
-# пропускала б найтихішу з них.
+# The asset is as much an input to the scenarios as their own code:
+# sc_ephemeris and sc_trajectory read it at runtime. Without this dependency
+# `make cook` changed the asset while the next `make test` compared the OLD
+# actual.txt and passed silently -- a check that exists to catch silent changes
+# missing the quietest one of all.
 FIXTURE  := $(wildcard data/fixture/*.eph)
 
-# Файли залежностей, які виписав -MMD. Кожен перелічує заголовки, від яких
-# залежить його ціль, у синтаксисі make. `-include` мовчить, коли їх ще
-# немає (перша збірка), а -MP додає фіктивні цілі для самих заголовків, щоб
-# видалення чи перейменування .h не ламало збірку помилкою «немає правила».
+# Dependency files written by -MMD. Each lists the headers its target depends
+# on, in make syntax. `-include` stays quiet when they do not exist yet (first
+# build), and -MP adds phony targets for the headers themselves so deleting or
+# renaming a .h does not break the build with "no rule to make target".
 DEP := $(CORE_OBJ:.o=.d) $(OFFLINE_OBJ:.o=.d) $(PLANNING_OBJ:.o=.d) \
        $(patsubst core/test/%.c,$(BUILD)/test/%.d,$(TEST_SRC)) \
        $(patsubst core/cook/%.c,$(BUILD)/cook/%.d,$(COOK_SRC)) \
@@ -194,12 +195,11 @@ DEP := $(CORE_OBJ:.o=.d) $(OFFLINE_OBJ:.o=.d) $(PLANNING_OBJ:.o=.d) \
        $(patsubst core/bench/%.c,$(BUILD)/bench/%.d,$(BENCH_SRC)) \
        $(patsubst core/scenario/%.c,$(BUILD)/scenario/%.d,$(SCEN_SRC))
 
-# Ціль за замовчуванням — явно, ДО `-include` нижче. Без цього голий `make`
-# нічого не збирав: `-include` вносить правила з .d-файлів раніше, ніж
-# з'явиться `all:`, і перше правило звідти (`build/core/accel.o`) ставало
-# ціллю за замовчуванням. Тобто `make` мовчки казав «up to date», не
-# зібравши нічого, — а перевірки, які потім бачили стару бібліотеку,
-# перевіряли не той код.
+# Default goal, explicitly, BEFORE the `-include` below. Without it a bare
+# `make` built nothing: `-include` brings in rules from the .d files before
+# `all:` appears, and the first rule from there (`build/core/accel.o`) became
+# the default goal. So `make` quietly said "up to date" having built nothing,
+# and the checks that then saw the old library were checking the wrong code.
 .DEFAULT_GOAL := all
 
 -include $(DEP)
@@ -217,11 +217,11 @@ $(BUILD)/core/offline/%.o: core/offline/%.c $(ANCHOR_STAMP)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(OFFLINE_DEFS) -Icore -Icore/offline -c $< -o $@
 
-# Без цього `make cook ANCHOR_BARYCENTRE=0` після звичайного `make` нічого б
-# не перезібрав: make не бачить значень змінних, лише файли. Ім'я штампа
-# несе значення, тож зміна значення робить його неіснуючим — і всі об'єктні
-# файли кукера стають застарілими. Мовчазний ассет, скукований не тим кодом,
-# який просили, — рівно той клас помилки, який ловить решта цього файлу.
+# Without this, `make cook ANCHOR_BARYCENTRE=0` after a normal `make` rebuilt
+# nothing: make sees files, not variable values. The stamp's name carries the
+# value, so changing the value makes it non-existent and every cooker object
+# file goes stale. A silent asset cooked by code other than the one asked for
+# is exactly the class of bug the rest of this file catches.
 $(ANCHOR_STAMP):
 	@mkdir -p $(dir $@)
 	@rm -f $(BUILD)/core/offline/.anchor-*
@@ -248,41 +248,42 @@ $(BUILD)/test/%$(EXE): core/test/%.c $(LIB) $(LIB_OFFLINE) $(LIB_PLANNING)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -Icore -Icore/offline -Icore/planning -o $@ $< \
 		$(LIB_OFFLINE) $(LIB_PLANNING) $(LIB) $(LDLIBS_OFFLINE)
 
-# Кукер: офлайновий, libm дозволений.
+# Cooker: offline, libm allowed.
 $(BUILD)/cook/%$(EXE): core/cook/%.c $(LIB) $(LIB_OFFLINE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -Icore -Icore/offline -o $@ $< \
 		$(LIB_OFFLINE) $(LIB) $(LDLIBS_OFFLINE)
 
-# Експортери CSV. Лінкуються як тести, з обома бібліотеками й -lm: це
-# діагностичні драйвери, а не рантайм, і один з них (ex_horizons) свідомо
-# ганяє офлайновий взаємний N-body проти Horizons. Живу перевірку «в рантаймі
-# немає libm» дають сценарії нижче — дублювати її тут нічого не додає.
+# CSV exporters. Linked like tests, with both libraries and -lm: these are
+# diagnostic drivers, not runtime, and one of them (ex_horizons) deliberately
+# runs the offline mutual N-body against Horizons. The live "no libm at
+# runtime" check comes from the scenarios below; duplicating it here adds
+# nothing.
 $(BUILD)/export/%$(EXE): core/export/%.c core/export/csv.c $(LIB) $(LIB_OFFLINE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -Icore -Icore/offline -Icore/export -o $@ \
 		$< core/export/csv.c $(LIB_OFFLINE) $(LIB) $(LDLIBS_OFFLINE)
 
-# Без libcore_offline.a і без -lm: лінкування тут — жива перевірка того,
-# що в рантаймовій частині немає libm.
+# Without libcore_offline.a and without -lm: linking here is the live check
+# that the runtime part holds no libm.
 $(BUILD)/scenario/%$(EXE): core/scenario/%.c $(LIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -Icore -o $@ $< $(LIB) $(LDLIBS)
 
-# Той самий рантаймовий libcore.a, без -lm: бенчмарк заявляє, що міряє
-# пропускну здатність деталізованої фізики (CLAUDE.md, інваріант 3 — жодного
-# libm у циклі інтегрування), і лінкування без -lm — жива перевірка цього,
-# а не просто оптимізм.
+# The same runtime libcore.a, without -lm: the benchmark claims to measure the
+# throughput of the detailed physics (CLAUDE.md, invariant 3 -- no libm in the
+# integration loop), and linking without -lm is the live check of that rather
+# than optimism.
 $(BUILD)/bench/%$(EXE): core/bench/%.c $(LIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -Icore -o $@ $< $(LIB) $(LDLIBS)
 
-# --- Перевірки -------------------------------------------------------------
+# --- Checks ----------------------------------------------------------------
 
-# Порядок навмисний: спершу найдешевша й найконкретніша перевірка.
+# The order is deliberate: cheapest and most specific check first.
 test: check-libm unit determinism
 	@echo ""
-	@echo "УСІ ПЕРЕВІРКИ ПРОЙДЕНІ"
+	@echo "ALL CHECKS PASSED"
 
 check-libm: $(LIB)
 	@sh scripts/check_no_libm.sh $(BUILD)/core
@@ -293,33 +294,32 @@ unit: $(TEST_BIN)
 		echo "== $$t"; \
 		$$t || fail=1; \
 	done; \
-	if [ $$fail -ne 0 ]; then echo "ЮНІТ-ТЕСТИ ПРОВАЛЕНІ"; exit 1; fi
+	if [ $$fail -ne 0 ]; then echo "UNIT TESTS FAILED"; exit 1; fi
 
-# Ті самі юніт-тести, зібрані з ASan+UBSan. Не входить у `make test` і не
-# входить у гейт детермінізму: це перевірка ПАМ'ЯТІ, а не чисел.
+# The same unit tests built with ASan+UBSan. Not part of `make test` and not
+# part of the determinism gate: this checks MEMORY, not numbers.
 #
-# Навіщо окремо, коли є valgrind у CI: той крок ганяється лише по тестових
-# бінарниках core-sys і core-rs (.github/workflows/valgrind.yml пояснює,
-# чому саме по них). Юніт-тести на C не перевіряв ніхто, і це вилізло рівно
-# так, як і мало: у test_prop блок K6b пропагував через уже звільнений
-# контекст, glibc віддавав звільнену пам'ять як ні в чому не бувало, обидва
-# лінукси були зелені — і впав лише macOS, сегфолтом, за два кроки від
-# причини. Тут це видно як heap-use-after-free з обома стеками.
+# Why separate when CI has valgrind: that step runs only over the core-sys and
+# core-rs test binaries (.github/workflows/valgrind.yml explains why). Nobody
+# checked the C unit tests, and it showed exactly as it should: in test_prop,
+# the K6b block propagated through an already freed context, glibc handed the
+# freed memory back as if nothing happened, both Linuxes were green -- and only
+# macOS fell over, with a segfault two steps from the cause. Here it shows as
+# heap-use-after-free with both stacks.
 #
-# Три речі, які легко зробити неправильно:
+# Three things that are easy to get wrong:
 #
-#   1. -fno-sanitize-recover=all ОБОВ'ЯЗКОВИЙ. UBSan типово друкує
-#      діагностику й ЙДЕ ДАЛІ, лишаючи код виходу нульовим. Без цього
-#      прапорця перевірка зеленіла б, надрукувавши помилку, — тобто була б
-#      гіршою за свою відсутність.
-#   2. Окреме дерево $(ASAN_DIR). Прапорці тут інші, а імена об'єктних
-#      файлів були б ті самі — змішати їх зі звичайною збіркою означало б
-#      лінкувати числа, зібрані невідомо чим. Тому тут не .o, а прямий
-#      прохід від .c до бінарника: перезбирається щоразу, зате переплутати
-#      нічого.
-#   3. -lm лінкується завжди. «Поліція libm» до цієї цілі не застосовна:
-#      тут усе зібрано в один бінарник, і живу перевірку через лінкування
-#      дають сценарії, а не ця ціль.
+#   1. -fno-sanitize-recover=all is MANDATORY. By default UBSan prints
+#      diagnostics and CARRIES ON, leaving the exit code zero. Without this
+#      flag the check would go green having printed an error -- worse than not
+#      existing.
+#   2. A separate $(ASAN_DIR) tree. The flags differ here while the object file
+#      names would be the same, so mixing them with the normal build would mean
+#      linking numbers built by who knows what. Hence no .o here but a direct
+#      pass from .c to binary: rebuilt every time, but nothing to confuse.
+#   3. -lm is always linked. The "libm police" does not apply to this target:
+#      everything is built into one binary here, and the live link-time check
+#      comes from the scenarios, not from this target.
 ASAN_DIR := $(BUILD)/asan
 ASAN_BIN := $(patsubst core/test/%.c,$(ASAN_DIR)/%$(EXE),$(TEST_SRC))
 ASAN_SRC := $(CORE_SRC) $(OFFLINE_SRC) $(PLANNING_SRC)
@@ -332,33 +332,34 @@ $(ASAN_DIR)/%$(EXE): core/test/%.c $(ASAN_SRC)
 		-Icore -Icore/offline -Icore/planning -o $@ $< $(ASAN_SRC) \
 		$(LDLIBS_OFFLINE)
 
-# stdout у /dev/null навмисно: що саме тести рахують, уже сказав `make unit`,
-# а тут цікавить лише мовчання санітайзерів. Обидва пишуть у stderr, тож
-# звіт про помилку видно, а сотні рядків діагностики — ні.
+# stdout to /dev/null deliberately: what the tests compute was already said by
+# `make unit`, and what matters here is only the sanitizers staying silent.
+# Both write to stderr, so an error report is visible while hundreds of lines
+# of diagnostics are not.
 asan: $(ASAN_BIN)
 	@fail=0; \
 	for t in $(ASAN_BIN); do \
 		echo "== $$t"; \
 		$$t > /dev/null || fail=1; \
 	done; \
-	if [ $$fail -ne 0 ]; then echo "ASAN/UBSAN ПРОВАЛЕНО"; exit 1; fi; \
+	if [ $$fail -ne 0 ]; then echo "ASAN/UBSAN FAILED"; exit 1; fi; \
 	echo ""; \
-	echo "asan: помилок пам'яті немає"
+	echo "asan: no memory errors"
 
-# Ті самі юніт-тести під valgrind. НЕ входить у `make test`: це перевірка
-# пам'яті, а не чисел, і вона повільна (близько шести хвилин проти секунд).
+# The same unit tests under valgrind. NOT part of `make test`: it checks
+# memory, not numbers, and it is slow (about six minutes against seconds).
 #
-# Навіщо ОКРЕМО від `make asan`, коли обидва про пам'ять: ASan не бачить
-# читання неініціалізованої пам'яті взагалі. Саме такою була помилка K7b —
-# `test_target` збирав FieldCtx руками й лишав більшу частину структури тим,
-# що було на стеку. ASan локально був зелений, `make test` теж, і впало це
-# аж на windows-mingw у CI, за три кроки від причини. Valgrind показує її
-# першим же рядком, з назвою функції й номером рядка.
+# Why SEPARATE from `make asan` when both are about memory: ASan does not see
+# reads of uninitialised memory at all. That was exactly bug K7b -- `test_target`
+# built a FieldCtx by hand and left most of the struct as whatever was on the
+# stack. ASan was green locally, so was `make test`, and it fell over only on
+# windows-mingw in CI, three steps from the cause. Valgrind shows it on the
+# first line, with function name and line number.
 #
-# --leak-check=no свідомо: юніт-тести не звільняють усе, що виділяють, і
-# робити з цього червоне означало б привчити себе ігнорувати червоне (той
-# самий аргумент, яким workflow пояснює, чому valgrind не ганяють по рушію).
-# Ціль тут — неініціалізовані читання й недозволені доступи.
+# --leak-check=no deliberately: the unit tests do not free everything they
+# allocate, and making that red would train us to ignore red (the same argument
+# the workflow uses for why valgrind is not run over the engine). The target
+# here is uninitialised reads and invalid accesses.
 VALGRIND ?= valgrind
 
 valgrind: $(TEST_BIN)
@@ -368,9 +369,9 @@ valgrind: $(TEST_BIN)
 		$(VALGRIND) --quiet --leak-check=no --error-exitcode=9 $$t \
 			> /dev/null || fail=1; \
 	done; \
-	if [ $$fail -ne 0 ]; then echo "VALGRIND ПРОВАЛЕНО"; exit 1; fi; \
+	if [ $$fail -ne 0 ]; then echo "VALGRIND FAILED"; exit 1; fi; \
 	echo ""; \
-	echo "valgrind: неініціалізованих читань і помилок пам'яті немає"
+	echo "valgrind: no uninitialised reads and no memory errors"
 
 $(ACTUAL): $(SCEN_BIN) $(FIXTURE)
 	@mkdir -p $(dir $@)
@@ -379,107 +380,110 @@ $(ACTUAL): $(SCEN_BIN) $(FIXTURE)
 
 determinism: $(ACTUAL)
 	@if [ ! -f $(GOLDEN) ]; then \
-		echo "determinism: еталонів немає — спершу make determinism-bless" >&2; \
+		echo "determinism: no golden file -- run make determinism-bless" >&2; \
 		exit 1; \
 	fi
 	@if diff -u $(GOLDEN) $(ACTUAL) > $(BUILD)/scenario/diff.txt; then \
-		echo "determinism: хеші збігаються з еталонними"; \
+		echo "determinism: hashes match the golden file"; \
 	else \
-		echo "determinism: ПРОВАЛ — хеші розійшлися з $(GOLDEN)" >&2; \
+		echo "determinism: FAILED -- hashes diverged from $(GOLDEN)" >&2; \
 		cat $(BUILD)/scenario/diff.txt >&2; \
 		echo "" >&2; \
-		echo "  Якщо зміна поведінки навмисна — make determinism-bless" >&2; \
-		echo "  і покажіть різницю в коміті. Якщо ні — це регресія." >&2; \
+		echo "  If the behaviour change is intended: make determinism-bless" >&2; \
+		echo "  and show the diff in the commit. If not, this is a regression." >&2; \
 		exit 1; \
 	fi
 
 determinism-bless: $(ACTUAL)
 	@cp $(ACTUAL) $(GOLDEN)
-	@echo "Еталонні хеші оновлено. Перегляньте git diff $(GOLDEN) перед комітом:"
-	@echo "  зміна тут означає, що результат симуляції змінився."
+	@echo "Golden hashes updated. Review git diff $(GOLDEN) before committing:"
+	@echo "  a change here means the simulation result changed."
 
-# Для ручної звірки між машинами, коли CI ще немає або коли він уже впав
-# і треба подивитись очима (ROADMAP C5).
+# For comparing by hand across machines, when there is no CI yet or when it
+# has already failed and the diff needs eyes (ROADMAP C5).
 hashes: $(ACTUAL)
 	@cat $(ACTUAL)
 
-# Ассет-фікстура закомічена навмисно. Кукер використовує cos() через
-# чебишевську підгонку, тож два комп'ютери порахували б РІЗНІ коефіцієнти —
-# і крос-платформна звірка падала б на кукері, а не на рантаймі, який вона
-# має перевіряти. Готуємо один раз, комітимо, звіряємо (ROADMAP C5).
+# The asset fixture is committed deliberately. The cooker uses cos() via
+# Chebyshev fitting, so two computers would compute DIFFERENT coefficients and
+# the cross-platform comparison would fail on the cooker rather than on the
+# runtime it is meant to check. Cook once, commit, compare (ROADMAP C5).
 cook: $(COOK_BIN)
 	@mkdir -p data/fixture
 	@$(BUILD)/cook/cook_fixture$(EXE)
 	@echo ""
-	@echo "Перегенеровано. Перевірте git diff і що визначає зміну:"
-	@echo "  зміна тут змінює всі хеші сценаріїв, які читають ассет."
+	@echo "Regenerated. Check git diff and what drives the change:"
+	@echo "  a change here changes every scenario hash that reads the asset."
 
-# --- Кукер рельєфу (ROADMAP-PLANETS.md, R5b) -------------------------------
+# --- Terrain cooker (ROADMAP-PLANETS.md, R5b) ------------------------------
 #
-# Окремою ціллю від `cook`, і не з педантизму: той перегенеровує ассет-фікстуру
-# в git і міняє всі хеші сценаріїв, а цей пише в `/assets/`, якого в git немає
-# взагалі. Плутати їх дорого рівно в один бік.
+# A separate target from `cook`, and not out of pedantry: that one regenerates
+# the asset fixture in git and changes every scenario hash, while this one
+# writes to `/assets/`, which is not in git at all. Confusing them is expensive
+# in exactly one direction.
 .PHONY: cook-dem
 cook-dem:
 	cargo run --release -p dem-cook
 
-# Колір Місяця з мозаїки LROC WAC (етап T, T2d).
+# Moon colour from the LROC WAC mosaic (stage T, T2d).
 #
-# Окремою ціллю від `cook-dem`, бо джерело інше, глибина піраміди інша (6
-# проти 5) і бракувати може незалежно: сирі дані контенту живуть поза git
-# (Q5), і як покласти мозаїку на диск, каже `data/wac/README.md`.
+# A separate target from `cook-dem`: different source, different pyramid depth
+# (6 against 5), and it can be missing independently -- raw content data lives
+# outside git (Q5), and `data/wac/README.md` says how to put the mosaic on
+# disk.
 .PHONY: cook-colour
 cook-colour:
 	cargo run --release -p dem-cook -- --colour
 
-# Корабель з Blender (етап T, T5d).
+# Ship from Blender (stage T, T5d).
 #
-# Дві цілі, бо інструменти різні й потрібні в різний час. `model-ship` кличе
-# Blender і переписує `assets-src/` — тобто **файли в git**; робити це треба
-# свідомо й дивитись у діф. `cook-ship` лише перекладає вже закомічений
-# експорт у `/assets/`, якого в git немає, і Blender йому не потрібен зовсім.
+# Two targets, because the tools differ and are needed at different times.
+# `model-ship` calls Blender and rewrites `assets-src/` -- files in git; do it
+# deliberately and read the diff. `cook-ship` only translates the already
+# committed export into `/assets/`, which is not in git, and needs no Blender
+# at all.
 #
-# Шлях до Blender — змінною: на цій машині він стоїть через Steam і в `PATH`
-# його немає (скіл `blender-assets`). Свій шлях задавайте так:
-#   make model-ship BLENDER=/шлях/до/blender
+# Blender's path is a variable: on this machine it is installed through Steam
+# and is not on `PATH` (skill `blender-assets`). Set your own with:
+#   make model-ship BLENDER=/path/to/blender
 BLENDER ?= $(HOME)/snap/steam/common/.steam/steam/steamapps/common/Blender/blender
 
 .PHONY: model-ship
 model-ship:
 	$(BLENDER) -b --factory-startup -noaudio -P tools/blender/ship.py -- assets-src
 	@echo ""
-	@echo "Перегенеровано assets-src/. Перевірте git diff: у .gltf лежить"
-	@echo "версія Blender, тож діф може бути й без зміни моделі."
+	@echo "Regenerated assets-src/. Check git diff: the .gltf carries the"
+	@echo "Blender version, so a diff can appear with no model change."
 
 .PHONY: cook-ship
 cook-ship:
 	cargo run --release -p mesh-cook
 
-# --- Поставка M0: подивитися очима ----------------------------------------
+# --- M0 deliverable: look with your eyes -----------------------------------
 #
-# Тести кажуть «пройдено», а це показує, що саме пораховано. Обидва потрібні:
-# траєкторія, яка вкладається в допуск і при цьому летить не туди, — річ, яка
-# трапляється, і ловиться вона оком, а не порогом.
+# Tests say "passed"; this shows what was actually computed. Both are needed: a
+# trajectory that stays inside tolerance while flying the wrong way is a thing
+# that happens, and the eye catches it, not a threshold.
 #
-# CSV — артефакти збірки, у git їх немає (.gitignore). Вони НЕ входять у
-# звірку детермінізму: друк double у десятковий текст — справа libc, а не
-# IEEE, тож порівнювати ці файли між платформами не можна. Для цього є хеші
-# сценаріїв (core/export/csv.h).
+# CSV are build artefacts, not in git (.gitignore). They are NOT part of the
+# determinism comparison: printing a double as decimal text is libc's business,
+# not IEEE's, so these files cannot be compared across platforms. The scenario
+# hashes exist for that (core/export/csv.h).
 csv: $(EXPORT_BIN)
 	@mkdir -p $(CSV_DIR)
 	@for e in $(EXPORT_BIN); do echo "== $$e"; $$e || exit 1; done
 	@echo ""
-	@echo "CSV у $(CSV_DIR). Далі: make plots"
+	@echo "CSV in $(CSV_DIR). Next: make plots"
 
-# matplotlib свідомо не є залежністю збірки: ядро від нього не залежить,
-# і на CI його немає. Скрипт сам скаже, чого бракує.
+# matplotlib is deliberately not a build dependency: the core does not use it
+# and CI does not have it. The script itself says what is missing.
 plots: csv
 	@mkdir -p $(PLOT_DIR)
 	@$(PYTHON) scripts/plot.py --csv $(CSV_DIR) --out $(PLOT_DIR)
 
-# Пропускна здатність DOP853 на цій машині, у число, не хеш (скіл
-# perf-probe). Час стінного годинника нестабільний між прогонами й
-# машинами навмисно — саме тому результат не входить у determinism.
+# DOP853 throughput on this machine, as a number, not a hash (skill
+# perf-probe). Wall-clock time is unstable across runs and machines by nature,
+# which is exactly why the result is not part of determinism.
 bench: $(BENCH_BIN)
 	@for b in $(BENCH_BIN); do echo "== $$b"; $$b; done
 

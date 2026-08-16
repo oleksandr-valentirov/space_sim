@@ -1,11 +1,11 @@
-# Ассет ефемериди — двійковий, і це треба сказати явно.
+# The ephemeris asset is binary, and that must be said explicitly.
 #
-# Windows-клієнт з core.autocrlf=true за замовчуванням «виправляє» переводи
-# рядків. Усередині масиву double послідовність 0x0D 0x0A трапляється
-# регулярно, тож без цього рядка ассет міг би тихо зіпсуватися при клонуванні,
-# а крос-платформна звірка (ROADMAP C5) впала б на Windows із приголомшливо
-# незрозумілої причини.
+# A Windows client with core.autocrlf=true "fixes" line endings by default.
+# Inside an array of doubles the sequence 0x0D 0x0A occurs regularly, so
+# without this line the asset could quietly corrupt on clone and the
+# cross-platform comparison (ROADMAP C5) would fail on Windows for a
+# spectacularly obscure reason.
 *.eph binary
 
-# Скрипти мусять лишатися з LF: під sh файл із CRLF просто не запускається.
+# Scripts must stay LF: under sh a CRLF file simply does not run.
 *.sh text eol=lf
