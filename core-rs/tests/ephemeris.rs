@@ -1,16 +1,17 @@
-//! Перевірка кроку D3: обгортка нічого не змінює й нічого не тече.
+//! The D3 check: the wrapper changes nothing and leaks nothing.
 //!
-//! Два різні твердження, і перевіряються вони по-різному.
+//! Two distinct claims, checked differently.
 //!
-//! **Числа.** Обгортка не має права нічого підправити по дорозі, тож те, що
-//! вона віддає, звіряється з тим, що дає сирий виклик, бітово. Тест на D2 вже
-//! звірив сирий шар із C — отже ланцюжок C → core-sys → core-rs замкнений.
+//! **Numbers.** The wrapper may not adjust anything on the way, so what it
+//! returns is compared bitwise against what the raw call gives. The D2 test
+//! has already compared the raw layer against C, so the chain
+//! C -> core-sys -> core-rs closes.
 //!
-//! **Пам'ять.** Що подвійне звільнення й використання після звільнення
-//! неможливі, показують `compile_fail`-доктести в `src/lib.rs`: це властивість
-//! типів, її перевіряє компілятор, а не прогін. Те, що звільнення таки
-//! відбувається (а не просто не падає), ловиться інструментом — див. крок
-//! «Valgrind» у CI.
+//! **Memory.** That double free and use after free are impossible is shown by
+//! the `compile_fail` doctests in `src/lib.rs`: a property of the types,
+//! checked by the compiler rather than by a run. That freeing actually happens
+//! (rather than merely not crashing) is caught by a tool -- see the "Valgrind"
+//! step in CI.
 
 use std::path::{Path, PathBuf};
 
@@ -19,11 +20,11 @@ use core_rs::{CoreError, Ephemeris};
 const DAY: f64 = 86400.0;
 
 fn repo_root() -> PathBuf {
-    // Тести cargo запускаються з кореня крейта, а ассет лежить у корені
-    // репозиторію.
+    // cargo tests run from the crate root, while the asset lives in the
+    // repository root.
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .expect("core-rs має лежати в репозиторії")
+        .expect("core-rs must live inside the repository")
         .to_path_buf()
 }
 
@@ -32,14 +33,14 @@ fn fixture() -> PathBuf {
 }
 
 fn load() -> Ephemeris {
-    Ephemeris::load(&fixture()).expect("фікстура має читатися з кореня репозиторію")
+    Ephemeris::load(&fixture()).expect("the fixture must read from the repository root")
 }
 
-/// Обгортка віддає рівно ті самі біти, що й сирий виклик.
+/// The wrapper returns exactly the same bits as the raw call.
 ///
-/// Не «в межах допуску»: будь-яка різниця тут означала б, що по дорозі щось
-/// сталося — перетворення типу, копія через інший шлях, — а такого шару тут
-/// свідомо немає.
+/// Not "within tolerance": any difference here would mean something happened
+/// on the way -- a type conversion, a copy by another route -- and there is
+/// deliberately no such layer.
 #[test]
 fn wrapper_returns_the_same_bits_as_the_raw_call() {
     let eph = load();
@@ -48,9 +49,10 @@ fn wrapper_returns_the_same_bits_as_the_raw_call() {
     let path = fixture();
     let c_path = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
 
-    // SAFETY: другий, незалежний контекст на той самий файл. Тест сирого шару
-    // — єдине місце поза core-rs, де ми пишемо unsafe, і саме тому він тут:
-    // інакше нічого було б із чим звіряти.
+    // SAFETY: a second, independent context over the same file. A test of the
+    // raw layer is the only place outside core-rs where we write unsafe, and
+    // that is exactly why it is here: otherwise there would be nothing to
+    // compare against.
     unsafe {
         assert_eq!(
             core_sys::eph_load(c_path.as_ptr(), &mut raw_ctx),
@@ -60,10 +62,10 @@ fn wrapper_returns_the_same_bits_as_the_raw_call() {
 
     for body in [0, 3, 4] {
         for t in [0.0, 30.0 * DAY, 119.0 * DAY] {
-            let safe = eph.body_state(body, t).expect("момент усередині проміжку");
+            let safe = eph.body_state(body, t).expect("instant inside the span");
 
             let mut raw = core_sys::State::default();
-            // SAFETY: raw_ctx щойно завантажено й ще не звільнено.
+            // SAFETY: raw_ctx was just loaded and is not yet freed.
             let code = unsafe { core_sys::eph_body_state(raw_ctx, body, t, &mut raw) };
             assert_eq!(code, core_sys::CORE_OK);
 
@@ -82,63 +84,65 @@ fn wrapper_returns_the_same_bits_as_the_raw_call() {
                 assert_eq!(
                     a.to_bits(),
                     b.to_bits(),
-                    "тіло {body}, момент {t}, компонента {i}: обгортка змінила число"
+                    "body {body}, time {t}, component {i}: the wrapper changed the number"
                 );
             }
         }
     }
 
-    // SAFETY: контекст ще живий, звільняється рівно раз.
+    // SAFETY: the context is still alive and is freed exactly once.
     unsafe { core_sys::eph_free(raw_ctx) };
 }
 
-/// Коди повернення C стають типізованими помилками, а не зникають.
+/// C return codes become typed errors rather than disappearing.
 #[test]
 fn errors_arrive_as_errors() {
     let eph = load();
 
     for (label, body, t) in [
-        ("час до початку", 0, -DAY),
-        ("час після кінця", 0, 200.0 * DAY),
-        ("від'ємне тіло", -1, 0.0),
-        ("тіло поза списком", 999, 0.0),
+        ("time before the start", 0, -DAY),
+        ("time after the end", 0, 200.0 * DAY),
+        ("negative body", -1, 0.0),
+        ("body past the list", 999, 0.0),
     ] {
         assert_eq!(
             eph.body_state(body, t),
             Err(CoreError::InvalidArg),
-            "{label} мав дати InvalidArg"
+            "{label} should have given InvalidArg"
         );
     }
 
-    // І навпаки: всередині проміжку — успіх. Без цього попередня перевірка
-    // «проходила б» і на обгортці, яка повертає InvalidArg завжди.
+    // And the converse: inside the span, success. Without this the check above
+    // would "pass" for a wrapper that always returns InvalidArg.
     assert!(eph.body_state(0, 0.0).is_ok());
 }
 
 #[test]
 fn a_missing_file_is_an_error_not_a_panic() {
-    let missing = repo_root().join("data/fixture/немає-такого.eph");
+    let missing = repo_root().join("data/fixture/no-such-file.eph");
     assert!(matches!(
         Ephemeris::load(&missing),
         Err(CoreError::InvalidArg)
     ));
 }
 
-/// Шлях із `\0` усередині не може стати C-рядком. Це помилка нашого боку —
-/// ядро її не бачить, — і вона мусить бути окремою, а не вдавати помилку ядра.
+/// A path with an interior `\0` cannot become a C string. That is our side's
+/// error -- the core never sees it -- and it must be its own, not impersonate
+/// a core error.
 #[test]
 fn a_path_with_a_nul_is_rejected_before_c_sees_it() {
-    // matches!, а не assert_eq!: `Ephemeris` навмисно не PartialEq — його
-    // рівність нічого не означала б, бо це володіння хендлом, а не значення.
+    // matches!, not assert_eq!: `Ephemeris` is deliberately not PartialEq --
+    // its equality would mean nothing, since it owns a handle rather than
+    // being a value.
     let bad = Path::new("data/fixture/earth\0moon.eph");
     assert!(matches!(Ephemeris::load(bad), Err(CoreError::BadPath)));
 }
 
-/// Багато завантажень і звільнень поспіль.
+/// Many loads and frees in a row.
 ///
-/// Сам по собі тест нічого не доводить — він пройде і з витоком. Він існує,
-/// щоб дати Valgrind у CI що виміряти: витік на одному завантаженні легко
-/// не помітити, витік на п'ятдесяти — ні.
+/// The test proves nothing on its own -- it passes with a leak too. It exists
+/// to give CI's Valgrind something to measure: a leak on one load is easy to
+/// miss, a leak on fifty is not.
 #[test]
 fn loading_and_dropping_repeatedly_is_clean() {
     for _ in 0..50 {
@@ -147,7 +151,8 @@ fn loading_and_dropping_repeatedly_is_clean() {
     }
 }
 
-/// `Send` і `Sync` — обіцянка, обґрунтована читанням C. Ось її вжиток.
+/// `Send` and `Sync` are a promise justified by reading the C. Here is its
+/// use.
 #[test]
 fn the_handle_can_be_shared_between_threads() {
     use std::sync::Arc;
@@ -164,17 +169,17 @@ fn the_handle_can_be_shared_between_threads() {
 
     let first = eph.body_state(4, 0.0).unwrap().r.x;
     for handle in handles {
-        let got = handle.join().expect("потік не мав панікувати").unwrap();
+        let got = handle.join().expect("the thread should not have panicked").unwrap();
         assert_eq!(
             got.to_bits(),
             first.to_bits(),
-            "паралельне читання розійшлося"
+            "concurrent reads diverged"
         );
     }
 }
 
 // ---------------------------------------------------------------------------
-// Пропагатор (ROADMAP H4)
+// Propagator (ROADMAP H4)
 // ---------------------------------------------------------------------------
 
 use std::sync::Arc;
@@ -188,12 +193,12 @@ const VESSEL_VZ: f64 = 1475.88;
 
 const EARTH: i32 = 3;
 
-/// Той самий апарат, що в `core-sys/oracle.c`: витягнута навколоземна орбіта,
-/// задана числами, з перицентром, який є що шукати.
+/// The same vessel as in `core-sys/oracle.c`: an elongated Earth orbit given
+/// as numbers, with a periapsis worth searching for.
 fn vessel(eph: &Ephemeris) -> State {
     let earth = eph
         .body_state(EARTH, VESSEL_T0)
-        .expect("Земля в межах ассета");
+        .expect("Earth is within the asset");
 
     let mut s = State {
         r: earth.r,
@@ -226,11 +231,11 @@ fn same_bits(a: &State, b: &State) -> bool {
         && a.t.to_bits() == b.t.to_bits()
 }
 
-/// Обгортка пропагатора не змінює жодного біта проти сирого виклику.
+/// The propagator wrapper changes no bit against the raw call.
 ///
-/// Та сама вимога, що й до `Ephemeris` вище, і та сама причина: `core-sys`
-/// уже звірений з C оракулом, тож ланцюжок C → core-sys → core-rs замикається
-/// цим тестом.
+/// The same requirement as for `Ephemeris` above, for the same reason:
+/// `core-sys` is already compared against the C oracle, so the chain
+/// C -> core-sys -> core-rs closes with this test.
 #[test]
 fn propagation_matches_the_raw_call_bit_for_bit() {
     const CAP: usize = 64;
@@ -238,7 +243,7 @@ fn propagation_matches_the_raw_call_bit_for_bit() {
     let eph = Arc::new(load());
     let start = vessel(&eph);
 
-    let mut prop = Propagator::new(eph.clone(), config()).expect("пропагатор має створитися");
+    let mut prop = Propagator::new(eph.clone(), config()).expect("the propagator must create");
 
     let mut samples = vec![State::default(); CAP];
     let mut step = 0.0;
@@ -251,9 +256,9 @@ fn propagation_matches_the_raw_call_bit_for_bit() {
             &mut samples,
             &mut step,
         )
-        .expect("прогін має пройти");
+        .expect("the run must succeed");
 
-    // Сирий шлях, той самий буфер, ті самі числа.
+    // The raw path, the same buffer, the same numbers.
     let mut raw_samples = vec![State::default(); CAP];
     let mut raw_count: usize = 0;
     let mut raw_final = State::default();
@@ -305,10 +310,10 @@ fn propagation_matches_the_raw_call_bit_for_bit() {
         core_sys::eph_free(raw_eph);
     }
 
-    assert_eq!(run.filled, raw_count, "кількість семплів");
+    assert_eq!(run.filled, raw_count, "sample count");
     assert!(
         run.filled > 0,
-        "прогін без жодного семпла нічого не доводить"
+        "a run with no samples proves nothing"
     );
     for (i, (safe, raw)) in samples[..run.filled]
         .iter()
@@ -317,18 +322,18 @@ fn propagation_matches_the_raw_call_bit_for_bit() {
     {
         assert!(
             same_bits(safe, raw),
-            "семпл {i} розійшовся з сирим викликом"
+            "sample {i} diverged from the raw call"
         );
     }
-    assert!(same_bits(&run.final_state, &raw_final), "кінцевий стан");
-    assert_eq!(step.to_bits(), raw_step.to_bits(), "перенесений крок");
+    assert!(same_bits(&run.final_state, &raw_final), "final state");
+    assert_eq!(step.to_bits(), raw_step.to_bits(), "carried step");
 }
 
-/// Порожній зріз означає «без семплування», а не «буфер уже повний».
+/// An empty slice means "no sampling", not "the buffer is already full".
 ///
-/// Різниця не косметична: порожній зріз у Rust — це вирівняний висячий
-/// вказівник, не нуль, і якби він поїхав у C як буфер, прогін зупинявся б
-/// одразу, без поступу, і викликач крутився б у циклі назавжди.
+/// The difference is not cosmetic: an empty slice in Rust is an aligned
+/// dangling pointer, not null, and had it gone into C as a buffer the run
+/// would stop at once without progress and the caller would spin forever.
 #[test]
 fn an_empty_slice_means_no_sampling() {
     let eph = Arc::new(load());
@@ -338,14 +343,14 @@ fn an_empty_slice_means_no_sampling() {
     let mut step = 0.0;
     let run = prop
         .run(&start, None, VESSEL_T0 + 0.5 * DAY, &[], &mut [], &mut step)
-        .expect("прогін без семплів має пройти");
+        .expect("a run without samples must succeed");
 
     assert_eq!(run.filled, 0);
     assert_eq!(run.stop, Stop::ReachedEnd);
-    assert!(run.final_state.t > start.t, "час мусив просунутися");
+    assert!(run.final_state.t > start.t, "time must have advanced");
 }
 
-/// Подія доходить як подія, з індексом у переданий зріз.
+/// An event arrives as an event, with an index into the supplied slice.
 #[test]
 fn events_come_back_as_events() {
     let eph = Arc::new(load());
@@ -367,11 +372,11 @@ fn events_come_back_as_events() {
             &mut [],
             &mut step,
         )
-        .expect("прогін має пройти");
+        .expect("the run must succeed");
 
-    // Апарат стартує рівно в апоцентрі, тож першим має бути перицентр — це
-    // індекс 1, і саме він доводить, що індекс не вигаданий і не нульовий
-    // за замовчуванням.
+    // The vessel starts exactly at apoapsis, so periapsis must come first --
+    // that is index 1, and it is what proves the index is neither invented nor
+    // zero by default.
     assert_eq!(run.stop, Stop::Event(1));
 
     let earth = eph.body_state(EARTH, run.final_state.t).unwrap();
@@ -379,18 +384,20 @@ fn events_come_back_as_events() {
     let dy = run.final_state.r.y - earth.r.y;
     let dz = run.final_state.r.z - earth.r.z;
     let r = (dx * dx + dy * dy + dz * dz).sqrt();
-    assert!(r < VESSEL_DX, "перицентр має бути ближче за старт: {r} м");
+    assert!(r < VESSEL_DX, "periapsis must be closer than the start: {r} m");
 }
 
-/// Висота доходить як висота, а не як відстань (ROADMAP K7c).
+/// Altitude arrives as altitude, not as distance (ROADMAP K7c).
 ///
-/// Оракул тут — сама пара подій, без жодного числа про Землю в тесті. Та
-/// сама цифра, подана як висота і як відстань, зупиняє апарат на двох різних
-/// радіусах, і **різниця між ними і є радіус тіла**. Тесту лишається сказати,
-/// що це справді радіус Землі — з точністю до сотні кілометрів, тобто на
-/// рівні факту про світ, а не на рівні числа з ассета.
+/// The oracle here is the pair of events itself, with no number about Earth in
+/// the test. The same figure, given as an altitude and as a distance, stops
+/// the vessel at two different radii, and **the difference between them is the
+/// body radius**. The test only has to say that this really is Earth's radius
+/// -- to within a hundred kilometres, i.e. at the level of a fact about the
+/// world rather than a number from the asset.
 ///
-/// Якби варіант зліпився з `Event::Distance`, різниця була б нулем.
+/// Had the variant collapsed into `Event::Distance`, the difference would be
+/// zero.
 #[test]
 fn altitude_is_measured_from_the_surface() {
     let eph = Arc::new(load());
@@ -420,7 +427,7 @@ fn altitude_is_measured_from_the_surface() {
             &mut [],
             &mut step,
         )
-        .expect("прогін має пройти");
+        .expect("the run must succeed");
     assert_eq!(high.stop, Stop::Event(0));
 
     let mut step = 0.0;
@@ -436,47 +443,50 @@ fn altitude_is_measured_from_the_surface() {
             &mut [],
             &mut step,
         )
-        .expect("прогін має пройти");
+        .expect("the run must succeed");
     assert_eq!(low.stop, Stop::Event(0));
 
-    // Висоту перетнуто раніше: вона лежить далі від центра.
+    // The altitude is crossed earlier: it lies further from the centre.
     assert!(high.final_state.t < low.final_state.t);
 
-    // Різниця двох подій — це радіус, і тепер його можна не вгадувати
-    // вилкою «десь між 6.3 і 6.4 тисячами кілометрів», а спитати в ассета
-    // (ROADMAP U2a). Жодного числа про Землю в тесті не лишилось: обидві
-    // сторони рівності приходять із даних.
+    // The difference of the two events is the radius, and it need no longer be
+    // guessed with a "somewhere between 6.3 and 6.4 thousand kilometres" fork
+    // -- the asset can be asked (ROADMAP U2a). No number about Earth is left
+    // in the test: both sides of the equality come from data.
     //
-    // Допуск — метри, і він про інтегратор, а не про радіус: подія знаходиться
-    // пошуком кореня в межах кроку, тож рівність тут точна настільки, наскільки
-    // точно приземлився останній крок.
+    // The tolerance is in metres and is about the integrator, not the radius:
+    // the event is found by a root search within a step, so the equality here
+    // is as exact as the last step's landing.
     let measured = radius_at(&high) - radius_at(&low);
     let stated = eph.body_radius(EARTH);
     assert!(
         stated > 0.0,
-        "фікстура має називати розмір Землі, інакше перевірка порожня"
+        "the fixture must name Earth\'s size, or the check is empty"
     );
     assert!(
         (measured - stated).abs() < 1.0,
-        "різниця подій має бути радіусом з ассета: {measured} проти {stated} м"
+        "the event difference must be the asset radius: {measured} against {stated} m"
     );
 }
 
-/// Тіло, розміру якого ассет не називає, дає нуль — і невідоме тіло теж
+/// A body whose size the asset does not name gives zero -- and so does an
+/// unknown body
 /// (ROADMAP U2a).
 ///
-/// Обидва боки обов'язкові. Тест лише на нуль пройшов би й на обгортці, яка
-/// завжди повертає нуль; тест лише на Землю — на тій, що ігнорує аргумент.
+/// Both sides are required. A zero-only test would pass for a wrapper that
+/// always returns zero; an Earth-only test, for one that ignores its
+/// argument.
 #[test]
 fn a_body_without_a_size_answers_zero() {
     let eph = load();
 
-    assert!(eph.body_radius(EARTH) > 0.0, "Земля має радіус у фікстурі");
-    assert_eq!(eph.body_radius(-1), 0.0, "від'ємний індекс тіла");
-    assert_eq!(eph.body_radius(999), 0.0, "індекс поза списком");
+    assert!(eph.body_radius(EARTH) > 0.0, "Earth has a radius in the fixture");
+    assert_eq!(eph.body_radius(-1), 0.0, "negative body index");
+    assert_eq!(eph.body_radius(999), 0.0, "index past the list");
 }
 
-/// Від'ємна висота — це помилка знака у викликача, і межа каже про це.
+/// A negative altitude is a sign error in the caller, and the boundary says
+/// so.
 #[test]
 fn a_negative_altitude_is_refused() {
     let eph = Arc::new(load());
@@ -496,23 +506,23 @@ fn a_negative_altitude_is_refused() {
             &mut [],
             &mut step,
         )
-        .expect_err("від'ємна висота має бути відхилена");
+        .expect_err("a negative altitude must be rejected");
     assert!(matches!(err, CoreError::InvalidArg), "{err:?}");
 }
 
-/// Нульовий множник густини не читається як одиниця (ROADMAP K7c).
+/// A zero density multiplier is not read as one (ROADMAP K7c).
 #[test]
 fn a_zero_density_scale_is_refused() {
     let eph = Arc::new(load());
     let mut cfg = config();
     cfg.density_scale = 0.0;
 
-    let err = Propagator::new(eph, cfg).expect_err("нуль має бути відхилений");
+    let err = Propagator::new(eph, cfg).expect_err("zero must be rejected");
     assert!(matches!(err, CoreError::InvalidArg), "{err:?}");
 }
 
-/// Прогін, порізаний буфером, — та сама траєкторія (CLAUDE.md, інваріант 5),
-/// і через обгортку теж.
+/// A run sliced by the buffer is the same trajectory (CLAUDE.md, invariant
+/// 5), through the wrapper too.
 #[test]
 fn stitched_legs_are_the_same_trajectory() {
     let eph = Arc::new(load());
@@ -523,7 +533,7 @@ fn stitched_legs_are_the_same_trajectory() {
     let mut step = 0.0;
     let single = whole
         .run(&start, None, t_end, &[], &mut [], &mut step)
-        .expect("один прогін");
+        .expect("one run");
 
     let mut legs = Propagator::new(eph, config()).unwrap();
     let mut piece = [State::default(); 4];
@@ -534,7 +544,7 @@ fn stitched_legs_are_the_same_trajectory() {
     loop {
         let run = legs
             .run(&state, None, t_end, &[], &mut piece, &mut leg_step)
-            .expect("ланка");
+            .expect("leg");
         state = run.final_state;
         n_legs += 1;
 
@@ -542,18 +552,19 @@ fn stitched_legs_are_the_same_trajectory() {
             break;
         }
         assert_eq!(run.stop, Stop::BufferFull);
-        assert!(n_legs < 1000, "ланки не закінчуються — немає поступу");
+        assert!(n_legs < 1000, "the legs never end -- no progress");
     }
 
-    assert!(n_legs > 1, "буфер на чотири семпли мав розрізати прогін");
+    assert!(n_legs > 1, "a four-sample buffer should have sliced the run");
     assert!(
         same_bits(&state, &single.final_state),
-        "траєкторія розійшлася"
+        "the trajectory diverged"
     );
-    assert_eq!(leg_step.to_bits(), step.to_bits(), "перенесений крок");
+    assert_eq!(leg_step.to_bits(), step.to_bits(), "carried step");
 }
 
-/// Інтегратор, якого ще немає, — помилка, а не тихе підставляння наявного.
+/// An integrator that does not exist yet is an error, not a silent
+/// substitution of the one that does.
 #[test]
 fn asking_for_an_integrator_that_does_not_exist_is_an_error() {
     let eph = Arc::new(load());
@@ -565,8 +576,8 @@ fn asking_for_an_integrator_that_does_not_exist_is_an_error() {
     assert_eq!(Propagator::new(eph, cfg).err(), Some(CoreError::InvalidArg));
 }
 
-/// Вихід за проміжок ассета доходить як помилка, а не як правдоподібна
-/// траєкторія апарата, на який ніщо не тягне.
+/// Leaving the asset's span arrives as an error, not as a plausible
+/// trajectory of a vessel nothing pulls on.
 #[test]
 fn running_past_the_asset_is_an_error() {
     let eph = Arc::new(load());
@@ -580,16 +591,17 @@ fn running_past_the_asset_is_an_error() {
         Some(CoreError::InvalidArg)
     );
 
-    // І контекст не отруєний: наступний прогін у межах ассета проходить.
+    // And the context is not poisoned: the next run within the asset
+    // succeeds.
     let mut step = 0.0;
     assert!(prop
         .run(&start, None, VESSEL_T0 + 3600.0, &[], &mut [], &mut step)
         .is_ok());
 }
 
-/// Пропагатори створюються й звільняються, і це те, що міряє valgrind у CI:
-/// типи доводять, що звільнити двічі не можна, але не доводять, що звільнення
-/// взагалі відбувається — витік не є помилкою типів.
+/// Propagators are created and freed, which is what valgrind measures in CI:
+/// the types prove that freeing twice is impossible but do not prove that
+/// freeing happens at all -- a leak is not a type error.
 #[test]
 fn creating_and_dropping_repeatedly_is_clean() {
     let eph = Arc::new(load());
@@ -610,11 +622,12 @@ fn creating_and_dropping_repeatedly_is_clean() {
     }
 }
 
-/// `run_stm` (ROADMAP K8): матриця приходить, і траєкторія при цьому та сама.
+/// `run_stm` (ROADMAP K8): the matrix arrives, and the trajectory stays the
+/// same.
 ///
-/// Друге твердження — головне. Матриця варта чогось лише тоді, коли вона
-/// належить траєкторії, якою апарат справді летить; звірка бітова, бо
-/// «приблизно та сама» тут нічого не значила б.
+/// The second claim is the important one. The matrix is worth something only
+/// if it belongs to the trajectory the vessel actually flies; the comparison
+/// is bitwise, because "roughly the same" would mean nothing here.
 #[test]
 fn the_stm_run_is_the_same_trajectory() {
     let eph = Arc::new(load());
@@ -639,26 +652,26 @@ fn the_stm_run_is_the_same_trajectory() {
         (final_state.v.y, plain.final_state.v.y),
         (final_state.v.z, plain.final_state.v.z),
     ] {
-        assert_eq!(a.to_bits(), b.to_bits(), "траєкторія мусить бути та сама");
+        assert_eq!(a.to_bits(), b.to_bits(), "the trajectory must be the same");
     }
     assert_eq!(
         stm_step.to_bits(),
         plain_step.to_bits(),
-        "крок, який лишається на наступну ланку, теж"
+        "and so must the step left for the next leg"
     );
 
-    // Матриця осмислена: не одинична, не порожня, і індексується так, як
-    // обіцяно. Без цього все вище звірялося б із нулями.
+    // The matrix is meaningful: not the identity, not empty, and indexed as
+    // promised. Without this everything above would compare zeros.
     assert_eq!(phi.as_slice().len(), STM_LEN);
     let off_diagonal: f64 = (0..6)
         .flat_map(|i| (0..6).map(move |j| (i, j)))
         .filter(|(i, j)| i != j)
         .map(|(i, j)| phi.get(i, j).abs())
         .sum();
-    assert!(off_diagonal > 1.0, "STM виглядає одиничною");
+    assert!(off_diagonal > 1.0, "the STM looks like the identity");
 
-    // get(row, col) читає той самий елемент, що й сирий зріз - інакше
-    // транспонування пройшло б непоміченим.
+    // get(row, col) reads the same element as the raw slice -- otherwise a
+    // transposition would go unnoticed.
     for i in 0..6 {
         for j in 0..6 {
             assert_eq!(phi.get(i, j).to_bits(), phi.as_slice()[i * 6 + j].to_bits());
@@ -666,8 +679,8 @@ fn the_stm_run_is_the_same_trajectory() {
     }
 }
 
-/// Та сама відмова, що в `run`: за межами ассета це помилка, а не матриця
-/// для апарата, який не відчув тяжіння.
+/// The same rejection as in `run`: outside the asset this is an error, not a
+/// matrix for a vessel that felt no gravity.
 #[test]
 fn an_stm_run_past_the_asset_is_an_error() {
     let eph = Arc::new(load());
@@ -681,25 +694,26 @@ fn an_stm_run_past_the_asset_is_an_error() {
     );
 }
 
-/// `Stm::get` поза 6×6 — це помилка програміста, і вона мусить бути гучною.
+/// `Stm::get` outside 6x6 is a programmer error, and it must be loud.
 #[test]
-#[should_panic(expected = "STM 6x6")]
+#[should_panic(expected = "STM is 6x6")]
 fn indexing_the_stm_out_of_range_panics() {
     let phi = Stm([0.0; STM_LEN]);
     let _ = phi.get(6, 0);
 }
 
-/// Тиск сонячного світла через обгортку (ROADMAP K6b).
+/// Solar radiation pressure through the wrapper (ROADMAP K6b).
 ///
-/// Фізику міряє `core/test/test_srp.c`; тут перевіряється переклад
-/// `Option<&VesselParams>` у вказівник, і три твердження, кожне з яких
-/// ламається окремо:
+/// `core/test/test_srp.c` measures the physics; what is checked here is the
+/// translation of `Option<&VesselParams>` into a pointer, plus three claims,
+/// each of which breaks separately:
 ///
-/// - `None` і апарат без площі — це те саме, **бітово**: усе, що літало до
-///   K6b, летить так само;
-/// - апарат із площею летить інакше, і на скільки саме — видно;
-/// - `run_stm` несе той самий апарат, тобто матриця належить траєкторії, а
-///   не сусідній (це K8c, перевірене ще раз там, де його найлегше втратити).
+/// - `None` and a vessel with no area are the same thing, **bitwise**:
+///   everything that flew before K6b flies identically;
+/// - a vessel with area flies differently, and by how much is visible;
+/// - `run_stm` carries the same vessel, so the matrix belongs to the
+///   trajectory rather than a neighbouring one (that is K8c, checked again
+///   where it is easiest to lose).
 #[test]
 fn a_vessel_with_area_feels_the_sun() {
     let eph = Arc::new(load());
@@ -732,9 +746,9 @@ fn a_vessel_with_area_feels_the_sun() {
         .unwrap();
     assert!(
         same_bits(&none.final_state, &zero_area.final_state),
-        "апарат без площі — це та сама пробна частинка"
+        "a vessel with no area is the same test particle"
     );
-    assert_eq!(step.to_bits(), step_bare.to_bits(), "і той самий крок");
+    assert_eq!(step.to_bits(), step_bare.to_bits(), "and the same step");
 
     let mut step_sail = 0.0;
     let lit = prop
@@ -745,10 +759,10 @@ fn a_vessel_with_area_feels_the_sun() {
         + (lit.final_state.r.y - none.final_state.r.y).powi(2)
         + (lit.final_state.r.z - none.final_state.r.z).powi(2))
     .sqrt();
-    println!("  пів доби під SRP зрушили апарат на {moved:.4} м");
+    println!("  half a day under SRP moved the vessel by {moved:.4} m");
     assert!(
         moved > 1.0,
-        "площа мала змінити траєкторію, а зрушила {moved} м"
+        "area should have changed the trajectory, but moved it {moved} m"
     );
 
     let mut stm_step = 0.0;
@@ -757,20 +771,21 @@ fn a_vessel_with_area_feels_the_sun() {
         .unwrap();
     assert!(
         same_bits(&stm_final, &lit.final_state),
-        "матриця мусить належати траєкторії, яку апарат справді летить"
+        "the matrix must belong to the trajectory the vessel actually flies"
     );
 }
 
 // ---------------------------------------------------------------------------
-// Porkchop крізь межу (ROADMAP-UI.md, U5a)
+// Porkchop across the boundary (ROADMAP-UI.md, U5a)
 
-/// Клітинка плоту дорівнює прямому виклику Ламберта з тими самими аргументами.
+/// A plot cell equals a direct Lambert call with the same arguments.
 ///
-/// Оракул кроку дослівно, і він саме такий тому, що це **не той самий код**:
-/// сітка йде крізь `porkchop_compute_eph`, а звірка — крізь `lambert_solve`,
-/// обидві через межу, але різними шляхами. Так ловляться переплутані осі
-/// сітки, а вони переплутуються: `t1` і `tof` обидва додатні, обидва в
-/// секундах, і транспонована сітка виглядає цілком правдоподібно.
+/// The step's oracle verbatim, and it is this way because it is **not the same
+/// code**: the grid goes through `porkchop_compute_eph` while the comparison
+/// goes through `lambert_solve`, both across the boundary but by different
+/// routes. That is how swapped grid axes are caught, and they do get swapped:
+/// `t1` and `tof` are both positive, both in seconds, and a transposed grid
+/// looks perfectly plausible.
 #[test]
 fn a_porkchop_cell_equals_a_direct_lambert_solve() {
     let eph = load();
@@ -778,26 +793,26 @@ fn a_porkchop_cell_equals_a_direct_lambert_solve() {
     const MOON: i32 = 4;
 
     let mu = eph.body_mu(EARTH);
-    assert!(mu > 0.0, "фікстура мусить знати масу Землі");
+    assert!(mu > 0.0, "the fixture must know Earth\'s mass");
 
     let t1_grid = [0.0, 3.0 * DAY, 6.0 * DAY];
     let tof_grid = [4.0 * DAY, 5.0 * DAY];
 
     let grid = core_rs::porkchop(&eph, EARTH, MOON, mu, true, &t1_grid, &tof_grid)
-        .expect("сітка мала порахуватися");
-    assert!(!grid.is_empty(), "жодної клітинки — звіряти нема чого");
+        .expect("the grid should have computed");
+    assert!(!grid.is_empty(), "no cells -- nothing to compare");
 
     for cell in &grid {
-        // Клітинка мусить лежати на сітці, а не десь між: це перше, що
-        // ламається при переплутаних осях.
+        // A cell must lie on the grid rather than somewhere between: that is
+        // the first thing to break when the axes are swapped.
         assert!(
             t1_grid.contains(&cell.t1),
-            "t1 = {} немає в сітці відходу",
+            "t1 = {} is not in the departure grid",
             cell.t1
         );
         assert!(
             tof_grid.contains(&cell.tof),
-            "tof = {} немає в сітці перельоту",
+            "tof = {} is not in the flight-time grid",
             cell.tof
         );
 
@@ -805,7 +820,7 @@ fn a_porkchop_cell_equals_a_direct_lambert_solve() {
         let to = eph.body_state(MOON, cell.t1 + cell.tof).unwrap();
 
         let (v1, v2) = core_rs::lambert_solve(from.r, to.r, cell.tof, mu, true, 0)
-            .expect("той самий переліт мав зійтися й напряму");
+            .expect("the same transfer should converge directly too");
 
         let speed = |a: core_rs::Vec3d, b: core_rs::Vec3d| {
             let (dx, dy, dz) = (a.x - b.x, a.y - b.y, a.z - b.z);
@@ -815,27 +830,28 @@ fn a_porkchop_cell_equals_a_direct_lambert_solve() {
         let depart = speed(v1, from.v);
         let arrive = speed(v2, to.v);
 
-        // Не бітово, і це названо чесно: обидва шляхи рахують те саме тими
-        // самими функціями, але компілятор вільний тримати проміжне в регістрі
-        // на одному шляху й не тримати на іншому. Частина з 10¹² — на дев'ять
-        // порядків нижче за все, що пережила б переплутана вісь.
+        // Not bitwise, and that is stated honestly: both paths compute the
+        // same thing with the same functions, but the compiler is free to keep
+        // an intermediate in a register on one path and not on the other. A
+        // part in 1e12 is nine orders below anything a swapped axis would
+        // survive.
         assert!(
             (cell.v_inf_depart - depart).abs() <= 1e-12 * depart,
-            "відхід: сітка {} проти Ламберта {depart}",
+            "departure: grid {} against Lambert {depart}",
             cell.v_inf_depart
         );
         assert!(
             (cell.v_inf_arrive - arrive).abs() <= 1e-12 * arrive,
-            "прихід: сітка {} проти Ламберта {arrive}",
+            "arrival: grid {} against Lambert {arrive}",
             cell.v_inf_arrive
         );
     }
 }
 
-/// Порожня сітка — це помилка аргументу, а не порожній результат.
+/// An empty grid is an argument error, not an empty result.
 ///
-/// Різниця не формальна: порожній `Vec` виглядав би як «жодна клітинка не
-/// зійшлася», тобто як заборонена зона на весь плот.
+/// The difference is not formal: an empty `Vec` would look like "no cell
+/// converged", i.e. a forbidden zone covering the whole plot.
 #[test]
 fn an_empty_grid_is_refused() {
     let eph = load();
@@ -851,29 +867,31 @@ fn an_empty_grid_is_refused() {
     );
 }
 
-/// Невідоме тіло дає нульову `mu` — і сітку, яку нема з чим рахувати.
+/// An unknown body gives a zero `mu` -- and a grid with nothing to compute
+/// from.
 #[test]
 fn an_unknown_body_has_no_mass() {
     let eph = load();
     assert_eq!(eph.body_mu(999), 0.0);
-    assert!(eph.body_mu(3) > 3.9e14, "GM Землі — близько 3.986·10¹⁴");
+    assert!(eph.body_mu(3) > 3.9e14, "Earth\'s GM is about 3.986e14");
 }
 
-/// Орієнтація крізь обгортку — і те, чого біти не покажуть (R1c).
+/// Orientation through the wrapper -- and what bits will not show (R1c).
 ///
-/// Бітова звірка з C уже є в `core-sys` і ловить переставлені компоненти. Чого
-/// вона не ловить — це **зміст**: спряжений кватерніон збігається з прямим у
-/// всьому, крім знака трьох компонент, лишається одиничним і повертає рівно
-/// так само, тільки в інший бік. Тому тут перевіряються не біти, а три
-/// астрономічні числа, жодне з яких не походить із нашого коду.
+/// The bitwise comparison against C already exists in `core-sys` and catches
+/// swapped components. What it does not catch is **meaning**: a conjugated
+/// quaternion agrees with the original in everything but the sign of three
+/// components, stays unit, and rotates exactly as much, merely the other way.
+/// So what is checked here is not bits but three astronomical numbers, none of
+/// which comes from our own code.
 ///
-/// Виміряно на фікстурі, і всі три збіглися з опублікованими:
+/// Measured on the fixture, and all three matched the published values:
 ///
 /// | | |
 /// |---|---|
-/// | полюс у момент J2000 | `(0, 0, 1)` з точністю 10⁻¹⁶ |
-/// | RA нульового меридіана в J2000 | 280.194° |
-/// | швидкість | 15.041° за годину, у бік зростання RA |
+/// | pole at J2000 | `(0, 0, 1)` to within 1e-16 |
+/// | RA of the prime meridian at J2000 | 280.194 deg |
+/// | rate | 15.041 deg per hour, towards increasing RA |
 #[test]
 fn the_earth_turns_the_way_the_quaternion_says() {
     const EARTH: i32 = 3;
@@ -883,76 +901,77 @@ fn the_earth_turns_the_way_the_quaternion_says() {
     let eph = load();
     let turn = |t: f64, v: [f64; 3]| -> [f64; 3] {
         eph.body_orientation(EARTH, t)
-            .expect("Земля в межах ассета")
+            .expect("Earth is within the asset")
             .rotate(v)
     };
     let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 
-    // 1. Полюс. Кадр ассета — екваторіальний (ICRF), а полюс Землі за
-    //    IAU/NAIF pck00011 має в J2000 рівно RA = 0, Dec = 90°, тобто вісь z.
-    //    Це ловить переставлені осі: полюс на x або y видно одразу.
+    // 1. The pole. The asset frame is equatorial (ICRF), and Earth's pole per
+    //    IAU/NAIF pck00011 has exactly RA = 0, Dec = 90 deg at J2000, i.e. the
+    //    z axis. This catches swapped axes: a pole on x or y is obvious.
     let pole = turn(0.0, [0.0, 0.0, 1.0]);
     assert!(
         (dot(pole, pole) - 1.0).abs() < 1e-12,
-        "обертання не зберігає довжину — це не кватерніон"
+        "the rotation does not preserve length -- this is not a quaternion"
     );
-    println!("  полюс у J2000: {pole:?}");
+    println!("  pole at J2000: {pole:?}");
     assert!(
         pole[2] > 1.0 - 1e-12 && pole[0].abs() < 1e-9 && pole[1].abs() < 1e-9,
-        "полюс не на осі z: {pole:?} — або кадр не екваторіальний, або осі \
-         переставлені"
+        "the pole is not on the z axis: {pole:?} -- either the frame is not \
+         equatorial or the axes are swapped"
     );
 
-    // 2. Фаза. Кут повороту Землі (ERA) у J2000 — 280.4606°, і саме на цю
-    //    величину нульовий меридіан відходить від осі x. Ассет рахує від
-    //    шкали TT, а ERA означена від UT1, тож 63.83 с різниці дають
-    //    −0.267°: 280.194°. Ось це число й ловить **спряження**, якого не
-    //    ловить ніщо інше: обернений кватерніон дав би 79.8°.
+    // 2. The phase. Earth's rotation angle (ERA) at J2000 is 280.4606 deg,
+    //    and that is how far the prime meridian sits from the x axis. The
+    //    asset counts from the TT scale while ERA is defined from UT1, so the
+    //    63.83 s difference gives -0.267 deg: 280.194 deg. This number is what
+    //    catches **conjugation**, which nothing else catches: the inverse
+    //    quaternion would give 79.8 deg.
     let ra = |t: f64| -> f64 {
         let e = turn(t, [1.0, 0.0, 0.0]);
         e[1].atan2(e[0]).to_degrees().rem_euclid(360.0)
     };
     let at_epoch = ra(0.0);
-    println!("  нульовий меридіан у J2000: RA = {at_epoch:.4}°");
+    println!("  prime meridian at J2000: RA = {at_epoch:.4} deg");
     assert!(
         (at_epoch - 280.194).abs() < 0.01,
-        "RA нульового меридіана {at_epoch:.4}° замість 280.194° — \
-         кватерніон спряжений або фаза не та"
+        "prime meridian RA {at_epoch:.4} deg instead of 280.194 -- the \
+         quaternion is conjugated or the phase is wrong"
     );
 
-    // 3. Швидкість і напрямок. Зоряна доба — 15.041° за годину в бік
-    //    зростання RA. Сонячні 15.000° тут теж помітні: за добу це різниця
-    //    майже в градус.
+    // 3. Rate and direction. A sidereal day is 15.041 deg per hour towards
+    //    increasing RA. The solar 15.000 deg is distinguishable here too: over
+    //    a day that is nearly a degree of difference.
     let rate = (ra(HOUR) - at_epoch).rem_euclid(360.0);
-    println!("  за годину: {rate:.4}°");
+    println!("  per hour: {rate:.4} deg");
     assert!(
         (rate - 15.0411).abs() < 0.001,
-        "{rate:.4}° за годину — це не зоряна доба (15.0411°)"
+        "{rate:.4} deg per hour is not a sidereal day (15.0411)"
     );
 
-    // Вісь при цьому стоїть: прецесія за добу — то кутові секунди, і
-    // сплутати її з обертанням не можна.
+    // The axis stays put meanwhile: precession over a day is arcseconds, and
+    // cannot be confused with rotation.
     let drift = dot(pole, turn(DAY, [0.0, 0.0, 1.0])).clamp(-1.0, 1.0);
     assert!(
         drift > 0.999_999_999,
-        "вісь обертання поїхала на {} за добу",
+        "the rotation axis moved by {} over a day",
         1.0 - drift
     );
 }
 
-/// Тіло без моделі обертання — одиничний кватерніон і `Ok`.
+/// A body with no rotation model gives the identity quaternion and `Ok`.
 #[test]
 fn a_body_without_a_rotation_model_is_not_an_error() {
     let eph = load();
 
-    // Сонце (0) у фікстурі каналів обертання не несе — вісім із десяти тіл
-    // не несуть.
-    let quiet = eph.body_orientation(0, 0.0).expect("це не помилка");
+    // The Sun (0) carries no rotation channels in the fixture -- eight of the
+    // ten bodies do not.
+    let quiet = eph.body_orientation(0, 0.0).expect("this is not an error");
     assert_eq!(quiet, core_rs::Quat::default());
 
-    // А невідоме тіло — таки помилка: тут, на відміну від радіуса, є час, і
-    // мовчазна одиниця сховала б переплутаний індекс.
+    // An unknown body, though, is an error: unlike the radius there is time
+    // here, and a silent identity would hide a swapped index.
     assert!(eph.body_orientation(999, 0.0).is_err());
-    // Як і час поза проміжком ассета.
+    // As is a time outside the asset's span.
     assert!(eph.body_orientation(3, 1.0e9).is_err());
 }

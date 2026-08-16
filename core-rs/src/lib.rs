@@ -1,28 +1,27 @@
-//! Безпечна обгортка над числовим ядром (ROADMAP D3, PROJECT.md §5).
+//! Safe wrapper over the numeric core (ROADMAP D3, PROJECT.md §5).
 //!
-//! **Це єдине місце в проєкті з нашим `unsafe`** (CLAUDE.md, інваріант 1).
-//! Сторонні `-sys` крейти — виняток; наш код більше ніде його не пише. Тому
-//! цей файл має лишатися маленьким і нудним: усе, що можна зробити зовні
-//! в безпечному Rust, робиться зовні.
+//! **This is the only place in the project with our `unsafe`** (CLAUDE.md,
+//! invariant 1). Third-party `-sys` crates are the exception; our code writes
+//! it nowhere else. So this file must stay small and boring: anything doable
+//! outside in safe Rust is done outside.
 //!
-//! Обіцянка обгортки не в тому, що помилок немає, а в тому, що двох
-//! конкретних помилок не можна зробити навіть навмисно:
+//! The wrapper does not promise there are no bugs, but that two specific bugs
+//! cannot be made even on purpose:
 //!
-//! - **подвійне звільнення** — `eph_free` не експортується, а поле з
-//!   вказівником приватне. Звільнення відбувається рівно один раз, у `Drop`.
-//! - **використання після звільнення** — `Ephemeris` не `Copy` і не `Clone`,
-//!   тож після `drop` значення переміщене, і компілятор не дасть його
-//!   торкнутися.
+//! - **double free** -- `eph_free` is not exported and the pointer field is
+//!   private. Freeing happens exactly once, in `Drop`.
+//! - **use after free** -- `Ephemeris` is neither `Copy` nor `Clone`, so after
+//!   `drop` the value is moved and the compiler will not let it be touched.
 //!
-//! Обидві обіцянки перевіряються `compile_fail`-доктестами нижче, а не
-//! коментарем.
+//! Both promises are checked by the `compile_fail` doctests below, not by a
+//! comment.
 //!
-//! ## Стиль
+//! ## Style
 //!
-//! Свідомо простий (CLAUDE.md): конкретні типи замість дженериків, `&Path`
-//! замість `impl AsRef<Path>`, ніяких лайфтаймів у структурах. `State` і
-//! `Vec3d` реекспортуються з `core-sys` як є — це прості структури з `double`,
-//! і шар перетворення додав би роботу без жодної нової гарантії.
+//! Deliberately simple (CLAUDE.md): concrete types instead of generics,
+//! `&Path` instead of `impl AsRef<Path>`, no lifetimes in structs. `State` and
+//! `Vec3d` are re-exported from `core-sys` as they are -- plain structs of
+//! `double`, and a conversion layer would add work without a new guarantee.
 
 use std::ffi::CString;
 use std::fmt;
@@ -31,37 +30,39 @@ use std::sync::Arc;
 
 pub use core_sys::{State, Vec3d};
 
-/// Помилка ядра.
+/// A core error.
 ///
-/// `Unknown` існує не для повноти. `core-sys` віддає код повернення як
-/// `c_int`, бо Rust-енум зі значенням поза переліком — невизначена поведінка;
-/// перетворення на цей тип і є те місце, де невідоме значення стає видимою
-/// помилкою замість тихого пошкодження.
+/// `Unknown` is not there for completeness. `core-sys` hands the return code
+/// back as a `c_int`, because a Rust enum holding an out-of-range value is
+/// undefined behaviour; the conversion into this type is where an unknown
+/// value becomes a visible error instead of silent corruption.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoreError {
-    /// Наданий буфер замалий; C повертає потрібну кількість окремо.
+    /// The supplied buffer is too small; C returns the needed count
+    /// separately.
     BufferTooSmall,
-    /// Ітерація не збіглася до заданого допуску.
+    /// The iteration did not converge to the given tolerance.
     ToleranceNotMet,
-    /// Некоректний аргумент: невідоме тіло, час поза проміжком ассета.
+    /// Invalid argument: unknown body, or a time outside the asset's span.
     InvalidArg,
-    /// Код, якого немає в `CoreResult`. Означає розсинхрон між C і межею.
+    /// A code absent from `CoreResult`. Means C and the boundary have drifted
+    /// apart.
     Unknown(i32),
-    /// Шлях не вдалося передати в C: не UTF-8 або містить `\0` усередині.
-    /// Помилка нашого боку, ядро її не бачило.
+    /// The path could not be passed to C: not UTF-8, or holding an interior
+    /// `\0`. Our side's error; the core never saw it.
     BadPath,
 }
 
 impl fmt::Display for CoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CoreError::BufferTooSmall => write!(f, "буфер замалий"),
-            CoreError::ToleranceNotMet => write!(f, "не збіглося до допуску"),
-            CoreError::InvalidArg => write!(f, "некоректний аргумент"),
+            CoreError::BufferTooSmall => write!(f, "buffer too small"),
+            CoreError::ToleranceNotMet => write!(f, "did not converge to tolerance"),
+            CoreError::InvalidArg => write!(f, "invalid argument"),
             CoreError::Unknown(code) => {
-                write!(f, "невідомий код ядра {code} — межа розійшлася з C")
+                write!(f, "unknown core code {code} -- boundary drifted from C")
             }
-            CoreError::BadPath => write!(f, "шлях не UTF-8 або містить \\0"),
+            CoreError::BadPath => write!(f, "path is not UTF-8 or holds a \\0"),
         }
     }
 }
@@ -80,7 +81,7 @@ fn check(code: core_sys::CoreResult) -> Result<()> {
     }
 }
 
-/// Завантажена ефемерида. Звільняється сама.
+/// A loaded ephemeris. Frees itself.
 ///
 /// ```no_run
 /// use core_rs::Ephemeris;
@@ -92,7 +93,7 @@ fn check(code: core_sys::CoreResult) -> Result<()> {
 /// # Ok::<(), core_rs::CoreError>(())
 /// ```
 ///
-/// Використання після звільнення не компілюється:
+/// Use after free does not compile:
 ///
 /// ```compile_fail
 /// use core_rs::Ephemeris;
@@ -103,8 +104,8 @@ fn check(code: core_sys::CoreResult) -> Result<()> {
 /// let _ = eph.body_state(4, 0.0);
 /// ```
 ///
-/// Звільнити двічі теж не вийде — `eph_free` просто нема звідки взяти, а поле
-/// з вказівником приватне:
+/// Freeing twice is impossible too -- there is nowhere to get `eph_free` from,
+/// and the pointer field is private:
 ///
 /// ```compile_fail
 /// use core_rs::Ephemeris;
@@ -117,35 +118,35 @@ pub struct Ephemeris {
     ctx: *mut core_sys::EphemerisCtx,
 }
 
-// Читання ефемериди не має спільного мутабельного стану, і це перевірено, а
-// не припущено: `eph_body_state` бере `const EphemerisCtx*`, торкається лише
-// полів контексту й купи, до якої той володіє, і не має ні статиків, ні кешу
-// (`core/ephemeris.c`, `core/cheb.c`). Контекст після `eph_load` не
-// змінюється взагалі.
+// Reading the ephemeris involves no shared mutable state, and that is checked
+// rather than assumed: `eph_body_state` takes a `const EphemerisCtx*`, touches
+// only context fields and the heap the context owns, and has neither statics
+// nor a cache (`core/ephemeris.c`, `core/cheb.c`). After `eph_load` the
+// context does not change at all.
 //
-// Тому вказівник можна переносити між потоками (`Send`), а `&Ephemeris` —
-// читати з кількох одночасно (`Sync`). Це знадобиться, щойно фізика поїде у
-// свій потік (PROJECT.md §6), і краще, щоб обіцянку писав той, хто щойно
-// прочитав C, ніж той, кому вона зрештою знадобиться.
+// So the pointer can move between threads (`Send`), and `&Ephemeris` can be
+// read from several at once (`Sync`). That will be needed as soon as physics
+// moves to its own thread (PROJECT.md §6), and the promise is better written
+// by whoever has just read the C than by whoever eventually needs it.
 unsafe impl Send for Ephemeris {}
 unsafe impl Sync for Ephemeris {}
 
 impl Ephemeris {
-    /// Читає скукований ассет.
+    /// Reads a cooked asset.
     pub fn load(path: &Path) -> Result<Ephemeris> {
         let text = path.to_str().ok_or(CoreError::BadPath)?;
         let c_path = CString::new(text).map_err(|_| CoreError::BadPath)?;
 
         let mut ctx: *mut core_sys::EphemerisCtx = std::ptr::null_mut();
 
-        // SAFETY: c_path — валідний C-рядок, живий до кінця виклику. `ctx` —
-        // валідне місце під один вказівник. C записує його лише при CORE_OK.
+        // SAFETY: c_path is a valid C string, alive to the end of the call.
+        // `ctx` is a valid slot for one pointer. C writes it only on CORE_OK.
         let code = unsafe { core_sys::eph_load(c_path.as_ptr(), &mut ctx) };
         check(code)?;
 
-        // Захист від контракту, якого C не порушує, але міг би: CORE_OK і
-        // NULL разом. Без цієї перевірки помилка проявилася б розіменуванням
-        // нуля десь далі, вже без сліду причини.
+        // Guard against a contract C does not break but could: CORE_OK and
+        // NULL together. Without this check the bug would surface as a null
+        // dereference somewhere later, with no trace of the cause.
         if ctx.is_null() {
             return Err(CoreError::Unknown(core_sys::CORE_OK));
         }
@@ -153,83 +154,86 @@ impl Ephemeris {
         Ok(Ephemeris { ctx })
     }
 
-    /// Положення й швидкість тіла в момент `t` (секунди від епохи ассета).
+    /// Position and velocity of a body at time `t` (seconds from the asset
+    /// epoch).
     ///
-    /// Час поза проміжком ассета — [`CoreError::InvalidArg`], а не
-    /// екстраполяція: продовження чебишевської підгонки за її межі дає
-    /// впевнену дурницю.
+    /// A time outside the asset's span gives [`CoreError::InvalidArg`] rather
+    /// than extrapolation: continuing a Chebyshev fit past its range returns
+    /// confident nonsense.
     pub fn body_state(&self, body: i32, t: f64) -> Result<State> {
         let mut state = State::default();
 
-        // SAFETY: self.ctx отримано з eph_load і ще не звільнено — звільняє
-        // лише Drop, а самоволодіння гарантує, що Drop ще не був. `state` —
-        // валідне місце під State.
+        // SAFETY: self.ctx came from eph_load and is not yet freed -- only
+        // Drop frees, and sole ownership guarantees Drop has not run. `state`
+        // is a valid slot for a State.
         let code = unsafe { core_sys::eph_body_state(self.ctx, body, t, &mut state) };
         check(code)?;
 
         Ok(state)
     }
 
-    /// Гравітаційний параметр тіла, м³/с² (ROADMAP-UI.md, U5a).
+    /// Gravitational parameter of the body, m^3/s^2 (ROADMAP-UI.md, U5a).
     ///
-    /// Той самий контракт, що в [`Ephemeris::body_radius`]: читання поля,
-    /// нуль для невідомого тіла. Потрібне тому, хто рахує переліт: `mu`
-    /// **мусить** бути з того самого ассета, що й траєкторія, інакше
-    /// планувальник цілиться біля іншої Землі, ніж літає інтегратор.
+    /// The same contract as [`Ephemeris::body_radius`]: a field read, zero for
+    /// an unknown body. Needed by whoever computes a transfer: `mu` **must**
+    /// come from the same asset as the trajectory, or the planner aims near a
+    /// different Earth than the integrator flies.
     pub fn body_mu(&self, body: i32) -> f64 {
-        // SAFETY: той самий контекст, що в body_state; C читає поле й нічого
-        // не пише.
+        // SAFETY: the same context as in body_state; C reads a field and
+        // writes nothing.
         unsafe { core_sys::eph_body_mu(self.ctx, body) }
     }
 
-    /// Середній радіус тіла, метри; нуль, якщо ассет не каже (ROADMAP U2a).
+    /// Mean body radius in metres; zero if the asset does not say (U2a).
     ///
-    /// Це та сама сфера, від якої міряють висоту атмосфера (K7a) і подія
-    /// [`Event::Altitude`] (K7c), — а не еталонний радіус гармонік, який у
-    /// Землі інше число. Перший викликач — HUD: висота над поверхнею без
-    /// радіуса не рахується, а брати його з рендера означало б, що гра міряє
-    /// висоту від намальованої сфери.
+    /// This is the same sphere the atmosphere (K7a) and the
+    /// [`Event::Altitude`] event (K7c) measure altitude from -- not the
+    /// harmonics reference radius, which for Earth is a different number. The
+    /// first caller is the HUD: altitude above the surface cannot be computed
+    /// without a radius, and taking it from the renderer would mean the game
+    /// measured altitude from the drawn sphere.
     ///
-    /// Не `Result`, бо в C це читання поля: невідоме тіло дає той самий нуль,
-    /// що й тіло без розміру, і це рішення, а не недогляд — обидва випадки
-    /// означають «розміру немає», і два різні відповіді довелося б розрізняти
-    /// кожному викликачеві.
+    /// Not a `Result`, because in C this is a field read: an unknown body
+    /// gives the same zero as a body with no size, and that is a decision, not
+    /// an oversight -- both cases mean "no size available", and two distinct
+    /// answers would have to be told apart by every caller.
     pub fn body_radius(&self, body: i32) -> f64 {
-        // SAFETY: той самий контекст, що в body_state — отриманий з eph_load,
-        // ще не звільнений (звільняє лише Drop). C читає поле й нічого не
-        // пише, тож вихідного місця тут не потрібно взагалі.
+        // SAFETY: the same context as in body_state -- from eph_load, not yet
+        // freed (only Drop frees). C reads a field and writes nothing, so no
+        // output slot is needed at all.
         unsafe { core_sys::eph_body_radius(self.ctx, body) }
     }
 
-    /// Орієнтація тіла в момент `t` (ROADMAP-PLANETS.md, R1c).
+    /// Body orientation at time `t` (ROADMAP-PLANETS.md, R1c).
     ///
-    /// Кватерніон переводить компоненти вектора **з системи тіла в систему
-    /// ефемериди**. Напрямок названий тут, а не лишений здогаду: обернений
-    /// кватерніон — теж правильне обертання, просто в інший бік, і побачити
-    /// це можна хіба на планеті, поверненій навпаки.
+    /// The quaternion takes vector components **from the body frame into the
+    /// ephemeris frame**. The direction is named here rather than left to
+    /// guesswork: the inverse quaternion is also a valid rotation, merely the
+    /// other way, and the only sign would be a planet facing backwards.
     ///
-    /// Перший викликач — рендер: без орієнтації Місяць у кадрі не повернутий,
-    /// тобто маскони (K5) і рельєф дивляться в різні боки.
+    /// The first caller is the renderer: without orientation the Moon in frame
+    /// is unrotated, so the mascons (K5) and the terrain face different ways.
     ///
-    /// Тіло, для якого ассет не має каналів обертання, віддає одиничний
-    /// кватерніон і `Ok` — «не змодельоване» тут відповідь, а не помилка;
-    /// у фікстурі таких вісім із десяти.
+    /// A body whose asset has no rotation channels returns the identity and
+    /// `Ok` -- "not modelled" is an answer here, not an error; eight of the
+    /// fixture's ten bodies are like that.
     ///
-    /// # Помилки
+    /// # Errors
     ///
-    /// [`CoreError::InvalidArg`] — невідоме тіло або час поза проміжком
-    /// ассета. На відміну від радіуса й `mu`, тут є час, а отже й спосіб не
-    /// вдатися.
-    /// Синодичний фрейм пари `primary`-`secondary` на момент `t`
+    /// [`CoreError::InvalidArg`] for an unknown body or a time outside the
+    /// asset's span. Unlike radius and `mu`, there is time here, hence a way
+    /// to fail.
+    /// Synodic frame of the `primary`-`secondary` pair at time `t`
     /// (ROADMAP-UI.md, U6b1).
     ///
-    /// Метод ефемериди, а не вільна функція: фрейм будується **з неї** — з
-    /// позицій і швидкостей обох тіл у цю мить.
+    /// A method on the ephemeris rather than a free function: the frame is
+    /// built **from it** -- from both bodies' positions and velocities at that
+    /// instant.
     pub fn synodic_frame(&self, primary: i32, secondary: i32, t: f64) -> Result<SynodicFrame> {
         let mut raw = core_sys::SynodicFrame::default();
-        // SAFETY: `self.ctx` дійсний, доки живий `self`; вихідний вказівник
-        // веде на локальну змінну, і саме C заповнює її цілком — тому
-        // розкладка структури звірена бітово (`core-sys/tests/ffi.rs`).
+        // SAFETY: `self.ctx` is valid while `self` lives; the output pointer
+        // leads to a local, and C fills it entirely -- which is why the struct
+        // layout is compared bitwise (`core-sys/tests/ffi.rs`).
         let code = unsafe { core_sys::frame_synodic(self.ctx, primary, secondary, t, &mut raw) };
         check(code)?;
         Ok(SynodicFrame { raw })
@@ -237,9 +241,9 @@ impl Ephemeris {
 
     pub fn body_orientation(&self, body: i32, t: f64) -> Result<Quat> {
         let mut out = core_sys::Quat::default();
-        // SAFETY: контекст живий (позичений через &self, звільняє лише Drop),
-        // вихідне місце — локальна змінна, жива до кінця виклику. C нічого не
-        // виділяє й не зберігає: писати нема куди й звільняти нічого.
+        // SAFETY: the context is alive (borrowed through &self, only Drop
+        // frees); the output slot is a local alive to the end of the call. C
+        // allocates and stores nothing: nowhere to write, nothing to free.
         let code = unsafe { core_sys::eph_body_orientation(self.ctx, body, t, &mut out) };
         check(code)?;
         Ok(Quat {
@@ -251,10 +255,10 @@ impl Ephemeris {
     }
 }
 
-/// Кватерніон обертання: `w` перший, як у `core/quat.h`.
+/// Rotation quaternion: `w` first, as in `core/quat.h`.
 ///
-/// Власний тип, а не реекспорт із `core-sys`, з тієї ж причини, що [`State`]:
-/// сирий шар лишається сирим, і жоден крейт, крім цього, його не бачить.
+/// Its own type rather than a re-export from `core-sys`, for the same reason
+/// as [`State`]: the raw layer stays raw, and no crate but this one sees it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Quat {
     pub w: f64,
@@ -275,13 +279,13 @@ impl Default for Quat {
 }
 
 impl Quat {
-    /// Повертає вектор: `q · v · q*`, тобто з системи тіла в систему
-    /// ефемериди.
+    /// Rotates a vector: `q * v * q^-1`, i.e. from the body frame into the
+    /// ephemeris frame.
     ///
-    /// Формула Родрігеса, а не множення трьох кватерніонів: удвічі менше
-    /// арифметики й жодного проміжного кватерніона, який кортіло б
-    /// перенормувати. `libm` тут не з'являється взагалі — самі множення й
-    /// додавання, — тож і питання інваріанта 3 не виникає.
+    /// Rodrigues' formula rather than multiplying three quaternions: half the
+    /// arithmetic and no intermediate quaternion tempting a renormalisation.
+    /// `libm` does not appear at all -- only multiplies and adds -- so the
+    /// question of invariant 3 never arises.
     pub fn rotate(&self, v: [f64; 3]) -> [f64; 3] {
         let u = [self.x, self.y, self.z];
         let cross = |a: [f64; 3], b: [f64; 3]| {
@@ -305,101 +309,106 @@ impl Quat {
 
 impl Drop for Ephemeris {
     fn drop(&mut self) {
-        // SAFETY: вказівник отримано з eph_load, звільняється рівно тут і
-        // рівно раз — поле приватне, тип не Copy і не Clone, іншого шляху до
-        // eph_free немає.
+        // SAFETY: the pointer came from eph_load and is freed exactly here,
+        // exactly once -- the field is private, the type is neither Copy nor
+        // Clone, and there is no other route to eph_free.
         unsafe { core_sys::eph_free(self.ctx) };
     }
 }
 
 impl fmt::Debug for Ephemeris {
-    /// Без адреси всередині: вона нічого не пояснює й шумить у логах.
+    /// No address inside: it explains nothing and adds noise to logs.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Ephemeris")
     }
 }
 
 // ---------------------------------------------------------------------------
-// Пропагатор (ROADMAP H4)
+// Propagator (ROADMAP H4)
 // ---------------------------------------------------------------------------
 
-/// Який інтегратор рахує.
+/// Which integrator does the work.
 ///
-/// `Rkn` оголошений, але ядро його ще не має: `Propagator::new` з ним поверне
-/// [`CoreError::InvalidArg`]. Це не забутий шматок, а те, чого вимагає
-/// PROJECT.md §4 — поле вибору інтегратора існує з першого дня, щоб додати RKN
-/// колись означало змінити виклик, а не переписати шар.
+/// `Rkn` is declared but the core does not have it yet: `Propagator::new` with
+/// it returns [`CoreError::InvalidArg`]. Not a forgotten stub but what
+/// PROJECT.md §4 asks for -- the integrator selection field exists from day
+/// one so that adding RKN later means changing a call, not rewriting a
+/// layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Integrator {
     Dop853,
     Rkn,
 }
 
-/// Налаштування пропагатора.
+/// Propagator settings.
 #[derive(Debug, Clone, Copy)]
 pub struct PropConfig {
     pub integrator: Integrator,
-    /// Допуск по позиції в метрах — абсолютний, не відносний.
+    /// Position tolerance in metres -- absolute, not relative.
     pub tol_m: f64,
-    /// Стеля кроку в секундах. Задавайте її: з нулем стелю обирає інтегратор
-    /// за довжиною ланки, і тоді зшитий прогін лишає по собі інший крок, ніж
-    /// безперервний (`core/prop.h`, виміряно).
+    /// Step ceiling in seconds. Set it: with zero the integrator picks the
+    /// ceiling from the leg length, and a stitched run then leaves behind a
+    /// different step than a continuous one (`core/prop.h`, measured).
     pub h_max_s: f64,
-    /// Ліміт кроків на **один виклик** `run`. 0 — типовий ліміт ядра.
+    /// Step limit for **one call** to `run`. 0 means the core's default.
     pub max_steps: i64,
-    /// Множник густини повітря для всіх апаратів цього пропагатора
-    /// (ROADMAP K7c). Одиниця — профіль, який несе ассет.
+    /// Air density multiplier for every vessel of this propagator (K7c).
+    /// One means the profile the asset carries.
     ///
-    /// Тут, а не у [`VesselParams`], бо описує повітря, а не корабель: два
-    /// апарати на одній ланці летять крізь ту саму атмосферу. Стала на ланку,
-    /// а не функція часу: сонячний цикл — синусоїда з періодом в одинадцять
-    /// років, `libm` у циклі інтегрування заборонений, і де наступний максимум
-    /// — все одно ніхто не скаже. Тож множник рахує гра (майбутня галочка
-    /// «космічна погода»), а ядро його лише застосовує.
+    /// Here rather than in [`VesselParams`], because it describes the air, not
+    /// the ship: two vessels on one leg fly through the same atmosphere.
+    /// Constant per leg rather than a function of time: the solar cycle is a
+    /// sinusoid of eleven years, `libm` is forbidden in the integration loop,
+    /// and nobody can say where the next maximum falls anyway. So the game
+    /// computes the multiplier (a future "space weather" toggle) and the core
+    /// only applies it.
     ///
-    /// **Нуль неприпустимий** — `new` поверне [`CoreError::InvalidArg`].
-    /// Ядро свідомо не читає його як одиницю: незаданe поле має падати гучно
+    /// **Zero is inadmissible** -- `new` returns [`CoreError::InvalidArg`].
+    /// The core deliberately does not read it as one: an unset field must fail
+    /// loudly
     /// (`core/prop.h`).
     pub density_scale: f64,
 }
 
 impl Default for PropConfig {
-    /// Метр допуску й година стелі — тобто числа, з якими вже рахували
-    /// фікстуру (`data/fixture/README.md`), а не круглі значення з повітря.
+    /// A metre of tolerance and an hour of ceiling -- the numbers the fixture
+    /// was already computed with (`data/fixture/README.md`), not round values
+    /// out of thin air.
     fn default() -> Self {
         PropConfig {
             integrator: Integrator::Dop853,
             tol_m: 1.0,
             h_max_s: 3600.0,
             max_steps: 0,
-            // Профіль ассета як він є. Множник з'явиться тоді, коли гра
-            // дасть гравцеві вимикач сонячної активності.
+            // The asset profile as it is. A multiplier appears when the game
+            // gives the player a solar activity switch.
             density_scale: 1.0,
         }
     }
 }
 
-/// Подія, на якій прогін зупиняється.
+/// An event the run stops on.
 ///
-/// Енум замість структури з полем `param`, яке для двох видів із трьох нічого
-/// не означає: тут неможливо задати перицентр із відстанню, бо такого варіанту
-/// просто немає.
+/// An enum rather than a struct with a `param` field meaning nothing for two
+/// kinds out of three: here a periapsis with a distance cannot be expressed,
+/// because no such variant exists.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Event {
-    /// Найближча точка до тіла.
+    /// Closest point to the body.
     Periapsis { body: i32 },
-    /// Найдальша.
+    /// Furthest.
     Apoapsis { body: i32 },
-    /// Задана відстань від **центра** тіла, в обидва боки. Сфера впливу або
-    /// кільце зустрічі — це саме відстань від центра, до поверхні вона
-    /// стосунку не має.
+    /// A given distance from the body **centre**, crossed either way. A
+    /// sphere of influence or a rendezvous ring is a distance from the centre;
+    /// it has nothing to do with the surface.
     Distance { body: i32, metres: f64 },
-    /// Задана висота над **поверхнею** тіла, в обидва боки (ROADMAP K7c).
+    /// A given altitude above the body **surface**, crossed either way (K7c).
     ///
-    /// Поверхня — середній радіус з ассета, тобто та сама сфера, від якої
-    /// міряє висоти атмосфера. Тіло, розміру якого ассет не називає, дає
-    /// [`CoreError::InvalidArg`] при озброєнні: радіус нуль мовчки зробив би
-    /// із цього [`Event::Distance`]. Нуль як висота дозволений — це поверхня.
+    /// The surface is the asset's mean radius, the same sphere the atmosphere
+    /// measures altitude from. A body whose size the asset does not name gives
+    /// [`CoreError::InvalidArg`] on arming: a zero radius would silently turn
+    /// this into [`Event::Distance`]. Zero altitude is allowed -- that is the
+    /// surface.
     Altitude { body: i32, metres: f64 },
 }
 
@@ -430,68 +439,69 @@ impl Event {
     }
 }
 
-/// Чому прогін спинився.
+/// Why the run stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stop {
-    /// Дійшов до `t_end`.
+    /// Reached `t_end`.
     ReachedEnd,
-    /// Скінчився буфер під семпли. Продовжуйте з `final_state` і тим самим
-    /// кроком — це буде та сама траєкторія, бітово.
+    /// The sample buffer ran out. Continue from `final_state` with the same
+    /// step -- it will be the same trajectory, bitwise.
     BufferFull,
-    /// Спрацювала подія з таким індексом у переданому зрізі.
+    /// The event at this index in the supplied slice fired.
     Event(usize),
 }
 
-/// Скільки чисел у матриці переходу: 6×6 (`STM_SIZE` у `core/stm.h`).
+/// How many numbers in the transition matrix: 6x6 (`STM_SIZE` in
+/// `core/stm.h`).
 pub const STM_LEN: usize = 36;
 
-/// Матриця переходу стану, рядково-мажорна 6×6 (ROADMAP K8).
+/// State transition matrix, row-major 6x6 (ROADMAP K8).
 ///
-/// Обгортка навколо масиву, а не голий `[f64; 36]`, рівно з однієї причини:
-/// щоб `phi[(i, j)]` читалося як «рядок i, стовпець j» і не було місця, де
-/// хтось перепише індекс навпаки. Транспонована матриця переходу — цілком
-/// правдоподібна матриця, і помилка проявилась би як дивна корекція, а не
-/// як падіння.
+/// A wrapper around the array rather than a bare `[f64; 36]`, for exactly one
+/// reason: so `phi[(i, j)]` reads as "row i, column j" and there is no place
+/// to write the index the other way round. A transposed transition matrix is a
+/// perfectly plausible matrix, and the error would surface as a strange
+/// correction rather than a crash.
 #[derive(Debug, Clone, Copy)]
 pub struct Stm(pub [f64; STM_LEN]);
 
 impl Stm {
-    /// ∂y_i(t_end) / ∂y_j(t0), стан у порядку `(x, y, z, vx, vy, vz)`.
+    /// dy_i(t_end) / dy_j(t0), state in the order `(x, y, z, vx, vy, vz)`.
     pub fn get(&self, row: usize, col: usize) -> f64 {
-        assert!(row < 6 && col < 6, "STM 6x6, а просять ({row}, {col})");
+        assert!(row < 6 && col < 6, "STM is 6x6, but ({row}, {col}) was asked for");
         self.0[row * 6 + col]
     }
 
-    /// Сирі 36 чисел у тому ж порядку, в якому їх дав C.
+    /// The raw 36 numbers in the order C gave them.
     pub fn as_slice(&self) -> &[f64] {
         &self.0
     }
 }
 
-/// Апарат так, як його бачить модель сил (ROADMAP K6b, K7b, `core/core.h`).
+/// The vessel as the force model sees it (K6b, K7b, `core/core.h`).
 ///
-/// Гравітації вона не потрібна: там апарат — безмасова пробна частинка, і це
-/// поділ, на якому стоїть архітектура, а не наближення. Тиску сонячного
-/// світла — потрібна, бо прискорення від нього масштабується на `Cr·A/m`.
-/// Опору — на `Cd·A/m`.
+/// Gravity does not need it: there the vessel is a massless test particle,
+/// which is a separation the architecture rests on, not an approximation.
+/// Solar radiation pressure does need it, because its acceleration scales with
+/// `Cr·A/m`. Drag, with `Cd·A/m`.
 ///
-/// Передається **на кожен прогін**, а не в конфігурацію пропагатора: маса
-/// змінюється при горінні, а `/game` тримає один пропагатор на всі апарати
-/// (`game/src/world.rs`) — апарат у конфігурації зробив би з них один
-/// корабель із кількома траєкторіями.
+/// Passed **per run** rather than in the propagator config: mass changes while
+/// burning, and `/game` keeps one propagator for all vessels
+/// (`game/src/world.rs`) -- a vessel in the config would make them one ship
+/// with several trajectories.
 ///
-/// **Одна площа на дві сили.** Переріз, підставлений Сонцю, і переріз,
-/// підставлений повітрю, — тут одне число: розділити їх означало б
-/// моделювати орієнтацію, а орієнтація це локальний рівень (PROJECT.md §4),
-/// не цей.
+/// **One area for two forces.** The cross-section presented to the Sun and the
+/// one presented to the air are a single number here: separating them would
+/// mean modelling orientation, and orientation is the local level
+/// (PROJECT.md §4), not this one.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VesselParams {
     pub mass_kg: f64,
-    /// Площа перерізу, спільна для світла й повітря, м².
+    /// Cross-section area, shared by light and air, m^2.
     pub area_m2: f64,
-    /// 1 — повне поглинання, 2 — дзеркало; реальні апарати біля 1.3.
+    /// 1 is full absorption, 2 a mirror; real spacecraft sit near 1.3.
     pub cr: f64,
-    /// Коефіцієнт опору; для тупого тіла на низькій орбіті близько 2.2.
+    /// Drag coefficient; near 2.2 for a blunt body in low orbit.
     pub cd: f64,
 }
 
@@ -506,22 +516,22 @@ impl VesselParams {
     }
 }
 
-/// Що дав один виклик [`Propagator::run`].
+/// What one call to [`Propagator::run`] produced.
 #[derive(Debug, Clone, Copy)]
 pub struct Run {
-    /// Скільки семплів записано на початок переданого зрізу.
+    /// How many samples were written to the front of the supplied slice.
     pub filled: usize,
-    /// Стан, у якому прогін спинився. Саме з нього продовжувати.
+    /// The state the run stopped in. Continue from exactly this.
     pub final_state: State,
     pub stop: Stop,
 }
 
-/// Пропагатор апарата в полі всіх тіл ассета.
+/// A vessel propagator in the field of every body in the asset.
 ///
-/// Тримає [`Arc`] на ефемериду, а не позичену ссилку: контекст у C зберігає
-/// сирий вказівник на неї, тож вона мусить пережити пропагатор. Лайфтайм у
-/// структурі виразив би те саме й заразив би ним усе, що пропагатор
-/// зберігає (CLAUDE.md: жодних лайфтаймів у структурах).
+/// Holds an [`Arc`] to the ephemeris rather than a borrowed reference: the C
+/// context keeps a raw pointer to it, so it must outlive the propagator. A
+/// lifetime in the struct would express the same thing and infect everything
+/// the propagator is stored in (CLAUDE.md: no lifetimes in structs).
 ///
 /// ```no_run
 /// use core_rs::{Ephemeris, Event, PropConfig, Propagator, State};
@@ -537,11 +547,11 @@ pub struct Run {
 ///
 /// let run = prop.run(&vessel, None, 86_400.0, &[Event::Periapsis { body: 3 }],
 ///                    &mut samples, &mut step)?;
-/// println!("{:?} після {} семплів", run.stop, run.filled);
+/// println!("{:?} after {} samples", run.stop, run.filled);
 /// # Ok::<(), core_rs::CoreError>(())
 /// ```
 ///
-/// Використання після звільнення не компілюється:
+/// Use after free does not compile:
 ///
 /// ```compile_fail
 /// use core_rs::{Ephemeris, PropConfig, Propagator, State};
@@ -555,8 +565,8 @@ pub struct Run {
 /// let _ = prop.run(&State::default(), None, 1.0, &[], &mut [], &mut step);
 /// ```
 ///
-/// Звільнити двічі теж нема чим — `prop_free` не реекспортується, поле
-/// приватне:
+/// There is nothing to free twice with either -- `prop_free` is not
+/// re-exported and the field is private:
 ///
 /// ```compile_fail
 /// use core_rs::{Ephemeris, PropConfig, Propagator};
@@ -568,21 +578,21 @@ pub struct Run {
 /// let _ = prop.ctx;
 /// ```
 pub struct Propagator {
-    // Тримає ефемериду живою. Читається лише в Drop-порядку — поле мусить
-    // існувати, а не використовуватись.
+    // Keeps the ephemeris alive. Read only by drop order -- the field must
+    // exist rather than be used.
     _eph: Arc<Ephemeris>,
     ctx: *mut core_sys::PropagatorCtx,
 }
 
-// Пропагатор можна віддати іншому потоку — саме це й станеться, щойно фізика
-// поїде у свій (PROJECT.md §6). Він володіє своїм контекстом, а ефемерида, на
-// яку той дивиться, вже `Sync` (обґрунтування вище).
+// A propagator can be handed to another thread -- which is exactly what
+// happens once physics moves to its own (PROJECT.md §6). It owns its context,
+// and the ephemeris that context looks at is already `Sync` (reasoning above).
 //
-// `Sync` НЕ оголошений, і це не забутий рядок: контекст усередині C несе
-// липкий прапорець помилки, який `prop_run` скидає на початку кожного
-// прогону. Два потоки з `&Propagator` не могли б навіть покликати `run` —
-// вона бере `&mut self`, — але заявляти безпеку, якої ніхто не перевіряв,
-// немає навіщо. Один потік — один пропагатор.
+// `Sync` is NOT declared, and that is not a forgotten line: the context inside
+// C carries a sticky error flag that `prop_run` clears at the start of every
+// run. Two threads holding `&Propagator` could not even call `run` -- it takes
+// `&mut self` -- but there is no point claiming safety nobody has checked. One
+// thread, one propagator.
 unsafe impl Send for Propagator {}
 
 impl Propagator {
@@ -600,10 +610,10 @@ impl Propagator {
 
         let mut ctx: *mut core_sys::PropagatorCtx = std::ptr::null_mut();
 
-        // SAFETY: eph.ctx отримано з eph_load і живий — `Arc` нижче тримає
-        // його щонайменше стільки ж, скільки цей пропагатор. `raw` живе до
-        // кінця виклику, C його лише читає. `ctx` — валідне місце під один
-        // вказівник, C пише туди лише при CORE_OK.
+        // SAFETY: eph.ctx came from eph_load and is alive -- the `Arc` below
+        // holds it at least as long as this propagator. `raw` lives to the end
+        // of the call and C only reads it. `ctx` is a valid slot for one
+        // pointer, and C writes there only on CORE_OK.
         let code = unsafe { core_sys::prop_create(eph.ctx, &raw, &mut ctx) };
         check(code)?;
 
@@ -614,22 +624,22 @@ impl Propagator {
         Ok(Propagator { _eph: eph, ctx })
     }
 
-    /// Інтегрує від `initial` до `t_end`, до першої події або поки не
-    /// скінчиться `samples`.
+    /// Integrates from `initial` to `t_end`, to the first event, or until
+    /// `samples` runs out.
     ///
-    /// `samples` може бути порожнім — тоді прогін іде без семплування й
-    /// зупиняється лише на `t_end` або на події. Це та сама інтеграція, крок
-    /// у крок, і саме тому фізика й лінія прогнозу можуть ділити один шлях
-    /// (CLAUDE.md, інваріант 5).
+    /// `samples` may be empty -- then the run proceeds without sampling and
+    /// stops only at `t_end` or on an event. It is the same integration, step
+    /// for step, which is why physics and the prediction line can share one
+    /// path (CLAUDE.md, invariant 5).
     ///
-    /// `step` несе крок інтегратора між викликами: 0 на першому, далі —
-    /// значення, яке лишив попередній. Він входить у сейв (PROJECT.md §4), і
-    /// це не формальність: викинути його коштує сімдесятикратної роботи й
-    /// іншої траєкторії (`core/test/test_prop.c`).
+    /// `step` carries the integrator step between calls: 0 on the first, then
+    /// whatever the previous one left. It goes into the save (PROJECT.md §4),
+    /// and that is no formality: dropping it costs seventyfold work and a
+    /// different trajectory (`core/test/test_prop.c`).
     ///
-    /// `vessel` — `None` для безмасової пробної частинки, тобто рівно те, що
-    /// цей виклик робив до K6b. З `Some` до сил додається тиск сонячного
-    /// світла з моделлю тіні.
+    /// `vessel` is `None` for a massless test particle, i.e. exactly what this
+    /// call did before K6b. With `Some`, solar radiation pressure with a
+    /// shadow model joins the forces.
     pub fn run(
         &mut self,
         initial: &State,
@@ -647,10 +657,10 @@ impl Propagator {
         let mut stop: core_sys::CoreStopReason = -1;
         let mut event: std::ffi::c_int = -1;
 
-        // Порожній зріз у Rust — це НЕ нульовий вказівник, а вирівняний
-        // «висячий», і C розрізняє ці випадки: буфер без місця він вважає
-        // помилкою викликача, бо той крутився б у циклі без поступу. Тож
-        // порожність перекладається явно.
+        // An empty slice in Rust is NOT a null pointer but an aligned
+        // dangling one, and C distinguishes the cases: it treats a buffer with
+        // no room as a caller error, since the caller would spin without
+        // progress. So emptiness is translated explicitly.
         let (out_ptr, out_cap) = if samples.is_empty() {
             (std::ptr::null_mut(), 0)
         } else {
@@ -663,21 +673,20 @@ impl Propagator {
             raw_events.as_ptr()
         };
 
-        // `None` перекладається в нульовий вказівник, і C читає це як
-        // «безмасова пробна частинка» — той самий прогін, що був до K6b,
-        // біт у біт.
+        // `None` translates to a null pointer, which C reads as "massless
+        // test particle" -- the same run as before K6b, bit for bit.
         let vessel_ptr = raw_vessel
             .as_ref()
             .map_or(std::ptr::null(), |v| v as *const _);
 
-        // SAFETY: self.ctx отримано з prop_create і ще не звільнено (звільняє
-        // лише Drop, а `&mut self` доводить, що його не було). `initial` і
-        // `raw_events` живі до кінця виклику й лише читаються. Буфер має рівно
-        // `out_cap` елементів `State`, і C обіцяє не писати далі — рівно тому
-        // місткість передається поруч із ним. `raw_vessel` живе на стеку до
-        // кінця виклику й лише читається, а null там — легальне значення,
-        // не помилка. Решта вказівників — місця під по одному значенню на
-        // стеку.
+        // SAFETY: self.ctx came from prop_create and is not yet freed (only
+        // Drop frees, and `&mut self` proves it has not run). `initial` and
+        // `raw_events` live to the end of the call and are only read. The
+        // buffer holds exactly `out_cap` `State` elements and C promises not
+        // to write past them -- which is exactly why the capacity travels
+        // beside it. `raw_vessel` lives on the stack to the end of the call
+        // and is only read, and null there is a legal value, not an error. The
+        // remaining pointers are stack slots for one value each.
         let code = unsafe {
             core_sys::prop_run(
                 self.ctx,
@@ -701,8 +710,9 @@ impl Propagator {
             core_sys::CORE_STOP_T_END => Stop::ReachedEnd,
             core_sys::CORE_STOP_BUFFER_FULL => Stop::BufferFull,
             core_sys::CORE_STOP_EVENT => {
-                // Індекс приходить із C і вказує в зріз, який дав викликач.
-                // Перевіряємо, а не довіряємо: з нього збираються зрізати.
+                // The index comes from C and points into the slice the caller
+                // supplied. Checked rather than trusted: it is about to be
+                // used for slicing.
                 if event < 0 || (event as usize) >= events.len() {
                     return Err(CoreError::Unknown(event));
                 }
@@ -718,24 +728,27 @@ impl Propagator {
         })
     }
 
-    /// Та сама інтеграція, що `run`, але несе матрицю переходу стану
+    /// The same integration as `run`, but carrying the state transition
+    /// matrix
     /// (ROADMAP K8).
     ///
-    /// Повертає кінцевий стан і 6×6 рядково-мажорну Φ = ∂y(t_end)/∂y(initial)
-    /// зі станом у порядку `(x, y, z, vx, vy, vz)`. Це те, що просить
-    /// диференціальна корекція M3 і чим рухається коваріація в M6.
+    /// Returns the final state and the row-major 6x6
+    /// Phi = dy(t_end)/dy(initial), state in the order
+    /// `(x, y, z, vx, vy, vz)`. This is what M3's differential correction asks
+    /// for and what moves the covariance in M6.
     ///
-    /// **Траєкторія бітово та сама, що дав би `run`** з тими самими
-    /// аргументами й тим самим `step` — не «в межах допуску». Контролер
-    /// кроку в C читає лише опорний блок, тож шість варіаційних блоків
-    /// їдуть тією ж послідовністю кроків, не голосуючи за неї
-    /// (`core/test/test_prop.c` це міряє). Планувальник, який виправляє
-    /// маневр матрицею від трохи іншої траєкторії, цілив би туди, де
-    /// апарата немає.
+    /// **The trajectory is bit-identical to what `run` would give** with the
+    /// same arguments and the same `step` -- not "within tolerance". The step
+    /// controller in C reads only the reference block, so the six variational
+    /// blocks ride the same step sequence without voting on it
+    /// (`core/test/test_prop.c` measures this). A planner correcting a
+    /// manoeuvre with a matrix from a slightly different trajectory would aim
+    /// where the vessel is not.
     ///
-    /// Подій тут немає навмисно: питання стосується однієї ланки з двома
-    /// кінцями, і подія обірвала б її там, де викликач не просив. Хто хоче
-    /// обох — спершу `run`, щоб знайти подію, потім це на знайденій ланці.
+    /// No events here, deliberately: the question concerns one leg with two
+    /// ends, and an event would cut it where the caller did not ask. Whoever
+    /// wants both runs `run` first to find the event, then this on the leg
+    /// found.
     pub fn run_stm(
         &mut self,
         initial: &State,
@@ -750,11 +763,11 @@ impl Propagator {
             .as_ref()
             .map_or(std::ptr::null(), |v| v as *const _);
 
-        // SAFETY: self.ctx отримано з prop_create і ще не звільнено (звільняє
-        // лише Drop, а `&mut self` доводить, що його не було). `initial` живий
-        // до кінця виклику й лише читається. `phi` — рівно STM_LEN значень
-        // поспіль, стільки ж, скільки C оголосив у `out_stm[36]`; решта
-        // вказівників — місця під по одному значенню на стеку.
+        // SAFETY: self.ctx came from prop_create and is not yet freed (only
+        // Drop frees, and `&mut self` proves it has not run). `initial` lives
+        // to the end of the call and is only read. `phi` is exactly STM_LEN
+        // contiguous values, as many as C declared in `out_stm[36]`; the
+        // remaining pointers are stack slots for one value each.
         let code = unsafe {
             core_sys::prop_run_stm(
                 self.ctx,
@@ -774,8 +787,9 @@ impl Propagator {
 
 impl Drop for Propagator {
     fn drop(&mut self) {
-        // SAFETY: вказівник отримано з prop_create, звільняється рівно тут і
-        // рівно раз — поле приватне, тип не Copy і не Clone.
+        // SAFETY: the pointer came from prop_create and is freed exactly here,
+        // exactly once -- the field is private, the type neither Copy nor
+        // Clone.
         unsafe { core_sys::prop_free(self.ctx) };
     }
 }
@@ -786,29 +800,29 @@ impl fmt::Debug for Propagator {
     }
 }
 
-/// Задача Ламберта: швидкості перельоту з `r1` у `r2` за `dt` секунд навколо
-/// тіла з гравітаційним параметром `mu` (ROADMAP L3, борг D1).
+/// Lambert's problem: transfer velocities from `r1` to `r2` in `dt` seconds
+/// about a body of gravitational parameter `mu` (ROADMAP L3, debt D1).
 ///
-/// Повертає `(v1, v2)` — швидкість на відльоті й на прильоті, м/с.
+/// Returns `(v1, v2)`, the departure and arrival velocities in m/s.
 ///
-/// **Поза межею детермінізму, і це єдина така функція тут.** PROJECT.md §4:
-/// симуляція заданого плану мусить збігатися біт-у-біт, а те, як гравець цей
-/// план придумав, — ні. Результат Ламберта це **дані** — з них виходить
-/// маневр `(час, Δv)`, і вже його виконання відтворюється точно. Тому ця
-/// функція має право на `libm` (вона в окремій `libcore_planning.a`), і тому
-/// її числа не входять у звірку хешів.
+/// **Outside the determinism boundary, and the only such function here.**
+/// PROJECT.md §4: simulating a given plan must match bit for bit, while how
+/// the player arrived at that plan need not. Lambert's result is **data** -- a
+/// manoeuvre `(time, dv)` comes out of it, and executing that is what
+/// reproduces exactly. So this function may use `libm` (it lives in a separate
+/// `libcore_planning.a`), and its numbers are not part of the hash comparison.
 ///
-/// `prograde` — це знак z-компоненти моменту імпульсу, **не** «коротка чи
-/// довга дуга». Викликач, що працює не в площині ефемериди, повертає `r1`
-/// і `r2` у площину, де це справедливо, перед викликом.
+/// `prograde` is the sign of the z component of angular momentum, **not**
+/// "short or long arc". A caller not working in the ephemeris plane rotates
+/// `r1` and `r2` into a plane where that holds before calling.
 ///
-/// # Помилки
+/// # Errors
 ///
-/// [`CoreError::InvalidArg`] — `dt <= 0`, `mu <= 0`, `n_revs != 0` або `r1`
-/// і `r2` на одній прямій через початок координат (площина перельоту, а з
-/// нею й угода про напрям, там невизначені).
-/// [`CoreError::ToleranceNotMet`] — Ньютон не зійшовся; `core/test/test_lambert.c`
-/// записує, для яких геометрій це справді трапляється.
+/// [`CoreError::InvalidArg`] for `dt <= 0`, `mu <= 0`, `n_revs != 0`, or `r1`
+/// and `r2` on one line through the origin (the transfer plane, and with it
+/// the direction convention, are undefined there).
+/// [`CoreError::ToleranceNotMet`] if Newton did not converge;
+/// `core/test/test_lambert.c` records which geometries really do that.
 ///
 /// ```no_run
 /// use core_rs::{lambert_solve, Vec3d};
@@ -819,10 +833,10 @@ impl fmt::Debug for Propagator {
 /// println!("{v1:?}");
 /// # Ok::<(), core_rs::CoreError>(())
 /// ```
-/// Клітинка porkchop-сітки: коли летіти, скільки летіти й чого це коштує.
+/// A porkchop grid cell: when to leave, how long to fly and what it costs.
 ///
-/// `v_inf` — швидкість відносно тіла на своєму кінці: перша каже, з чим треба
-/// відірватися, друга — з чим прилетиш.
+/// `v_inf` is the speed relative to the body at its own end: the first says
+/// what is needed to break away, the second what you arrive with.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PorkchopPoint {
     pub t1: f64,
@@ -831,17 +845,18 @@ pub struct PorkchopPoint {
     pub v_inf_arrive: f64,
 }
 
-/// Сітка porkchop, порахована з ефемериди (ROADMAP-UI.md, U5a).
+/// Porkchop grid computed from the ephemeris (ROADMAP-UI.md, U5a).
 ///
-/// Буфер дає Rust, C заповнює й повертає кількість (PROJECT.md §5, правило 1),
-/// тож питання «хто звільняє» тут не виникає взагалі. Розмір буфера — уся
-/// сітка: клітинок не може бути більше, ніж пар, а менше — легко, бо там, де
-/// Ламберт не зійшовся, клітинка **пропускається**, і це очікувана частина
-/// плоту, а не помилка (ROADMAP, G-етап).
+/// Rust supplies the buffer, C fills it and returns a count (PROJECT.md §5,
+/// rule 1), so the question of who frees never arises. The buffer is sized for
+/// the whole grid: there cannot be more cells than pairs, and fewer is easy,
+/// because where Lambert did not converge the cell is **skipped** -- an
+/// expected part of the plot, not an error (ROADMAP, stage G).
 ///
-/// Обгортка над `porkchop_compute_eph`, а не над `porkchop_compute`: та бере
-/// колбеки, і саме тому крізь межу не проходить (інваріант 7). Розв'язок
-/// живе в C — див. `core/planning/porkchop.h`.
+/// A wrapper over `porkchop_compute_eph`, not over `porkchop_compute`: that
+/// one takes callbacks, which is exactly why it does not cross the boundary
+/// (invariant 7). The resolution lives in C -- see
+/// `core/planning/porkchop.h`.
 pub fn porkchop(
     eph: &Ephemeris,
     depart_body: i32,
@@ -858,9 +873,9 @@ pub fn porkchop(
     let mut out = vec![core_sys::PorkchopPoint::default(); t1_grid.len() * tof_grid.len()];
     let mut count: usize = 0;
 
-    // SAFETY: контекст живий (позичений), обидві сітки — зрізи Rust із
-    // власними довжинами, буфер наш і рівно тієї місткості, яку ми
-    // оголошуємо. C не володіє нічим із цього після повернення.
+    // SAFETY: the context is alive (borrowed), both grids are Rust slices
+    // with their own lengths, and the buffer is ours with exactly the capacity
+    // we declare. C owns none of it after returning.
     let code = unsafe {
         core_sys::porkchop_compute_eph(
             eph.ctx,
@@ -902,10 +917,10 @@ pub fn lambert_solve(
     let mut v1 = Vec3d::default();
     let mut v2 = Vec3d::default();
 
-    // SAFETY: обидва вихідні вказівники ведуть на локальні змінні, живі до
-    // кінця виклику; вхідні структури передаються за значенням і копіюються
-    // C-стороною. Функція нічого не виділяє й не зберігає — звільняти нічого,
-    // а отже й пари create/free тут немає.
+    // SAFETY: both output pointers lead to locals alive to the end of the
+    // call; the input structs are passed by value and copied on the C side.
+    // The function allocates and stores nothing -- there is nothing to free,
+    // hence no create/free pair here.
     let code = unsafe {
         core_sys::lambert_solve(
             r1,
@@ -923,94 +938,95 @@ pub fn lambert_solve(
     Ok((v1, v2))
 }
 
-/// Частка маси пари тіл, `μ = m₂/(m₁+m₂)` — визначення системи, у якій
-/// рахуються і константа Якобі, і крива нульової швидкості (ROADMAP-UI.md,
+/// Mass fraction of a body pair, `mu = m2/(m1+m2)` -- the definition of the
+/// system in which both the Jacobi constant and the zero-velocity curve are
+/// computed (ROADMAP-UI.md,
 /// U6b2).
 ///
-/// Одна ділення, і воно все одно тут: два різні `μ` в одному кадрі означали б
-/// криву від однієї системи поверх траєкторії з іншої.
+/// One division, and it lives here anyway: two different `mu` in one frame
+/// would mean a curve from one system over a trajectory from another.
 pub fn cr3bp_mu(gm_primary: f64, gm_secondary: f64) -> f64 {
-    // SAFETY: два `double` за значенням, жодного вказівника й жодного стану —
-    // тут неможливо помилитися ні з часом життя, ні зі звільненням.
+    // SAFETY: two `double` by value, no pointers and no state -- neither
+    // lifetime nor freeing can go wrong here.
     unsafe { core_sys::cr3bp_mu(gm_primary, gm_secondary) }
 }
 
-/// Константа Якобі `C = 2Ω − v²`, **у безрозмірних одиницях CR3BP**.
+/// Jacobi constant `C = 2*Omega - v^2`, **in dimensionless CR3BP units**.
 ///
-/// Одиниці — не деталь, а угода: тіла на одиничній відстані, сумарна маса 1,
-/// фрейм обертається з одиничною кутовою швидкістю. Метри сюди подавати можна,
-/// і результат буде схожий на константу Якобі рівно настільки, щоб не
-/// помітити.
+/// The units are a convention, not a detail: bodies at unit distance, total
+/// mass 1, frame rotating at unit angular velocity. Metres can be passed in,
+/// and the result will resemble a Jacobi constant just closely enough to go
+/// unnoticed.
 pub fn cr3bp_jacobi(r: Vec3d, v: Vec3d, mu: f64) -> f64 {
-    // SAFETY: обидві структури передаються за значенням і копіюються
-    // C-стороною; нічого не виділяється й не зберігається.
+    // SAFETY: both structs are passed by value and copied on the C side;
+    // nothing is allocated or stored.
     unsafe { core_sys::cr3bp_jacobi(r, v, mu) }
 }
 
-/// Точка Лагранжа 1..5 у безрозмірних координатах.
+/// Lagrange point 1..5 in dimensionless coordinates.
 pub fn cr3bp_lagrange(mu: f64, point: i32) -> Result<Vec3d> {
     let mut out = Vec3d::default();
-    // SAFETY: вихідний вказівник веде на локальну змінну, живу до кінця
-    // виклику; решта аргументів — за значенням.
+    // SAFETY: the output pointer leads to a local alive to the end of the
+    // call; the remaining arguments are by value.
     let code = unsafe { core_sys::cr3bp_lagrange(mu, point, &mut out) };
     check(code)?;
     Ok(out)
 }
 
-/// Де промінь `from + r·dir_unit` перетинає криву нульової швидкості, або
-/// [`CoreError::ToleranceNotMet`], якщо не перетинає взагалі.
+/// Where the ray `from + r*dir_unit` crosses the zero-velocity curve, or
+/// [`CoreError::ToleranceNotMet`] if it does not cross at all.
 ///
-/// **Ця помилка — відповідь, а не збій**, і викликач зобов'язаний її
-/// розрізняти: уздовж такого променя область або цілком заборонена, або цілком
-/// відкрита. Хто трактує її як невдачу, домальовує криву там, де її немає.
+/// **That error is an answer, not a failure**, and the caller must tell them
+/// apart: along such a ray the region is either wholly forbidden or wholly
+/// open. Whoever treats it as a failure draws the curve where there is none.
 ///
-/// `dir_unit` мусить бути одиничним — його рахує викликач, бо `cos`/`sin` у
-/// `/core` заборонені (CLAUDE.md, інваріант 3).
+/// `dir_unit` must be a unit vector -- the caller computes it, because
+/// `cos`/`sin` are forbidden in `/core` (CLAUDE.md, invariant 3).
 pub fn cr3bp_zvc_radius(mu: f64, c: f64, from: Vec3d, dir_unit: Vec3d, r_max: f64) -> Result<f64> {
     let mut r = 0.0;
-    // SAFETY: вихідний вказівник веде на локальну змінну; вхідні структури
-    // йдуть за значенням і копіюються C-стороною.
+    // SAFETY: the output pointer leads to a local; the input structs go by
+    // value and are copied on the C side.
     let code = unsafe { core_sys::cr3bp_zvc_radius(mu, c, from, dir_unit, r_max, &mut r) };
     check(code)?;
     Ok(r)
 }
 
-/// Синодичний фрейм справжньої пари тіл на конкретну мить
-/// (`core/frame.h`, ROADMAP C4; на межі — U6b1).
+/// Synodic frame of a real body pair at a specific instant (`core/frame.h`,
+/// ROADMAP C4; on the boundary, U6b1).
 ///
-/// Тримає структуру C цілою й не дає читати з неї те, чого ніхто не питав:
-/// назовні йдуть три величини, які визначають масштаб, і сам перехід.
+/// Keeps the C struct whole and does not expose what nobody asked for: three
+/// quantities defining the scale, plus the transform itself, go out.
 #[derive(Clone, Copy, Debug)]
 pub struct SynodicFrame {
     raw: core_sys::SynodicFrame,
 }
 
 impl SynodicFrame {
-    /// `L` — відстань між тілами в цю мить, метри.
+    /// `L`, the distance between the bodies at that instant, metres.
     pub fn length(&self) -> f64 {
         self.raw.length
     }
 
-    /// `|ω|`, рад/с: одна безрозмірна одиниця часу.
+    /// `|omega|`, rad/s: one dimensionless unit of time.
     pub fn rate(&self) -> f64 {
         self.raw.rate
     }
 
-    /// `μ` пари.
+    /// `mu` of the pair.
     pub fn mass_ratio(&self) -> f64 {
         self.raw.mu
     }
 
-    /// Інерціальний стан у метрах → безрозмірний стан CR3BP.
+    /// Inertial state in metres -> dimensionless CR3BP state.
     ///
-    /// **Це не просто поворот осей.** Разом із координатами перетворюється й
-    /// швидкість: у обертовому фреймі до неї додається `−ω × r`, і саме тому
-    /// перетворення живе в C, а не поруч із камерою.
+    /// **This is not merely rotating axes.** The velocity transforms along
+    /// with the coordinates: in a rotating frame `-omega x r` is added to it,
+    /// which is why the transform lives in C rather than beside the camera.
     pub fn from_inertial(&self, state: &State) -> State {
         let mut out = State::default();
-        // SAFETY: обидва вказівники ведуть на локальні змінні, живі до кінця
-        // виклику; функція нічого не виділяє й коду не повертає — заміна
-        // координат не вдатися не може.
+        // SAFETY: both pointers lead to locals alive to the end of the call;
+        // the function allocates nothing and returns no code -- a change of
+        // coordinates cannot fail.
         unsafe { core_sys::frame_from_inertial(&self.raw, state, &mut out) };
         out
     }
