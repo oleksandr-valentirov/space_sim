@@ -675,6 +675,7 @@ impl Frame {
             colour: colour.cloned(),
             bind_group,
             scale_m: terrain.scale_m,
+            albedo: colour.map_or([0.0; 3], |c| c.mean().map(|v| v as f32)),
         });
         Ok(scene::TerrainId(self.planet.terrains.len() - 1))
     }
@@ -883,12 +884,18 @@ impl Frame {
         // коштувала 0.05 мс за диск повітря завширшки в шістнадцяту пікселя.
         // Двох режимів «видно наполовину» тут не існує.
         let focal = lod::focal_px(FOV_Y, f64::from(height));
-        let air = Frame::air_view(scene, aspect).filter(|(atmosphere, bottom, view)| {
+        let air = Frame::air_view(scene, aspect).filter(|(atmosphere, bottom, view, _)| {
             Frame::shell_px(atmosphere, *bottom, view, focal) >= 1.0
         });
         let aerial = air.is_some();
-        if let Some((atmosphere, bottom, view)) = &air {
-            self.sky.ensure(gpu, atmosphere, *bottom);
+        if let Some((atmosphere, bottom, view, surface)) = &air {
+            // Альбедо під небом — з тайлсета тіла, порахованого при
+            // завантаженні. Немає тайлсета — нуль, тобто рівно те, що робив
+            // прохід до T7h.
+            let albedo = surface
+                .and_then(|id| self.planet.terrains.get(id.0))
+                .map_or([0.0; 3], |slot| slot.albedo);
+            self.sky.ensure(gpu, atmosphere, *bottom, albedo);
             self.sky.prepare_view(gpu, encoder, view);
             self.sky.prepare_aerial(encoder);
         }
@@ -969,7 +976,7 @@ impl Frame {
             // Власного запису глибини прохід неба не робить: воно нескінченно
             // далеко, і сперечатися з ним нема про що.
             if index == 0 {
-                if let Some((atmosphere, _, view)) = &air {
+                if let Some((atmosphere, _, view, _)) = &air {
                     self.sky.draw(&mut pass, view.radius() < atmosphere.top_m);
                 }
             }
@@ -1057,7 +1064,10 @@ impl Frame {
     /// `None` означає «повітря в кадрі немає», і це не окремий випадок, а той
     /// самий кадр, що був до етапу S: жодна таблиця не рахується, прохід не
     /// подається, знімок лишається бітово тим самим.
-    fn air_view(scene: &Scene, aspect: f64) -> Option<(scene::Atmosphere, f64, sky::View)> {
+    fn air_view(
+        scene: &Scene,
+        aspect: f64,
+    ) -> Option<(scene::Atmosphere, f64, sky::View, Option<scene::TerrainId>)> {
         let eye = scene.camera.position();
         let mut best: Option<(f64, &Body)> = None;
         for body in &scene.bodies {
@@ -1090,6 +1100,11 @@ impl Frame {
         let t = (FOV_Y / 2.0).tan();
         let narrow = |v: [f64; 3]| [v[0] as f32, v[1] as f32, v[2] as f32];
 
+        // Тайлсет тіла — щоб небо дізналося, що під ним лежить (T7h).
+        let surface = match body.tiles {
+            scene::TileSet::Loaded(id) => Some(id),
+            scene::TileSet::Smooth => None,
+        };
         Some((
             air,
             body.radius_m,
@@ -1107,6 +1122,7 @@ impl Frame {
                 forward: narrow(forward),
                 tan_half: [(t * aspect) as f32, t as f32],
             },
+            surface,
         ))
     }
 
@@ -1335,6 +1351,15 @@ struct TerrainSlot {
     bind_group: wgpu::BindGroup,
     /// Метрів на одиницю зберігання — множник для вершинного зсуву.
     scale_m: f32,
+    /// Середнє альбедо поверхні, лінійне (T7h). Рахується **раз на асет**:
+    /// `Colour::mean` розкодовує sRGB у кожному з 22 050 вузлів найгрубішого
+    /// рівня, тобто це десятки тисяч `powf` — щокадру такого робити не можна,
+    /// а щоразу при завантаженні можна.
+    ///
+    /// Нуль без колірного тайлсета, і це те саме рішення, що діяло до T7h:
+    /// небо над тілом, кольору якого ми не знаємо, не має звідки взяти
+    /// відбите знизу світло.
+    albedo: [f32; 3],
 }
 
 /// Те, чим одне тіло відрізняється від іншого на GPU: своя матриця й свої

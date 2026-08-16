@@ -44,6 +44,17 @@ use engine::sky::Sky;
 
 const BOTTOM: f64 = 6_371_000.0;
 
+/// Альбедо поверхні під небом — виміряне середнє `assets/earth.col` (T7h).
+///
+/// Ненульове навмисно: із нулем звірка GPU з двійником не перевіряла б доданок
+/// відбиття взагалі, бо він у обох гілках зникав би однаково.
+const ALBEDO: [f32; 3] = [0.0595, 0.0595, 0.0732];
+
+/// Те саме число для двійника, який рахує в `f64`.
+fn twin_albedo() -> [f64; 3] {
+    ALBEDO.map(f64::from)
+}
+
 fn gpu() -> Option<Gpu> {
     Gpu::for_tests()
 }
@@ -61,7 +72,10 @@ fn the_transmittance_table_matches_the_oracle_everywhere() {
 
     let air = Atmosphere::EARTH.with_surface(BOTTOM);
     let mut sky = Sky::new(&gpu, engine::shot::FORMAT);
-    assert!(sky.ensure(&gpu, &air, BOTTOM), "перший раз таблицю рахують");
+    assert!(
+        sky.ensure(&gpu, &air, BOTTOM, ALBEDO),
+        "перший раз таблицю рахують"
+    );
 
     let table = sky
         .read_transmittance(&gpu)
@@ -114,7 +128,7 @@ fn the_vertical_column_matches_the_closed_form() {
 
     let air = Atmosphere::EARTH.with_surface(BOTTOM);
     let mut sky = Sky::new(&gpu, engine::shot::FORMAT);
-    sky.ensure(&gpu, &air, BOTTOM);
+    sky.ensure(&gpu, &air, BOTTOM, ALBEDO);
     let table = sky
         .read_transmittance(&gpu)
         .expect("таблиця мала прочитатися");
@@ -153,7 +167,7 @@ fn the_table_is_monotone_in_both_of_its_axes() {
 
     let air = Atmosphere::EARTH.with_surface(BOTTOM);
     let mut sky = Sky::new(&gpu, engine::shot::FORMAT);
-    sky.ensure(&gpu, &air, BOTTOM);
+    sky.ensure(&gpu, &air, BOTTOM, ALBEDO);
     let table = sky
         .read_transmittance(&gpu)
         .expect("таблиця мала прочитатися");
@@ -192,22 +206,39 @@ fn the_table_is_recomputed_only_when_the_air_changes() {
 
     let air = Atmosphere::EARTH.with_surface(BOTTOM);
     let mut sky = Sky::new(&gpu, engine::shot::FORMAT);
-    assert!(sky.ensure(&gpu, &air, BOTTOM), "перший раз — рахуємо");
     assert!(
-        !sky.ensure(&gpu, &air, BOTTOM),
+        sky.ensure(&gpu, &air, BOTTOM, ALBEDO),
+        "перший раз — рахуємо"
+    );
+    assert!(
+        !sky.ensure(&gpu, &air, BOTTOM, ALBEDO),
         "те саме повітря — не рахуємо"
     );
 
     // Інший радіус того самого тіла — інша атмосфера: висота над поверхнею
     // рахується від нього.
     assert!(
-        sky.ensure(&gpu, &air, BOTTOM + 1000.0),
+        sky.ensure(&gpu, &air, BOTTOM + 1000.0, ALBEDO),
         "інший радіус — інша таблиця"
     );
 
     let mut thicker = air;
     thicker.rayleigh_height_m *= 2.0;
-    assert!(sky.ensure(&gpu, &thicker, BOTTOM + 1000.0), "інше повітря");
+    assert!(
+        sky.ensure(&gpu, &thicker, BOTTOM + 1000.0, ALBEDO),
+        "інше повітря"
+    );
+
+    // І альбедо теж у ключі: воно міняє таблицю багаторазового розсіювання,
+    // тож перебудова мусить статися й від нього самого (T7h).
+    assert!(
+        sky.ensure(&gpu, &thicker, BOTTOM + 1000.0, [0.5, 0.5, 0.5]),
+        "інше альбедо — інша таблиця"
+    );
+    assert!(
+        !sky.ensure(&gpu, &thicker, BOTTOM + 1000.0, [0.5, 0.5, 0.5]),
+        "те саме альбедо — не рахуємо вдруге"
+    );
 }
 
 /// Розміри таблиці записані і в Rust, і в Slang — і мусять збігатися.
@@ -258,7 +289,7 @@ fn the_multiscatter_table_matches_the_oracle() {
 
     let air = Atmosphere::EARTH.with_surface(BOTTOM);
     let mut sky = Sky::new(&gpu, engine::shot::FORMAT);
-    sky.ensure(&gpu, &air, BOTTOM);
+    sky.ensure(&gpu, &air, BOTTOM, ALBEDO);
     let table = sky
         .read_multiscatter(&gpu)
         .expect("таблиця мала прочитатися");
@@ -278,7 +309,14 @@ fn the_multiscatter_table_matches_the_oracle() {
             let u = f64::from(x) / f64::from(size - 1);
             let v = f64::from(y) / f64::from(size - 1);
             let (r, mu_s) = atmosphere::multiscatter_uv(&air, BOTTOM, u, v);
-            let (psi, _) = atmosphere::multiple_scattering(&air, BOTTOM, &transmittance, r, mu_s);
+            let (psi, _) = atmosphere::multiple_scattering(
+                &air,
+                BOTTOM,
+                &transmittance,
+                r,
+                mu_s,
+                twin_albedo(),
+            );
             let got = table[(y * size + x) as usize];
             for channel in 0..3 {
                 largest = largest.max(psi[channel]);
@@ -334,7 +372,7 @@ fn every_further_scattering_adds_less_than_the_one_before() {
 
     let air = Atmosphere::EARTH.with_surface(BOTTOM);
     let mut sky = Sky::new(&gpu, engine::shot::FORMAT);
-    sky.ensure(&gpu, &air, BOTTOM);
+    sky.ensure(&gpu, &air, BOTTOM, ALBEDO);
     let table = sky
         .read_multiscatter(&gpu)
         .expect("таблиця мала прочитатися");
@@ -381,7 +419,7 @@ fn the_multiscatter_table_is_monotone_in_both_of_its_axes() {
 
     let air = Atmosphere::EARTH.with_surface(BOTTOM);
     let mut sky = Sky::new(&gpu, engine::shot::FORMAT);
-    sky.ensure(&gpu, &air, BOTTOM);
+    sky.ensure(&gpu, &air, BOTTOM, ALBEDO);
     let table = sky
         .read_multiscatter(&gpu)
         .expect("таблиця мала прочитатися");
@@ -449,6 +487,56 @@ fn the_multiscatter_table_is_monotone_in_both_of_its_axes() {
 // S4 — небо
 // ---------------------------------------------------------------------------
 
+/// Земля під небом робить небо світлішим — і на скільки саме (T7h).
+///
+/// До T7h альбедо поверхні стояло нулем, і то було рішення: кольору поверхні
+/// в сцені не існувало взагалі, тож будь-яке число було б вигаданим. Тепер
+/// воно приходить з тайлсета (`Colour::mean`), і цей тест каже, що доданок не
+/// лише є в коді, а й доходить до яскравості.
+///
+/// Двійник, а не GPU: питання тут фізичне — «чи світліше», — і відповідає на
+/// нього та сама арифметика, яку шейдер уже звірено відтворює
+/// (`the_multiscatter_table_matches_the_oracle` ганяє обидві гілки з
+/// **ненульовим** альбедо).
+#[test]
+fn the_ground_under_the_sky_makes_it_brighter() {
+    let air = Atmosphere::EARTH.with_surface(BOTTOM);
+    let dark = atmosphere::Model::build(&air, BOTTOM, 500, [0.0; 3]);
+    let lit = atmosphere::Model::build(&air, BOTTOM, 500, twin_albedo());
+
+    // Зеніт з рівня моря, Сонце високо: там багаторазове розсіювання важить
+    // найбільше, тобто відбите знизу світло має де проявитися.
+    let r = BOTTOM + 2.0;
+    let mut worst = f64::INFINITY;
+    let mut best: f64 = 0.0;
+    for mu_s in [1.0, 0.7, 0.4] {
+        for mu_v in [1.0, 0.5, 0.1] {
+            let a = dark.sky_view(r, mu_s, mu_v, 0.0);
+            let b = lit.sky_view(r, mu_s, mu_v, 0.0);
+            for channel in 0..3 {
+                assert!(
+                    b[channel] >= a[channel],
+                    "альбедо {:.3} зробило небо темнішим при mu_s {mu_s}, \
+                     mu_v {mu_v}, канал {channel}: {} проти {}",
+                    twin_albedo()[channel],
+                    b[channel],
+                    a[channel]
+                );
+                let gain = b[channel] / a[channel].max(1.0e-30);
+                worst = worst.min(gain);
+                best = best.max(gain);
+            }
+        }
+    }
+    println!("  небо світлішає в {worst:.4}…{best:.4} рази при альбедо {ALBEDO:?}");
+
+    // І приріст помітний: доданок, загублений у нулях, дав би рівно одиницю.
+    assert!(
+        best > 1.005,
+        "найбільший приріст лише {best:.5} — доданок нікуди не дійшов"
+    );
+}
+
 /// Таблиця неба збігається з двійником, і на трьох різних камерах.
 ///
 /// Три, а не одна: параметризація по зеніту залежить від висоти (горизонт з
@@ -460,11 +548,11 @@ fn the_sky_table_matches_the_oracle_from_three_cameras() {
 
     let air = Atmosphere::EARTH.with_surface(BOTTOM);
     let mut sky = Sky::new(&gpu, engine::shot::FORMAT);
-    sky.ensure(&gpu, &air, BOTTOM);
+    sky.ensure(&gpu, &air, BOTTOM, ALBEDO);
 
     // 500 кроків у таблиці пропускання — рівно стільки, скільки в шейдері:
     // тут перевіряється небо, а точність пропускання вже перевірена окремо.
-    let model = atmosphere::Model::build(&air, BOTTOM, 500);
+    let model = atmosphere::Model::build(&air, BOTTOM, 500, twin_albedo());
 
     let width = atmosphere::SKYVIEW_WIDTH;
     let height = atmosphere::SKYVIEW_HEIGHT;

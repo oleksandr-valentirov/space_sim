@@ -23,6 +23,10 @@ struct AirParams
     // x — центр озонового шару, y — його півширина (обидва м),
     // z — радіус поверхні тіла, w — радіус верхньої межі повітря.
     float4 shape;
+    // rgb — середнє альбедо поверхні під цим небом, лінійне (T7h); w — запас.
+    // Нуль означає «поверхні не знаємо», і тоді прохід поводиться так, як до
+    // T7h: небо не дістає нічого відбитого знизу.
+    float4 ground;
 };
 
 // ## Групи прив'язки, і чому їх дві
@@ -484,6 +488,26 @@ void multiscatter_main(uint3 id : SV_DispatchThreadID)
             fraction += throughput * sigma_s * gain;
 
             throughput *= step_transmittance;
+        }
+
+        // Відбиття від поверхні (T7h). Промінь, що впав у землю, повертає
+        // ламбертове `albedo/π · E`, і повертає його **після** всього шляху,
+        // тобто помноженим на те, що від променя лишилось.
+        //
+        // Для частки — те саме джерело, але освітлення ізотропне з яскравістю
+        // одиниця: `∫ cos/π dω = 1`, тож ламбертова поверхня віддає рівно
+        // `albedo`. Без цього доданка ряд рахував би відбиття лише в другому
+        // порядку, а в третьому й далі — ні.
+        if (ground >= 0.0)
+        {
+            float3 hit = float3(ground * w.x, ground * w.y, r + ground * w.z);
+            float mu_s_ground = dot(normalize(hit), sun);
+            if (mu_s_ground > 0.0)
+            {
+                second += throughput * air.ground.rgb / PI
+                        * sample_transmittance(bottom, mu_s_ground) * mu_s_ground;
+            }
+            fraction += throughput * air.ground.rgb;
         }
     }
 

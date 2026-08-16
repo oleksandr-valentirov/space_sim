@@ -4,6 +4,7 @@ struct AirParams_std140_0
     @align(16) mie_0 : vec4<f32>,
     @align(16) ozone_0 : vec4<f32>,
     @align(16) shape_0 : vec4<f32>,
+    @align(16) ground_0 : vec4<f32>,
 };
 
 @binding(0) @group(0) var<uniform> air_0 : AirParams_std140_0;
@@ -215,6 +216,7 @@ fn scattering_0( h_4 : f32) -> vec3<f32>
 @workgroup_size(8, 8, 1)
 fn multiscatter_main(@builtin(global_invocation_id) id_1 : vec3<u32>)
 {
+    var to_sun_0 : vec3<f32>;
     var _S16 : u32 = id_1.x;
     var _S17 : bool;
     if(_S16 >= u32(32))
@@ -254,20 +256,23 @@ fn multiscatter_main(@builtin(global_invocation_id) id_1 : vec3<u32>)
         var w_0 : vec3<f32> = sphere_direction_0(k_2);
         var mu_7 : f32 = w_0.z;
         var span_2 : f32 = distance_to_top_0(_S19, mu_7, _S21, _S22);
-        var ground_0 : f32 = distance_to_ground_0(_S19, mu_7, _S21);
+        var ground_1 : f32 = distance_to_ground_0(_S19, mu_7, _S21);
+        var _S24 : bool = ground_1 >= 0.0f;
         var span_3 : f32;
-        if(ground_0 >= 0.0f)
+        if(_S24)
         {
-            span_3 = min(span_2, ground_0);
+            span_3 = min(span_2, ground_1);
         }
         else
         {
             span_3 = span_2;
         }
-        var _S24 : f32 = span_3 / 20.0f;
-        const _S25 : vec3<f32> = vec3<f32>(1.0f, 1.0f, 1.0f);
+        var _S25 : f32 = span_3 / 20.0f;
+        const _S26 : vec3<f32> = vec3<f32>(1.0f, 1.0f, 1.0f);
         var s_0 : u32 = u32(0);
-        var throughput_0 : vec3<f32> = _S25;
+        var throughput_0 : vec3<f32> = _S26;
+        var second_1 : vec3<f32> = second_0;
+        var fraction_1 : vec3<f32> = fraction_0;
         for(;;)
         {
             if(s_0 < u32(20))
@@ -277,13 +282,12 @@ fn multiscatter_main(@builtin(global_invocation_id) id_1 : vec3<u32>)
             {
                 break;
             }
-            var t_0 : f32 = (f32(s_0) + 0.5f) * _S24;
-            var _S26 : f32 = max(0.0f, _S21 + 2.0f * t_0 * _S19 * mu_7 + t_0 * t_0);
-            var radius_0 : f32 = sqrt(max(0.0f, _S26 + bottom_2 * bottom_2));
-            var h_5 : f32 = _S26 / (radius_0 + bottom_2);
+            var t_0 : f32 = (f32(s_0) + 0.5f) * _S25;
+            var _S27 : f32 = max(0.0f, _S21 + 2.0f * t_0 * _S19 * mu_7 + t_0 * t_0);
+            var radius_0 : f32 = sqrt(max(0.0f, _S27 + bottom_2 * bottom_2));
+            var h_5 : f32 = _S27 / (radius_0 + bottom_2);
             var mu_s_here_0 : f32 = dot(vec3<f32>(t_0 * w_0.x, t_0 * w_0.y, _S19 + t_0 * mu_7), _S20) / max(radius_0, 1.0f);
-            var to_sun_0 : vec3<f32>;
-            if((distance_to_ground_0(radius_0, mu_s_here_0, _S26)) < 0.0f)
+            if((distance_to_ground_0(radius_0, mu_s_here_0, _S27)) < 0.0f)
             {
                 to_sun_0 = sample_transmittance_0(radius_0, mu_s_here_0);
             }
@@ -292,22 +296,42 @@ fn multiscatter_main(@builtin(global_invocation_id) id_1 : vec3<u32>)
                 to_sun_0 = _S23;
             }
             var sigma_e_0 : vec3<f32> = extinction_0(h_5);
-            var step_transmittance_0 : vec3<f32> = exp((vec3<f32>(0) - sigma_e_0) * vec3<f32>(_S24));
+            var step_transmittance_0 : vec3<f32> = exp((vec3<f32>(0) - sigma_e_0) * vec3<f32>(_S25));
             var gain_0 : vec3<f32> = (vec3<f32>(1.0f) - step_transmittance_0) / max(sigma_e_0, vec3<f32>(1.00000000317107685e-30f));
-            var _S27 : vec3<f32> = throughput_0 * scattering_0(h_5);
-            var second_1 : vec3<f32> = second_0 + _S27 * to_sun_0 * vec3<f32>(0.07957746833562851f) * gain_0;
-            var fraction_1 : vec3<f32> = fraction_0 + _S27 * gain_0;
+            var _S28 : vec3<f32> = throughput_0 * scattering_0(h_5);
+            var second_2 : vec3<f32> = second_1 + _S28 * to_sun_0 * vec3<f32>(0.07957746833562851f) * gain_0;
+            var fraction_2 : vec3<f32> = fraction_1 + _S28 * gain_0;
             var throughput_1 : vec3<f32> = throughput_0 * step_transmittance_0;
             s_0 = s_0 + u32(1);
             throughput_0 = throughput_1;
+            second_1 = second_2;
+            fraction_1 = fraction_2;
+        }
+        if(_S24)
+        {
+            var mu_s_ground_0 : f32 = dot(normalize(vec3<f32>(ground_1 * w_0.x, ground_1 * w_0.y, _S19 + ground_1 * mu_7)), _S20);
+            if(mu_s_ground_0 > 0.0f)
+            {
+                to_sun_0 = second_1 + throughput_0 * air_0.ground_0.xyz / vec3<f32>(3.14159274101257324f) * sample_transmittance_0(bottom_2, mu_s_ground_0) * vec3<f32>(mu_s_ground_0);
+            }
+            else
+            {
+                to_sun_0 = second_1;
+            }
+            var fraction_3 : vec3<f32> = fraction_1 + throughput_0 * air_0.ground_0.xyz;
+            second_0 = to_sun_0;
+            fraction_0 = fraction_3;
+        }
+        else
+        {
             second_0 = second_1;
             fraction_0 = fraction_1;
         }
         k_2 = k_2 + u32(1);
     }
-    var _S28 : vec3<f32> = vec3<f32>(64.0f);
-    var fraction_2 : vec3<f32> = fraction_0 / _S28;
-    textureStore((multiscatter_out_0), (id_1.xy), (vec4<f32>(second_0 / _S28 / max(vec3<f32>(1.0f, 1.0f, 1.0f) - fraction_2, vec3<f32>(9.99999997475242708e-07f)), max(fraction_2.x, max(fraction_2.y, fraction_2.z)))));
+    var _S29 : vec3<f32> = vec3<f32>(64.0f);
+    var fraction_4 : vec3<f32> = fraction_0 / _S29;
+    textureStore((multiscatter_out_0), (id_1.xy), (vec4<f32>(second_0 / _S29 / max(vec3<f32>(1.0f, 1.0f, 1.0f) - fraction_4, vec3<f32>(9.99999997475242708e-07f)), max(fraction_4.x, max(fraction_4.y, fraction_4.z)))));
     return;
 }
 
@@ -316,20 +340,20 @@ fn skyview_uv_0( r_7 : f32,  uv_2 : vec2<f32>) -> vec2<f32>
     var bottom_3 : f32 = air_0.shape_0.z;
     var beta_0 : f32 = acos(clamp(sqrt(max(0.0f, r_7 * r_7 - bottom_3 * bottom_3)) / r_7, -1.0f, 1.0f));
     var zenith_horizon_0 : f32 = 3.14159274101257324f - beta_0;
-    var _S29 : f32 = uv_2.y;
+    var _S30 : f32 = uv_2.y;
     var zenith_0 : f32;
-    if(_S29 < 0.5f)
+    if(_S30 < 0.5f)
     {
-        var c_0 : f32 = 1.0f - 2.0f * _S29;
+        var c_0 : f32 = 1.0f - 2.0f * _S30;
         zenith_0 = zenith_horizon_0 * (1.0f - c_0 * c_0);
     }
     else
     {
-        var c_1 : f32 = 2.0f * _S29 - 1.0f;
+        var c_1 : f32 = 2.0f * _S30 - 1.0f;
         zenith_0 = zenith_horizon_0 + beta_0 * c_1 * c_1;
     }
-    var _S30 : f32 = uv_2.x;
-    return vec2<f32>(cos(zenith_0), 1.0f - 2.0f * _S30 * _S30);
+    var _S31 : f32 = uv_2.x;
+    return vec2<f32>(cos(zenith_0), 1.0f - 2.0f * _S31 * _S31);
 }
 
 fn rayleigh_phase_0( cos_theta_0 : f32) -> f32
@@ -339,8 +363,8 @@ fn rayleigh_phase_0( cos_theta_0 : f32) -> f32
 
 fn mie_phase_0( cos_theta_1 : f32,  g_0 : f32) -> f32
 {
-    var _S31 : f32 = g_0 * g_0;
-    return (1.0f - _S31) / (12.56637096405029297f * pow(max(1.0f + _S31 - 2.0f * g_0 * cos_theta_1, 9.99999997475242708e-07f), 1.5f));
+    var _S32 : f32 = g_0 * g_0;
+    return (1.0f - _S32) / (12.56637096405029297f * pow(max(1.0f + _S32 - 2.0f * g_0 * cos_theta_1, 9.99999997475242708e-07f), 1.5f));
 }
 
 fn sample_multiscatter_0( r_8 : f32,  mu_s_1 : f32) -> vec3<f32>
@@ -351,18 +375,18 @@ fn sample_multiscatter_0( r_8 : f32,  mu_s_1 : f32) -> vec3<f32>
 
 fn raymarch_0( pos_0 : vec3<f32>,  dir_0 : vec3<f32>,  sun_1 : vec3<f32>,  rho2_2 : f32,  span_4 : f32,  steps_1 : u32) -> vec3<f32>
 {
-    var _S32 : f32 = air_0.shape_0.z;
+    var _S33 : f32 = air_0.shape_0.z;
     var r_9 : f32 = length(pos_0);
-    var _S33 : f32 = dot(pos_0, dir_0) / max(r_9, 1.0f);
+    var _S34 : f32 = dot(pos_0, dir_0) / max(r_9, 1.0f);
     var cos_theta_2 : f32 = dot(dir_0, sun_1);
-    var _S34 : f32 = rayleigh_phase_0(cos_theta_2);
-    var _S35 : f32 = mie_phase_0(cos_theta_2, air_0.mie_0.w);
-    var _S36 : f32 = span_4 / f32(steps_1);
-    const _S37 : vec3<f32> = vec3<f32>(1.0f, 1.0f, 1.0f);
-    const _S38 : vec3<f32> = vec3<f32>(0.0f, 0.0f, 0.0f);
+    var _S35 : f32 = rayleigh_phase_0(cos_theta_2);
+    var _S36 : f32 = mie_phase_0(cos_theta_2, air_0.mie_0.w);
+    var _S37 : f32 = span_4 / f32(steps_1);
+    const _S38 : vec3<f32> = vec3<f32>(1.0f, 1.0f, 1.0f);
+    const _S39 : vec3<f32> = vec3<f32>(0.0f, 0.0f, 0.0f);
     var s_1 : u32 = u32(0);
-    var throughput_2 : vec3<f32> = _S37;
-    var light_0 : vec3<f32> = _S38;
+    var throughput_2 : vec3<f32> = _S38;
+    var light_0 : vec3<f32> = _S39;
     for(;;)
     {
         if(s_1 < steps_1)
@@ -372,26 +396,26 @@ fn raymarch_0( pos_0 : vec3<f32>,  dir_0 : vec3<f32>,  sun_1 : vec3<f32>,  rho2_
         {
             break;
         }
-        var t_1 : f32 = (f32(s_1) + 0.5f) * _S36;
-        var _S39 : f32 = max(0.0f, rho2_2 + 2.0f * t_1 * r_9 * _S33 + t_1 * t_1);
-        var radius_1 : f32 = sqrt(max(0.0f, _S39 + _S32 * _S32));
-        var h_6 : f32 = _S39 / (radius_1 + _S32);
+        var t_1 : f32 = (f32(s_1) + 0.5f) * _S37;
+        var _S40 : f32 = max(0.0f, rho2_2 + 2.0f * t_1 * r_9 * _S34 + t_1 * t_1);
+        var radius_1 : f32 = sqrt(max(0.0f, _S40 + _S33 * _S33));
+        var h_6 : f32 = _S40 / (radius_1 + _S33);
         var mu_s_here_1 : f32 = dot(pos_0 + vec3<f32>(t_1) * dir_0, sun_1) / max(radius_1, 1.0f);
         var to_sun_1 : vec3<f32>;
-        if((distance_to_ground_0(radius_1, mu_s_here_1, _S39)) < 0.0f)
+        if((distance_to_ground_0(radius_1, mu_s_here_1, _S40)) < 0.0f)
         {
             to_sun_1 = sample_transmittance_0(radius_1, mu_s_here_1);
         }
         else
         {
-            to_sun_1 = _S38;
+            to_sun_1 = _S39;
         }
         var d_5 : vec3<f32> = density_0(h_6);
         var sigma_e_1 : vec3<f32> = extinction_0(h_6);
         var sigma_r_0 : vec3<f32> = air_0.rayleigh_0.xyz * vec3<f32>(d_5.x);
         var sigma_m_0 : f32 = air_0.mie_0.x * d_5.y;
-        var step_transmittance_1 : vec3<f32> = exp((vec3<f32>(0) - sigma_e_1) * vec3<f32>(_S36));
-        var light_1 : vec3<f32> = light_0 + throughput_2 * ((sigma_r_0 * vec3<f32>(_S34) + vec3<f32>((sigma_m_0 * _S35))) * to_sun_1 + (sigma_r_0 + vec3<f32>(sigma_m_0)) * sample_multiscatter_0(radius_1, mu_s_here_1)) * (vec3<f32>(1.0f) - step_transmittance_1) / max(sigma_e_1, vec3<f32>(1.00000000317107685e-30f));
+        var step_transmittance_1 : vec3<f32> = exp((vec3<f32>(0) - sigma_e_1) * vec3<f32>(_S37));
+        var light_1 : vec3<f32> = light_0 + throughput_2 * ((sigma_r_0 * vec3<f32>(_S35) + vec3<f32>((sigma_m_0 * _S36))) * to_sun_1 + (sigma_r_0 + vec3<f32>(sigma_m_0)) * sample_multiscatter_0(radius_1, mu_s_here_1)) * (vec3<f32>(1.0f) - step_transmittance_1) / max(sigma_e_1, vec3<f32>(1.00000000317107685e-30f));
         var throughput_3 : vec3<f32> = throughput_2 * step_transmittance_1;
         s_1 = s_1 + u32(1);
         throughput_2 = throughput_3;
@@ -407,41 +431,41 @@ fn raymarch_sky_0( r_10 : f32,  mu_s_2 : f32,  mu_v_0 : f32,  cos_azimuth_0 : f3
     var sun_2 : vec3<f32> = vec3<f32>(sqrt(max(0.0f, 1.0f - mu_s_2 * mu_s_2)), 0.0f, mu_s_2);
     var sin_v_0 : f32 = sqrt(max(0.0f, 1.0f - mu_v_0 * mu_v_0));
     var w_1 : vec3<f32> = vec3<f32>(sin_v_0 * cos_azimuth_0, sin_v_0 * sqrt(max(0.0f, 1.0f - cos_azimuth_0 * cos_azimuth_0)), mu_v_0);
-    var _S40 : f32 = max(0.0f, r_10 * r_10 - bottom_5 * bottom_5);
-    var span_5 : f32 = distance_to_top_0(r_10, mu_v_0, _S40, (top_3 - bottom_5) * (top_3 + bottom_5));
-    var ground_1 : f32 = distance_to_ground_0(r_10, mu_v_0, _S40);
+    var _S41 : f32 = max(0.0f, r_10 * r_10 - bottom_5 * bottom_5);
+    var span_5 : f32 = distance_to_top_0(r_10, mu_v_0, _S41, (top_3 - bottom_5) * (top_3 + bottom_5));
+    var ground_2 : f32 = distance_to_ground_0(r_10, mu_v_0, _S41);
     var span_6 : f32;
-    if(ground_1 >= 0.0f)
+    if(ground_2 >= 0.0f)
     {
-        span_6 = min(span_5, ground_1);
+        span_6 = min(span_5, ground_2);
     }
     else
     {
         span_6 = span_5;
     }
-    return raymarch_0(vec3<f32>(0.0f, 0.0f, r_10), w_1, sun_2, _S40, span_6, steps_2);
+    return raymarch_0(vec3<f32>(0.0f, 0.0f, r_10), w_1, sun_2, _S41, span_6, steps_2);
 }
 
 @compute
 @workgroup_size(8, 8, 1)
 fn skyview_main(@builtin(global_invocation_id) id_2 : vec3<u32>)
 {
-    var _S41 : u32 = id_2.x;
-    var _S42 : bool;
-    if(_S41 >= u32(192))
+    var _S42 : u32 = id_2.x;
+    var _S43 : bool;
+    if(_S42 >= u32(192))
     {
-        _S42 = true;
+        _S43 = true;
     }
     else
     {
-        _S42 = (id_2.y) >= u32(108);
+        _S43 = (id_2.y) >= u32(108);
     }
-    if(_S42)
+    if(_S43)
     {
         return;
     }
     var r_11 : f32 = frame_0.view_0.x;
-    var angles_0 : vec2<f32> = skyview_uv_0(r_11, vec2<f32>(f32(_S41) / 191.0f, f32(id_2.y) / 107.0f));
+    var angles_0 : vec2<f32> = skyview_uv_0(r_11, vec2<f32>(f32(_S42) / 191.0f, f32(id_2.y) / 107.0f));
     textureStore((skyview_out_0), (id_2.xy), (vec4<f32>(raymarch_sky_0(r_11, frame_0.view_0.y, angles_0.x, angles_0.y, u32(32)), 1.0f)));
     return;
 }
@@ -511,28 +535,28 @@ struct pixelInput_0
 };
 
 @fragment
-fn fragment_sky_inside( _S43 : pixelInput_0, @builtin(position) position_1 : vec4<f32>) -> pixelOutput_0
+fn fragment_sky_inside( _S44 : pixelInput_0, @builtin(position) position_1 : vec4<f32>) -> pixelOutput_0
 {
     var bottom_7 : f32 = air_0.shape_0.z;
     var r_13 : f32 = frame_0.view_0.x;
-    var dir_1 : vec3<f32> = pixel_ray_0(_S43.ndc_3);
+    var dir_1 : vec3<f32> = pixel_ray_0(_S44.ndc_3);
     var up_0 : vec3<f32> = frame_0.eye_0.xyz / vec3<f32>(max(r_13, 1.0f));
     var mu_v_2 : f32 = dot(dir_1, up_0);
     var dir_h_0 : vec3<f32> = dir_1 - vec3<f32>(mu_v_2) * up_0;
     var sun_h_0 : vec3<f32> = frame_0.sun_0.xyz - vec3<f32>(frame_0.view_0.y) * up_0;
     var dir_len_0 : f32 = length(dir_h_0);
     var sun_len_0 : f32 = length(sun_h_0);
-    var _S44 : bool;
+    var _S45 : bool;
     if(dir_len_0 > 9.99999997475242708e-07f)
     {
-        _S44 = sun_len_0 > 9.99999997475242708e-07f;
+        _S45 = sun_len_0 > 9.99999997475242708e-07f;
     }
     else
     {
-        _S44 = false;
+        _S45 = false;
     }
     var cos_azimuth_2 : f32;
-    if(_S44)
+    if(_S45)
     {
         cos_azimuth_2 = dot(dir_h_0, sun_h_0) / (dir_len_0 * sun_len_0);
     }
@@ -541,8 +565,8 @@ fn fragment_sky_inside( _S43 : pixelInput_0, @builtin(position) position_1 : vec
         cos_azimuth_2 = 1.0f;
     }
     var uv_3 : vec2<f32> = skyview_coords_0(bottom_7, r_13, mu_v_2, cos_azimuth_2);
-    var _S45 : pixelOutput_0 = pixelOutput_0( vec4<f32>((textureSampleLevel((skyview_lut_0), (lut_sampler_0), (vec2<f32>(unit_to_texture_0(uv_3.x, u32(192)), unit_to_texture_0(uv_3.y, u32(108)))), (0.0f))).xyz * vec3<f32>(frame_0.view_0.z), 1.0f) );
-    return _S45;
+    var _S46 : pixelOutput_0 = pixelOutput_0( vec4<f32>((textureSampleLevel((skyview_lut_0), (lut_sampler_0), (vec2<f32>(unit_to_texture_0(uv_3.x, u32(192)), unit_to_texture_0(uv_3.y, u32(108)))), (0.0f))).xyz * vec3<f32>(frame_0.view_0.z), 1.0f) );
+    return _S46;
 }
 
 struct pixelOutput_1
@@ -556,28 +580,28 @@ struct pixelInput_1
 };
 
 @fragment
-fn fragment_sky_outside( _S46 : pixelInput_1, @builtin(position) position_2 : vec4<f32>) -> pixelOutput_1
+fn fragment_sky_outside( _S47 : pixelInput_1, @builtin(position) position_2 : vec4<f32>) -> pixelOutput_1
 {
     var bottom_8 : f32 = air_0.shape_0.z;
     var top_4 : f32 = air_0.shape_0.w;
     var pos_1 : vec3<f32> = frame_0.eye_0.xyz;
-    var dir_2 : vec3<f32> = pixel_ray_0(_S46.ndc_4);
+    var dir_2 : vec3<f32> = pixel_ray_0(_S47.ndc_4);
     var sun_3 : vec3<f32> = frame_0.sun_0.xyz;
     var r_14 : f32 = length(pos_1);
     var mu_8 : f32 = dot(pos_1, dir_2) / max(r_14, 1.0f);
-    var _S47 : f32 = r_14 * r_14;
+    var _S48 : f32 = r_14 * r_14;
     var shell2_1 : f32 = (top_4 - bottom_8) * (top_4 + bottom_8);
-    var discriminant_1 : f32 = _S47 * mu_8 * mu_8 + (shell2_1 - max(0.0f, _S47 - bottom_8 * bottom_8));
-    var _S48 : bool;
+    var discriminant_1 : f32 = _S48 * mu_8 * mu_8 + (shell2_1 - max(0.0f, _S48 - bottom_8 * bottom_8));
+    var _S49 : bool;
     if(discriminant_1 < 0.0f)
     {
-        _S48 = true;
+        _S49 = true;
     }
     else
     {
-        _S48 = mu_8 > 0.0f;
+        _S49 = mu_8 > 0.0f;
     }
-    if(_S48)
+    if(_S49)
     {
         discard;
     }
@@ -590,18 +614,18 @@ fn fragment_sky_outside( _S46 : pixelInput_1, @builtin(position) position_2 : ve
     var start_r_0 : f32 = length(start_0);
     var start_mu_0 : f32 = dot(start_0, dir_2) / max(start_r_0, 1.0f);
     var span_7 : f32 = distance_to_top_0(start_r_0, start_mu_0, shell2_1, shell2_1);
-    var ground_2 : f32 = distance_to_ground_0(start_r_0, start_mu_0, shell2_1);
+    var ground_3 : f32 = distance_to_ground_0(start_r_0, start_mu_0, shell2_1);
     var span_8 : f32;
-    if(ground_2 >= 0.0f)
+    if(ground_3 >= 0.0f)
     {
-        span_8 = min(span_7, ground_2);
+        span_8 = min(span_7, ground_3);
     }
     else
     {
         span_8 = span_7;
     }
-    var _S49 : pixelOutput_1 = pixelOutput_1( vec4<f32>(raymarch_0(start_0, dir_2, sun_3, shell2_1, span_8, u32(16)) * vec3<f32>(frame_0.view_0.z), 1.0f) );
-    return _S49;
+    var _S50 : pixelOutput_1 = pixelOutput_1( vec4<f32>(raymarch_0(start_0, dir_2, sun_3, shell2_1, span_8, u32(16)) * vec3<f32>(frame_0.view_0.z), 1.0f) );
+    return _S50;
 }
 
 fn aerial_distance_0( slice_0 : f32) -> f32
@@ -615,17 +639,17 @@ fn aerial_distance_0( slice_0 : f32) -> f32
 @workgroup_size(8, 8, 1)
 fn aerial_main(@builtin(global_invocation_id) id_4 : vec3<u32>)
 {
-    var _S50 : u32 = id_4.x;
-    var _S51 : bool;
-    if(_S50 >= u32(32))
+    var _S51 : u32 = id_4.x;
+    var _S52 : bool;
+    if(_S51 >= u32(32))
     {
-        _S51 = true;
+        _S52 = true;
     }
     else
     {
-        _S51 = (id_4.y) >= u32(32);
+        _S52 = (id_4.y) >= u32(32);
     }
-    if(_S51)
+    if(_S52)
     {
         return;
     }
@@ -633,32 +657,32 @@ fn aerial_main(@builtin(global_invocation_id) id_4 : vec3<u32>)
     var top_5 : f32 = air_0.shape_0.w;
     var pos_2 : vec3<f32> = frame_0.eye_0.xyz;
     var sun_4 : vec3<f32> = frame_0.sun_0.xyz;
-    var _S52 : u32 = id_4.y;
-    var dir_3 : vec3<f32> = pixel_ray_0(vec2<f32>(f32(_S50) + 0.5f, f32(_S52) + 0.5f) / vec2<f32>(32.0f) * vec2<f32>(2.0f) - vec2<f32>(1.0f));
+    var _S53 : u32 = id_4.y;
+    var dir_3 : vec3<f32> = pixel_ray_0(vec2<f32>(f32(_S51) + 0.5f, f32(_S53) + 0.5f) / vec2<f32>(32.0f) * vec2<f32>(2.0f) - vec2<f32>(1.0f));
     var r_15 : f32 = length(pos_2);
     var mu_9 : f32 = dot(pos_2, dir_3) / max(r_15, 1.0f);
-    var _S53 : f32 = bottom_9 * bottom_9;
-    var _S54 : f32 = max(0.0f, r_15 * r_15 - _S53);
-    var limit_0 : f32 = distance_to_top_0(r_15, mu_9, _S54, (top_5 - bottom_9) * (top_5 + bottom_9));
-    var ground_3 : f32 = distance_to_ground_0(r_15, mu_9, _S54);
+    var _S54 : f32 = bottom_9 * bottom_9;
+    var _S55 : f32 = max(0.0f, r_15 * r_15 - _S54);
+    var limit_0 : f32 = distance_to_top_0(r_15, mu_9, _S55, (top_5 - bottom_9) * (top_5 + bottom_9));
+    var ground_4 : f32 = distance_to_ground_0(r_15, mu_9, _S55);
     var limit_1 : f32;
-    if(ground_3 >= 0.0f)
+    if(ground_4 >= 0.0f)
     {
-        limit_1 = min(limit_0, ground_3);
+        limit_1 = min(limit_0, ground_4);
     }
     else
     {
         limit_1 = limit_0;
     }
     var cos_theta_3 : f32 = dot(dir_3, sun_4);
-    var _S55 : f32 = rayleigh_phase_0(cos_theta_3);
-    var _S56 : f32 = mie_phase_0(cos_theta_3, air_0.mie_0.w);
-    const _S57 : vec3<f32> = vec3<f32>(1.0f, 1.0f, 1.0f);
-    const _S58 : vec3<f32> = vec3<f32>(0.0f, 0.0f, 0.0f);
+    var _S56 : f32 = rayleigh_phase_0(cos_theta_3);
+    var _S57 : f32 = mie_phase_0(cos_theta_3, air_0.mie_0.w);
+    const _S58 : vec3<f32> = vec3<f32>(1.0f, 1.0f, 1.0f);
+    const _S59 : vec3<f32> = vec3<f32>(0.0f, 0.0f, 0.0f);
     var previous_0 : f32 = 0.0f;
     var slice_1 : u32 = u32(0);
-    var throughput_4 : vec3<f32> = _S57;
-    var light_2 : vec3<f32> = _S58;
+    var throughput_4 : vec3<f32> = _S58;
+    var light_2 : vec3<f32> = _S59;
     for(;;)
     {
         if(slice_1 < u32(32))
@@ -668,8 +692,8 @@ fn aerial_main(@builtin(global_invocation_id) id_4 : vec3<u32>)
         {
             break;
         }
-        var _S59 : f32 = min(aerial_distance_0(f32(slice_1)), limit_1);
-        var _S60 : f32 = max(0.0f, _S59 - previous_0) / 4.0f;
+        var _S60 : f32 = min(aerial_distance_0(f32(slice_1)), limit_1);
+        var _S61 : f32 = max(0.0f, _S60 - previous_0) / 4.0f;
         var k_3 : u32 = u32(0);
         for(;;)
         {
@@ -680,36 +704,36 @@ fn aerial_main(@builtin(global_invocation_id) id_4 : vec3<u32>)
             {
                 break;
             }
-            var t_2 : f32 = previous_0 + (f32(k_3) + 0.5f) * _S60;
-            var _S61 : f32 = max(0.0f, _S54 + 2.0f * t_2 * r_15 * mu_9 + t_2 * t_2);
-            var radius_2 : f32 = sqrt(max(0.0f, _S61 + _S53));
-            var h_7 : f32 = _S61 / (radius_2 + bottom_9);
+            var t_2 : f32 = previous_0 + (f32(k_3) + 0.5f) * _S61;
+            var _S62 : f32 = max(0.0f, _S55 + 2.0f * t_2 * r_15 * mu_9 + t_2 * t_2);
+            var radius_2 : f32 = sqrt(max(0.0f, _S62 + _S54));
+            var h_7 : f32 = _S62 / (radius_2 + bottom_9);
             var mu_s_here_2 : f32 = dot(pos_2 + vec3<f32>(t_2) * dir_3, sun_4) / max(radius_2, 1.0f);
             var to_sun_2 : vec3<f32>;
-            if((distance_to_ground_0(radius_2, mu_s_here_2, _S61)) < 0.0f)
+            if((distance_to_ground_0(radius_2, mu_s_here_2, _S62)) < 0.0f)
             {
                 to_sun_2 = sample_transmittance_0(radius_2, mu_s_here_2);
             }
             else
             {
-                to_sun_2 = _S58;
+                to_sun_2 = _S59;
             }
             var d_6 : vec3<f32> = density_0(h_7);
             var sigma_e_2 : vec3<f32> = extinction_0(h_7);
             var sigma_r_1 : vec3<f32> = air_0.rayleigh_0.xyz * vec3<f32>(d_6.x);
             var sigma_m_1 : f32 = air_0.mie_0.x * d_6.y;
-            var step_transmittance_2 : vec3<f32> = exp((vec3<f32>(0) - sigma_e_2) * vec3<f32>(_S60));
-            var light_3 : vec3<f32> = light_2 + throughput_4 * ((sigma_r_1 * vec3<f32>(_S55) + vec3<f32>((sigma_m_1 * _S56))) * to_sun_2 + (sigma_r_1 + vec3<f32>(sigma_m_1)) * sample_multiscatter_0(radius_2, mu_s_here_2)) * (vec3<f32>(1.0f) - step_transmittance_2) / max(sigma_e_2, vec3<f32>(1.00000000317107685e-30f));
+            var step_transmittance_2 : vec3<f32> = exp((vec3<f32>(0) - sigma_e_2) * vec3<f32>(_S61));
+            var light_3 : vec3<f32> = light_2 + throughput_4 * ((sigma_r_1 * vec3<f32>(_S56) + vec3<f32>((sigma_m_1 * _S57))) * to_sun_2 + (sigma_r_1 + vec3<f32>(sigma_m_1)) * sample_multiscatter_0(radius_2, mu_s_here_2)) * (vec3<f32>(1.0f) - step_transmittance_2) / max(sigma_e_2, vec3<f32>(1.00000000317107685e-30f));
             var throughput_5 : vec3<f32> = throughput_4 * step_transmittance_2;
             k_3 = k_3 + u32(1);
             throughput_4 = throughput_5;
             light_2 = light_3;
         }
-        var texel_0 : vec3<u32> = vec3<u32>(_S50, _S52, slice_1);
+        var texel_0 : vec3<u32> = vec3<u32>(_S51, _S53, slice_1);
         textureStore((aerial_inscatter_out_0), (texel_0), (vec4<f32>(light_2 * vec3<f32>(frame_0.view_0.z), 1.0f)));
         textureStore((aerial_transmittance_out_0), (texel_0), (vec4<f32>(throughput_4, 1.0f)));
         var slice_2 : u32 = slice_1 + u32(1);
-        previous_0 = _S59;
+        previous_0 = _S60;
         slice_1 = slice_2;
     }
     return;
@@ -717,13 +741,13 @@ fn aerial_main(@builtin(global_invocation_id) id_4 : vec3<u32>)
 
 fn geometry_distance_0( pixel_0 : vec2<i32>,  dir_4 : vec3<f32>) -> f32
 {
-    var _S62 : vec3<i32> = vec3<i32>(pixel_0, i32(0));
-    var _S63 : f32 = (textureLoad((depth_texture_0), ((_S62)).xy, ((_S62)).z).x);
-    if(_S63 <= 0.0f)
+    var _S63 : vec3<i32> = vec3<i32>(pixel_0, i32(0));
+    var _S64 : f32 = (textureLoad((depth_texture_0), ((_S63)).xy, ((_S63)).z).x);
+    if(_S64 <= 0.0f)
     {
         return -1.0f;
     }
-    return range_0.depth_0.y / (_S63 + range_0.depth_0.x) / max(dot(dir_4, frame_0.forward_0.xyz), 0.00100000004749745f);
+    return range_0.depth_0.y / (_S64 + range_0.depth_0.x) / max(dot(dir_4, frame_0.forward_0.xyz), 0.00100000004749745f);
 }
 
 fn aerial_coord_0( ndc_5 : vec2<f32>,  distance_0 : f32) -> vec3<f32>
@@ -743,15 +767,15 @@ struct pixelInput_2
 };
 
 @fragment
-fn fragment_aerial_multiply( _S64 : pixelInput_2, @builtin(position) position_3 : vec4<f32>) -> pixelOutput_2
+fn fragment_aerial_multiply( _S65 : pixelInput_2, @builtin(position) position_3 : vec4<f32>) -> pixelOutput_2
 {
-    var distance_1 : f32 = geometry_distance_0(vec2<i32>(position_3.xy), pixel_ray_0(_S64.ndc_6));
+    var distance_1 : f32 = geometry_distance_0(vec2<i32>(position_3.xy), pixel_ray_0(_S65.ndc_6));
     if(distance_1 < 0.0f)
     {
         discard;
     }
-    var _S65 : pixelOutput_2 = pixelOutput_2( vec4<f32>((textureSampleLevel((aerial_transmittance_lut_0), (lut_sampler_0), (aerial_coord_0(_S64.ndc_6, distance_1)), (0.0f))).xyz, 1.0f) );
-    return _S65;
+    var _S66 : pixelOutput_2 = pixelOutput_2( vec4<f32>((textureSampleLevel((aerial_transmittance_lut_0), (lut_sampler_0), (aerial_coord_0(_S65.ndc_6, distance_1)), (0.0f))).xyz, 1.0f) );
+    return _S66;
 }
 
 struct pixelOutput_3
@@ -765,14 +789,14 @@ struct pixelInput_3
 };
 
 @fragment
-fn fragment_aerial_add( _S66 : pixelInput_3, @builtin(position) position_4 : vec4<f32>) -> pixelOutput_3
+fn fragment_aerial_add( _S67 : pixelInput_3, @builtin(position) position_4 : vec4<f32>) -> pixelOutput_3
 {
-    var distance_2 : f32 = geometry_distance_0(vec2<i32>(position_4.xy), pixel_ray_0(_S66.ndc_7));
+    var distance_2 : f32 = geometry_distance_0(vec2<i32>(position_4.xy), pixel_ray_0(_S67.ndc_7));
     if(distance_2 < 0.0f)
     {
         discard;
     }
-    var _S67 : pixelOutput_3 = pixelOutput_3( vec4<f32>((textureSampleLevel((aerial_inscatter_lut_0), (lut_sampler_0), (aerial_coord_0(_S66.ndc_7, distance_2)), (0.0f))).xyz, 1.0f) );
-    return _S67;
+    var _S68 : pixelOutput_3 = pixelOutput_3( vec4<f32>((textureSampleLevel((aerial_inscatter_lut_0), (lut_sampler_0), (aerial_coord_0(_S67.ndc_7, distance_2)), (0.0f))).xyz, 1.0f) );
+    return _S68;
 }
 

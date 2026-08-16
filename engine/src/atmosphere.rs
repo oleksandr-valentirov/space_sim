@@ -392,7 +392,12 @@ impl Table {
     ///
     /// Тільки `ψ`; `f` тут не зберігається, бо його читає лише перевірка
     /// збіжності, а вона дивиться в таблицю на GPU.
-    pub fn multiscatter(air: &Atmosphere, bottom: f64, transmittance: &Table) -> Table {
+    pub fn multiscatter(
+        air: &Atmosphere,
+        bottom: f64,
+        transmittance: &Table,
+        albedo: [f64; 3],
+    ) -> Table {
         let size = MULTISCATTER_SIZE;
         let mut values = Vec::with_capacity((size * size) as usize);
         for y in 0..size {
@@ -400,7 +405,7 @@ impl Table {
                 let u = f64::from(x) / f64::from(size - 1);
                 let v = f64::from(y) / f64::from(size - 1);
                 let (r, mu_s) = multiscatter_uv(air, bottom, u, v);
-                let (psi, _) = multiple_scattering(air, bottom, transmittance, r, mu_s);
+                let (psi, _) = multiple_scattering(air, bottom, transmittance, r, mu_s, albedo);
                 values.push(psi);
             }
         }
@@ -511,16 +516,19 @@ pub fn scattering(air: &Atmosphere, h: f64) -> [f64; 3] {
 ///
 /// ## Чого тут свідомо немає
 ///
-/// **Відбиття від поверхні.** У статті воно є, і воно справжнє: над снігом
-/// небо світліше. Але кольору поверхні в [`crate::scene`] немає взагалі, а
-/// вигаданий дав би небу відтінок, якого в грі нема звідки взяти. Отже
-/// альбедо нуль — і це рішення, а не пропуск.
+/// **Нічого — з T7h.** Відбиття від поверхні тут є, і аргумент `albedo` це
+/// воно: середнє альбедо тіла, лінійне. До T7h стояв нуль, і то було рішення,
+/// а не пропуск — кольору поверхні в `crate::scene` тоді не існувало взагалі,
+/// тож будь-яке число було б вигаданим. Тепер воно береться з тайлсета
+/// (`Colour::mean`), а нуль лишається законним значенням для тіла, кольору
+/// якого ми не знаємо.
 pub fn multiple_scattering(
     air: &Atmosphere,
     bottom: f64,
     table: &Table,
     r: f64,
     mu_s: f64,
+    albedo: [f64; 3],
 ) -> ([f64; 3], [f64; 3]) {
     // Сонце в площині xz, точка на осі z: `up = (0, 0, 1)`.
     let sun = [(1.0 - mu_s * mu_s).max(0.0).sqrt(), 0.0, mu_s];
@@ -599,6 +607,29 @@ pub fn multiple_scattering(
                 fraction[channel] += throughput[channel] * integrate(sigma_s[channel]);
 
                 throughput[channel] *= step_transmittance;
+            }
+        }
+
+        // Відбиття від поверхні (T7h). Промінь, що впав у землю, повертає
+        // ламбертове `albedo/π · E`, і повертає його **після** всього шляху,
+        // тобто помноженим на те, що від нього лишилось.
+        //
+        // Для частки джерело те саме, але освітлення ізотропне з яскравістю
+        // одиниця: `∫ cos/π dω = 1`, тож ламбертова поверхня віддає рівно
+        // `albedo`. Без цього доданка відбиття рахувалося б лише у другому
+        // порядку, а в третьому й далі — ні.
+        if let Some(ground) = distance_to_ground(r, mu, rho2) {
+            let hit = [ground * w[0], ground * w[1], r + ground * w[2]];
+            let length = (hit[0] * hit[0] + hit[1] * hit[1] + hit[2] * hit[2]).sqrt();
+            let mu_s_ground = (hit[0] * sun[0] + hit[1] * sun[1] + hit[2] * sun[2]) / length;
+            let lit = table.transmittance_at(air, bottom, bottom, mu_s_ground);
+            for channel in 0..3 {
+                if mu_s_ground > 0.0 {
+                    second[channel] += throughput[channel] * albedo[channel] / std::f64::consts::PI
+                        * lit[channel]
+                        * mu_s_ground;
+                }
+                fraction[channel] += throughput[channel] * albedo[channel];
             }
         }
     }
@@ -745,9 +776,9 @@ pub struct Model {
 impl Model {
     /// Побудувати обидві сталі таблиці. `steps` — скільки кроків на промінь у
     /// таблиці пропускання; 500 дає те саме, що шейдер.
-    pub fn build(air: &Atmosphere, bottom: f64, steps: usize) -> Model {
+    pub fn build(air: &Atmosphere, bottom: f64, steps: usize, albedo: [f64; 3]) -> Model {
         let transmittance = Table::transmittance(air, bottom, steps);
-        let multiscatter = Table::multiscatter(air, bottom, &transmittance);
+        let multiscatter = Table::multiscatter(air, bottom, &transmittance, albedo);
         Model {
             air: *air,
             bottom,

@@ -45,7 +45,7 @@ const SKY_WGSL: &str = include_str!("../shaders/sky.wgsl");
 const LUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// Скільки байтів займає `AirParams` у шейдері: чотири `float4`.
-const AIR_BYTES: u64 = 64;
+const AIR_BYTES: u64 = 80;
 
 /// Скільки байтів займає `ViewParams` у шейдері: шість `float4`.
 const VIEW_BYTES: u64 = 96;
@@ -163,7 +163,7 @@ pub struct Sky {
     /// Радіус окремо, бо в [`Atmosphere`] його немає: там лише верхня межа.
     /// Два тіла з однаковим повітрям і різними радіусами — різні атмосфери, і
     /// ключ мусить це бачити.
-    current: Option<(Atmosphere, f64)>,
+    current: Option<(Atmosphere, f64, [u32; 3])>,
 }
 
 /// Група композиції разом із розміром буфера глибини, під який її зроблено.
@@ -852,13 +852,17 @@ impl Sky {
     /// пропускання. Бар'єр між ними ставить wgpu сам, за використанням
     /// ресурсів; окремі проходи потрібні лише тому, що всередині одного
     /// проходу порядок груп не гарантований.
-    pub fn ensure(&mut self, gpu: &Gpu, air: &Atmosphere, bottom_m: f64) -> bool {
-        if self.current == Some((*air, bottom_m)) {
+    pub fn ensure(&mut self, gpu: &Gpu, air: &Atmosphere, bottom_m: f64, albedo: [f32; 3]) -> bool {
+        // Альбедо входить у ключ разом із повітрям: воно міняє **таблиці**, а
+        // не кадр, тож перебудова мусить статися рівно тоді, коли воно
+        // змінилось. Порівняння бітове — це вхід, а не результат виміру.
+        let key = (*air, bottom_m, albedo.map(f32::to_bits));
+        if self.current == Some(key) {
             return false;
         }
 
         gpu.queue
-            .write_buffer(&self.air_buffer, 0, &air_bytes(air, bottom_m));
+            .write_buffer(&self.air_buffer, 0, &air_bytes(air, bottom_m, albedo));
 
         let mut encoder = gpu
             .device
@@ -892,7 +896,7 @@ impl Sky {
         }
         gpu.queue.submit([encoder.finish()]);
 
-        self.current = Some((*air, bottom_m));
+        self.current = Some(key);
         true
     }
 
@@ -906,7 +910,7 @@ impl Sky {
         // залежить від повітря, а повітря знає лише `Sky`. Кадру довелося б
         // тягнути ту саму формулу другим примірником.
         let span = match self.current {
-            Some((air, bottom)) => atmosphere::aerial_span(&air, bottom, view.radius()),
+            Some((air, bottom, _)) => atmosphere::aerial_span(&air, bottom, view.radius()),
             None => (0.0, 1.0),
         };
         gpu.queue
@@ -1172,7 +1176,7 @@ fn read_lut(
 /// яких камера віднімається від великого числа; радіус тіла в неї не входить
 /// — з нього рахують висоту над поверхнею, а `6.371·10⁶` у `f32` має крок
 /// 0.5 м, тобто помилку в шістнадцять мільйонних від висоти шкали.
-fn air_bytes(air: &Atmosphere, bottom_m: f64) -> Vec<u8> {
+fn air_bytes(air: &Atmosphere, bottom_m: f64, albedo: [f32; 3]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(AIR_BYTES as usize);
     let mut push = |values: [f32; 4]| {
         for value in values {
@@ -1203,6 +1207,8 @@ fn air_bytes(air: &Atmosphere, bottom_m: f64) -> Vec<u8> {
         bottom_m as f32,
         air.top_m as f32,
     ]);
+    // Середнє альбедо поверхні під цим небом (T7h); `w` — запас.
+    push([albedo[0], albedo[1], albedo[2], 0.0]);
     bytes
 }
 
@@ -1283,12 +1289,14 @@ mod tests {
         assert!(from_half(0x7e00).is_nan());
     }
 
-    /// Розкладка `AirParams` — та сама, що в шейдері: шістнадцять чисел,
+    /// Розкладка `AirParams` — та сама, що в шейдері: двадцять чисел,
     /// і кожне на своєму місці.
     #[test]
     fn the_air_params_land_where_the_shader_reads_them() {
         let air = Atmosphere::EARTH;
-        let bytes = air_bytes(&air, 6_371_000.0);
+        // Альбедо навмисно різне по каналах: однакове не відрізнило б
+        // переставлені місцями компоненти.
+        let bytes = air_bytes(&air, 6_371_000.0, [0.11, 0.22, 0.33]);
         assert_eq!(bytes.len() as u64, AIR_BYTES);
 
         let word = |k: usize| f32::from_le_bytes(bytes[k * 4..k * 4 + 4].try_into().unwrap());
@@ -1300,5 +1308,8 @@ mod tests {
         assert_eq!(word(12), air.ozone_centre_m);
         assert_eq!(word(14), 6_371_000.0);
         assert_eq!(word(15), air.top_m as f32);
+        assert_eq!(word(16), 0.11);
+        assert_eq!(word(17), 0.22);
+        assert_eq!(word(18), 0.33);
     }
 }
