@@ -631,7 +631,7 @@ impl Frame {
         self.ensure_depth(gpu, width, height);
 
         let aspect = f64::from(width) / f64::from(height);
-        self.plan(scene, aspect);
+        Frame::plan(&mut self.passes, scene, aspect);
 
         // Повітря (етап S). Нічого не коштує, коли його немає: тіло без
         // атмосфери не запускає ні таблиць, ні проходу, і кадр лишається
@@ -861,6 +861,32 @@ impl Frame {
         far
     }
 
+    /// Ближні площини діапазонів глибини цієї сцени, **від найближчого**.
+    ///
+    /// Довжина — скільки буде проходів; `[0]` — ближня площина кадру, `[1]` —
+    /// межа між першим і другим діапазоном, і так далі. Питання до плану, і
+    /// відповідь на нього не варта ні GPU, ні кадру — так само, як
+    /// [`Frame::near_for`].
+    ///
+    /// Числа дістаються з тих самих `depth_a`/`depth_b`, якими користується
+    /// композиція аеральної перспективи (`z_ndc = −A + B/z`), а не рахуються
+    /// вдруге: `lo = B/(A+1)` однаково для скінченного діапазону й для
+    /// нескінченного, у якого `A = 0`. Тобто перевірка питає те число, яким
+    /// кадр справді малює, а не своє власне.
+    ///
+    /// Існує заради V3: там треба стверджувати і «діапазонів два», і «межа
+    /// лягла саме сюди», а повторювати формулу поруч із нею — це два джерела
+    /// правди про одну річ.
+    pub fn depth_ranges(scene: &Scene, aspect: f64) -> Vec<f64> {
+        let mut passes = Vec::new();
+        Frame::plan(&mut passes, scene, aspect);
+        passes
+            .iter()
+            .rev()
+            .map(|plan| plan.depth_b / (plan.depth_a + 1.0))
+            .collect()
+    }
+
     /// План кадру: скільки діапазонів глибини й де їхні межі (R4a, R4b).
     ///
     /// ## Скільки проходів, і звідки взялося це число
@@ -895,10 +921,15 @@ impl Frame {
     ///
     /// Порядок — back-to-front, від найдальшого діапазону до найближчого:
     /// колір очищає перший, глибину — кожен.
-    fn plan(&mut self, scene: &Scene, aspect: f64) {
+    ///
+    /// Без `self` навмисно — з тієї самої причини, що [`Frame::near_for`]: це
+    /// чиста арифметика над сценою, і питати в неї «скільки тут проходів»
+    /// не має вимагати ні GPU, ні кадру. Список приходить параметром, щоб
+    /// пам'ять під нього виділялась один раз на життя кадру, а не щокадру.
+    fn plan(passes: &mut Vec<Pass>, scene: &Scene, aspect: f64) {
         let near = Frame::near_for(scene);
         let far = Frame::far_for(scene);
-        self.passes.clear();
+        passes.clear();
 
         let span = (far / near).max(1.0);
         let count = ((span.log10() / DECADES_PER_PASS).ceil() as usize).clamp(1, MAX_PASSES);
@@ -920,7 +951,7 @@ impl Frame {
                     lo * hi / span,
                 )
             };
-            self.passes.push(Pass {
+            passes.push(Pass {
                 label: PASS_LABELS[k],
                 projection,
                 clear_colour: last,
@@ -2579,5 +2610,136 @@ mod tests {
         let threshold = air.thickness_m(bottom) * focal;
         assert!((at(threshold) - 1.0).abs() < 1.0e-9, "{}", at(threshold));
         assert!(at(threshold * 1.01) < 1.0 && at(threshold * 0.99) > 1.0);
+    }
+
+    /// Корабель за метри й планета за мільйони метрів в одному кадрі — це
+    /// **два** діапазони глибини, і це перша сцена, у якій їх більше одного
+    /// (V3).
+    ///
+    /// Число, з якого воно виходить, виміряно на F3: один буфер тримає сім
+    /// порядків. Тут розмах `far/near` = 1.15·10⁷, тобто 7.06 порядка — на
+    /// шість сотих більше за той, що вміщається в один прохід. Тому сцена
+    /// зондів рушія (розмах 22.7) лишається однопрохідною, а ця — ні.
+    ///
+    /// Межа перевіряється не «приблизно там»: вона мусить лягти в порожнечу
+    /// **між** корпусом і поверхнею, і обидва краї названі числами сцени, а не
+    /// константами тесту.
+    #[test]
+    fn a_ship_over_a_planet_needs_two_depth_ranges() {
+        let scene = crate::ship_demo::scene_at(0, crate::ship_demo::FRAMES);
+        let ranges = Frame::depth_ranges(&scene, 16.0 / 9.0);
+
+        assert_eq!(ranges.len(), 2, "діапазонів мало б бути два: {ranges:?}");
+
+        let eye = scene.camera.position();
+        let range = |p: [f64; 3]| {
+            let d = [p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]];
+            (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+        };
+        let ship = &scene.ships[0];
+        let hull_far = range(ship.centre) + ship.extent_m;
+        let body = &scene.bodies[0];
+        let surface = range(body.centre) - body.radius_m;
+
+        // Ближня площина — те саме число, що дає `near_for`; межа — наступна.
+        assert!(
+            (ranges[0] - Frame::near_for(&scene)).abs() < 1.0e-9,
+            "ближня площина плану розійшлася з near_for: {ranges:?}"
+        );
+        let boundary = ranges[1];
+        assert!(
+            boundary > hull_far,
+            "межа {boundary} м ріже корпус, який тягнеться до {hull_far} м"
+        );
+        assert!(
+            boundary < surface,
+            "межа {boundary} м лежить під поверхнею, до якої {surface} м"
+        );
+    }
+
+    /// Розвилка кроку V3, закрита арифметикою, а не одним кадром: **межа
+    /// діапазонів не потрапляє в корпус ніколи**.
+    ///
+    /// Доведення коротке, і саме тому воно варте тесту, а не коментаря. Другий
+    /// діапазон з'являється лише при розмаху понад 10⁷, тож найменше можливе
+    /// відношення сусідніх меж — `√10⁷ ≈ 3162` (три й чотири діапазони роблять
+    /// його ще більшим). Межа стоїть на `near·3162`, а `near` — це десята
+    /// частина відстані до найближчої точки корпусу. Тобто межа не ближча за
+    /// 316 висот, а корпус тягнеться щонайбільше на два своїх габарити.
+    /// Зійтися вони могли б хіба тоді, коли камера впритул до корпусу — а там
+    /// `near` впирається в поріг 0.1 м і межа все одно лишається за сотні
+    /// метрів.
+    ///
+    /// Перевірка — свіп, а не одна точка, і напрямок на камеру навмисно
+    /// несиметричний: фікстура, що стоїть рівно над центром грані куба, вже
+    /// ховала дві помилки поспіль (D13, D14).
+    #[test]
+    fn the_range_boundary_never_falls_inside_the_hull() {
+        let radius = sphere::EARTH_RADIUS_M;
+        let height = crate::ship::DEFAULT_HEIGHT_M;
+        let extent = 0.5 * height;
+
+        // Косий напрямок: жодна вісь не збігається з віссю світу.
+        let dir = {
+            let v: [f64; 3] = [0.37, -0.51, 0.77];
+            let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+            [v[0] / n, v[1] / n, v[2] / n]
+        };
+
+        // Від «камера торкається корпусу» до «корабель — крапка в кадрі», і
+        // висоти орбіти теж різні: від дотику до поверхні до геостаціонарної.
+        for altitude in [1.0e3, 4.0e5, 3.6e7] {
+            let centre = [
+                dir[0] * (radius + altitude),
+                dir[1] * (radius + altitude),
+                dir[2] * (radius + altitude),
+            ];
+            for step in 0..40 {
+                let distance = extent * 1.001 * 1.3_f64.powi(step);
+                let eye = [
+                    centre[0] + dir[0] * distance,
+                    centre[1] + dir[1] * distance,
+                    centre[2] + dir[2] * distance,
+                ];
+                let camera = Camera::look_at(eye, centre, [0.0, 0.0, 1.0]);
+
+                let mut scene = Scene::new(camera);
+                scene.bodies.push(Body {
+                    centre: [0.0, 0.0, 0.0],
+                    radius_m: radius,
+                    orientation: [1.0, 0.0, 0.0, 0.0],
+                    tiles: TileSet::Smooth,
+                    air: None,
+                });
+                scene.ships.push(scene::Ship {
+                    centre,
+                    orientation: [1.0, 0.0, 0.0, 0.0],
+                    height_m: height,
+                    extent_m: extent,
+                    colour: [0.7, 0.7, 0.75, 1.0],
+                });
+
+                let ranges = Frame::depth_ranges(&scene, 16.0 / 9.0);
+
+                // Ближня площина пропускає корпус — те саме твердження, що
+                // в V2, але тепер на всьому свіпі, а не в одній точці.
+                let near = Frame::near_for(&scene);
+                let hull_near = (distance - extent).max(0.0);
+                assert!(
+                    near <= hull_near.max(0.1),
+                    "висота {altitude}, відстань {distance}: near {near} ріже корпус з {hull_near}"
+                );
+
+                let Some(&boundary) = ranges.get(1) else {
+                    continue;
+                };
+                let hull_far = distance + extent;
+                assert!(
+                    boundary > hull_far,
+                    "висота {altitude}, відстань {distance}: межа {boundary} впала в корпус,
+                     який тягнеться до {hull_far} м"
+                );
+            }
+        }
     }
 }
