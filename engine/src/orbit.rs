@@ -49,6 +49,13 @@ pub struct Orbit {
     pitch: f64,
     /// Altitude above the surface, metres.
     altitude: f64,
+    /// Radius of the body the altitude is measured above, metres.
+    ///
+    /// A field rather than Earth's radius inline, because "10 km up" is a
+    /// statement about a body, not about the camera. With Earth's radius
+    /// hard-coded, the same call over the Moon put the camera 4634 km up --
+    /// and nothing in the caller looked wrong. See [`Orbit::around`].
+    reference_m: f64,
 }
 
 impl Default for Orbit {
@@ -60,6 +67,7 @@ impl Default for Orbit {
             yaw: 0.0,
             pitch: 0.0,
             altitude: crate::frame::DEFAULT_ALTITUDE_M,
+            reference_m: sphere::EARTH_RADIUS_M,
         }
     }
 }
@@ -73,8 +81,23 @@ impl Orbit {
     /// as the wheel -- otherwise this would be a way around them rather than a
     /// constructor.
     pub fn at_altitude(altitude: f64) -> Orbit {
+        Orbit::around(sphere::EARTH_RADIUS_M, altitude)
+    }
+
+    /// The same, above a body of the given radius.
+    ///
+    /// Everything the game looks at today is Earth, so [`at_altitude`] covers
+    /// every caller in `game`. This one exists for whoever looks at something
+    /// else -- the Moon, a fixture body -- and it exists because the mistake it
+    /// prevents is silent: an altitude read against the wrong radius produces a
+    /// perfectly valid camera at the wrong place, and the picture from it looks
+    /// like an answer.
+    ///
+    /// [`at_altitude`]: Orbit::at_altitude
+    pub fn around(reference_m: f64, altitude: f64) -> Orbit {
         Orbit {
             altitude: altitude.clamp(MIN_ALTITUDE_M, MAX_ALTITUDE_M),
+            reference_m,
             ..Orbit::default()
         }
     }
@@ -83,9 +106,9 @@ impl Orbit {
         self.altitude
     }
 
-    /// Distance from the planet's centre.
+    /// Distance from the centre of the body the camera orbits.
     pub fn distance(&self) -> f64 {
-        sphere::EARTH_RADIUS_M + self.altitude
+        self.reference_m + self.altitude
     }
 
     /// A mouse drag of `dx`, `dy` pixels.
@@ -220,6 +243,45 @@ mod tests {
             "came back to {} instead of {start}",
             orbit.altitude()
         );
+    }
+
+    /// An altitude is measured above the body it was given, not above Earth.
+    ///
+    /// The reason this needs a test of its own is that the wrong answer here
+    /// is a *working* camera, not a crash: asking for "10 km" over the Moon
+    /// against Earth's radius puts the eye 4634 km up, and the picture from
+    /// there is a perfectly ordinary picture of the Moon from far away. The
+    /// tile census read exactly that as "six patches at every altitude" and
+    /// nearly published it as a measurement.
+    #[test]
+    fn an_altitude_is_measured_above_the_body_it_was_given() {
+        const MOON_RADIUS_M: f64 = 1_737_400.0;
+        const ALTITUDE_M: f64 = 10.0e3;
+
+        let moon = Orbit::around(MOON_RADIUS_M, ALTITUDE_M);
+        assert_eq!(moon.distance(), MOON_RADIUS_M + ALTITUDE_M);
+
+        let earth = Orbit::at_altitude(ALTITUDE_M);
+        assert_eq!(earth.distance(), sphere::EARTH_RADIUS_M + ALTITUDE_M);
+
+        // The two differ by the radii and by nothing else -- i.e. the altitude
+        // itself carried over untouched.
+        assert_eq!(
+            earth.distance() - moon.distance(),
+            sphere::EARTH_RADIUS_M - MOON_RADIUS_M
+        );
+    }
+
+    /// Zooming does not forget which body the camera orbits.
+    #[test]
+    fn zooming_keeps_the_body_it_was_built_around() {
+        const MOON_RADIUS_M: f64 = 1_737_400.0;
+
+        let mut orbit = Orbit::around(MOON_RADIUS_M, 1.0e6);
+        for _ in 0..1000 {
+            orbit.zoom(1.0);
+        }
+        assert_eq!(orbit.distance(), MOON_RADIUS_M + MIN_ALTITUDE_M);
     }
 
     /// The default camera is the one the frame is measured with.

@@ -37,6 +37,7 @@ use std::collections::HashSet;
 use engine::camera::Camera;
 use engine::frame::FOV_Y;
 use engine::lod;
+use engine::orbit::Orbit;
 use engine::tiles::{self, Colour, Terrain};
 
 /// The resolution the census is taken at.
@@ -53,31 +54,25 @@ const HEIGHT_PX: f64 = 1080.0;
 /// camera at once.
 const ALTITUDES_M: [f64; 3] = [1.0e9, 400.0e3, 10.0e3];
 
-/// Where the camera stands, as an azimuth and an elevation in radians.
+/// Where the camera stands, as a mouse drag in pixels off the default view.
 ///
-/// Any direction that is not symmetric would do; this one is over neither a
-/// face centre (0, 0) nor a cube corner (pi/4, atan(1/sqrt(2))).
-const YAW: f64 = 0.7;
-const PITCH: f64 = 0.35;
+/// Any direction that is not symmetric would do; this one (0.70 rad, 0.35 rad)
+/// is over neither a face centre (0, 0) nor a cube corner (pi/4,
+/// atan(1/sqrt(2))). Pixels rather than radians because pixels are what
+/// `Orbit` takes, and the exact angle is not what matters here.
+const DRAG_PX: (f64, f64) = (134.0, 67.0);
 
 /// The camera for this body at this altitude, looking at its centre.
 ///
-/// ⚠ Built here rather than through `orbit::Orbit`, and that is the whole
-/// point: `Orbit::distance` is `sphere::EARTH_RADIUS_M + altitude`, i.e. it
-/// hard-codes **Earth's** radius. Asking it for "10 km" over the Moon puts the
-/// camera 4634 km above the surface, and the census then reports six patches
-/// at every altitude -- a wrong answer that looks like a measurement. Each
-/// body must be seen from its own radius.
+/// ⚠ `Orbit::around`, not `Orbit::at_altitude`: the latter measures the
+/// altitude above **Earth**, so asking it for "10 km" over the Moon puts the
+/// camera 4634 km above the surface and the census reports six patches at
+/// every altitude -- a wrong answer that looks like a measurement. Each body
+/// must be seen from its own radius, which is why that radius is a parameter.
 fn camera_at(radius_m: f64, altitude_m: f64) -> Camera {
-    let distance = radius_m + altitude_m;
-    let (sin_pitch, cos_pitch) = PITCH.sin_cos();
-    let (sin_yaw, cos_yaw) = YAW.sin_cos();
-    let position = [
-        distance * cos_pitch * cos_yaw,
-        distance * cos_pitch * sin_yaw,
-        distance * sin_pitch,
-    ];
-    Camera::look_at(position, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0])
+    let mut orbit = Orbit::around(radius_m, altitude_m);
+    orbit.drag(DRAG_PX.0, DRAG_PX.1);
+    orbit.camera()
 }
 
 fn main() -> Result<(), String> {
