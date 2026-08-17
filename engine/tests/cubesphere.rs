@@ -1,39 +1,42 @@
-//! Куб на сферу: три числа й одна рівність (ROADMAP-PLANETS.md, R1a).
+//! A cube onto a sphere: three numbers and one equality (ROADMAP-PLANETS.md,
+//! R1a).
 //!
-//! Нічого з цього не потребує ні GPU, ні вікна — тут сама арифметика, і саме
-//! тому вона перевіряється до того, як щось намальовано. Тріщина на знімку —
-//! одна темна лінія в піксель, яку око пропустить; рівність вершин її не
-//! пропустить ніколи (правило 5 етапу R).
+//! None of this needs a GPU or a window -- it is arithmetic alone, and that is
+//! exactly why it is checked before anything is drawn. A crack in a shot is
+//! one dark line a pixel wide, which the eye will miss; equality of vertices
+//! will never miss it (rule 5 of stage R).
 
 use engine::cubesphere::{self, grid, ratio, vertex, FACES};
 use engine::sphere::EARTH_RADIUS_M;
 
 const N: usize = 32;
 
-/// Варп справді вирівнює сітку — і це видно лише поруч із наївною проєкцією.
+/// The warp really does even out the grid -- and that is only visible next to
+/// the naive projection.
 ///
-/// Одне число тут не означало б нічого: «1.4» без «2.0» поруч не каже, добре
-/// це чи погано.
+/// One number here would mean nothing: "1.4" without "2.0" beside it does not
+/// say whether that is good or bad.
 #[test]
 fn the_warp_makes_the_grid_more_even_than_plain_normalisation() {
     let naive = ratio(N, false, EARTH_RADIUS_M);
     let warped = ratio(N, true, EARTH_RADIUS_M);
 
-    println!("  сітка {N}×{N}: наївна {naive:.4}, варпована {warped:.4}");
+    println!("  grid {N}x{N}: naive {naive:.4}, warped {warped:.4}");
 
     assert!(
         warped < naive,
-        "варп мав вирівняти сітку, а вийшло {warped:.4} проти {naive:.4}"
+        "the warp should have evened out the grid, but it came out {warped:.4} \
+         against {naive:.4}"
     );
-    // Не «менше», а помітно менше: варп, що виграє третій знак, не вартий
-    // тангенса при породженні.
+    // Not "smaller" but noticeably smaller: a warp that wins the third decimal
+    // is not worth the tangent it costs at generation time.
     assert!(
         warped < 0.9 * naive,
-        "виграш замалий, щоб платити за нього tan: {warped:.4} проти {naive:.4}"
+        "the gain is too small to pay a tan for it: {warped:.4} against {naive:.4}"
     );
 }
 
-/// Кожна вершина лежить на сфері, а не поруч із нею.
+/// Every vertex lies on the sphere, not next to it.
 #[test]
 fn every_vertex_is_exactly_a_radius_from_the_centre() {
     let values = grid(N, true);
@@ -49,37 +52,42 @@ fn every_vertex_is_exactly_a_radius_from_the_centre() {
         }
     }
 
-    println!("  найбільше відхилення |r|: {worst:.2e} відносних");
-    assert!(worst < 1e-15, "вершини не на сфері: {worst:.2e}");
+    println!("  largest deviation of |r|: {worst:.2e} relative");
+    assert!(
+        worst < 1e-15,
+        "the vertices are not on the sphere: {worst:.2e}"
+    );
 }
 
-/// Вершина на спільному ребрі двох граней — **той самий біт**.
+/// A vertex on a shared edge of two faces is **the same bits**.
 ///
-/// Це головна перевірка кроку, і мутації під неї прогнані руками — з
-/// результатом, який виправляє план (R1a):
+/// This is the step's main check, and mutations against it were run by hand --
+/// with a result that corrects the plan (R1a):
 ///
-/// - **не примусові кінці таблиці** (лишити `tan(π/4)` як є) — валить цей
-///   тест. Саме той шов, заради якого крок існує;
-/// - **дзеркало другим викликом `tan`** замість віднімання — цей тест
-///   переживає, бо `tan` у glibc на цій машині виявився бітово непарним.
-///   Ловить його сусідній тест таблиці, і в цьому вся його користь:
-///   властивість, що тримається випадково, мусить мати сторожа, інакше
-///   вона зникне на іншій платформі — а межа тут бітова;
-/// - **перестановка осей `u` й `v` в одній грані** — те, що план називав
-///   головною мутацією, — не валить **нічого**. І це не слабкість тесту:
-///   транспонована грань дає ту саму **множину** вершин, тобто шва не
-///   розриває взагалі. Розійдеться від неї не шов, а відповідність `(i, j)`
-///   між сусідніми патчами — а патчів тут ще немає, тож і ловити її буде
-///   R1b/R2b, де в індексів з'явиться зміст.
+/// - **not forcing the ends of the table** (leaving `tan(pi/4)` as it is)
+///   breaks this test. That is precisely the seam the step exists for;
+/// - **mirroring by a second call to `tan`** instead of by negation survives
+///   this test, because `tan` in glibc on this machine turned out to be
+///   bitwise odd. What catches it is the neighbouring table test, and therein
+///   lies its whole value: a property that holds by accident must have a
+///   guard, otherwise it will vanish on another platform -- and the boundary
+///   here is bitwise;
+/// - **swapping the `u` and `v` axes within one face** -- what the plan called
+///   the main mutation -- breaks **nothing**. And that is not a weakness of
+///   the test: a transposed face gives the same **set** of vertices, i.e. it
+///   does not tear the seam at all. What it does break is not the seam but the
+///   `(i, j)` correspondence between neighbouring patches -- and there are no
+///   patches here yet, so catching that is for R1b/R2b, where the indices
+///   acquire meaning.
 ///
-/// Перевіряються всі дванадцять ребер куба, а не одне.
+/// All twelve edges of the cube are checked, not one.
 #[test]
 fn a_vertex_on_a_shared_edge_is_the_same_bits_from_both_faces() {
     let values = grid(N, true);
     let radius = EARTH_RADIUS_M;
 
-    // Усі вершини кожної грані — за ключем із бітів позиції. Збіг ключа
-    // означає бітову рівність усіх трьох компонент.
+    // Every vertex of every face, keyed by the bits of the position. Matching
+    // keys mean bitwise equality of all three components.
     let mut seen: std::collections::HashMap<[u64; 3], Vec<usize>> =
         std::collections::HashMap::new();
     for face in 0..FACES {
@@ -95,82 +103,91 @@ fn a_vertex_on_a_shared_edge_is_the_same_bits_from_both_faces() {
         }
     }
 
-    // Скільки вершин ділять рівно дві грані (ребра) і скільки три (кути).
+    // How many vertices exactly two faces share (edges) and how many three
+    // share (corners).
     let shared_by_two = seen.values().filter(|f| f.len() == 2).count();
     let shared_by_three = seen.values().filter(|f| f.len() == 3).count();
 
-    println!("  спільних вершин: {shared_by_two} на ребрах, {shared_by_three} у кутах");
+    println!("  shared vertices: {shared_by_two} on edges, {shared_by_three} at corners");
 
-    // Дванадцять ребер по (N − 1) внутрішніх вершин: кути рахуються окремо.
+    // Twelve edges of (N - 1) interior vertices each: the corners are counted
+    // separately.
     assert_eq!(
         shared_by_two,
         12 * (N - 1),
-        "на ребрах збіглося не все — шов розходиться там, де його не видно"
+        "not everything matched on the edges -- the seam parts where it cannot \
+         be seen"
     );
-    // Вісім кутів куба, у кожному сходяться ТРИ грані, а не чотири: саме тут
-    // ламається наївне зшивання (R2b про це ще нагадає).
-    assert_eq!(shared_by_three, 8, "кути куба зійшлися не по три грані");
+    // Eight cube corners, and THREE faces meet at each, not four: this is
+    // exactly where naive stitching breaks (R2b will remind us of this again).
+    assert_eq!(
+        shared_by_three, 8,
+        "the cube corners did not meet three faces at a time"
+    );
 
-    // І жодна вершина не належить більш ніж трьом граням: чотири означало б,
-    // що дві протилежні грані десь злилися.
+    // And no vertex belongs to more than three faces: four would mean two
+    // opposite faces had merged somewhere.
     assert!(seen.values().all(|f| f.len() <= 3));
 }
 
-/// Таблиця параметрів симетрична бітово, а кінці — точні.
+/// The parameter table is a bitwise mirror of itself, and the ends are exact.
 ///
-/// Окремою перевіркою, бо це передумова рівності вище, і зламати її можна,
-/// не зачепивши нічого іншого: досить порахувати другу половину другим
-/// викликом `tan` замість дзеркала.
+/// A separate check, because it is a precondition of the equality above and
+/// can be broken without touching anything else: it is enough to compute the
+/// second half by a second call to `tan` instead of by mirroring.
 #[test]
 fn the_parameter_table_is_a_mirror_of_itself() {
     for n in [2, 8, 32, 33] {
         let values = grid(n, true);
-        assert_eq!(values[0], -1.0, "лівий кінець не точний при n = {n}");
-        assert_eq!(values[n], 1.0, "правий кінець не точний при n = {n}");
+        assert_eq!(values[0], -1.0, "the left end is not exact at n = {n}");
+        assert_eq!(values[n], 1.0, "the right end is not exact at n = {n}");
 
         for k in 0..=n {
-            // Нуль — окремо, і не з педантизму: заперечення нуля міняє знак,
-            // тож у точній середині бітова рівність із дзеркалом неможлива
-            // за означенням. Натомість вимога до неї сильніша — рівно `+0.0`,
-            // бо саме цим бітом вершини й порівнюються.
+            // Zero is handled separately, and not out of pedantry: negating
+            // zero flips the sign, so at the exact midpoint bitwise equality
+            // with the mirror is impossible by definition. The requirement on
+            // it is stronger instead -- exactly `+0.0`, because that is the
+            // very bit the vertices are compared by.
             if values[k] == 0.0 {
                 assert_eq!(
                     values[k].to_bits(),
                     0.0_f64.to_bits(),
-                    "середина при n = {n} — це «мінус нуль»"
+                    "the midpoint at n = {n} is a \"minus zero\""
                 );
                 continue;
             }
             assert_eq!(
                 values[k].to_bits(),
                 (-values[n - k]).to_bits(),
-                "таблиця несиметрична в {k} при n = {n}"
+                "the table is asymmetric at {k} for n = {n}"
             );
         }
     }
 
-    // Парна сітка мусить мати точну нульову середину; непарна не має
-    // середнього вузла взагалі.
+    // An even grid must have an exact zero midpoint; an odd one has no middle
+    // node at all.
     assert_eq!(grid(8, true)[4], 0.0);
 }
 
 // ---------------------------------------------------------------------------
-// Патч: початок у f64, вершини у f32 (R1b)
+// The patch: origin in f64, vertices in f32 (R1b)
 
 use engine::camera::Camera;
 use engine::cubesphere::{Patch, SIDE};
 
-/// Похибка вершини — стала частка **розміру патча**, а не відстані.
+/// A vertex is off by a constant fraction of the **patch size**, not of the
+/// distance.
 ///
-/// Це правило 2 етапу R, і перевіряється воно як закон, а не як одне число:
-/// на рівнях 0, 5 і 10 патч різниться в мільйон разів за розміром, а частка
-/// мусить лишитися тією самою. Одне вимірювання на одному рівні пройшло б і
-/// на реалізації, де зсув береться від чужого початку.
+/// This is rule 2 of stage R, and it is checked as a law rather than as a
+/// single number: at levels 0, 5 and 10 a patch differs a millionfold in size,
+/// and the fraction has to stay the same. One measurement at one level would
+/// pass on an implementation where the offset is taken from someone else's
+/// origin.
 #[test]
 fn a_vertex_is_off_by_a_fraction_of_the_patch_not_of_the_distance() {
-    // `f32` дає 24 біти мантиси, тобто 6·10⁻⁸ відносних — те саме число, що
-    // в reversed-Z (F3). Множник 2 — бо зсув від центра патча ще й
-    // округлюється при відніманні.
+    // `f32` gives 24 bits of mantissa, i.e. 6e-8 relative -- the same number
+    // as in reversed-Z (F3). The factor of 2 is because the offset from the
+    // patch centre is rounded once more on subtraction.
     const TOLERANCE: f64 = 2.0 * 6e-8;
 
     for level in [0, 5, 10] {
@@ -182,7 +199,8 @@ fn a_vertex_is_off_by_a_fraction_of_the_patch_not_of_the_distance() {
         };
         let mesh = patch.mesh(EARTH_RADIUS_M);
 
-        // Розмір патча — довжина його діагоналі; з нею й порівнюється похибка.
+        // The patch size is the length of its diagonal; the error is compared
+        // against that.
         let corner = patch.vertex(0, 0, EARTH_RADIUS_M);
         let opposite = patch.vertex(SIDE, SIDE, EARTH_RADIUS_M);
         let size = ((corner[0] - opposite[0]).powi(2)
@@ -209,37 +227,39 @@ fn a_vertex_is_off_by_a_fraction_of_the_patch_not_of_the_distance() {
         }
 
         println!(
-            "  рівень {level:2}: патч {size:.3e} м, найгірша похибка {worst:.3e} м \
-             = {:.2e} розміру",
+            "  level {level:2}: patch {size:.3e} m, worst error {worst:.3e} m \
+             = {:.2e} of the size",
             worst / size
         );
         assert!(
             worst <= TOLERANCE * size,
-            "рівень {level}: {worst:.3e} м на патчі {size:.3e} м — це {:.2e} \
-             розміру, а мало бути не більше {TOLERANCE:.0e}",
+            "level {level}: {worst:.3e} m on a patch of {size:.3e} m -- that is \
+             {:.2e} of the size, and it should have been no more than \
+             {TOLERANCE:.0e}",
             worst / size
         );
     }
 }
 
-/// Камера за 10 м і камера за 4·10⁸ м бачать той самий патч.
+/// A camera 10 m away and a camera 4e8 m away see the same patch.
 ///
-/// Друга половина R1b, і без неї перша нічого не варта: похибка може бути
-/// малою відносно патча й усе одно з'їдатися відніманням камери, якщо це
-/// віднімання робиться не там, де треба. Тут воно робиться так, як його
-/// робитиме GPU: `camera.relative(origin)` **один раз на патч**, плюс
-/// повернутий зсув вершини — проти `camera.relative(exact)` **на кожну
-/// вершину**, тобто проти того, що робив F4.
+/// The second half of R1b, and without it the first is worth nothing: the
+/// error can be small relative to the patch and still be eaten by the camera
+/// subtraction if that subtraction is done in the wrong place. Here it is done
+/// the way the GPU will do it: `camera.relative(origin)` **once per patch**,
+/// plus the rotated vertex offset -- against `camera.relative(exact)` **per
+/// vertex**, i.e. against what F4 did.
 ///
-/// Міряється **кут**, а не метри, і це не оформлення результату. Абсолютна
-/// розбіжність зобов'язана рости з відстанню: `f32` тримає сталу відносну
-/// точність, тож на 4·10⁸ м його крок — 32 м, і обидва шляхи однаково
-/// округляють до цієї сітки. Питання не в тому, чи зросли метри, а в тому, чи
-/// зсунувся **силует**: розбіжність, поділена на відстань до самої вершини, —
-/// це і є кут, на який вершина поїде на екрані.
+/// What is measured is an **angle**, not metres, and that is not presentation
+/// of the result. The absolute divergence is obliged to grow with distance:
+/// `f32` holds a constant relative precision, so at 4e8 m its step is 32 m and
+/// both paths round to that same grid alike. The question is not whether the
+/// metres grew but whether the **silhouette** moved: the divergence divided by
+/// the distance to the vertex itself is precisely the angle by which the
+/// vertex will shift on screen.
 ///
-/// Твердження, отже, сильне в правильній формі: не «похибка мала», а «кут той
-/// самий на обох відстанях» — відстані немає в рівнянні.
+/// So the claim is strong in the right form: not "the error is small" but "the
+/// angle is the same at both distances" -- distance is not in the equation.
 #[test]
 fn the_patch_looks_the_same_from_ten_metres_and_from_the_moon() {
     let patch = Patch {
@@ -250,7 +270,8 @@ fn the_patch_looks_the_same_from_ten_metres_and_from_the_moon() {
     };
     let mesh = patch.mesh(EARTH_RADIUS_M);
 
-    // Камера дивиться на центр патча з двох відстаней уздовж його нормалі.
+    // The camera looks at the patch centre from two distances along its
+    // normal.
     let direction = [
         mesh.origin[0] / EARTH_RADIUS_M,
         mesh.origin[1] / EARTH_RADIUS_M,
@@ -266,8 +287,9 @@ fn the_patch_looks_the_same_from_ten_metres_and_from_the_moon() {
         ];
         let camera = Camera::look_at(eye, mesh.origin, [0.0, 0.0, 1.0]);
 
-        // Патчевий шлях: камера віднімається від початку патча, зсув
-        // додається вже у `f32`. Саме це робитиме вершинний шейдер.
+        // The patch path: the camera is subtracted from the patch origin, the
+        // offset is added already in `f32`. This is exactly what the vertex
+        // shader will do.
         let base = camera.relative(mesh.origin);
 
         let mut worst_angle: f64 = 0.0;
@@ -275,9 +297,9 @@ fn the_patch_looks_the_same_from_ten_metres_and_from_the_moon() {
         for a in 0..=SIDE {
             for b in 0..=SIDE {
                 let offset = mesh.offsets[a * (SIDE + 1) + b];
-                // Зсув живе у світових осях, тож у камерний простір його
-                // повертає `rotate` — рівно те, що робитиме вершинний шейдер
-                // матрицею вигляду.
+                // The offset lives in world axes, so `rotate` takes it into
+                // camera space -- exactly what the vertex shader will do with
+                // the view matrix.
                 let turned = camera.rotate([
                     f64::from(offset[0]),
                     f64::from(offset[1]),
@@ -288,16 +310,16 @@ fn the_patch_looks_the_same_from_ten_metres_and_from_the_moon() {
                     base[1] + turned[1],
                     base[2] + turned[2],
                 ];
-                // Шлях F4: camera-relative на кожну вершину, з повного `f64`.
+                // The F4 path: camera-relative per vertex, from full `f64`.
                 let by_vertex = camera.relative(patch.vertex(a, b, EARTH_RADIUS_M));
 
                 let gap = ((f64::from(by_patch[0]) - f64::from(by_vertex[0])).powi(2)
                     + (f64::from(by_patch[1]) - f64::from(by_vertex[1])).powi(2)
                     + (f64::from(by_patch[2]) - f64::from(by_vertex[2])).powi(2))
                 .sqrt();
-                // Відстань до самої вершини, а не до центра патча: зблизька
-                // вони різняться на порядки, і саме дальні вершини дають
-                // найбільші метри.
+                // The distance to the vertex itself, not to the patch centre:
+                // up close they differ by orders of magnitude, and it is the
+                // far vertices that give the largest metres.
                 let range = (f64::from(by_vertex[0]).powi(2)
                     + f64::from(by_vertex[1]).powi(2)
                     + f64::from(by_vertex[2]).powi(2))
@@ -308,11 +330,11 @@ fn the_patch_looks_the_same_from_ten_metres_and_from_the_moon() {
             }
         }
 
-        // Пікселі — щоб число мало зміст без перекладу: 1280 пікселів на
-        // 60° поля зору, тобто радіан ≈ 1223 пікселі.
+        // Pixels -- so the number means something without translation: 1280
+        // pixels over a 60 deg field of view, i.e. a radian is ~1223 pixels.
         println!(
-            "  камера за {distance:.3e} м: {worst_metres:.3e} м, кут \
-             {worst_angle:.2e} рад = {:.1e} пікселя",
+            "  camera at {distance:.3e} m: {worst_metres:.3e} m, angle \
+             {worst_angle:.2e} rad = {:.1e} pixels",
             worst_angle * 1223.0
         );
         angles.push(worst_angle);
@@ -321,27 +343,28 @@ fn the_patch_looks_the_same_from_ten_metres_and_from_the_moon() {
     let (near, far) = (angles[0], angles[1]);
     assert!(
         near < 1e-6 && far < 1e-6,
-        "силует їде: зблизька {near:.2e} рад, здалеку {far:.2e} рад"
+        "the silhouette moves: {near:.2e} rad up close, {far:.2e} rad far away"
     );
-    // Головне твердження: відстань не входить у рівняння. Множник 10 —
-    // запас на округлення самої камери, не на зростання з відстанню.
+    // The main claim: distance is not in the equation. The factor of 10 is
+    // slack for the camera's own rounding, not for growth with distance.
     assert!(
         far <= near.max(1e-12) * 10.0,
-        "здалеку кут більший, ніж зблизька ({far:.2e} проти {near:.2e}) — \
-         отже відстань таки входить у рівняння"
+        "the angle is larger far away than up close ({far:.2e} against \
+         {near:.2e}) -- so distance is in the equation after all"
     );
 }
 
-/// Сусідні патчі ділять вершини **бітово**, і на межі рівнів теж.
+/// Neighbouring patches share their vertices **bitwise**, across a level
+/// boundary too.
 ///
-/// Ось де перестановка осей у грані нарешті стає видимою (R1a про це прямо
-/// каже): у патчів індекси мають зміст, і сусід за `i` мусить збігтися
-/// краєм, а не «десь тією самою множиною».
+/// This is where swapping the axes within a face finally becomes visible (R1a
+/// says so outright): patch indices have meaning, and the neighbour along `i`
+/// has to match along the edge rather than "somewhere in the same set".
 #[test]
 fn neighbouring_patches_share_their_edge_bit_for_bit() {
     let radius = EARTH_RADIUS_M;
 
-    // Сусіди на одній грані.
+    // Neighbours on one face.
     let left = Patch {
         face: 2,
         level: 3,
@@ -361,14 +384,14 @@ fn neighbouring_patches_share_their_edge_bit_for_bit() {
             assert_eq!(
                 a[k].to_bits(),
                 c[k].to_bits(),
-                "край між сусідами розійшовся у вузлі {b}, компонента {k}"
+                "the edge between neighbours parted at node {b}, component {k}"
             );
         }
     }
 
-    // Межа рівнів: патч рівня 3 і чотири патчі рівня 4 на його місці. Сітка
-    // рівня 4 містить сітку рівня 3 у своїх парних вузлах — і це не
-    // випадковість, а те, на чому триматиметься зшивання в R2b.
+    // A level boundary: a level-3 patch and the four level-4 patches in its
+    // place. The level-4 grid contains the level-3 one at its even nodes --
+    // and that is no coincidence but what the stitching in R2b will rest on.
     let coarse = Patch {
         face: 2,
         level: 3,
@@ -389,15 +412,15 @@ fn neighbouring_patches_share_their_edge_bit_for_bit() {
                 assert_eq!(
                     from_coarse[k].to_bits(),
                     from_fine[k].to_bits(),
-                    "рівні 3 і 4 розійшлися у вузлі ({a}, {b}), компонента {k}"
+                    "levels 3 and 4 parted at node ({a}, {b}), component {k}"
                 );
             }
         }
     }
 }
 
-/// Сітка патча замкнена: індекси в межах, трикутників рівно стільки, скільки
-/// клітинок, і жодна вершина не загубилась.
+/// The patch mesh is closed: indices within bounds, exactly as many triangles
+/// as cells, and no vertex lost.
 #[test]
 fn the_patch_mesh_is_closed() {
     let mesh = Patch {
@@ -421,31 +444,34 @@ fn the_patch_mesh_is_closed() {
     }
     assert!(
         used.iter().all(|&u| u),
-        "є вершини, яких не малює жоден трикутник"
+        "there are vertices no triangle draws"
     );
 
-    // Нормаль — одиничний напрямок, а не позиція.
+    // A normal is a unit direction, not a position.
     for n in &mesh.normals {
         let length =
             (f64::from(n[0]).powi(2) + f64::from(n[1]).powi(2) + f64::from(n[2]).powi(2)).sqrt();
-        assert!((length - 1.0).abs() < 1e-6, "нормаль довжиною {length}");
+        assert!((length - 1.0).abs() < 1e-6, "a normal of length {length}");
     }
 }
 
 // ---------------------------------------------------------------------------
-// Кубосфера в кадрі замість UV-сфери (R1d)
+// The cubesphere in the frame instead of the UV sphere (R1d)
 
-/// Силует кубосфери збігається з силуетом UV-сфери — маскою, не кольорами.
+/// The cubesphere's silhouette matches the UV sphere's -- by mask, not by
+/// colour.
 ///
-/// Оракул тут — **інший шлях до тієї самої картинки**: `sphere_render` (F5)
-/// малює UV-сферу з тією самою камерою, проєкцією й ближньою площиною, а
-/// `Frame` тепер малює патчі. Порівнюються не пікселі, а маска «планета /
-/// небо»: кольори різнитися **зобов'язані** — нормалі в кубосфери інші, та й
-/// sRGB-перетворення вже записане як окреме рішення (правило 7 етапу R).
+/// The oracle here is **a different path to the same picture**:
+/// `sphere_render` (F5) draws a UV sphere with the same camera, projection and
+/// near plane, while `Frame` now draws patches. What is compared is not pixels
+/// but the "planet / sky" mask: the colours are **obliged** to differ -- the
+/// cubesphere's normals are different, and the sRGB conversion is already
+/// recorded as a separate decision (rule 7 of stage R).
 ///
-/// Допуск — частка кадру, і взятий він із геометрії, а не зі стелі: обидві
-/// сітки апроксимують коло 32 сегментами на 90°, тобто силует у кожної свій
-/// на частки пікселя, а розбіжність збирається вздовж усього краю диска.
+/// The tolerance is a fraction of the frame, and it is taken from geometry
+/// rather than from thin air: both meshes approximate a circle with 32
+/// segments per 90 deg, so each has its own silhouette to within fractions of
+/// a pixel, and the divergence accumulates along the whole rim of the disc.
 #[test]
 fn the_cubesphere_draws_the_same_silhouette_as_the_uv_sphere() {
     use engine::frame;
@@ -463,7 +489,7 @@ fn the_cubesphere_draws_the_same_silhouette_as_the_uv_sphere() {
     let camera = frame::default_camera();
     let near = frame::DEFAULT_ALTITUDE_M / 10.0;
 
-    // Старий шлях: UV-сфера, camera-relative на кожну вершину.
+    // The old path: a UV sphere, camera-relative per vertex.
     let mesh = sphere::generate(sphere::EARTH_RADIUS_M, 64, 128);
     let old = sphere_render::render(
         &gpu,
@@ -477,20 +503,21 @@ fn the_cubesphere_draws_the_same_silhouette_as_the_uv_sphere() {
             colour: [0.2, 0.6, 0.9, 1.0],
         },
     )
-    .expect("UV-сфера мала намалюватися");
+    .expect("the UV sphere should have drawn");
 
-    // Новий шлях: патчі, camera-relative раз на патч. Той самий `Frame`, що
-    // йде у вікно, — інакше перевірявся б не той кадр.
+    // The new path: patches, camera-relative once per patch. The same `Frame`
+    // that goes to the window -- otherwise the wrong frame would be checked.
     let new = shot::take_scene(
         &gpu,
         WIDTH,
         HEIGHT,
         &frame::default_scene(frame::default_camera()),
     )
-    .expect("кубосфера мала намалюватися");
+    .expect("the cubesphere should have drawn");
 
-    // Тло в двох шляхів різне — `sphere_render` чистить у чорний, `Frame` у
-    // свій колір неба, — тож маска береться від власного тла кожного.
+    // The two paths have different backgrounds -- `sphere_render` clears to
+    // black, `Frame` to its own sky colour -- so the mask is taken from each
+    // one's own background.
     let planet = |s: &Shot, x: u32, y: u32, sky: [u8; 3]| {
         let p = s.pixel(x, y);
         [p[0], p[1], p[2]] != sky
@@ -514,31 +541,35 @@ fn the_cubesphere_draws_the_same_silhouette_as_the_uv_sphere() {
 
     let edge = 2.0 * std::f64::consts::PI * (lit as f64 / std::f64::consts::PI).sqrt();
     println!(
-        "  силует: {lit} пікселів, розбіжність {differ} = {:.2} пікселя на \\
-         піксель краю (край ≈ {edge:.0})",
+        "  silhouette: {lit} pixels, divergence {differ} = {:.2} pixels per \
+         rim pixel (rim ~ {edge:.0})",
         differ as f64 / edge
     );
 
-    assert!(lit > 0, "стара сфера не намалювалася — звіряти нема з чим");
-    // Не більше пікселя по краю (R1d), і край рахується з площі диска, а не
-    // вгадується: 2πr при r = √(площа/π).
+    assert!(
+        lit > 0,
+        "the old sphere did not draw -- there is nothing to check against"
+    );
+    // No more than a pixel along the rim (R1d), and the rim is computed from
+    // the disc's area rather than guessed: 2*pi*r with r = sqrt(area/pi).
     assert!(
         (differ as f64) <= edge,
-        "силует поїхав на {differ} пікселів при краю в {edge:.0} — це не \\
-         допуск, це вісь або порядок обходу"
+        "the silhouette moved by {differ} pixels with a rim of {edge:.0} -- \
+         that is not a tolerance, that is an axis or a winding order"
     );
 }
 
 // ---------------------------------------------------------------------------
-// Сусідство й зшивання (R2b)
+// Neighbourhood and stitching (R2b)
 
 use engine::cubesphere::{Edge, EDGES};
 
-/// Сусідство симетричне: хто мій сусід, тому сусід я, тим самим ребром.
+/// Neighbourhood is symmetric: whoever is my neighbour has me as a neighbour,
+/// across the same edge.
 ///
-/// Перевіряються **всі** патчі рівня 2 на всіх шести гранях, а не зразок:
-/// помилка в перекладі індексів через ребро куба сидить рівно в одному з
-/// двадцяти чотирьох випадків, і зразок її не побачить.
+/// **All** level-2 patches on all six faces are checked, not a sample: a
+/// mistake in translating indices across a cube edge sits in exactly one case
+/// out of twenty-four, and a sample will not see it.
 #[test]
 fn being_a_neighbour_is_mutual() {
     const LEVEL: u32 = 2;
@@ -558,12 +589,13 @@ fn being_a_neighbour_is_mutual() {
                     let back = there.patch.neighbour(there.edge);
                     assert_eq!(
                         back.patch, patch,
-                        "{patch:?} через {edge:?} потрапив у {:?}, а звідти не назад",
+                        "{patch:?} through {edge:?} landed in {:?}, and does not \
+                         come back from there",
                         there.patch
                     );
                     assert_eq!(
                         back.edge, edge,
-                        "{patch:?} через {edge:?}: назад прийшло інше ребро"
+                        "{patch:?} through {edge:?}: a different edge came back"
                     );
                 }
             }
@@ -571,21 +603,21 @@ fn being_a_neighbour_is_mutual() {
     }
 }
 
-/// Вершини спільного ребра збігаються **бітово**, і вузол `k` — це вузол `k`.
+/// The vertices of a shared edge match **bitwise**, and node `k` is node `k`.
 ///
-/// Головна перевірка кроку (правило 5 етапу R). Слабша форма — «збігається
-/// множина вершин» — тут не годиться: транспонована грань дала б ту саму
-/// множину й розійшлася б у відповідності індексів, а зшивання стоїть саме
-/// на ній. Кути куба, де сходяться **три** грані, потрапляють у перевірку
-/// разом з усіма: це ті патчі, у яких два ребра з чотирьох ведуть на різні
-/// грані.
+/// The step's main check (rule 5 of stage R). The weaker form -- "the set of
+/// vertices matches" -- is no good here: a transposed face would give the same
+/// set and part ways in the correspondence of indices, and the stitching rests
+/// on precisely that. The cube corners, where **three** faces meet, fall into
+/// the check along with everything else: they are the patches in which two of
+/// the four edges lead to different faces.
 #[test]
 fn a_shared_edge_matches_node_by_node_not_just_as_a_set() {
     const LEVEL: u32 = 2;
     let side = 1u32 << LEVEL;
     let radius = EARTH_RADIUS_M;
 
-    // Вершини ребра патча в порядку зростання спільного індексу.
+    // The vertices of a patch edge in order of increasing shared index.
     let along = |patch: &Patch, edge: Edge, k: usize| match edge {
         Edge::AMin => patch.vertex(0, k, radius),
         Edge::AMax => patch.vertex(SIDE, k, radius),
@@ -615,8 +647,8 @@ fn a_shared_edge_matches_node_by_node_not_just_as_a_set() {
                             assert_eq!(
                                 mine[c].to_bits(),
                                 theirs[c].to_bits(),
-                                "{patch:?} / {edge:?}: вузол {k} розійшовся з \
-                                 {:?} / {:?} у компоненті {c}",
+                                "{patch:?} / {edge:?}: node {k} parted from \
+                                 {:?} / {:?} in component {c}",
                                 there.patch,
                                 there.edge
                             );
@@ -627,32 +659,35 @@ fn a_shared_edge_matches_node_by_node_not_just_as_a_set() {
         }
     }
 
-    // Двадцять чотири ребра куба (по чотири на грань), на кожному `side`
-    // патчів, і кожне ребро рахується з обох боків.
+    // Twenty-four cube edges (four per face), `side` patches on each, and
+    // every edge counted from both sides.
     assert_eq!(
         across_faces,
         FACES * 4 * side as usize,
-        "через ребра куба пройшло не стільки сусідств, скільки їх є"
+        "the number of neighbourhoods crossing cube edges is not the number \
+         there are"
     );
 }
 
-/// **Вузол ореолу лежить рівно на один крок за ребром** (R7b).
+/// **A halo node sits exactly one step past the edge** (R7b).
 ///
-/// Ореол ловить те, чого рельєф без нього не вміє: градієнт у вузлі на межі
-/// тайла потребує сусіда з іншого тайла, а затиснений індекс дав би на двох
-/// боках межі різні амплітуди — тобто тріщину рівно там, де R2b її прибрав.
+/// The halo catches what terrain cannot do without it: the gradient at a node
+/// on a tile boundary needs a neighbour from another tile, and a clamped index
+/// would give different amplitudes on the two sides of the boundary -- i.e. a
+/// crack exactly where R2b removed one.
 ///
-/// Перевірка мусить бути **незалежною від самої формули**, інакше вона лише
-/// повторить її. Тому два різні оракули:
+/// The check has to be **independent of the formula itself**, otherwise it
+/// merely repeats it. Hence two different oracles:
 ///
-/// 1. **Усередині грані — точна арифметика.** Вузол `−1` патча `(i, j)` — це
-///    вузол `SIDE − 1` патча `(i − 1, j)`, і це видно прямо з нумерації, без
-///    жодного `neighbour`. Бітова рівність вершин.
-/// 2. **Через ребро куба — геометрія.** Там немає спільної нумерації, зате є
-///    твердження, якого формула не може підробити: три точки — ореол, вузол
-///    ребра й наш перший внутрішній вузол — ідуть **підряд**, тобто крок від
-///    ореолу до ребра близький до кроку від ребра всередину. Варп робить їх
-///    не рівними, але й не різними вдвічі.
+/// 1. **Inside a face -- exact arithmetic.** Node `-1` of patch `(i, j)` is
+///    node `SIDE - 1` of patch `(i - 1, j)`, and that is visible straight from
+///    the numbering, without any `neighbour`. Bitwise equality of vertices.
+/// 2. **Across a cube edge -- geometry.** There is no shared numbering there,
+///    but there is a claim the formula cannot fake: three points -- the halo,
+///    the edge node and our first interior node -- run **consecutively**, i.e.
+///    the step from the halo to the edge is close to the step from the edge
+///    inward. The warp makes them unequal, but not different by a factor of
+///    two.
 #[test]
 fn a_halo_node_sits_one_step_past_the_edge() {
     use engine::cubesphere::{Patch, EDGES, SIDE};
@@ -678,8 +713,8 @@ fn a_halo_node_sits_one_step_past_the_edge() {
                     let (there, ha, hb) = patch.halo_node(edge, SIDE / 3);
                     let halo = there.vertex(ha, hb, radius);
 
-                    // Наші три точки поперек ребра: ореол, сам край, перший
-                    // внутрішній вузол.
+                    // Our three points across the edge: the halo, the edge
+                    // itself, the first interior node.
                     let k = SIDE / 3;
                     let (edge_node, inner) = match edge {
                         Edge::AMin => (patch.vertex(0, k, radius), patch.vertex(1, k, radius)),
@@ -695,8 +730,9 @@ fn a_halo_node_sits_one_step_past_the_edge() {
                     };
 
                     if there.face == face {
-                        // Той самий бік грані: сусід зсунутий на один патч, і
-                        // потрібний вузол виводиться з нумерації напряму.
+                        // The same side of the face: the neighbour is one
+                        // patch over, and the node needed follows straight
+                        // from the numbering.
                         let (di, dj) = match edge {
                             Edge::AMin => (-1i64, 0i64),
                             Edge::AMax => (1, 0),
@@ -720,8 +756,8 @@ fn a_halo_node_sits_one_step_past_the_edge() {
                             assert_eq!(
                                 halo[c].to_bits(),
                                 expected[c].to_bits(),
-                                "{patch:?} / {edge:?}: ореол не збігся з вузлом \
-                                 {plain:?} ({pa}, {pb}) у компоненті {c}"
+                                "{patch:?} / {edge:?}: the halo did not match \
+                                 node {plain:?} ({pa}, {pb}) in component {c}"
                             );
                         }
                         same_face += 1;
@@ -739,8 +775,9 @@ fn a_halo_node_sits_one_step_past_the_edge() {
                     worst_ratio = worst_ratio.max(ratio);
                     assert!(
                         ratio < 1.5,
-                        "{patch:?} / {edge:?}: крок назовні {out:.1} м проти \
-                         {inward:.1} м усередину — ореол не на сусідньому вузлі"
+                        "{patch:?} / {edge:?}: a step of {out:.1} m outward \
+                         against {inward:.1} m inward -- the halo is not on the \
+                         neighbouring node"
                     );
                 }
             }
@@ -748,21 +785,22 @@ fn a_halo_node_sits_one_step_past_the_edge() {
     }
 
     println!(
-        "  ореолів усередині грані {same_face}, через ребро куба {across}, \
-         найгірше відношення кроків {worst_ratio:.4}"
+        "  halos inside a face {same_face}, across a cube edge {across}, \
+         worst step ratio {worst_ratio:.4}"
     );
     assert_eq!(
         across,
         FACES * 4 * side as usize,
-        "через ребра куба пройшло не стільки ореолів, скільки їх є"
+        "the number of halos crossing cube edges is not the number there are"
     );
 }
 
-/// Зшите ребро віддає рівно парні вузли — і рівно на тих ребрах, що в масці.
+/// A stitched edge keeps exactly its even nodes -- and exactly on the edges in
+/// the mask.
 ///
-/// Дві половини, і без другої перша нічого не варта: набір, який викидає
-/// непарні вузли **скрізь**, пройшов би перевірку «на зшитому ребрі їх
-/// немає» і зіпсував би всі внутрішні шви.
+/// Two halves, and without the second the first is worth nothing: a set that
+/// throws away the odd nodes **everywhere** would pass the "there are none on
+/// a stitched edge" check and ruin every interior seam.
 #[test]
 fn a_stitched_edge_keeps_only_its_even_nodes() {
     let stride = (SIDE + 1) as u32;
@@ -792,23 +830,23 @@ fn a_stitched_edge_keeps_only_its_even_nodes() {
                 assert_eq!(
                     used.contains(&index),
                     expected,
-                    "маска {mask:04b}, {edge:?}, вузол {k}: очікували \
-                     {expected}, а вузол {}",
+                    "mask {mask:04b}, {edge:?}, node {k}: expected {expected}, \
+                     but the node {}",
                     if used.contains(&index) {
-                        "малюється"
+                        "is drawn"
                     } else {
-                        "зник"
+                        "is gone"
                     }
                 );
             }
         }
 
-        // Внутрішні вузли лишаються на місці за будь-якої маски.
+        // Interior nodes stay in place under any mask.
         for a in 1..SIDE {
             for b in 1..SIDE {
                 assert!(
                     used.contains(&node(a, b)),
-                    "маска {mask:04b} загубила внутрішній вузол ({a}, {b})"
+                    "mask {mask:04b} lost the interior node ({a}, {b})"
                 );
             }
         }
@@ -817,21 +855,22 @@ fn a_stitched_edge_keeps_only_its_even_nodes() {
 }
 
 // ---------------------------------------------------------------------------
-// Обернене відображення: напрямок → грань і вузол (етап T, крок T6b)
+// The inverse mapping: direction -> face and node (stage T, step T6b)
 
 use engine::cubesphere::locate;
 
-/// Вузол, знайдений оберненим відображенням, — той самий вузол.
+/// A node found by the inverse mapping is the node it started from.
 ///
-/// Оракул тут прямий: `Patch::vertex` дає точку вузла, `locate` мусить
-/// повернути **цілий** номер того самого вузла. Ціле число — це і є твердження:
-/// похибка в чверть вузла лишилася б непоміченою при порівнянні «приблизно
-/// там», а на асеті означала б чужий тексель.
+/// The oracle here is direct: `Patch::vertex` gives the point of a node,
+/// `locate` has to return an **integer** index of that same node. The
+/// integrality is the claim: an error of a quarter of a node would go
+/// unnoticed by a comparison of "roughly there", while on an asset it would
+/// mean the wrong texel.
 ///
-/// ⚠ **Перевіряються всі шість граней і несиметричні вузли.** Симетрична
-/// точка тут ховає рівно те, що ховала фікстура вибору рівня (D13, D14):
-/// переставлені `u` й `v`, дзеркало однієї осі, зсув на пів вузла — усе це
-/// на діагоналі й у центрі грані дає правильну відповідь.
+/// WARNING: **all six faces and asymmetric nodes are checked.** A symmetric
+/// point here hides exactly what the level-selection fixture hid (D13, D14):
+/// swapped `u` and `v`, a mirrored axis, a half-node shift -- on the diagonal
+/// and at the centre of a face, all of these give the right answer.
 #[test]
 fn a_node_found_by_direction_is_the_node_it_started_from() {
     for level in [0, 3] {
@@ -843,31 +882,33 @@ fn a_node_found_by_direction_is_the_node_it_started_from() {
                 i: 0,
                 j: 0,
             };
-            // Несиметричні вузли: різні за обома осями, жоден не в центрі
-            // й не на діагоналі. Ребра грані сюди не входять навмисно — там
-            // відповідь неоднозначна за побудовою (див. `locate`), і про них
-            // окреме твердження нижче.
+            // Asymmetric nodes: different along both axes, none at the centre
+            // or on the diagonal. The face edges are deliberately excluded --
+            // there the answer is ambiguous by construction (see `locate`),
+            // and there is a separate claim about them below.
             for (a, b) in [(1, 7), (7, 1), (SIDE - 3, 2), (SIDE - 1, SIDE - 5)] {
                 let direction = patch.vertex(a, b, 1.0);
                 let found = locate(direction);
                 let (u, v) = (found.s * n as f64, found.t * n as f64);
-                assert_eq!(found.face, face, "грань поїхала на вузлі ({a}, {b})");
+                assert_eq!(found.face, face, "the face moved at node ({a}, {b})");
                 assert!(
                     (u - a as f64).abs() < 1e-9 && (v - b as f64).abs() < 1e-9,
-                    "рівень {level}, грань {face}, вузол ({a}, {b}) знайдений \
-                     як ({u:.6}, {v:.6})"
+                    "level {level}, face {face}, node ({a}, {b}) was found as \
+                     ({u:.6}, {v:.6})"
                 );
             }
         }
     }
 }
 
-/// Між вузлами обернене теж точне — і це вже про сам варп.
+/// Between nodes the inverse is exact too -- and that is already about the
+/// warp itself.
 ///
-/// Вузли перевіряють таблицю параметрів, а не `atan`: у них `s` і `t` кратні
-/// кроку сітки, тож груба обернена (наприклад, без варпу взагалі) на кінцях
-/// збіглася б. Тут напрямки беруться довільні — по одному в кожному октанті,
-/// плюс майже вздовж осі, — і зворотний шлях мусить відтворити сам напрямок.
+/// The nodes check the parameter table rather than `atan`: at them `s` and `t`
+/// are multiples of the grid step, so a crude inverse (one without the warp at
+/// all, say) would agree at the ends. Here the directions are arbitrary -- one
+/// per octant, plus one nearly along an axis -- and the round trip has to
+/// reproduce the direction itself.
 #[test]
 fn a_direction_between_nodes_comes_back_as_itself() {
     let directions: [[f64; 3]; 6] = [
@@ -882,8 +923,8 @@ fn a_direction_between_nodes_comes_back_as_itself() {
         let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
         let unit = [d[0] / length, d[1] / length, d[2] / length];
         let found = locate(unit);
-        // Назад тим самим шляхом, яким будується сітка: параметр сітки →
-        // варп → грань → сфера.
+        // Back the same way the grid is built: grid parameter -> warp -> face
+        // -> sphere.
         let warp = |x: f64| ((2.0 * x - 1.0) * std::f64::consts::FRAC_PI_4).tan();
         let back = vertex(found.face, warp(found.s), warp(found.t), 1.0);
         let off = ((back[0] - unit[0]).powi(2)
@@ -892,22 +933,23 @@ fn a_direction_between_nodes_comes_back_as_itself() {
         .sqrt();
         assert!(
             off < 1e-12,
-            "напрямок {unit:?} повернувся як {back:?} ({off})"
+            "direction {unit:?} came back as {back:?} ({off})"
         );
         assert!(
             (0.0..=1.0).contains(&found.s) && (0.0..=1.0).contains(&found.t),
-            "параметри поза гранню: {found:?}"
+            "parameters outside the face: {found:?}"
         );
     }
 }
 
-/// На ребрі куба грань неоднозначна — і саме тому там перевіряється **точка**.
+/// On a cube edge the face is a choice, but the point is not.
 ///
-/// Вузол на спільному ребрі належить двом граням, а в куті — трьом, тож
-/// питати «яка грань правильна» безглуздо: правильні обидві. Твердження, яке
-/// має зміст, інше — хоч би яку `locate` вибрала, назад вона дає ту саму
-/// точку сфери. Якби вибір грані й перерахунок координат розійшлися, тут би
-/// поїхала чверть сфери.
+/// A node on a shared edge belongs to two faces, and at a corner to three, so
+/// asking "which face is correct" is meaningless: both are. The claim that
+/// does have meaning is different -- whichever face `locate` picks, it gives
+/// back the same point of the sphere. Had the choice of face and the
+/// recomputation of coordinates parted ways, a quarter of the sphere would
+/// move here.
 #[test]
 fn on_a_cube_edge_the_face_is_a_choice_but_the_point_is_not() {
     let warp = |x: f64| ((2.0 * x - 1.0) * std::f64::consts::FRAC_PI_4).tan();
@@ -918,7 +960,8 @@ fn on_a_cube_edge_the_face_is_a_choice_but_the_point_is_not() {
             i: 0,
             j: 0,
         };
-        // Кути грані й середини її ребер — усе, що лежить на ребрі куба.
+        // The corners of the face and the midpoints of its edges -- everything
+        // that lies on a cube edge.
         for (a, b) in [
             (0, 0),
             (0, SIDE),
@@ -936,7 +979,7 @@ fn on_a_cube_edge_the_face_is_a_choice_but_the_point_is_not() {
             .sqrt();
             assert!(
                 off < 1e-12,
-                "грань {face}, вузол ({a}, {b}): {unit:?} → грань {} → {back:?}",
+                "face {face}, node ({a}, {b}): {unit:?} -> face {} -> {back:?}",
                 found.face
             );
         }
