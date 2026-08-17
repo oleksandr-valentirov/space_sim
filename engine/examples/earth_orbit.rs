@@ -1,21 +1,24 @@
-//! Земля з висоти 400 км — те, що бачить екіпаж станції.
+//! The Earth from 400 km -- what a station crew sees.
 //!
-//! Той самий жанр, що `earth_stills`, і та сама пастка: малює **своїм**
-//! `Frame`, бо `shot::take_scene` створює власний, у якому виданого тут
-//! хендла поверхні не існує — і сцена тихо вийшла б гладкою кулею.
+//! The same genre as `earth_stills`, and the same trap: it draws with its
+//! **own** `Frame`, because `shot::take_scene` creates one of its own in which
+//! the surface handle issued here does not exist -- and the scene would
+//! silently come out a smooth ball.
 //!
-//! Відмінність від `earth_stills` одна й уся тут: **повітря увімкнене**. З
-//! 400 км його вже видно смугою над лімбом, і саме на цій висоті видно те, що
-//! T7h додав, — небо, підсвічене відбиттям від поверхні під ним.
+//! There is one difference from `earth_stills` and it is the whole point:
+//! **the air is on**. From 400 km it is already visible as a band above the
+//! limb, and it is at this altitude that what T7h added shows -- a sky lit by
+//! the reflection off the surface beneath it.
 //!
-//! Чотири ракурси, кожен зі своїм питанням:
+//! Four angles, each with its own question:
 //!
-//! * **nadir** — прямо вниз: чи є деталь, коли вузол сітки (9.8 км) ширший за
-//!   екранний піксель;
-//! * **limb** — уздовж горизонту: смуга повітря на тлі космосу;
-//! * **sunrise** — термінатор під косим сонцем: чи лягають колір і тінь на
-//!   одну поверхню;
-//! * **oblique** — навскіс униз: силует лімба разом з поверхнею в кадрі.
+//! * **nadir** -- straight down: is there detail when a grid node (9.8 km) is
+//!   wider than a screen pixel;
+//! * **limb** -- along the horizon: the band of air against space;
+//! * **sunrise** -- the terminator under a low sun: do colour and shadow land
+//!   on one surface;
+//! * **oblique** -- down at an angle: the limb silhouette together with the
+//!   surface in frame.
 //!
 //!     cargo run --release -p engine --example earth_orbit -- build/orbit
 
@@ -27,31 +30,33 @@ use engine::{frame, shot, tiles};
 const WIDTH: u32 = 1600;
 const HEIGHT: u32 = 900;
 
-/// Висота орбіти, метри — та сама, що в МКС і в демо `ship_demo`.
+/// Orbit altitude, metres -- the same as the ISS and as the `ship_demo` demo.
 const ALTITUDE_M: f64 = 400_000.0;
 
-/// Під якою точкою висить станція: Середземне море й Сахара в кадрі.
+/// The point the station hangs over: the Mediterranean and the Sahara in
+/// frame.
 const UNDER: (f64, f64) = (28.0, 18.0);
 
 fn main() -> Result<(), String> {
     let gpu = Gpu::new(wgpu::Instance::default(), None)?;
-    println!("адаптер: {}", gpu.describe());
+    println!("adapter: {}", gpu.describe());
 
     let mut frame = frame::Frame::new(&gpu, shot::FORMAT);
     let terrain = tiles::Terrain::from_bytes(
         &std::fs::read("assets/earth.dem")
-            .map_err(|e| format!("assets/earth.dem: {e}\nполікувати: make cook-earth"))?,
+            .map_err(|e| format!("assets/earth.dem: {e}\nto fix: make cook-earth"))?,
     )?;
     let colour = tiles::Colour::from_bytes(
         &std::fs::read("assets/earth.col")
-            .map_err(|e| format!("assets/earth.col: {e}\nполікувати: make cook-earth"))?,
+            .map_err(|e| format!("assets/earth.col: {e}\nto fix: make cook-earth"))?,
     )?;
-    // Радіус тіла — **опорний радіус ассета**, а не стала сфери: висоти в
-    // тайлах відлічені саме від нього, і брати сюди інше число означало б
-    // підняти або втопити всю поверхню на різницю.
+    // The body radius is the **asset's reference radius**, not the sphere
+    // constant: the heights in the tiles are counted from it, and taking a
+    // different number here would raise or sink the whole surface by the
+    // difference.
     let radius = terrain.reference_m;
     println!(
-        "рельєф {} рівнів, колір {} рівнів; альбедо поверхні {:?}",
+        "terrain {} levels, colour {} levels; surface albedo {:?}",
         terrain.levels,
         colour.levels,
         colour.mean().map(|v| (v * 1.0e4).round() / 1.0e4)
@@ -79,15 +84,16 @@ fn main() -> Result<(), String> {
 
     let degrees = std::f64::consts::PI / 180.0;
     let (lat, lon) = (UNDER.0 * degrees, UNDER.1 * degrees);
-    // Місцевий базис у точці під станцією: вгору, на північ, на схід.
+    // The local basis at the point under the station: up, north, east.
     let up = [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()];
     let north = [-lat.sin() * lon.cos(), -lat.sin() * lon.sin(), lat.cos()];
     let east = cross(north, up);
 
     let eye = scale(up, radius + ALTITUDE_M);
 
-    // `pitch` — кут погляду від надира: 0° прямо вниз, 90° уздовж горизонту.
-    // `sun` — висота Сонця над місцевим горизонтом, теж у градусах.
+    // `pitch` is the view angle from the nadir: 0 deg straight down, 90 deg
+    // along the horizon. `sun` is the Sun's elevation above the local horizon,
+    // also in degrees.
     for (name, pitch, sun_elevation, sun_azimuth) in [
         ("nadir", 0.0f64, 55.0f64, 30.0f64),
         ("limb", 88.0, 35.0, 0.0),
@@ -99,20 +105,22 @@ fn main() -> Result<(), String> {
             sun_elevation * degrees,
             sun_azimuth * degrees,
         );
-        // Погляд: від надира відхиляємось на північ, тобто «вперед по руху».
+        // The view: tilted away from the nadir towards the north, i.e.
+        // "forward along the motion".
         let forward = unit(add(scale(up, -p.cos()), scale(north, p.sin())));
-        // ⚠ Вертикаль кадру не можна брати сталою «вгору від центра»: у надирі
-        // вона паралельна погляду, і базис камери вироджується — кадр виходить
-        // чорним, без жодної діагностики. Це рівно те, що сталося з першою
-        // версією зонда. Ця пара завжди ортогональна до погляду: у надирі
-        // вертикаллю кадру стає північ, на горизонті — місцева вертикаль.
+        // WARNING: the frame's vertical must not be a constant "up from the
+        // centre": at the nadir it is parallel to the view, the camera basis
+        // degenerates, and the frame comes out black with no diagnostic at
+        // all. That is exactly what happened to the first version of this
+        // probe. This pair is always orthogonal to the view: at the nadir the
+        // frame's vertical becomes north, at the horizon the local vertical.
         let frame_up = unit(add(scale(north, p.cos()), scale(up, p.sin())));
         let target = add(eye, scale(forward, 4.0e6));
         let camera = Camera::look_at(eye, target, frame_up);
 
         let mut scene = Scene::new(camera);
-        // Напрямок **до** Сонця в місцевому базисі: висота над горизонтом і
-        // азимут від півночі за годинниковою.
+        // The direction **to** the Sun in the local basis: elevation above the
+        // horizon and azimuth from north, clockwise.
         scene.sun = unit(add(
             scale(up, e.sin()),
             add(
@@ -126,8 +134,9 @@ fn main() -> Result<(), String> {
             orientation: [1.0, 0.0, 0.0, 0.0],
             tiles: TileSet::Loaded(id),
             colour: frame::COLOUR,
-            // Повітря на своєму місці: верхня межа задана відносно **цього**
-            // радіуса, а не сталої 6 371 000 в самій константі.
+            // The air in its proper place: the top boundary is set relative to
+            // **this** radius, not to the constant 6 371 000 inside the
+            // constant itself.
             air: Some(Atmosphere::EARTH.with_surface(radius)),
         });
 
@@ -140,7 +149,7 @@ fn main() -> Result<(), String> {
         let picture = shot::read_back(&gpu, commands, &texture, WIDTH, HEIGHT)?;
         let path = format!("{dir}/orbit_{name}.png");
         picture.write_png(std::path::Path::new(&path))?;
-        println!("  {path}  (нахил {pitch}°, Сонце {sun_elevation}° над горизонтом)");
+        println!("  {path}  (pitch {pitch} deg, Sun {sun_elevation} deg above the horizon)");
     }
     Ok(())
 }

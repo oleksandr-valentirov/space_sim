@@ -1,12 +1,13 @@
-//! Корабель з чотирьох боків як окремі PNG — щоб подивитись оком (T9).
+//! The ship from four sides as separate PNGs -- to look at with the eye (T9).
 //!
-//! Той самий жанр, що `earth_stills`, і та сама пастка: малює **своїм**
-//! `Frame`, бо `shot::take_scene` створює власний, у якому завантаженого тут
-//! меша не існує — і в кадр поїхала б заглушка V1.
+//! The same genre as `earth_stills`, and the same trap: it draws with its
+//! **own** `Frame`, because `shot::take_scene` creates one of its own in which
+//! the mesh loaded here does not exist -- and the V1 stub would go into frame.
 //!
-//! Чому не `--ship-demo`: він робить APNG на 240 кадрів, тобто відповідає на
-//! питання «як корабель обертається». Форму й фарбу питають з боку, з носа й
-//! з корми, і питають нерухомо.
+//! Why not `--ship-demo`: that makes a 240-frame APNG, i.e. it answers the
+//! question "how does the ship rotate". Shape and paint are asked about from
+//! the side, from the nose and from the stern, and they are asked while
+//! standing still.
 //!
 //!     cargo run --release -p engine --example ship_stills -- build/ship
 
@@ -19,20 +20,20 @@ use engine::{frame, ship, shot};
 const WIDTH: u32 = 720;
 const HEIGHT: u32 = 900;
 
-/// Скільки метрів від камери до корабля.
+/// How many metres from the camera to the ship.
 const RANGE_M: f64 = 13.0;
 
 fn main() -> Result<(), String> {
     let gpu = Gpu::new(wgpu::Instance::default(), None)?;
-    println!("адаптер: {}", gpu.describe());
+    println!("adapter: {}", gpu.describe());
 
     let mut frame = frame::Frame::new(&gpu, shot::FORMAT);
     let model = Model::from_bytes(
         &std::fs::read("assets/ship.mesh")
-            .map_err(|e| format!("assets/ship.mesh: {e}\nполікувати: make cook-ship"))?,
+            .map_err(|e| format!("assets/ship.mesh: {e}\nto fix: make cook-ship"))?,
     )?;
     println!(
-        "меш: {} вершин, {} трикутників, висота {:.3} м, extent {:.3}",
+        "mesh: {} vertices, {} triangles, height {:.3} m, extent {:.3}",
         model.mesh.positions.len(),
         model.mesh.indices.len() / 3,
         model.height_m,
@@ -62,7 +63,8 @@ fn main() -> Result<(), String> {
     let height_m = ship::DEFAULT_HEIGHT_M;
     let ship = Ship {
         centre: [0.0, 0.0, 0.0],
-        // Тотожний поворот: ніс уздовж світового `+Z`, тобто вгору кадром.
+        // The identity rotation: the nose along the world's `+Z`, i.e. up in
+        // frame.
         orientation: [1.0, 0.0, 0.0, 0.0],
         height_m,
         extent_m: model.extent * height_m,
@@ -78,12 +80,14 @@ fn main() -> Result<(), String> {
         ("back", 180.0),
     ] {
         let angle = azimuth * std::f64::consts::PI / 180.0;
-        // Камера в площині ілюмінатора (корабельний `+X`) і трохи згори:
-        // звідти видно і силует, і те, що обідок стоїть на опуклому корпусі.
+        // The camera in the plane of the porthole (the ship's `+X`) and a
+        // little above: from there both the silhouette and the fact that the
+        // rim sits on a convex hull are visible.
         let eye = [RANGE_M * angle.cos(), RANGE_M * angle.sin(), 0.25 * RANGE_M];
         let mut scene = Scene::new(Camera::look_at(eye, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]));
-        // Світило збоку-згори від камери: пряме світло в спину зробило б кадр
-        // пласким, а зустрічне лишило б від корабля силует.
+        // The light source to the side and above the camera: direct light
+        // from behind would make the frame flat, and light head-on would leave
+        // nothing of the ship but a silhouette.
         scene.sun = unit([
             angle.cos() * 0.6 - angle.sin(),
             angle.sin() * 0.6 + angle.cos(),

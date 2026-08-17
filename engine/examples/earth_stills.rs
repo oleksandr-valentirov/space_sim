@@ -1,18 +1,22 @@
-//! Земля з трьох висот як окремі PNG — щоб подивитись оком (T7g).
+//! The Earth from three altitudes as separate PNGs -- to look at with the eye
+//! (T7g).
 //!
-//! Той самий жанр, що `moon_stills`, і та сама пастка: малює **своїм**
-//! `Frame`, бо `shot::take_scene` створює власний, у якому виданого тут
-//! хендла поверхні не існує — і сцена тихо вийшла б гладкою кулею.
+//! The same genre as `moon_stills`, and the same trap: it draws with its
+//! **own** `Frame`, because `shot::take_scene` creates one of its own in which
+//! the surface handle issued here does not exist -- and the scene would
+//! silently come out a smooth ball.
 //!
-//! Висоти взяті так, щоб кожна відповідала на своє питання:
+//! The altitudes are chosen so that each answers its own question:
 //!
-//! * **10⁷ м** — увесь диск у кадрі: континенти на своїх місцях чи ні;
-//! * **10⁶ м** — материк на весь кадр: чи видно берегову лінію різкою;
-//! * **2·10⁵ м** — низька орбіта: чи є деталь, коли вузол сітки (9.8 км)
-//!   ширший за екранний піксель.
+//! * **1e7 m** -- the whole disc in frame: are the continents where they
+//!   belong or not;
+//! * **1e6 m** -- a continent filling the frame: is the coastline sharp;
+//! * **2e5 m** -- low orbit: is there detail when a grid node (9.8 km) is
+//!   wider than a screen pixel.
 //!
-//! Камера дивиться на точку під собою, світило — збоку від напрямку погляду,
-//! щоб термінатор входив у кадр: колір і тіні мусять лежати на одній поверхні.
+//! The camera looks at the point beneath it, the light source is off to the
+//! side of the view direction so that the terminator enters the frame: colour
+//! and shadows have to lie on one surface.
 //!
 //!     cargo run --release -p engine --example earth_stills -- build/earth
 
@@ -24,30 +28,30 @@ use engine::{frame, shot, sphere, tiles};
 const WIDTH: u32 = 960;
 const HEIGHT: u32 = 540;
 
-/// Куди дивиться камера — Європа й Африка в кадрі, тобто найупізнаваніша
-/// половина глобуса. Широта й довгота в градусах.
+/// Where the camera looks -- Europe and Africa in frame, i.e. the most
+/// recognisable half of the globe. Latitude and longitude in degrees.
 const LOOK_AT: (f64, f64) = (20.0, 15.0);
 
 fn main() -> Result<(), String> {
     let gpu = Gpu::new(wgpu::Instance::default(), None)?;
-    println!("адаптер: {}", gpu.describe());
+    println!("adapter: {}", gpu.describe());
 
     let mut frame = frame::Frame::new(&gpu, shot::FORMAT);
     let terrain = tiles::Terrain::from_bytes(
         &std::fs::read("assets/earth.dem")
-            .map_err(|e| format!("assets/earth.dem: {e}\nполікувати: make cook-earth"))?,
+            .map_err(|e| format!("assets/earth.dem: {e}\nto fix: make cook-earth"))?,
     )?;
     let colour = tiles::Colour::from_bytes(
         &std::fs::read("assets/earth.col")
-            .map_err(|e| format!("assets/earth.col: {e}\nполікувати: make cook-earth"))?,
+            .map_err(|e| format!("assets/earth.col: {e}\nto fix: make cook-earth"))?,
     )?;
     println!(
-        "рельєф: {} рівнів; колір: {} рівнів, {} канали, sRGB {}",
+        "terrain: {} levels; colour: {} levels, {} channels, sRGB {}",
         terrain.levels, colour.levels, colour.channels, colour.srgb
     );
     let id = frame.load_surface(&gpu, &terrain, Some(&colour))?;
-    // Та сама поверхня без мозаїки — щоб питати, звідки взявся артефакт:
-    // з кольору чи з рельєфу під ним.
+    // The same surface without the mosaic -- so one can ask where an artefact
+    // came from: the colour or the terrain under it.
     let grey = frame.load_surface(&gpu, &terrain, None)?;
 
     let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -83,8 +87,9 @@ fn main() -> Result<(), String> {
         let range = sphere::EARTH_RADIUS_M + altitude;
         let eye = [under[0] * range, under[1] * range, under[2] * range];
         let mut scene = Scene::new(Camera::look_at(eye, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]));
-        // Світило збоку: термінатор проходить кадром, і на ньому видно, що
-        // колір і тінь лежать на одній поверхні, а не двома шарами.
+        // The light source off to the side: the terminator crosses the frame,
+        // and on it one can see that colour and shadow lie on one surface
+        // rather than in two layers.
         scene.sun = unit([
             under[0] * 0.5 - under[1],
             under[1] * 0.5 + under[0],

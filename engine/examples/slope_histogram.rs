@@ -1,25 +1,27 @@
-//! Розподіл нахилу в тайлсеті рельєфу (етап T, кроки T4c і T7f).
+//! Distribution of slope in a terrain tileset (stage T, steps T4c and T7f).
 //!
-//! Існує заради одного числа — [`engine::material::SLOPE_REF`], нахилу, на
-//! якому підсвітка схилу виходить на повну. Взяти його з фізики не можна:
-//! кут природного укосу реголіту стосується **місцевого** схилу, а
-//! `Terrain::slope_at` міряє нахил на базі найдрібнішого вузла піраміди —
-//! 5330 м на Місяці. Різниця виявилась більш ніж удвічі, і поставлений «з
-//! фізики» поріг вимикав правило на 999 вузлах з 1000.
+//! It exists for one number -- [`engine::material::SLOPE_REF`], the slope at
+//! which the slope tint reaches full strength. That number cannot be taken
+//! from physics: the angle of repose of regolith concerns the **local** slope,
+//! while `Terrain::slope_at` measures the slope over the base of the finest
+//! node of the pyramid -- 5330 m on the Moon. The difference turned out to be
+//! more than twofold, and a threshold set "from physics" switched the rule off
+//! on 999 nodes out of 1000.
 //!
-//! **Друга таблиця — про рівень патча, і вона з'явилась не заради ассета, а
-//! заради артефакту** (T7f): на Землі з висоти 10⁶ м кадр вийшов смугастим по
-//! патчах. Освітлення тут ні до чого — нормаль у шейдері це нормаль сфери, —
-//! отже яскравість може відрізнятися лише множником матеріалу, а той читає
-//! нахил. Тож питання ставиться прямо: чи залежить нахил від того, патч
-//! якого рівня його спитав.
+//! **The second table is about the patch level, and it appeared not for the
+//! sake of the asset but for the sake of an artefact** (T7f): on Earth from
+//! 1e6 m the frame came out striped along the patches. Lighting has nothing to
+//! do with it -- the normal in the shader is the sphere's normal -- so the
+//! brightness can differ only by the material multiplier, and that one reads
+//! the slope. So the question is put directly: does the slope depend on which
+//! level of patch asked for it.
 //!
-//!     cargo run --release -p engine --example slope_histogram [асет]
+//!     cargo run --release -p engine --example slope_histogram [asset]
 
 use engine::cubesphere::{Patch, FACES, SIDE};
 use engine::{demo, material, tiles};
 
-/// Квантилі, які друкуються обома таблицями.
+/// The quantiles both tables print.
 const QUANTILES: [f64; 7] = [0.5, 0.75, 0.9, 0.95, 0.99, 0.999, 1.0];
 
 fn main() -> Result<(), String> {
@@ -27,36 +29,38 @@ fn main() -> Result<(), String> {
         .nth(1)
         .unwrap_or_else(|| demo::TERRAIN_ASSET.to_string());
     let bytes = std::fs::read(&path)
-        .map_err(|e| format!("{path}: {e}\nполікувати: make cook-dem або make cook-earth"))?;
+        .map_err(|e| format!("{path}: {e}\nto fix: make cook-dem or make cook-earth"))?;
     let terrain = tiles::Terrain::from_bytes(&bytes)?;
     println!(
-        "{path}: {} рівнів, крок {:.0} м",
+        "{path}: {} levels, step {:.0} m",
         terrain.levels,
         terrain.step_m()
     );
 
-    // Найглибший рівень: там нахил міряється на найкоротшій базі, яка в ассеті
-    // взагалі є, і саме його читає кадр зблизька.
+    // The deepest level: there the slope is measured over the shortest base the
+    // asset has at all, and it is the one the frame reads from up close.
     let deepest = terrain.levels.saturating_sub(1);
     let values = sample(&terrain, deepest);
     let at = |q: f64| values[((values.len() - 1) as f64 * q) as usize];
-    println!("вузлів {}", values.len());
+    println!("nodes {}", values.len());
     for q in QUANTILES {
         let slope = at(q);
         println!(
-            "  {:>5.1}% : нахил {slope:.4} ({:.2}°), множник {:.3}",
+            "  {:>5.1}% : slope {slope:.4} ({:.2} deg), tint {:.3}",
             q * 100.0,
             slope.atan().to_degrees(),
             material::tint(slope, 0.0, false)
         );
     }
-    println!("SLOPE_REF зараз {:.3}", material::SLOPE_REF);
+    println!("SLOPE_REF is now {:.3}", material::SLOPE_REF);
 
-    // ── Під водою нахил такий самий, а колір там уже правдивий ─────────────
+    // --- Under water the slope is just as steep, and the colour there is
+    // already truthful ---
     //
-    // Питання T7f: чи має правило нахилу право працювати на морі. Мозаїка над
-    // океаном показує воду, а DEM під нею — хребти й жолоби; якщо їхній нахил
-    // не менший за суходільний, правило намалює батиметрію на поверхні моря.
+    // The T7f question: is the slope rule entitled to work at sea. The mosaic
+    // over the ocean shows water, while the DEM under it shows ridges and
+    // trenches; if their slope is no smaller than the dry-land one, the rule
+    // will draw bathymetry on the surface of the sea.
     let mut water = Vec::new();
     let mut land = Vec::new();
     let side = 1u32 << deepest;
@@ -83,13 +87,13 @@ fn main() -> Result<(), String> {
         }
     }
     if !water.is_empty() && !land.is_empty() {
-        water.sort_by(|a, b| a.partial_cmp(b).expect("нахил не буває NaN"));
-        land.sort_by(|a, b| a.partial_cmp(b).expect("нахил не буває NaN"));
+        water.sort_by(|a, b| a.partial_cmp(b).expect("a slope is never NaN"));
+        land.sort_by(|a, b| a.partial_cmp(b).expect("a slope is never NaN"));
         let share = water.len() as f64 / (water.len() + land.len()) as f64;
         println!();
-        println!("нижче нуля {:.1}% вузлів:", 100.0 * share);
-        println!("        |  медіана |     90% |      99% | множник 90%");
-        for (name, values) in [("вода ", &water), ("суша ", &land)] {
+        println!("below zero {:.1}% of nodes:", 100.0 * share);
+        println!("        |   median |     90% |      99% | tint 90%");
+        for (name, values) in [("water", &water), ("land ", &land)] {
             let at = |q: f64| values[((values.len() - 1) as f64 * q) as usize];
             println!(
                 "  {name} | {:>8.4} | {:>7.4} | {:>8.4} | {:.3}",
@@ -101,19 +105,21 @@ fn main() -> Result<(), String> {
         }
     }
 
-    // ── Чи однаковий нахил на всіх рівнях патча ────────────────────────────
+    // --- Is the slope the same at every patch level ---
     //
-    // Однаковий він **не** буде, і причина не в конструкції, а в даних: кожен
-    // рівень міряє нахил на своєму кроці (`node_step_m`), і грубий тайл — це
-    // рідша вибірка тієї самої поверхні, тобто згладженіша. Ця таблиця й каже,
-    // наскільки — у нахилі й одразу в множнику, тобто в тому, що видно оком.
+    // It will **not** be the same, and the reason is not in the construction
+    // but in the data: every level measures the slope over its own step
+    // (`node_step_m`), and a coarse tile is a sparser sampling of the same
+    // surface, i.e. a smoother one. This table says by how much -- in the slope
+    // and straight away in the multiplier, i.e. in what the eye sees.
     //
-    // ⚠ Ці два стовпці читаються **не** як «нахил залежить від рівня патча»:
-    // на спільному вузлі двох сусідніх патчів нахил бітово один (етап W), бо
-    // обидва беруть його з того самого вузла того самого тайла.
+    // WARNING: these two columns do **not** read as "the slope depends on the
+    // patch level": on a node shared by two neighbouring patches the slope is
+    // bitwise identical (stage W), because both take it from the same node of
+    // the same tile.
     println!();
-    println!("нахил за рівнем патча (той самий крок у метрах, різні дані):");
-    println!("  рівень |  медіана |  90% |  множник медіани");
+    println!("slope by patch level (the same step in metres, different data):");
+    println!("   level |   median |   90%  | median tint");
     for level in 0..=deepest {
         let values = sample(&terrain, level);
         let at = |q: f64| values[((values.len() - 1) as f64 * q) as usize];
@@ -127,11 +133,11 @@ fn main() -> Result<(), String> {
     Ok(())
 }
 
-/// Нахил у вузлах патчів заданого рівня — розріджено й відсортовано.
+/// The slope at the nodes of patches of a given level -- decimated and sorted.
 ///
-/// Розрідження одне на всі рівні (кожен другий патч, кожен четвертий вузол),
-/// тож на грубих рівнях вибірка виходить меншою — і це чесно: там патчів
-/// стільки й є.
+/// The decimation is the same for every level (every second patch, every
+/// fourth node), so on coarse levels the sample comes out smaller -- and that
+/// is honest: there really are only that many patches there.
 fn sample(terrain: &tiles::Terrain, level: u32) -> Vec<f64> {
     let side = 1u32 << level;
     let step = if side >= 2 { 2 } else { 1 };
@@ -148,6 +154,6 @@ fn sample(terrain: &tiles::Terrain, level: u32) -> Vec<f64> {
             }
         }
     }
-    values.sort_by(|a, b| a.partial_cmp(b).expect("нахил не буває NaN"));
+    values.sort_by(|a, b| a.partial_cmp(b).expect("a slope is never NaN"));
     values
 }

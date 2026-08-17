@@ -1,9 +1,10 @@
-//! Кадри прольоту повз Місяць як окремі PNG — щоб подивитись оком.
+//! Frames of the flyby past the Moon as separate PNGs -- to look at with the
+//! eye.
 //!
-//! ⚠ Малює **своїм** `Frame`, а не через `shot::take_scene`, з тієї самої
-//! причини, що `moon_stills`: той створює власний кадр усередині, тобто
-//! хендл поверхні, виданий тут, у ньому не існує, і сцена тихо малюється
-//! гладкою.
+//! WARNING: it draws with its **own** `Frame` rather than through
+//! `shot::take_scene`, for the same reason as `moon_stills`: that one creates
+//! a frame of its own inside, so the surface handle issued here does not exist
+//! in it, and the scene is silently drawn smooth.
 //!
 //! cargo run --release -p engine --example flyby_stills -- build/stills
 
@@ -16,7 +17,7 @@ const HEIGHT: u32 = 360;
 
 fn main() -> Result<(), String> {
     let gpu = Gpu::new(wgpu::Instance::default(), None)?;
-    println!("адаптер: {}", gpu.describe());
+    println!("adapter: {}", gpu.describe());
 
     let mut frame = frame::Frame::new(&gpu, shot::FORMAT);
     let bytes = std::fs::read(demo::TERRAIN_ASSET).map_err(|e| e.to_string())?;
@@ -50,7 +51,8 @@ fn main() -> Result<(), String> {
     let dir = std::env::args().nth(1).unwrap_or_else(|| "build".into());
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
-    // Апогей, покриття Землі, спуск, перигей, підйом — п'ять моментів витка.
+    // Apoapsis, the Earth occultation, the descent, periapsis, the climb --
+    // five moments of one revolution.
     let quarter = flyby_demo::FRAMES / 4;
     for k in [0, 180, quarter, 2 * quarter, 3 * quarter] {
         let scene = flyby_demo::scene_at(

@@ -1,18 +1,18 @@
-//! Розгортка для ROADMAP F4: де саме наївний шлях ламається.
+//! A sweep for ROADMAP F4: where exactly the naive path breaks.
 
 fn main() {
     let gpu = engine::gpu::Gpu::new(wgpu::Instance::default(), None).unwrap();
     let step = 0.1;
 
-    println!("Об'єкт за 10 м від камери, обидва — на відстані D від початку координат.");
-    println!("Камера рухається кроками по {step} м; це ~1.2 пікселя на крок.\n");
+    println!("Object 10 m from the camera, both at distance D from the origin.");
+    println!("The camera moves in steps of {step} m; that is ~1.2 pixels per step.\n");
     println!(
         "{:>10} {:>12} {:>22} {:>22}",
-        "D, м", "ULP f32, м", "camera-relative", "наївний"
+        "D, m", "ULP f32, m", "camera-relative", "naive"
     );
     println!(
         "{:>10} {:>12} {:>22} {:>22}",
-        "", "", "видно, сер/макс px", "видно, сер/макс px"
+        "", "", "seen, mean/max px", "seen, mean/max px"
     );
 
     for exponent in [3, 5, 7, 8, 9, 11] {
@@ -27,7 +27,7 @@ fn main() {
             let mean = shifts.iter().sum::<f64>() / shifts.len() as f64;
             let max = shifts.iter().fold(0.0f64, |a, &b| a.max(b));
             cells.push(if seen == 0 {
-                "немає в кадрі".to_string()
+                "not in frame".to_string()
             } else {
                 format!("{seen}/12, {mean:.2}/{max:.2}")
             });

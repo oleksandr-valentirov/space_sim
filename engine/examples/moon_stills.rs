@@ -1,9 +1,11 @@
-//! Три кадри анімації підльоту як окремі PNG — щоб подивитись оком.
+//! Three frames of the approach animation as separate PNGs -- to look at
+//! with the eye.
 //!
-//! ⚠ Малює **своїм** `Frame`, а не через `shot::take_scene`: той створює
-//! власний кадр усередині, тобто хендл поверхні, виданий тут, у ньому не
-//! існує, і сцена тихо малюється гладкою. Перша версія цього прикладу так і
-//! зробила, і Місяць вийшов рівною синьою кулею.
+//! WARNING: it draws with its **own** `Frame` rather than through
+//! `shot::take_scene`: that one creates a frame of its own inside, so the
+//! surface handle issued here does not exist in it, and the scene is silently
+//! drawn smooth. The first version of this example did exactly that, and the
+//! Moon came out an even blue ball.
 //!
 //! cargo run --release -p engine --example moon_stills -- build/stills
 
@@ -16,7 +18,7 @@ const HEIGHT: u32 = 360;
 
 fn main() -> Result<(), String> {
     let gpu = Gpu::new(wgpu::Instance::default(), None)?;
-    println!("адаптер: {}", gpu.describe());
+    println!("adapter: {}", gpu.describe());
 
     let mut frame = frame::Frame::new(&gpu, shot::FORMAT);
     let bytes = std::fs::read(demo::TERRAIN_ASSET).map_err(|e| e.to_string())?;
