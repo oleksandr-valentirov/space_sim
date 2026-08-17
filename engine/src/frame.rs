@@ -332,6 +332,12 @@ struct Hdr {
 struct Tonemap {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
+    /// The scene's exposure, written once per frame (step Z1).
+    ///
+    /// It lives here and not in [`Hdr`] because it has nothing to do with the
+    /// size of the target: [`Hdr`] is rebuilt whenever the window changes, and
+    /// a buffer of one number has no reason to be.
+    exposure_buffer: wgpu::Buffer,
 }
 
 impl Tonemap {
@@ -346,19 +352,33 @@ impl Tonemap {
             .device
             .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("tonemap"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        // Нефільтрована: прохід один в один по пікселях, тож
-                        // семплера немає взагалі, а `Load` фільтрації не
-                        // потребує.
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            // Нефільтрована: прохід один в один по пікселях, тож
+                            // семплера немає взагалі, а `Load` фільтрації не
+                            // потребує.
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                }],
+                    // The exposure. `binding 1` -- the number the generated WGSL
+                    // carries, so it is fixed by `tonemap.slang`, not chosen here.
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
             });
         let pipeline_layout = gpu
             .device
@@ -394,7 +414,20 @@ impl Tonemap {
                 multiview_mask: None,
                 cache: None,
             });
-        Tonemap { pipeline, layout }
+        // Sixteen bytes for one `f32`: a uniform binding is padded to that
+        // anyway, and writing the padding ourselves keeps the write and the
+        // allocation the same size.
+        let exposure_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("tonemap exposure"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        Tonemap {
+            pipeline,
+            layout,
+            exposure_buffer,
+        }
     }
 }
 
@@ -842,10 +875,16 @@ impl Frame {
         let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("tonemap"),
             layout: &self.tonemap.layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&view),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.tonemap.exposure_buffer.as_entire_binding(),
+                },
+            ],
         });
 
         self.hdr = Some(Hdr {
@@ -1023,6 +1062,18 @@ impl Frame {
                 self.sky.composite(&mut pass, index);
             }
         }
+
+        // The exposure the scene asked for, written before the pass begins --
+        // like every other queue write in this frame. `f32` because that is
+        // what the shader reads; the scene keeps `f64` because everything the
+        // game hands over is `f64`, and the narrowing belongs at the boundary.
+        //
+        // A fixed array rather than a built-up `Vec`: this runs once per
+        // frame, and the padding is known at compile time.
+        let mut exposure = [0u8; 16];
+        exposure[..4].copy_from_slice(&(scene.exposure as f32).to_le_bytes());
+        gpu.queue
+            .write_buffer(&self.tonemap.exposure_buffer, 0, &exposure);
 
         // Стиснення — **один раз, після всієї сцени**. Саме тут кадр уперше
         // дізнається про формат цілі: усе, що вище, малювалося в HDR.

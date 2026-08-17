@@ -39,12 +39,37 @@
 // "compress the luminance, keep the hue" variant gives coloured blobs where
 // the eye expects white.
 
+// ## Exposure: a multiplier BEFORE the curve, and never automatic
+//
+// The sun's disc is orders of magnitude brighter than the lit surface, so
+// without a multiplier it clips to white and takes the same colour as the
+// desert below it (stage Z). Stage Y needs the other end of the same range:
+// night lights are two or three orders dimmer than the lit side.
+//
+// The multiplier is explicit and defaults to exactly one. It is NOT derived
+// from the contents of the frame, and that is a decision with two reasons:
+//
+//   - An automatic factor dims the faint exactly when something bright
+//     enters the frame -- night lights would go out at the terminator, the
+//     one place they are supposed to appear.
+//   - Identity below the knee carries every oracle of stage T. At an
+//     exposure of one, each existing frame comes out bit for bit the same;
+//     a factor that drifted with the frame would end that class of oracle
+//     for good.
+
 static const float KNEE = 0.8;
 
 // The scene frame in linear light. There is no sampler on purpose: the pass
 // is one to one in pixels, so `Load` at integer coordinates is exact, and
 // filtering here could only spoil it.
 Texture2D<float4> scene;
+
+struct Uniforms
+{
+    float exposure;
+};
+
+ConstantBuffer<Uniforms> uniforms;
 
 float compress(float x)
 {
@@ -78,6 +103,6 @@ float4 fragment_main(float4 position : SV_Position) : SV_Target
     // `SV_Position` in the fragment is the target pixel coordinate, so the
     // orientation matches the texture by construction and nothing needs
     // flipping.
-    float3 c = scene.Load(int3(int(position.x), int(position.y), 0)).rgb;
+    float3 c = scene.Load(int3(int(position.x), int(position.y), 0)).rgb * uniforms.exposure;
     return float4(compress(c.r), compress(c.g), compress(c.b), 1.0);
 }

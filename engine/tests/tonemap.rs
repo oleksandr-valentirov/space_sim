@@ -97,6 +97,54 @@ fn below_the_knee_the_pass_is_invisible() {
     }
 }
 
+/// The exposure reaches the frame, and at its default it changes nothing.
+///
+/// The GPU half of step Z1. The unit tests next to the curve prove the
+/// arithmetic; this proves the number actually arrives at the shader through
+/// the uniform, which is the part that can fail silently -- a binding that
+/// never gets written reads as zero, and a frame that went black would look
+/// exactly like a frame that went dark on purpose.
+///
+/// Both halves in one test on purpose: the default and a raised exposure share
+/// one fixture, and the pair is the claim. One alone proves nothing -- an
+/// exposure the shader ignores entirely would pass the first half.
+#[test]
+fn the_exposure_reaches_the_shader_and_one_changes_nothing() {
+    let Some(gpu) = Gpu::for_tests() else { return };
+
+    // 0.35 is below the knee, so at exposure one the byte is the colour
+    // itself, and at exposure two it is `compress(0.7)` -- still below the
+    // knee, so still the identity. That keeps the expectation free of the
+    // curve for both halves.
+    let colour = 0.35f32;
+
+    let mut scene_one = scene([colour; 4]);
+    scene_one.exposure = 1.0;
+    let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene_one).expect("кадр");
+    let at_one = shot.pixel(SIZE / 2, SIZE / 2)[0];
+    let expected = srgb::linear_to_byte(f64::from(colour));
+    println!("  exposure 1.0 -> byte {at_one}, expected {expected}");
+    assert!(
+        at_one.abs_diff(expected) <= 1,
+        "the default exposure moved the frame: {at_one} instead of {expected}"
+    );
+
+    let mut scene_two = scene([colour; 4]);
+    scene_two.exposure = 2.0;
+    let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene_two).expect("кадр");
+    let at_two = shot.pixel(SIZE / 2, SIZE / 2)[0];
+    let doubled = srgb::linear_to_byte(tonemap::expose(f64::from(colour), 2.0));
+    println!("  exposure 2.0 -> byte {at_two}, expected {doubled}");
+    assert!(
+        at_two.abs_diff(doubled) <= 1,
+        "exposure 2.0 gave {at_two} instead of {doubled}"
+    );
+    assert!(
+        at_two > at_one,
+        "twice the exposure did not brighten the frame: {at_two} after {at_one}"
+    );
+}
+
 /// Крива записана двічі — у Rust і в шейдері — і мусить збігатися.
 #[test]
 fn the_shader_carries_the_same_knee() {

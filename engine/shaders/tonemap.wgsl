@@ -1,5 +1,11 @@
 @binding(0) @group(0) var scene_0 : texture_2d<f32>;
 
+struct Uniforms_std140_0
+{
+    @align(16) exposure_0 : f32,
+};
+
+@binding(1) @group(0) var<uniform> uniforms_0 : Uniforms_std140_0;
 struct VertexOutput_0
 {
     @builtin(position) position_0 : vec4<f32>,
@@ -31,7 +37,7 @@ struct pixelOutput_0
 fn fragment_main(@builtin(position) position_1 : vec4<f32>) -> pixelOutput_0
 {
     var _S1 : vec3<i32> = vec3<i32>(i32(position_1.x), i32(position_1.y), i32(0));
-    var c_0 : vec3<f32> = (textureLoad((scene_0), ((_S1)).xy, ((_S1)).z)).xyz;
+    var c_0 : vec3<f32> = (textureLoad((scene_0), ((_S1)).xy, ((_S1)).z)).xyz * vec3<f32>(uniforms_0.exposure_0);
     var _S2 : pixelOutput_0 = pixelOutput_0( vec4<f32>(compress_0(c_0.x), compress_0(c_0.y), compress_0(c_0.z), 1.0f) );
     return _S2;
 }

@@ -259,6 +259,24 @@ pub struct Scene {
     /// Гра дає одиничний; кадр нормалізуватиме сам, коли на місце
     /// тимчасового освітлення прийдуть матеріали M5.
     pub sun: [f64; 3],
+    /// The multiplier applied before the tonemapper's curve (stage Z, step Z1).
+    ///
+    /// A field of the scene rather than of the engine: how much light is in
+    /// the frame is known by whoever assembled it. The sun's disc is orders of
+    /// magnitude brighter than the lit surface and stage Y's night lights are
+    /// two or three orders dimmer than it -- the same scene has to be able to
+    /// ask for either.
+    ///
+    /// ⚠ **One is a decision here, not a placeholder.** At `1.0` the multiplier
+    /// does nothing, the curve stays the identity below the knee, and every
+    /// frame drawn before Z1 comes out bit for bit the same. Every oracle of
+    /// stage T rests on that.
+    ///
+    /// **There is no automatic exposure and none is planned.** A factor that
+    /// drifted with the contents of the frame would dim the faint exactly when
+    /// something bright entered it: stage Y's night lights would go out at the
+    /// terminator, the one place they are supposed to appear.
+    pub exposure: f64,
 }
 
 impl Scene {
@@ -278,6 +296,7 @@ impl Scene {
             // V5 — і рівно тому кадр зондів рушія лишається бітово тим самим.
             // Хто знає, де його світило, той його й ставить.
             sun: crate::frame::LIGHT_DIR.map(f64::from),
+            exposure: crate::tonemap::DEFAULT_EXPOSURE,
         }
     }
 

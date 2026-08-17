@@ -25,6 +25,29 @@ pub fn compress(value: f64) -> f64 {
     1.0 - d * d / (value - 2.0 * KNEE + 1.0)
 }
 
+/// The exposure a scene carries until someone sets another one (step Z1).
+///
+/// Exactly one, and that number is load-bearing: at one the multiplier is a
+/// no-op, the curve stays the identity below the knee, and every frame drawn
+/// before Z1 comes out bit for bit the same. Every oracle of stage T rests on
+/// that -- T5b compares a byte against a measured reflectance.
+pub const DEFAULT_EXPOSURE: f64 = 1.0;
+
+/// One channel through the whole pass: exposure, then the curve.
+///
+/// The multiplier goes **before** the curve, never after. After it, it would
+/// stretch numbers the curve has already flattened -- the highlight would come
+/// back as a white blob, which is the one thing the pass exists to prevent.
+///
+/// There is no automatic exposure and there is not meant to be one. A factor
+/// that drifted with the contents of the frame would dim the faint exactly
+/// when something bright entered it: stage Y's night lights would go out at
+/// the terminator, the one place they are supposed to appear. The scene says
+/// the number.
+pub fn expose(value: f64, exposure: f64) -> f64 {
+    compress(value * exposure)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,5 +117,56 @@ mod tests {
         // Without the compression all three would be exactly 255.
         assert_eq!(crate::srgb::linear_to_byte(2.0), 255);
         assert_eq!(crate::srgb::linear_to_byte(3.7), 255);
+    }
+
+    /// At the default exposure the pass does nothing at all -- bitwise.
+    ///
+    /// The first oracle of Z1, and the more important of the two. Every frame
+    /// drawn before exposure existed has to come out the same byte for byte,
+    /// or Z1 has quietly re-based every measured number of stage T. Bits, not
+    /// a tolerance: a multiplier by one is exact in IEEE 754 for every finite
+    /// value, so anything less than equality here means the multiplier landed
+    /// somewhere it should not have.
+    #[test]
+    fn the_default_exposure_moves_nothing() {
+        for k in 0..=4000 {
+            let value = f64::from(k) / 1000.0;
+            assert_eq!(
+                expose(value, DEFAULT_EXPOSURE).to_bits(),
+                compress(value).to_bits(),
+                "{value} moved at the default exposure"
+            );
+        }
+    }
+
+    /// More exposure never makes a pixel darker.
+    ///
+    /// The second oracle. The curve is monotone and so is multiplication by a
+    /// positive number, but the two are composed here, and a multiplier put
+    /// after the curve instead of before would still pass a "brighter is
+    /// brighter" eyeball test while destroying the highlight. This checks the
+    /// composition across the knee, where the curve bends.
+    #[test]
+    fn more_exposure_never_darkens_a_pixel() {
+        for k in 0..=400 {
+            let value = f64::from(k) / 100.0;
+            let mut previous = 0.0;
+            for e in 1..=40 {
+                let exposure = f64::from(e) / 4.0;
+                let got = expose(value, exposure);
+                assert!(
+                    got >= previous,
+                    "{value} at exposure {exposure} gave {got} after {previous}"
+                );
+                previous = got;
+            }
+        }
+        // And the point of it all: a disc far brighter than the surface keeps
+        // a colour of its own instead of clipping to white with it. Halving
+        // the exposure has to pull the two apart in bytes.
+        let disc = crate::srgb::linear_to_byte(expose(40.0, 0.5));
+        let ground = crate::srgb::linear_to_byte(expose(1.2, 0.5));
+        println!("  disc -> {disc}, ground -> {ground}");
+        assert!(disc > ground, "the disc and the ground merged: {disc}");
     }
 }
