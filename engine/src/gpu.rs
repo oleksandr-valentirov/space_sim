@@ -1,28 +1,32 @@
-//! Пристрій wgpu. Один на процес, спільний для вікна і для знімків.
+//! The wgpu device. One per process, shared by the window and the
+//! screenshots.
 
-/// Адаптер, пристрій і черга. Без вікна: surface приходить окремо, бо
-/// знімки його не мають.
+/// Adapter, device and queue. No window: the surface arrives separately,
+/// because screenshots have none.
 pub struct Gpu {
     pub instance: wgpu::Instance,
     pub adapter: wgpu::Adapter,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
-    /// Чи вміє цей пристрій bindless-масиви текстур (ROADMAP-PLANETS.md, R5c).
+    /// Whether this device can do bindless texture arrays
+    /// (ROADMAP-PLANETS.md, R5c).
     ///
-    /// Полем, а не питанням до адаптера щоразу: рушій мусить знати відповідь
-    /// **один раз** і однаково в усіх місцях. Без цього рельєф не малюється
-    /// взагалі — правило 6 етапу R не дозволяє «спочатку класично».
+    /// A field rather than a question asked of the adapter each time: the
+    /// engine must know the answer **once** and identically everywhere.
+    /// Without it terrain is not drawn at all -- rule 6 of stage R does not
+    /// allow "the classic way first".
     ///
-    /// Три цілі проєкту (Vulkan, D3D12, Metal) це вміють — саме тому GL і
-    /// відпав (PROJECT.md §7). Отже `false` тут означає бекенд, який і так не
-    /// ціль, і мовчати про це не можна: той, хто просить рельєф, дістає
-    /// помилку з назвою адаптера, а не порожній кадр.
+    /// All three targets of the project (Vulkan, D3D12, Metal) can do it --
+    /// which is why GL was dropped (PROJECT.md §7). So `false` here means a
+    /// backend that is not a target anyway, and it must not be passed over in
+    /// silence: whoever asks for terrain gets an error naming the adapter
+    /// rather than an empty frame.
     pub bindless: bool,
 }
 
 impl Gpu {
-    /// `compatible` потрібен лише для вікна: адаптер має вміти малювати саме
-    /// в цю поверхню. Для знімків передається `None`.
+    /// `compatible` is only needed for a window: the adapter must be able to
+    /// draw into that particular surface. Screenshots pass `None`.
     pub fn new(
         instance: wgpu::Instance,
         compatible: Option<&wgpu::Surface<'static>>,
@@ -36,46 +40,47 @@ impl Gpu {
             }))
         };
 
-        // Немає апаратного — беремо програмний (ROADMAP-UI.md, U6c). На
-        // Windows це WARP, тобто D3D12 на процесорі; на Linux ту саму роль
-        // грає lavapipe, який CI ставить пакетом.
+        // No hardware one -- take a software one (ROADMAP-UI.md, U6c). On
+        // Windows that is WARP, i.e. D3D12 on the CPU; on Linux the same role
+        // is played by lavapipe, which CI installs as a package.
         //
-        // Порядок саме такий, а не `force_fallback_adapter` завжди: на
-        // машині з відеокартою програмний растеризатор був би в сотні разів
-        // повільнішим і мовчки підмінив би те, що міряють зонди.
+        // In this order rather than `force_fallback_adapter` always: on a
+        // machine with a graphics card a software rasteriser would be hundreds
+        // of times slower and would silently replace what the probes measure.
         let adapter = match ask(false) {
             Ok(adapter) => adapter,
             Err(hardware) => ask(true).map_err(|software| {
-                format!("немає придатного адаптера: {hardware}; програмного теж: {software}")
+                format!("no suitable adapter: {hardware}; no software one either: {software}")
             })?,
         };
 
-        // Bindless просимо, лише якщо адаптер його має: інакше `request_device`
-        // впаде, і перша картинка не з'явилася б навіть там, де рельєф ніхто
-        // не просив.
+        // Bindless is requested only if the adapter has it: otherwise
+        // `request_device` fails and the first picture would not appear even
+        // where nobody asked for terrain.
         let wanted = wgpu::Features::TEXTURE_BINDING_ARRAY
             | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
             | wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY;
         let bindless = adapter.features().contains(wanted);
 
-        // downlevel_defaults, а не defaults: на етапі F нам нічого не
-        // бракує, а нижча планка означає, що перша картинка запуститься
-        // й там, де слабший бекенд. Піднімати — коли впремося.
+        // downlevel_defaults rather than defaults: nothing is missing for
+        // stage F, and a lower bar means the first picture also runs on a
+        // weaker backend. Raise it when we run into it.
         let mut limits = wgpu::Limits::downlevel_defaults();
-        // Відбір у compute (R6b) читає п'ять storage-буферів: кандидати,
-        // конуси, початки, вижилі й аргументи indirect. Downlevel дає чотири,
-        // тож планка піднімається — це і є те «коли впремося», про яке
-        // говорить коментар нижче. Просимо мінімум із того, що є в адаптера, і
-        // того, що треба: більше не потрібно, менше не працює.
+        // Culling in compute (R6b) reads five storage buffers: candidates,
+        // cones, origins, survivors and the indirect arguments. Downlevel
+        // gives four, so the bar goes up -- this is the "when we run into it"
+        // the comment above speaks of. We ask for the minimum of what the
+        // adapter has and what is needed: more is unnecessary, less does not
+        // work.
         limits.max_storage_buffers_per_shader_stage = limits
             .max_storage_buffers_per_shader_stage
             .max(6)
             .min(adapter.limits().max_storage_buffers_per_shader_stage);
         if bindless {
-            // Впираємось саме сюди, і число не з голови: **колірний** тайлсет
-            // Місяця з шістьма рівнями піраміди — 8190 тайлів (T2a). Висоти
-            // на п'яти рівнях — 2046, тобто вчетверо менше, і саме тому це
-            // число колись було 4096.
+            // This is where we run into it, and the number is not invented:
+            // the Moon's **colour** tileset with six pyramid levels is 8190
+            // tiles (T2a). Heights over five levels are 2046, four times
+            // fewer, which is why this number used to be 4096.
             limits.max_binding_array_elements_per_shader_stage = wgpu::Limits::default()
                 .max_binding_array_elements_per_shader_stage
                 .max(8192);
@@ -93,7 +98,7 @@ impl Gpu {
             trace: wgpu::Trace::Off,
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
         }))
-        .map_err(|e| format!("пристрій не створюється: {e}"))?;
+        .map_err(|e| format!("the device cannot be created: {e}"))?;
 
         Ok(Gpu {
             instance,
@@ -104,29 +109,29 @@ impl Gpu {
         })
     }
 
-    /// Пристрій для тестів, або `None`, якщо адаптера немає взагалі.
+    /// A device for tests, or `None` if there is no adapter at all.
     ///
-    /// **Мовчазний пропуск — це зелений тест, який нічого не перевіряє**, тож
-    /// на машині, де GPU має бути, пропуск має бути помилкою. Це вмикає
-    /// змінна середовища `SPACE_SIM_REQUIRE_GPU`: локально її немає (не в
-    /// кожного під рукою драйвер), у CI вона стоїть скрізь, де адаптер
-    /// зобов'язаний знайтися.
+    /// **A silent skip is a green test that checks nothing**, so on a machine
+    /// where a GPU should exist a skip must be an error. The
+    /// `SPACE_SIM_REQUIRE_GPU` environment variable switches that on: locally
+    /// it is unset (not everyone has a driver to hand), in CI it is set
+    /// everywhere an adapter is obliged to be found.
     ///
-    /// Друкує назву адаптера завжди. Без цього рядка в логу CI неможливо
-    /// відрізнити «тести пройшли на WARP» від «тести пройшли на чомусь
-    /// іншому» — а це різні твердження (U6c).
+    /// It always prints the adapter name. Without that line in the CI log
+    /// there is no telling "the tests passed on WARP" from "the tests passed
+    /// on something else" -- and those are different claims (U6c).
     pub fn for_tests() -> Option<Gpu> {
         match Gpu::new(wgpu::Instance::default(), None) {
             Ok(gpu) => {
-                eprintln!("адаптер: {}", gpu.describe());
+                eprintln!("adapter: {}", gpu.describe());
                 Some(gpu)
             }
             Err(e) => {
                 assert!(
                     std::env::var_os("SPACE_SIM_REQUIRE_GPU").is_none(),
-                    "SPACE_SIM_REQUIRE_GPU задано, а адаптера немає: {e}"
+                    "SPACE_SIM_REQUIRE_GPU is set, but there is no adapter: {e}"
                 );
-                eprintln!("ПРОПУЩЕНО: немає адаптера wgpu ({e})");
+                eprintln!("SKIPPED: no wgpu adapter ({e})");
                 None
             }
         }
@@ -135,15 +140,11 @@ impl Gpu {
     pub fn describe(&self) -> String {
         let info = self.adapter.get_info();
         format!(
-            "{:?} — {} ({:?}){}",
+            "{:?} -- {} ({:?}){}",
             info.backend,
             info.name,
             info.device_type,
-            if self.bindless {
-                ""
-            } else {
-                ", без bindless"
-            }
+            if self.bindless { "" } else { ", no bindless" }
         )
     }
 }

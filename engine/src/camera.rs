@@ -1,16 +1,17 @@
-//! Камера: позиція в `double`, camera-relative перетворення (ROADMAP F4, F5).
+//! The camera: position in `double`, camera-relative transform (ROADMAP F4,
+//! F5).
 //!
-//! PROJECT.md §7, рішення 1: світові координати НІКОЛИ не потрапляють у
-//! `float`. [`camera_probe`](crate::camera_probe) довів принцип на одній
-//! точці; тут той самий принцип застосований до кожної вершини меша,
-//! оскільки об'єкт планетарного розміру — камера може опинитися за десять
-//! метрів від однієї вершини й за 10⁷ м від протилежної одночасно.
+//! PROJECT.md §7, decision 1: world coordinates NEVER reach a `float`.
+//! [`camera_probe`](crate::camera_probe) proved the principle on a single
+//! point; here the same principle is applied to every vertex of a mesh,
+//! because on a planet-sized object the camera can be ten metres from one
+//! vertex and 1e7 m from the opposite one at the same time.
 //!
-//! Поворот і перенесення рахуються разом, у `double`, до звуження: базис
-//! камери (right, up, forward) обертає різницю `світ − камера`, і лише
-//! результат — уже маленьке число — стає `f32`. Проєкційна матриця
-//! ([`crate::depth`]) далі чекає готові координати камерного простору, як
-//! і в `depth_quad.slang`.
+//! Rotation and translation are computed together, in `double`, before
+//! narrowing: the camera basis (right, up, forward) rotates the difference
+//! `world - camera`, and only the result -- already a small number -- becomes
+//! `f32`. The projection matrix ([`crate::depth`]) then expects ready camera
+//! space coordinates, as in `depth_quad.slang`.
 
 fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -41,9 +42,9 @@ pub struct Camera {
 }
 
 impl Camera {
-    /// `world_up` — орієнтир, не обов'язково ортогональний до напрямку
-    /// погляду; ортогоналізується тут же (стандартний Грам-Шмідт для трьох
-    /// векторів).
+    /// `world_up` is a hint, not necessarily orthogonal to the view
+    /// direction; it is orthogonalised right here (the standard Gram-Schmidt
+    /// for three vectors).
     pub fn look_at(position: [f64; 3], target: [f64; 3], world_up: [f64; 3]) -> Camera {
         let forward = normalize(sub(target, position));
         let right = normalize(cross(forward, world_up));
@@ -57,54 +58,57 @@ impl Camera {
         }
     }
 
-    /// Де камера стоїть, у світових координатах.
+    /// Where the camera stands, in world coordinates.
     ///
-    /// Потрібно тим, хто рахує щось від відстані до сцени — наприклад
-    /// ближню площину під поточну висоту (`frame::Frame`).
+    /// Needed by whoever computes something from the distance to the scene --
+    /// the near plane for the current altitude, for instance
+    /// (`frame::Frame`).
     pub fn position(&self) -> [f64; 3] {
         self.position
     }
 
-    /// Три осі камери у світових координатах: вправо, вгору, вперед.
+    /// The camera's three axes in world coordinates: right, up, forward.
     ///
-    /// Потрібні проходу неба (S4b): промінь пікселя будується з них і з
-    /// тангенсів півкутів огляду, без оберненої матриці проєкції. Обертати
-    /// матрицю заради напрямку означало б завести другу правду про той самий
-    /// базис — рівно те, від чого застерігає [`Self::view_rotation`].
+    /// Needed by the sky pass (S4b): the pixel ray is built from them and from
+    /// the tangents of the view half-angles, with no inverse projection
+    /// matrix. Inverting a matrix for a direction would introduce a second
+    /// truth about the same basis -- exactly what [`Self::view_rotation`]
+    /// warns against.
     pub fn axes(&self) -> ([f64; 3], [f64; 3], [f64; 3]) {
         (self.right, self.up, self.forward)
     }
 
-    /// Точка світу → координата в камерному просторі (камера в (0,0,0),
-    /// дивиться вздовж −z). Віднімання й поворот — у `double`; звуження до
-    /// `f32` — останній крок, коли число вже мале.
+    /// A world point -> a coordinate in camera space (the camera at (0,0,0)
+    /// looking along -z). Subtraction and rotation happen in `double`;
+    /// narrowing to `f32` is the last step, when the number is already small.
     pub fn relative(&self, world: [f64; 3]) -> [f32; 3] {
         let v = self.relative64(world);
         [v[0] as f32, v[1] as f32, v[2] as f32]
     }
 
-    /// Те саме без звуження до `f32`.
+    /// The same without narrowing to `f32`.
     ///
-    /// Потрібне відбору за frustum (R3b): там координата патча порівнюється з
-    /// радіусом його обмежувальної сфери, і обидва числа мусять прийти з
-    /// однієї арифметики. Звуження посередині зробило б межу відбору
-    /// властивістю `f32`, а не геометрії.
+    /// Needed by frustum culling (R3b): there a patch coordinate is compared
+    /// with the radius of its bounding sphere, and both numbers must come out
+    /// of the same arithmetic. Narrowing in the middle would make the culling
+    /// boundary a property of `f32` rather than of geometry.
     pub fn relative64(&self, world: [f64; 3]) -> [f64; 3] {
         let d = sub(world, self.position);
         [dot(d, self.right), dot(d, self.up), -dot(d, self.forward)]
     }
 
-    /// **Напрямок** світу → напрямок у камерному просторі: поворот без
-    /// перенесення (ROADMAP-PLANETS.md, R1b).
+    /// A world **direction** -> a direction in camera space: rotation without
+    /// translation (ROADMAP-PLANETS.md, R1b).
     ///
-    /// Потрібне патчу. Патч віднімає камеру **один раз** — від свого початку
-    /// координат, у `f64`, — а вершини лежать зсувами у світових осях, тож
-    /// повернути їх треба окремо. Робити це через [`Self::relative`] не можна
-    /// за побудовою: та віднімає позицію камери, а зсув її вже не містить.
+    /// Needed by the patch. A patch subtracts the camera **once** -- from its
+    /// own origin, in `f64` -- while its vertices are offsets in world axes,
+    /// so they have to be rotated separately. Doing it through
+    /// [`Self::relative`] is impossible by construction: that subtracts the
+    /// camera position, which an offset no longer contains.
     ///
-    /// Ділення на `f32` тут безпечне без застережень: зсув усередині патча
-    /// малий за означенням, і катастрофічного скорочення в ньому немає —
-    /// саме тому воно й лишилося єдиним, що зберігається в `f32`.
+    /// Narrowing to `f32` here is safe without caveats: an offset inside a
+    /// patch is small by definition and has no catastrophic cancellation in it
+    /// -- which is why it stayed the one thing stored as `f32`.
     pub fn rotate(&self, direction: [f64; 3]) -> [f32; 3] {
         [
             dot(direction, self.right) as f32,
@@ -113,18 +117,20 @@ impl Camera {
         ]
     }
 
-    /// Поворот вигляду як матриця 4×4 у розкладці [`crate::depth::Matrix`]
-    /// (ROADMAP-PLANETS.md, R1d).
+    /// The view rotation as a 4x4 matrix in the [`crate::depth::Matrix`]
+    /// layout (ROADMAP-PLANETS.md, R1d).
     ///
-    /// Тільки поворот, без перенесення, і це не недогляд: перенесення вже
-    /// зробило віднімання камери в `f64` — на CPU, раз на патч. Матриця з
-    /// позицією камери всередині означала б віднімання у `f32`, тобто рівно
-    /// ту катастрофу скорочення, від якої весь camera-relative і рятує.
+    /// Rotation only, no translation, and that is no oversight: the
+    /// translation was already done by subtracting the camera in `f64` -- on
+    /// the CPU, once per patch. A matrix with the camera position inside it
+    /// would mean subtracting in `f32`, i.e. exactly the catastrophic
+    /// cancellation the whole camera-relative scheme saves us from.
     ///
-    /// Рядки — це [`Self::relative`], записана матрицею: `right`, `up`,
-    /// `−forward`. Дві реалізації того самого повороту тут навмисно поруч, і
-    /// тест звіряє їх між собою — бо саме розбіжність між CPU-шляхом і
-    /// GPU-шляхом дала б планету, зсунуту відносно ламаних.
+    /// The rows are [`Self::relative`] written as a matrix: `right`, `up`,
+    /// `-forward`. The two implementations of the same rotation sit side by
+    /// side deliberately, and a test compares them -- because a divergence
+    /// between the CPU path and the GPU path is what would give a planet
+    /// shifted relative to the polylines.
     pub fn view_rotation(&self) -> [[f32; 4]; 4] {
         let rows = [
             self.right,
@@ -142,20 +148,22 @@ impl Camera {
         m
     }
 
-    /// Точка світу → піксель на екрані, або `None`, якщо вона позаду камери
-    /// (ROADMAP-UI.md, U4b).
+    /// A world point -> a pixel on screen, or `None` if it is behind the
+    /// camera (ROADMAP-UI.md, U4b).
     ///
-    /// Потрібно піккінгу: знайти найближчий до курсора вузол маневру — це
-    /// порівняння в пікселях, а не рейкаст у сцену. Рейкаст без буфера
-    /// ідентифікаторів був би окремою підсистемою заради одного маркера.
+    /// Needed for picking: finding the manoeuvre node nearest the cursor is a
+    /// comparison in pixels, not a raycast into the scene. A raycast without
+    /// an id buffer would be a subsystem of its own for the sake of one
+    /// marker.
     ///
-    /// **Ближня площина сюди не входить, і це не спрощення.** У
-    /// [`crate::depth::reversed_infinite`] `near` стоїть лише в рядку `z`;
-    /// `x` і `y` від неї не залежать узагалі, тож піккінгу нема чого знати
-    /// про глибину.
+    /// **The near plane does not enter this, and that is not a
+    /// simplification.** In [`crate::depth::reversed_infinite`] `near` appears
+    /// only in the `z` row; `x` and `y` do not depend on it at all, so picking
+    /// has no need to know about depth.
     ///
-    /// Осі — як в egui: `x` праворуч, `y` **вниз**. Так число з цієї функції
-    /// порівнюється з позицією курсора без жодного перевертання по дорозі.
+    /// The axes are egui's: `x` to the right, `y` **down**. That way the
+    /// number from this function is compared with the cursor position with no
+    /// flip along the way.
     pub fn to_screen(
         &self,
         fov_y: f64,
@@ -165,8 +173,9 @@ impl Camera {
     ) -> Option<[f32; 2]> {
         let view = self.relative(world);
 
-        // Камера дивиться вздовж −z, тож попереду — від'ємні z. Нуль теж
-        // виключений: там ділення не має сенсу, а не «дуже велике число».
+        // The camera looks along -z, so what is ahead has negative z. Zero is
+        // excluded too: the division there is meaningless rather than "a very
+        // large number".
         if view[2] >= 0.0 {
             return None;
         }
@@ -209,7 +218,7 @@ mod tests {
         for i in 0..3 {
             assert!(
                 (a[i] - b[i]).abs() < 1e-4,
-                "компонента {i}: {} проти {}",
+                "component {i}: {} against {}",
                 a[i],
                 b[i]
             );
