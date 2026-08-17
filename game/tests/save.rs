@@ -1,13 +1,12 @@
-//! Зберегти, завантажити, продовжити — і не помітити (ROADMAP J6).
+//! Save, load, carry on -- and notice nothing (ROADMAP J6).
 //!
-//! PROJECT.md §4, правило 4, нарешті перевіряється, а не декларується:
-//! **стан інтегратора входить у сейв.** Твердження перевірки одне —
-//! продовження після завантаження бітово дорівнює продовженню без нього.
+//! PROJECT.md §4, rule 4, is finally checked rather than declared: **the
+//! integrator state is part of the save.** One claim: continuing after a load
+//! equals bitwise continuing without one.
 //!
-//! Це рівно те, чого правило 4 і вимагає, і найлегший спосіб його зламати —
-//! забути крок. Тоді сейв не падає й навіть виглядає правильним: траєкторія
-//! після завантаження правдоподібна, просто **інша**, а в N-body розбіжність
-//! росте експоненційно.
+//! The easiest way to break it is to forget the step. The save then does not
+//! fail and even looks right: the trajectory after loading is plausible,
+//! merely **different**, and in N-body the divergence grows exponentially.
 
 use core_rs::State;
 use game::mission;
@@ -35,10 +34,10 @@ fn plan_at(start_t: f64) -> Plan {
 }
 
 fn planned_world() -> World {
-    let mut world = mission::world(&mission::default_asset()).expect("світ будується");
+    let mut world = mission::world(&mission::default_asset()).expect("the world builds");
     world
         .commit_plan(VesselId(0), plan_at(mission::start().t))
-        .expect("план у майбутньому");
+        .expect("a plan in the future");
     world
 }
 
@@ -54,8 +53,8 @@ fn samples_after(world: &World, t: f64) -> Vec<State> {
 }
 
 fn assert_same(a: &[State], b: &[State], what: &str) {
-    assert_eq!(a.len(), b.len(), "{what}: різна кількість семплів");
-    assert!(!a.is_empty(), "{what}: нічого не пораховано");
+    assert_eq!(a.len(), b.len(), "{what}: different sample counts");
+    assert!(!a.is_empty(), "{what}: nothing was computed");
 
     for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
         for (name, p, q) in [
@@ -70,23 +69,23 @@ fn assert_same(a: &[State], b: &[State], what: &str) {
             assert_eq!(
                 p.to_bits(),
                 q.to_bits(),
-                "{what}: семпл {i}, {name}: {p:e} проти {q:e}"
+                "{what}: sample {i}, {name}: {p:e} against {q:e}"
             );
         }
     }
 }
 
-/// Головна перевірка J6.
+/// The main check of J6.
 #[test]
 fn saving_and_loading_changes_nothing() {
     let start = mission::start();
 
-    // Прогін без збереження — еталон.
+    // A run with no saving -- the reference.
     let mut plain = planned_world();
     plain.run_to_end(1.0, 8);
     let reference = samples_after(&plain, start.t + 30.0 * DAY);
 
-    // Той самий прогін, але на 30-й добі його зберігають і піднімають наново.
+    // The same run, but on day 30 it is saved and brought back up anew.
     let mut interrupted = planned_world();
     interrupted.run_to_day(start.t + 30.0 * DAY, 1.0, 8);
 
@@ -94,52 +93,50 @@ fn saving_and_loading_changes_nothing() {
     let cut = saved.vessels[0].tip.t;
     assert!(
         saved.vessels[0].step > 0.0,
-        "у сейві крок нуль — тоді перевіряти нема чого"
+        "the step in the save is zero -- then there is nothing to check"
     );
 
     let text = saved.to_text();
     let mut loaded = Save::from_text(&text)
-        .expect("сейв читається")
+        .expect("the save is read")
         .into_world(interrupted.ephemeris(), mission::config())
-        .expect("світ із сейву");
+        .expect("a world from the save");
 
     loaded.run_to_end(1.0, 8);
 
-    // Порівнюємо все, що після точки збереження: до неї в завантаженого світу
-    // історії немає за побудовою (§4: траєкторія в сейв не входить).
+    // Everything after the save point is compared: before it the loaded world
+    // has no history by construction (§4: the trajectory is not part of the
+    // save).
     let after_reload = samples_after(&loaded, cut);
     let after_plain = samples_after(&plain, cut);
 
     println!(
-        "  збережено на добі {:.3}, звірено {} семплів",
+        "  saved on day {:.3}, {} samples compared",
         (cut - start.t) / DAY,
         after_reload.len()
     );
     assert!(
         after_reload.len() > 500,
-        "після точки збереження мало лишитися багато семплів"
+        "plenty of samples should have been left after the save point"
     );
 
-    assert_same(&after_plain, &after_reload, "після завантаження");
+    assert_same(&after_plain, &after_reload, "after loading");
 
-    // Точка збереження — не пізніша за курсор і не сам курсор: це остання
-    // межа ланки перед ним. Саме тому завантажена гра не стрибає ні вперед
-    // (у непорахований прогноз), ні в довільну точку, з якої продовжити
-    // бітово неможливо.
+    // The save point is no later than the cursor and is not the cursor itself:
+    // it is the last leg boundary before it. That is why a loaded game jumps
+    // neither forward (into an uncomputed forecast) nor to an arbitrary point
+    // from which continuing bitwise is impossible.
     let cursor = start.t + 30.0 * DAY;
-    assert!(
-        cut <= cursor,
-        "збереглися попереду курсора: {cut} > {cursor}"
-    );
-    assert!(cut > start.t, "збереглися на самому старті");
+    assert!(cut <= cursor, "saved ahead of the cursor: {cut} > {cursor}");
+    assert!(cut > start.t, "saved at the very start");
     assert!(!reference.is_empty());
 }
 
-/// Викинути крок із сейву — і гра стане іншою.
+/// Drop the step from a save and the game becomes a different one.
 ///
-/// Це та сама перевірка зубів, що в H1 і J3, але з найгіршою ціною: тут
-/// різниця не в роботі, а в тому, що завантажена гра летить не туди, куди
-/// летіла збережена.
+/// The same check for teeth as in H1 and J3, but with the worst price: the
+/// difference is not in the work done but in the loaded game flying somewhere
+/// other than the saved one did.
 #[test]
 fn dropping_the_step_from_a_save_gives_a_different_game() {
     let start = mission::start();
@@ -159,10 +156,10 @@ fn dropping_the_step_from_a_save_gives_a_different_game() {
             .into_world(
                 core_rs::Ephemeris::load(&mission::default_asset())
                     .map(std::sync::Arc::new)
-                    .expect("ассет"),
+                    .expect("asset"),
                 mission::config(),
             )
-            .expect("світ");
+            .expect("world");
         world.run_to_end(1.0, 8);
         samples_after(&world, cut)
     };
@@ -172,7 +169,7 @@ fn dropping_the_step_from_a_save_gives_a_different_game() {
     let without = run(careless);
 
     println!(
-        "  з кроком: {} семплів; без кроку: {}",
+        "  with the step: {} samples; without it: {}",
         with_step.len(),
         without.len()
     );
@@ -180,52 +177,53 @@ fn dropping_the_step_from_a_save_gives_a_different_game() {
     assert_ne!(
         with_step.len(),
         without.len(),
-        "сейв без кроку дав рівно ту саму траєкторію — тоді правило 4 з \
-         PROJECT.md §4 нічого не означає, а H1 виміряв щось інше"
+        "a save without the step gave exactly the same trajectory -- then rule 4 \
+         of PROJECT.md §4 means nothing and H1 measured something else"
     );
 }
 
-/// Маневр у момент збереження не виконується вдруге й не губиться.
+/// A manoeuvre at the save point is flown neither twice nor never.
 ///
-/// Найтихіша помилка сейву: стан до й після імпульсу мають **однаковий час**.
-/// Правило «застосувати все, що не пізніше» виконало б маневр удвічі,
-/// «застосувати все, що раніше» — жодного разу. Тому `applied` лежить у файлі
-/// числом, а точка перезапуску завжди доімпульсна.
+/// The quietest save bug: the states before and after an impulse have **the
+/// same time**. A rule of "apply everything no later than" would fly the
+/// manoeuvre twice, "apply everything earlier than" not at all. Hence
+/// `applied` sits in the file as a number, and the restart point is always
+/// pre-impulse.
 #[test]
 fn a_manoeuvre_at_the_save_point_is_flown_exactly_once() {
     let start = mission::start();
     let burn_t = start.t + 15.0 * DAY;
 
     let mut world = planned_world();
-    // Курсор трохи ЗА маневр: тоді остання межа ланки перед ним — це рівно
-    // момент маневру, бо на маневрі ланка й закінчується.
+    // The cursor slightly PAST the manoeuvre: then the last leg boundary
+    // before it is exactly the manoeuvre instant, because the leg ends there.
     world.run_to_day(burn_t + 0.5 * DAY, 1.0, 8);
 
     let saved = Save::of(&world);
     assert_eq!(
         saved.vessels[0].tip.t.to_bits(),
         burn_t.to_bits(),
-        "тест хотів зберегтися рівно на межі, що збігається з маневром"
+        "the test wanted to save exactly on the boundary that coincides with the manoeuvre"
     );
     assert_eq!(
         saved.vessels[0].applied, 0,
-        "стан на межі — доімпульсний, тож маневр іще не застосований"
+        "the state on the boundary is pre-impulse, so the manoeuvre is not applied yet"
     );
 
-    // Пост-імпульсний стан з оригінального світу: ланка, що ПОЧИНАЄТЬСЯ на
-    // маневрі.
+    // The post-impulse state from the original world: the leg that BEGINS at
+    // the manoeuvre.
     let original = world.vessels()[0]
         .trajectory
         .legs()
         .iter()
         .find(|leg| leg.entry.t == burn_t)
-        .expect("після маневру мала початися нова ланка")
+        .expect("a new leg should have begun after the manoeuvre")
         .entry;
 
     let mut loaded = Save::from_text(&saved.to_text())
-        .expect("читається")
+        .expect("reads back")
         .into_world(world.ephemeris(), mission::config())
-        .expect("світ із сейву");
+        .expect("a world from the save");
     loaded.tick(4);
 
     let resumed = loaded.vessels()[0]
@@ -233,7 +231,7 @@ fn a_manoeuvre_at_the_save_point_is_flown_exactly_once() {
         .legs()
         .iter()
         .find(|leg| leg.entry.t == burn_t)
-        .expect("після завантаження маневр мав виконатися")
+        .expect("after loading the manoeuvre should have been flown")
         .entry;
 
     for (name, a, b) in [
@@ -244,13 +242,13 @@ fn a_manoeuvre_at_the_save_point_is_flown_exactly_once() {
         assert_eq!(
             a.to_bits(),
             b.to_bits(),
-            "{name} після завантаження {b:e} проти {a:e} — маневр виконано не \
-             один раз"
+            "{name} after loading is {b:e} against {a:e} -- the manoeuvre was not \
+             flown exactly once"
         );
     }
 }
 
-/// Текст сейву читається назад бітово, і коментарі йому не заважають.
+/// The save text round-trips bitwise, and comments do not get in the way.
 #[test]
 fn the_text_round_trips_bit_for_bit() {
     let mut world = planned_world();
@@ -259,10 +257,13 @@ fn the_text_round_trips_bit_for_bit() {
     let saved = Save::of(&world);
     let text = saved.to_text();
 
-    // Десяткові значення в рядках — для ока; парсер читає біти.
-    assert!(text.contains('#'), "у сейві немає коментарів для читача");
+    // The decimal values on the lines are for the eye; the parser reads bits.
+    assert!(
+        text.contains('#'),
+        "the save has no comments for the reader"
+    );
 
-    let back = Save::from_text(&text).expect("читається");
+    let back = Save::from_text(&text).expect("reads back");
 
     assert_eq!(back.t.to_bits(), saved.t.to_bits());
     assert_eq!(back.warp.to_bits(), saved.warp.to_bits());
@@ -279,28 +280,28 @@ fn the_text_round_trips_bit_for_bit() {
     assert_eq!(a.plan, b.plan);
 }
 
-/// Чужий формат не читається мовчки.
+/// Someone else's format is not read in silence.
 #[test]
 fn a_file_that_is_not_a_save_is_refused() {
-    assert!(Save::from_text("щось інше\nt 0\n").is_err());
+    assert!(Save::from_text("something else\nt 0\n").is_err());
     assert!(Save::from_text("").is_err());
-    assert!(Save::from_text("space_sim save v1\n").is_err(), "немає 't'");
+    assert!(Save::from_text("space_sim save v1\n").is_err(), "no 't'");
 }
 
-/// Апарат, що відчуває тиск світла, зберігається й повертається тим самим
-/// апаратом (ROADMAP K6b).
+/// A vessel that feels light pressure is saved and comes back as the same
+/// vessel (ROADMAP K6b).
 ///
-/// Це та сама перевірка, що й з кроком інтегратора вище, і з тієї ж причини:
-/// площа й маса входять у модель сил, тож сейв, який їх загубив, повертає
-/// корабель, який летить не туди, куди летів збережений. Різниця лише в
-/// тому, що крок було видно в файлі одразу, а це поле легко забути.
+/// The same check as the integrator step above, and for the same reason: area
+/// and mass enter the force model, so a save that lost them returns a ship
+/// flying somewhere other than the saved one. The only difference is that the
+/// step was visible in the file at once, while this field is easy to forget.
 #[test]
 fn a_vessel_with_area_survives_the_save() {
     use core_rs::VesselParams;
 
-    // Обидва коефіцієнти ненульові навмисно. З `cd: 0.0` цей тест проходив
-    // би й тоді, якби сейв загубив поле цілком: нуль неможливо відрізнити
-    // від «не записано» (ROADMAP K7c).
+    // Both coefficients are non-zero on purpose. With `cd: 0.0` this test
+    // would pass even if the save lost the field entirely: zero cannot be told
+    // apart from "not written" (ROADMAP K7c).
     let sail = VesselParams {
         mass_kg: 1000.0,
         area_m2: 20.0,
@@ -310,8 +311,9 @@ fn a_vessel_with_area_survives_the_save() {
 
     let cursor = mission::start().t + 4.0 * 3600.0;
 
-    // Той самий світ, той самий апарат - лише з площею. Будується напряму,
-    // а не через mission::world, бо демо-апарат навмисно летить без неї.
+    // The same world and the same vessel, only with an area. Built directly
+    // rather than through mission::world, because the demo vessel deliberately
+    // flies without one.
     let build = || {
         let mut world = World::new(
             &mission::default_asset(),
@@ -319,7 +321,7 @@ fn a_vessel_with_area_survives_the_save() {
             mission::start().t,
             1.0,
         )
-        .expect("світ будується");
+        .expect("the world builds");
         world.add_vessel(
             "sail",
             mission::start(),
@@ -345,24 +347,24 @@ fn a_vessel_with_area_survives_the_save() {
 
     let save = Save::of(&interrupted);
 
-    // Через текст, не через структуру в пам'яті: якби `params` не
-    // друкувалося або не читалося назад, саме тут це й видно.
+    // Through the text, not through the struct in memory: if `params` were not
+    // printed or not read back, this is where it shows.
     let text = save.to_text();
     assert!(
         text.contains("params"),
-        "площа мала потрапити у файл:\n{text}"
+        "the area should have reached the file:\n{text}"
     );
 
-    let reloaded = Save::from_text(&text).expect("сейв читається");
+    let reloaded = Save::from_text(&text).expect("the save is read");
     assert_eq!(
         reloaded.vessels[0].params,
         Some(sail),
-        "апарат повернувся іншим кораблем"
+        "the vessel came back a different ship"
     );
 
     let mut loaded = reloaded
         .into_world(interrupted.ephemeris(), mission::config())
-        .expect("світ із сейву");
+        .expect("a world from the save");
     while loaded.clock().t() < cursor + 3600.0 {
         if loaded.step(60.0, 64).legs == 0 {
             break;
@@ -372,6 +374,6 @@ fn a_vessel_with_area_survives_the_save() {
     assert_same(
         &samples_after(&plain, cursor),
         &samples_after(&loaded, cursor),
-        "апарат із площею після завантаження",
+        "a vessel with an area after loading",
     );
 }

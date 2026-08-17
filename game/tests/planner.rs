@@ -1,13 +1,14 @@
-//! Лінія, яку ви бачили, і є лінія, якою полетите (ROADMAP J5).
+//! The line you saw is the line you will fly (ROADMAP J5).
 //!
-//! Прев'ю рахує інша нитка, з іншим пропагатором, у власному викидному світі.
-//! Обіцянка при цьому — не «схоже», а **бітово те саме**, що потім порахує
-//! `Sim`. Без неї планувальник маневрів безглуздий: гравець обирав би за
-//! однією кривою, а летів іншою (PROJECT.md §8, «флайт-планер»).
+//! The preview is computed by another thread, with another propagator, in its
+//! own throwaway world. The promise is not "similar" but **bitwise the same**
+//! as what `Sim` will compute later. Without it the manoeuvre planner is
+//! pointless: the player would choose by one curve and fly another
+//! (PROJECT.md §8, "флайт-планер").
 //!
-//! Найлегший спосіб цю обіцянку зламати — почати прогін не звідти: не з межі
-//! ланки, або з «обери крок сам». H1 виміряв, що це інша траєкторія, а не
-//! просто повільніша.
+//! The easiest way to break the promise is to start the run in the wrong
+//! place: not at a leg boundary, or with "pick the step yourself". H1
+//! measured that this is a different trajectory, not merely a slower one.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -38,55 +39,59 @@ fn burn_at(t: f64) -> Plan {
 fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
     let deadline = Instant::now() + PATIENCE;
     while !done() {
-        assert!(Instant::now() < deadline, "не дочекалися: {what}");
+        assert!(Instant::now() < deadline, "never arrived: {what}");
         std::thread::yield_now();
     }
 }
 
-/// Головна перевірка J5: прев'ю з іншої нитки — це майбутній політ, бітово.
+/// The main check of J5: a preview from another thread is the future flight,
+/// bitwise.
 #[test]
 fn a_preview_is_bit_identical_to_the_flight_that_follows() {
-    let sim = Sim::spawn(mission::world(&mission::default_asset()).expect("світ"))
-        .expect("нитка симуляції");
+    let sim = Sim::spawn(mission::world(&mission::default_asset()).expect("world"))
+        .expect("the simulation thread");
 
-    // Спершу дати курсору відійти від старту, тоді спинити. Пауза потрібна
-    // тесту, а не конструкції: інакше точка перезапуску встигла б утекти в
-    // минуле між снапшотом і комітом. А відійти треба тому, що горизонт
-    // тримається за курсором — біля старту після нього просто не лишилося б
-    // ланок, які можна звірити.
+    // First let the cursor move away from the start, then stop it. The pause
+    // is needed by the test, not by the design: otherwise the restart point
+    // could slip into the past between the snapshot and the commit. And it has
+    // to move away because the horizon trails the cursor -- near the start
+    // there would be no legs left after it to compare.
     sim.send(Command::SetWarp(game::clock::MAX_WARP));
-    wait_until("курсор відійде від старту", || {
+    wait_until("the cursor moves away from the start", || {
         sim.snapshot().t >= mission::start().t + 15.0 * DAY
     });
     sim.send(Command::TogglePause);
-    wait_until("пауза дійде", || {
+    wait_until("the pause arrives", || {
         sim.snapshot().stall == Some(Stall::Paused)
     });
 
-    // Момент маневру береться від того, де курсор СПРАВДІ спинився, а не від
-    // круглого числа. Команда долітає не миттєво, і на максимальному warp
-    // кожен тік — це майже дві доби; фіксована 30-та доба означала б, що на
-    // повільнішій машині курсор устигає її проїхати, і план відхиляється як
-    // «у минулому». Саме так цей тест і впав на macOS, пройшовши на Linux.
+    // The manoeuvre time is taken from where the cursor ACTUALLY stopped, not
+    // from a round number. The command does not arrive instantly, and at
+    // maximum warp each tick is almost two days; a fixed day 30 would mean
+    // that on a slower machine the cursor drives past it and the plan is
+    // rejected as "in the past". That is exactly how this test failed on macOS
+    // while passing on Linux.
     let cursor = sim.snapshot().t;
     let burn_t = cursor + 5.0 * DAY;
-    wait_until("горизонт дійде до маневру", || {
+    wait_until("the horizon reaches the manoeuvre", || {
         sim.snapshot().vessels[0].computed_to > burn_t
     });
 
     let snapshot = sim.snapshot();
     let vessel = &snapshot.vessels[0];
 
-    // Точка перезапуску — та сама функція, якою скористається `Sim`, коли
-    // прийме план. У цьому й сенс: одна функція, а не два однакові правила.
+    // The restart point comes from the same function `Sim` will use when it
+    // accepts the plan. That is the point: one function, not two identical
+    // rules.
     let restart = restart_at(&vessel.legs, vessel.start, burn_t);
     assert!(
         restart.step > 0.0,
-        "перезапуск із «обери крок сам» — прев'ю почалося б не з того місця"
+        "a restart with \"pick the step yourself\" -- the preview would start in \
+         the wrong place"
     );
 
     let plan = burn_at(burn_t);
-    let planner = Planner::spawn(sim.ephemeris(), mission::config()).expect("нитка планувальника");
+    let planner = Planner::spawn(sim.ephemeris(), mission::config()).expect("the planner thread");
     planner.request(Request::Preview(PreviewRequest {
         id: 1,
         vessel: VesselId(0),
@@ -98,41 +103,41 @@ fn a_preview_is_bit_identical_to_the_flight_that_follows() {
     }));
 
     let mut preview: Option<Preview> = None;
-    wait_until("прев'ю", || {
+    wait_until("the preview", || {
         preview = planner.latest();
         preview.is_some()
     });
-    let preview = preview.expect("щойно перевірили");
+    let preview = preview.expect("just checked");
     assert_eq!(preview.id, 1);
     assert!(
         preview.legs.len() >= 2,
-        "прев'ю з {} ланок — замало, щоб щось звіряти",
+        "a preview of {} legs -- too few to compare anything",
         preview.legs.len()
     );
 
-    // А тепер той самий план — по-справжньому.
+    // And now the same plan for real.
     sim.send(Command::CommitPlan {
         vessel: VesselId(0),
         plan,
     });
-    // Відмова тут — це не «ще не прийшло», а провал; чекати на неї до кінця
-    // терпіння означало б сховати причину за таймаутом.
-    wait_until("відповідь про план", || {
+    // A rejection here is not "not arrived yet" but a failure; waiting for it
+    // until patience runs out would hide the cause behind a timeout.
+    wait_until("an answer about the plan", || {
         for event in sim.events() {
             match event {
                 Event::PlanCommitted { .. } => return true,
-                Event::PlanRejected { why, .. } => panic!("план відхилено: {why:?}"),
+                Event::PlanRejected { why, .. } => panic!("the plan was rejected: {why:?}"),
                 _ => {}
             }
         }
         false
     });
 
-    // Скільки ланок політ порахує після точки перезапуску, вирішує горизонт,
-    // а той тримається за КУРСОРОМ, який стоїть на паузі. Прев'ю ж рахує свої
-    // чотири ланки від самої точки перезапуску, тобто заглядає далі. Звіряємо
-    // перекриття — його достатньо, і воно чесне: розбіжність показалася б уже
-    // на першій ланці.
+    // How many legs the flight computes after the restart point is decided by
+    // the horizon, which trails the CURSOR, and the cursor is paused. The
+    // preview computes its own four legs from the restart point itself, i.e.
+    // it looks further. The overlap is compared -- that is enough and it is
+    // honest: a divergence would show on the first leg already.
     let flown_after = |snapshot: &game::snapshot::WorldSnapshot| -> Vec<Arc<Leg>> {
         snapshot.vessels[0]
             .legs
@@ -142,11 +147,12 @@ fn a_preview_is_bit_identical_to_the_flight_that_follows() {
             .collect()
     };
 
-    // Чекати на кількість ланок недостатньо, і це варте окремого слова:
-    // до коміту їх уже було досить, тож перевірка проходила б на СТАРІЙ
-    // траєкторії. Ознака, що перерахунок таки стався, одна — ланка, що
-    // закінчується рівно на маневрі; до коміту такої не було й бути не могло.
-    wait_until("політ перерахує хвіст", || {
+    // Waiting for a leg count is not enough, and that is worth a word: there
+    // were already enough of them before the commit, so the check would run on
+    // the OLD trajectory. There is one sign the recomputation actually
+    // happened -- a leg ending exactly at the manoeuvre; before the commit
+    // there was none and could be none.
+    wait_until("the flight recomputes its tail", || {
         let snapshot = sim.snapshot();
         snapshot.vessels[0].legs.iter().any(|leg| leg.t1 == burn_t)
             && flown_after(&snapshot).len() >= 2
@@ -156,7 +162,7 @@ fn a_preview_is_bit_identical_to_the_flight_that_follows() {
     let flown = flown_after(&after);
 
     println!(
-        "  перезапуск на добі {:.3}, маневр на {:.3}",
+        "  restart on day {:.3}, manoeuvre on {:.3}",
         (restart.state.t - mission::start().t) / DAY,
         (burn_t - mission::start().t) / DAY
     );
@@ -164,7 +170,7 @@ fn a_preview_is_bit_identical_to_the_flight_that_follows() {
     let overlap = preview.legs.len().min(flown.len());
     assert!(
         overlap >= 2,
-        "звіряти нема чого: прев'ю {} ланок, політ {}",
+        "nothing to compare: {} legs of preview, {} of flight",
         preview.legs.len(),
         flown.len()
     );
@@ -179,14 +185,14 @@ fn a_preview_is_bit_identical_to_the_flight_that_follows() {
         assert_eq!(
             shown.samples.len(),
             flew.samples.len(),
-            "ланка {i}: {} семплів у прев'ю проти {} у польоті",
+            "leg {i}: {} samples in the preview against {} in the flight",
             shown.samples.len(),
             flew.samples.len()
         );
         assert_eq!(
             shown.step_out.to_bits(),
             flew.step_out.to_bits(),
-            "ланка {i}: різний крок на виході"
+            "leg {i}: different step on the way out"
         );
 
         for (j, (a, b)) in shown.samples.iter().zip(flew.samples.iter()).enumerate() {
@@ -202,14 +208,14 @@ fn a_preview_is_bit_identical_to_the_flight_that_follows() {
                 assert_eq!(
                     p.to_bits(),
                     q.to_bits(),
-                    "ланка {i}, семпл {j}, {name}: {p:e} проти {q:e}"
+                    "leg {i}, sample {j}, {name}: {p:e} against {q:e}"
                 );
             }
         }
     }
 
     println!(
-        "  звірено {overlap} ланок, {} семплів",
+        "  compared {overlap} legs, {} samples",
         preview.legs[..overlap]
             .iter()
             .map(|l| l.samples.len())
@@ -217,18 +223,19 @@ fn a_preview_is_bit_identical_to_the_flight_that_follows() {
     );
 }
 
-/// Прев'ю починається з межі ланки, а не «де апарат зараз».
+/// A preview starts at a leg boundary, not "where the vessel is now".
 ///
-/// Ця перевірка є окремо, бо саме тут обіцянка ламається найтихіше: прогін із
-/// довільної точки дає правдоподібну криву, яка просто не та.
+/// This check exists separately because that is where the promise breaks most
+/// quietly: a run from an arbitrary point gives a plausible curve that is
+/// simply not the right one.
 #[test]
 fn starting_a_preview_from_the_wrong_step_gives_a_different_line() {
-    let sim = Sim::spawn(mission::world(&mission::default_asset()).expect("світ"))
-        .expect("нитка симуляції");
+    let sim = Sim::spawn(mission::world(&mission::default_asset()).expect("world"))
+        .expect("the simulation thread");
     sim.send(Command::TogglePause);
 
     let burn_t = mission::start().t + 30.0 * DAY;
-    wait_until("горизонт", || {
+    wait_until("the horizon", || {
         sim.snapshot().vessels[0].computed_to > burn_t
     });
 
@@ -237,7 +244,7 @@ fn starting_a_preview_from_the_wrong_step_gives_a_different_line() {
     let restart = restart_at(&vessel.legs, vessel.start, burn_t);
     let plan = burn_at(burn_t);
 
-    let planner = Planner::spawn(sim.ephemeris(), mission::config()).expect("планувальник");
+    let planner = Planner::spawn(sim.ephemeris(), mission::config()).expect("the planner");
 
     let ask = |id: u64, step: f64| -> Preview {
         planner.request(Request::Preview(PreviewRequest {
@@ -250,11 +257,11 @@ fn starting_a_preview_from_the_wrong_step_gives_a_different_line() {
             horizon_end: vessel.horizon_end,
         }));
         let mut got = None;
-        wait_until("прев'ю", || {
+        wait_until("the preview", || {
             got = planner.latest();
             got.as_ref().is_some_and(|p| p.id == id)
         });
-        got.expect("щойно перевірили")
+        got.expect("just checked")
     };
 
     let right = ask(1, restart.step);
@@ -262,7 +269,7 @@ fn starting_a_preview_from_the_wrong_step_gives_a_different_line() {
 
     let count = |p: &Preview| p.legs.iter().map(|l| l.samples.len()).sum::<usize>();
     println!(
-        "  з перенесеним кроком: {} семплів; з «обери сам»: {}",
+        "  with the carried step: {} samples; with \"pick it yourself\": {}",
         count(&right),
         count(&wrong)
     );
@@ -270,23 +277,24 @@ fn starting_a_preview_from_the_wrong_step_gives_a_different_line() {
     assert_ne!(
         count(&right),
         count(&wrong),
-        "прогін з «обери крок сам» дав рівно те саме — тоді перенесення кроку \
-         нічого не значить, і H1 виміряв щось інше"
+        "the run with \"pick the step yourself\" gave exactly the same -- then \
+         carrying the step means nothing, and H1 measured something else"
     );
 }
 
-/// Застарілі прев'ю не доходять до викликача.
+/// Stale previews never reach the caller.
 ///
-/// Гравець тягне вузол — запити летять десятками за секунду. Актуальний
-/// завжди останній, і саме він мусить дійти; решта нікому не потрібні.
+/// The player drags a node and requests fly out dozens per second. The
+/// current one is always the last, and it is the one that must arrive; nobody
+/// needs the rest.
 #[test]
 fn only_the_latest_request_is_answered() {
-    let sim = Sim::spawn(mission::world(&mission::default_asset()).expect("світ"))
-        .expect("нитка симуляції");
+    let sim = Sim::spawn(mission::world(&mission::default_asset()).expect("world"))
+        .expect("the simulation thread");
     sim.send(Command::TogglePause);
 
     let burn_t = mission::start().t + 30.0 * DAY;
-    wait_until("горизонт", || {
+    wait_until("the horizon", || {
         sim.snapshot().vessels[0].computed_to > burn_t
     });
 
@@ -294,9 +302,9 @@ fn only_the_latest_request_is_answered() {
     let vessel = &snapshot.vessels[0];
     let restart = restart_at(&vessel.legs, vessel.start, burn_t);
 
-    let planner = Planner::spawn(sim.ephemeris(), mission::config()).expect("планувальник");
+    let planner = Planner::spawn(sim.ephemeris(), mission::config()).expect("the planner");
 
-    // Двадцять запитів поспіль, як від тягнення миші: кожен зі своїм Δv.
+    // Twenty requests in a row, as from a mouse drag: each with its own dv.
     for id in 1..=20u64 {
         let mut plan = Plan::new();
         plan.insert(Manoeuvre {
@@ -316,44 +324,44 @@ fn only_the_latest_request_is_answered() {
     }
 
     let mut last = None;
-    wait_until("останнє прев'ю", || {
+    wait_until("the last preview", || {
         if let Some(preview) = planner.latest() {
             last = Some(preview);
         }
         last.as_ref().is_some_and(|p| p.id == 20)
     });
 
-    let last = last.expect("щойно перевірили");
-    assert_eq!(last.id, 20, "дійшло не останнє прев'ю");
-    assert!(!last.legs.is_empty(), "останнє прев'ю порожнє");
+    let last = last.expect("just checked");
+    assert_eq!(last.id, 20, "it was not the last preview that arrived");
+    assert!(!last.legs.is_empty(), "the last preview is empty");
 }
 
-/// Запит, що **перервав** прогін, сам без відповіді не лишається.
+/// A request that **interrupted** a run is answered too.
 ///
-/// Перевірка вище шле пачку одним махом, і тому нічого не доводить про цей
-/// випадок: усі двадцять уже лежать у каналі, коли нитка бере перший, і їх
-/// забирає звичайне вичерпування черги. Тут інакше — другий запит прилітає
-/// **посеред** прогону першого, тобто його бачить саме перевірка скасування.
-/// Вона повідомлення з каналу виймає, і питання рівно одне: куди воно потім
-/// дінеться.
+/// The check above sends a batch in one go and therefore proves nothing about
+/// this case: all twenty are already in the channel when the thread takes the
+/// first, and ordinary queue draining picks them up. Here it is different --
+/// the second request arrives **in the middle** of the first run, so it is
+/// the cancellation check that sees it. That check takes the message out of
+/// the channel, and the question is exactly where it goes next.
 ///
-/// Так виглядає кінець тягнення вузла: гравець відпустив мишу, полетів
-/// останній запит, і після нього не буде жодного. Якщо його з'їдає
-/// скасування, нитка засинає на `recv()`, а на екрані лишається лінія
-/// передостаннього положення — назавжди.
+/// This is what the end of a node drag looks like: the player released the
+/// mouse, the last request flew out, and there will be no more. If
+/// cancellation eats it, the thread falls asleep on `recv()` and the line of
+/// the second-to-last position stays on screen forever.
 ///
-/// Пауза тут потрібна саме тесту: прев'ю рахується близько 50 мс (вимір цієї
-/// сесії), а перевірка каналу трапляється між ланками, тож п'яти мілісекунд
-/// досить, щоб другий запит застав перший у роботі, і мало, щоб той устиг
-/// добігти до кінця.
+/// The sleep is needed by the test: a preview takes about 50 ms (measured
+/// this session), and the channel is checked between legs, so five
+/// milliseconds are enough for the second request to catch the first at work
+/// and too few for it to finish.
 #[test]
 fn the_request_that_cancelled_the_work_is_answered_too() {
-    let sim = Sim::spawn(mission::world(&mission::default_asset()).expect("світ"))
-        .expect("нитка симуляції");
+    let sim = Sim::spawn(mission::world(&mission::default_asset()).expect("world"))
+        .expect("the simulation thread");
     sim.send(Command::TogglePause);
 
     let burn_t = mission::start().t + 30.0 * DAY;
-    wait_until("горизонт", || {
+    wait_until("the horizon", || {
         sim.snapshot().vessels[0].computed_to > burn_t
     });
 
@@ -361,7 +369,7 @@ fn the_request_that_cancelled_the_work_is_answered_too() {
     let vessel = &snapshot.vessels[0];
     let restart = restart_at(&vessel.legs, vessel.start, burn_t);
 
-    let planner = Planner::spawn(sim.ephemeris(), mission::config()).expect("планувальник");
+    let planner = Planner::spawn(sim.ephemeris(), mission::config()).expect("the planner");
 
     let ask = |id: u64| {
         let mut plan = Plan::new();
@@ -386,12 +394,12 @@ fn the_request_that_cancelled_the_work_is_answered_too() {
     ask(2);
 
     let mut last = None;
-    wait_until("прев'ю на другий запит", || {
+    wait_until("a preview for the second request", || {
         if let Some(preview) = planner.latest() {
             last = Some(preview);
         }
         last.as_ref().is_some_and(|p| p.id == 2)
     });
 
-    assert_eq!(last.expect("щойно перевірили").id, 2);
+    assert_eq!(last.expect("just checked").id, 2);
 }

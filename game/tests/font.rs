@@ -1,55 +1,54 @@
-//! Шрифт справді має гліфи для всього, що ми пишемо (ROADMAP-UI.md, U7b).
+//! The font really does have glyphs for everything we write (ROADMAP-UI.md,
+//! U7b).
 //!
-//! Питання кроку поставлене так: типові шрифти egui кирилицю, найімовірніше,
-//! покривають — але **перевірити, а не припустити**. Відсутній гліф малюється
-//! порожнім прямокутником, тобто помилка тиха рівно доти, доки хтось не
-//! подивиться на екран. А дивитись доводиться на кожну панель окремо, бо
-//! рядок з'являється лише в своєму стані.
+//! The step's question: egui's stock fonts most likely cover Cyrillic -- but
+//! **check, do not assume**. A missing glyph is drawn as an empty rectangle,
+//! so the bug is silent until someone looks at the screen, and one has to
+//! look at each panel separately, because a string only appears in its own
+//! state.
 //!
-//! ## Чому це не знімок
+//! Why this is not a screenshot: a screenshot would say "something is drawn",
+//! and it is green on tofu too -- an empty rectangle is pixels as well. The
+//! question is not whether there is paint but whether **different** characters
+//! give **different** rasters.
 //!
-//! Знімок сказав би «щось намальовано», і на тофу він теж зелений: порожній
-//! прямокутник — це теж пікселі. Питання не в тому, чи є фарба, а в тому, чи
-//! **різні** символи дають **різні** растри.
+//! Hence a sharper oracle: for an unknown character egui substitutes one and
+//! the same fallback raster. So take a character the font deliberately lacks
+//! (the Unicode private use area), remember its corner in the atlas -- and no
+//! glyph of any of our strings may coincide with it. This is cheaper too: no
+//! GPU is needed at all, so the check runs where there is no adapter instead
+//! of being skipped in silence.
 //!
-//! Тому оракул інший і точніший: egui для невідомого символу підставляє
-//! растр заміни, один і той самий. Отже беремо символ, якого в шрифті свідомо
-//! немає (приватна зона Unicode), запам'ятовуємо його кут в атласі — і жоден
-//! гліф жодного нашого рядка не має права на нього збігтися.
-//!
-//! Це ще й дешевше: GPU тут не потрібен взагалі, тобто перевірка біжить і
-//! там, де адаптера немає, а не пропускається мовчки.
-//!
-//! ## Чому обидві таблиці, а не лише українська
-//!
-//! Назви мов — ендоніми (U7a), тож «Українська» лежить і в **англійській**
-//! таблиці. Кирилиця потрібна в англійському інтерфейсі так само, як в
-//! українському, і перевіряти лише одну таблицю означало б перевіряти не те.
+//! Both tables are checked, not only the Ukrainian one: language names are
+//! endonyms (U7a), so "Українська" sits in the **English** table too.
 
 use engine::egui;
 
 use game::text::{tr, Language, ALL};
 
-/// Символи з приватної зони Unicode: жоден осмислений шрифт їх не несе.
+/// Characters from the Unicode private use area: no sensible font carries
+/// them.
 ///
-/// Два, а не один — щоб перевірка вміла провалитися. Якщо ці двоє дадуть
-/// різні растри, значить «растр заміни» — не константа, і весь оракул нижче
-/// не означає нічого.
+/// Two, not one, so that the check can fail. If these two give different
+/// rasters then "the fallback raster" is not a constant, and the oracle below
+/// means nothing.
 const MISSING: [char; 2] = ['\u{E000}', '\u{E001}'];
 
-/// Кут гліфа в атласі шрифта — саме те, що відрізняє один растр від іншого.
+/// The corner of a glyph in the font atlas -- exactly what tells one raster
+/// from another.
 ///
-/// Пара `[u16; 2]`, а не `UvRect`: сам тип із `epaint` не реекспортований, а
-/// для порівняння потрібні рівно ці чотири числа.
+/// A pair of `[u16; 2]` rather than `UvRect`: the type itself is not
+/// re-exported from `epaint`, and the comparison needs exactly these four
+/// numbers.
 type Raster = ([u16; 2], [u16; 2]);
 
-/// Розкладає рядки й повертає гліфи кожного.
+/// Lays out the strings and returns the glyphs of each.
 ///
-/// Усі разом і за один кадр, бо атлас шрифта будується всередині кадру:
-/// `Context::fonts` до першого `run_ui` не існує взагалі, а `layout_no_wrap`
-/// хоче мутабельний доступ, якого читач `fonts` не дає. Через `Painter` іде
-/// той самий шлях, яким текст розкладає сама панель, — тобто перевіряється те
-/// саме, що побачить гравець.
+/// All of them in one frame, because the font atlas is built inside a frame:
+/// `Context::fonts` does not exist at all before the first `run_ui`, and
+/// `layout_no_wrap` wants mutable access that the `fonts` reader does not
+/// give. Going through `Painter` is the same path a panel lays text out by,
+/// so what is checked is what the player sees.
 fn rasters(family: egui::FontFamily, texts: &[String]) -> Vec<Vec<(char, Raster)>> {
     let context = egui::Context::default();
     let input = egui::RawInput {
@@ -79,33 +78,34 @@ fn rasters(family: egui::FontFamily, texts: &[String]) -> Vec<Vec<(char, Raster)
             })
             .collect();
     });
-    // `TexturesDelta` падає в `Drop`, якщо її не застосувати (U1a).
+    // `TexturesDelta` panics in `Drop` if it is not applied (U1a).
     output.textures_delta.clear();
     out
 }
 
-/// Растр першого символу рядка.
+/// The raster of the first character of a string.
 fn one(family: egui::FontFamily, text: &str) -> (char, Raster) {
     let mut glyphs = rasters(family, &[text.to_string()]).remove(0);
-    assert_eq!(glyphs.len(), 1, "{text:?} розклався не в один гліф");
+    assert_eq!(glyphs.len(), 1, "{text:?} laid out as more than one glyph");
     glyphs.remove(0)
 }
 
-/// Обидва сімейства, які egui дає з коробки.
+/// Both families egui ships out of the box.
 ///
-/// Панелі сьогодні шрифту не задають, тобто беруть пропорційний. Моноширинний
-/// перевіряється **наперед**: U7c про приладову палітру, а прилади хочеться
-/// набрати моноширинним — і з'ясувати, що в ньому немає кирилиці, дешевше
-/// зараз, ніж посеред того кроку.
+/// Panels do not set a font today, i.e. they take the proportional one. The
+/// monospace one is checked **ahead of time**: U7c is about the instrument
+/// palette, and instruments want a monospace face -- finding out it has no
+/// Cyrillic is cheaper now than in the middle of that step.
 fn families() -> [egui::FontFamily; 2] {
     [egui::FontFamily::Proportional, egui::FontFamily::Monospace]
 }
 
-/// Спершу — що оракул узагалі працює: відсутнє дає растр заміни, і він один.
+/// First, that the oracle works at all: a missing character gives the
+/// fallback raster, and there is only one of it.
 ///
-/// Без цього тест нижче був би зелений і на шрифті без жодного гліфа: якби
-/// кожен невідомий символ давав власний растр, «не збігся із заміною» не
-/// означало б нічого.
+/// Without this the test below would be green on a font with no glyphs at
+/// all: if every unknown character gave its own raster, "did not match the
+/// fallback" would mean nothing.
 #[test]
 fn a_missing_glyph_falls_back_to_one_and_the_same_raster() {
     for family in families() {
@@ -114,20 +114,22 @@ fn a_missing_glyph_falls_back_to_one_and_the_same_raster() {
 
         assert_eq!(
             first.1, second.1,
-            "{family:?}: два різні відсутні символи дали різні растри — значить \
-             egui не підставляє заміну, і перевірка нижче не має оракула"
+            "{family:?}: two different missing characters gave different rasters -- \
+             so egui does not substitute a fallback, and the check below has no oracle"
         );
 
-        // І та заміна щось малює. Растр нульового розміру означав би, що
-        // невідоме просто не видно, — тоді збіг вище був би збігом двох ніщо.
+        // And that fallback draws something. A zero-sized raster would mean
+        // the unknown is simply invisible -- then the match above would be a
+        // match of two nothings.
         assert_ne!(
             first.1 .0, first.1 .1,
-            "{family:?}: растр заміни порожній — оракул порівнював би дві порожнечі"
+            "{family:?}: the fallback raster is empty -- the oracle would be \
+             comparing two voids"
         );
     }
 }
 
-/// А тепер головне: жоден рядок жодної таблиці не малюється заміною.
+/// And now the point: no string of either table is drawn with the fallback.
 #[test]
 fn every_string_in_both_tables_has_real_glyphs() {
     let mut texts = Vec::new();
@@ -145,40 +147,41 @@ fn every_string_in_both_tables_has_real_glyphs() {
         let mut checked = 0;
         for (glyphs, label) in rasters(family.clone(), &texts).iter().zip(&labels) {
             for (chr, raster) in glyphs {
-                // Пробіл законно не має растру, і порівнювати його із заміною
-                // безглуздо.
+                // Whitespace legitimately has no raster, and comparing it with
+                // the fallback is meaningless.
                 if chr.is_whitespace() {
                     continue;
                 }
                 assert_ne!(
                     *raster, tofu,
-                    "{family:?}: у {label} символ {chr:?} малюється порожнім \
-                     прямокутником — шрифт його не несе"
+                    "{family:?}: in {label} the character {chr:?} is drawn as an \
+                     empty rectangle -- the font does not carry it"
                 );
                 checked += 1;
             }
         }
 
-        // Перевірка, що перевірка щось перевірила: порожня таблиця пройшла б
-        // цикл вище мовчки.
+        // A check that the check checked something: an empty table would pass
+        // the loop above in silence.
         assert!(
             checked > 500,
-            "{family:?}: перевірено лише {checked} гліфів — таблиця схудла чи \
-             розкладка нічого не повернула"
+            "{family:?}: only {checked} glyphs checked -- the table has shrunk or \
+             the layout returned nothing"
         );
-        println!("  {family:?}: перевірено гліфів: {checked}");
+        println!("  {family:?}: glyphs checked: {checked}");
     }
 }
 
-/// Моноширинний шрифт лишається моноширинним і на кирилиці.
+/// The monospace font stays monospace in Cyrillic too.
 ///
-/// Тест вище цього не доводить, і саме тому цей існує: egui, не знайшовши
-/// гліфа в `Hack`, мовчки бере його з пропорційного — растр буде справжній,
-/// перевірка на тофу зелена, а літера прийде **іншої ширини**. Для приладової
-/// панелі це означає стовпчик, що роз'їжджається рівно на українських
-/// підписах, тобто помилку, яку видно лише в одній із двох мов.
+/// The test above does not prove that, which is why this one exists: egui,
+/// finding no glyph in `Hack`, silently takes it from the proportional face
+/// -- the raster is real, the tofu check is green, and the letter arrives at
+/// **a different width**. For an instrument panel that means a column that
+/// falls apart on exactly the Ukrainian labels, i.e. a bug visible in only
+/// one of the two languages.
 ///
-/// Знати це треба до U7c, а не всередині нього.
+/// This needs to be known before U7c, not inside it.
 #[test]
 fn the_monospace_family_is_monospace_in_cyrillic_too() {
     let context = egui::Context::default();
@@ -190,7 +193,7 @@ fn the_monospace_family_is_monospace_in_cyrillic_too() {
         ..Default::default()
     };
 
-    // Латиниця, цифри й кирилиця в одному рядку: усі ширини мають збігтися.
+    // Latin, digits and Cyrillic in one string: all widths must agree.
     let text = "iWm019аійЩ";
     let mut widths: Vec<(char, f32)> = Vec::new();
     let mut output = context.run_ui(input, |ui| {
@@ -212,29 +215,30 @@ fn the_monospace_family_is_monospace_in_cyrillic_too() {
     for (chr, width) in &widths {
         assert!(
             (width - first).abs() < 0.01,
-            "у моноширинному {chr:?} має ширину {width}, а {first_chr:?} — {first}: \
-             egui підставив гліф з іншого сімейства, і стовпчик роз'їдеться \
-             саме на цій літері"
+            "in monospace {chr:?} is {width} wide while {first_chr:?} is {first}: \
+             egui substituted a glyph from another family, and the column will \
+             fall apart on exactly this letter"
         );
     }
     println!(
-        "  моноширинна ширина: {first} на всі {} символів",
+        "  monospace width: {first} across all {} characters",
         widths.len()
     );
 }
 
-/// І окремо — кирилиця, названа поіменно.
+/// And separately, Cyrillic named letter by letter.
 ///
-/// Тест вище впав би й від зниклої латиниці, тобто його червона дошка не
-/// каже, що саме сталося. Цей звужує: український алфавіт цілком, включно з
-/// ґ, є, і, ї, які випадають із «російського» набору й тому губляться в
-/// шрифтах, зібраних не для нас.
+/// The test above would also fail on missing Latin, so its red board does not
+/// say what happened. This one narrows it down: the whole Ukrainian alphabet,
+/// including g with upturn, ye, i and yi, which fall outside the "Russian"
+/// set and are therefore lost in fonts assembled for someone else.
 #[test]
 fn the_ukrainian_alphabet_is_covered_letter_by_letter() {
     let alphabet = "абвгґдеєжзиіїйклмнопрстуфхцчшщьюя\
                     АБВГҐДЕЄЖЗИІЇЙКЛМНОПРСТУФХЦЧШЩЬЮЯ";
-    // Δ з «Δv плану», × з «warp ×1000», — з застережень: не кирилиця й не
-    // латиниця, тобто губляться окремо від обох.
+    // Delta from the plan's dv, the multiplication sign from "warp x1000", the
+    // em dash from the warnings: neither Cyrillic nor Latin, so they are lost
+    // separately from both.
     let symbols = "Δ×—";
 
     for family in families() {
@@ -242,10 +246,10 @@ fn the_ukrainian_alphabet_is_covered_letter_by_letter() {
 
         for (glyphs, what) in rasters(family.clone(), &[alphabet.to_string(), symbols.to_string()])
             .iter()
-            .zip(["літери", "символу"])
+            .zip(["letter", "symbol"])
         {
             for (chr, raster) in glyphs {
-                assert_ne!(*raster, tofu, "{family:?}: {what} {chr:?} у шрифті немає");
+                assert_ne!(*raster, tofu, "{family:?}: the font has no {what} {chr:?}");
             }
         }
     }
