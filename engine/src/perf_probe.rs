@@ -1,26 +1,29 @@
-//! Замір часу кадру рушія — рендерна половина процесу вимірювання
-//! продуктивності (скіл `perf-probe`).
+//! Measuring the engine's frame time -- the render half of the performance
+//! measurement process (the `perf-probe` skill).
 //!
-//! **Не прив'язаний до конкретної сцени.** Міряє те, що [`crate::frame::Frame::draw`]
-//! малює просто зараз — сьогодні це трикутник F2, після F5 це буде сфера
-//! в реальному масштабі, пізніше планета з LOD. Числа стають виміром нової
-//! сцени без жодної зміни в цьому файлі. Саме тому проба окрема від
-//! `depth_probe`/`camera_probe`: ті відповідають на конкретне геометричне
-//! питання свого кроку, а ця — на «скільки коштує кадр» для будь-якого кроку.
+//! **Not tied to any particular scene.** It measures whatever
+//! [`crate::frame::Frame::draw`] draws right now: a triangle on F2, a
+//! real-scale sphere after F5, a patched planet with LOD and terrain today.
+//! The numbers become a measurement of the new scene without a single change
+//! in this file. That is exactly why the probe is separate from
+//! `depth_probe`/`camera_probe`: those answer the specific geometric question
+//! of their own step, this one answers "what does a frame cost" for any step.
 //!
-//! ## Метод
+//! ## Method
 //!
-//! Синхронний `submit` + `device.poll(Wait)` на кожному кадрі, без вікна
-//! й без vsync. Це навмисно НЕ те, що бачить гравець: реальний цикл
-//! конвеєрний (GPU кадру N+1 починається, не чекаючи презентації N), а тут
-//! кожен кадр чекає на повне завершення попереднього. Тобто число —
-//! **верхня межа** часу кадру, не нижня. Порівнювати прогони між собою на
-//! цій самій машині — коректно; порівнювати абсолютне число з «на такому
-//! залізі гра дає N fps» — ні, поки рендер не конвеєрний.
+//! A synchronous `submit` plus `device.poll(Wait)` on every frame, without a
+//! window and without vsync. This is deliberately NOT what the player sees:
+//! the real loop is pipelined (the GPU work of frame N+1 starts without
+//! waiting for N to be presented), whereas here every frame waits for the
+//! previous one to finish completely. So the number is an **upper bound** on
+//! frame time, not a lower one. Comparing runs against each other on the same
+//! machine is sound; comparing the absolute number against "on hardware like
+//! this the game gives N fps" is not, as long as the render is not pipelined.
 //!
-//! Перші [`WARMUP_FRAMES`] кадрів відкидаються: перший запуск пайплайна на
-//! багатьох бекендах компілює шейдер лінивою, тому саме він на порядок
-//! довший за всі наступні, і без відкидання зіпсував би і мінімум, і max.
+//! The first [`WARMUP_FRAMES`] frames are discarded: on many backends the
+//! first run of a pipeline compiles the shader lazily, so that one frame is an
+//! order of magnitude longer than all the rest, and without discarding it it
+//! would spoil both the minimum and the max.
 
 use std::time::Instant;
 
@@ -30,8 +33,9 @@ use crate::gpu::Gpu;
 use crate::shot;
 use crate::sphere;
 
-/// Кадрів для розігріву перед виміром — компіляція шейдера й перший
-/// алокований конвеєр драйвера мають встигнути один раз, поза виміром.
+/// Warm-up frames before the measurement -- shader compilation and the
+/// driver's first allocated pipeline have to happen once, outside the
+/// measurement.
 const WARMUP_FRAMES: u32 = 10;
 
 pub struct Stats {
@@ -45,23 +49,24 @@ pub struct Stats {
 }
 
 impl Stats {
-    /// Статистика з уже зібраних зразків часу кадру, у мілісекундах.
+    /// Statistics over already collected frame-time samples, in milliseconds.
     ///
-    /// Винесено сюди, бо зондів стало два: цей і той, що в `game` міряє
-    /// справжній кадр гри з її панелями (U8). Формула мусить бути одна на
-    /// обидва — інакше їхні числа не можна класти в одну таблицю, а саме для
-    /// цього вони й рахуються.
+    /// Factored out here because there are two probes now: this one and the
+    /// one in `game` that measures the real game frame with its panels (U8).
+    /// The formula has to be the same for both -- otherwise their numbers
+    /// cannot go into one table, and that is precisely what they are computed
+    /// for.
     pub fn from_samples(width: u32, height: u32, mut samples: Vec<f64>) -> Stats {
-        assert!(!samples.is_empty(), "статистика з нуля кадрів");
+        assert!(!samples.is_empty(), "statistics over zero frames");
         samples.sort_by(f64::total_cmp);
 
         let frames = samples.len() as u32;
         let min_ms = samples[0];
-        let max_ms = *samples.last().expect("непорожній");
+        let max_ms = *samples.last().expect("non-empty");
         let mean_ms = samples.iter().sum::<f64>() / f64::from(frames);
 
-        // Найближчий ранг, не інтерполяція — на кількасот кадрів різниця не
-        // помітна, а формула на порядок простіша.
+        // Nearest rank, not interpolation -- over a few hundred frames the
+        // difference is invisible, and the formula is an order simpler.
         let p95_index = ((f64::from(frames) * 0.95) as usize).min(samples.len() - 1);
 
         Stats {
@@ -79,27 +84,29 @@ impl Stats {
         1000.0 / self.mean_ms
     }
 
-    /// Скільки мілісекунд лишається до бюджету кадру. Від'ємне — бюджет
-    /// перевищено.
+    /// How many milliseconds are left of the frame budget. Negative means the
+    /// budget is exceeded.
     pub fn headroom_ms(&self, budget_ms: f64) -> f64 {
         budget_ms - self.mean_ms
     }
 }
 
-/// Скільки коштував прохід camera-relative по вершинах UV-сфери.
+/// What the camera-relative pass over the vertices of a UV sphere used to
+/// cost.
 ///
-/// **Кадр цього більше не робить** (R1d): планета малюється патчами, і
-/// віднімання камери коштує шість чисел замість 8385. Функція лишилася саме
-/// тому, що число без другого числа нічого не означає — вона друкується
-/// поруч із [`patch_pass_ms`], і різниця між ними і є той виграш.
+/// **The frame no longer does this** (R1d): the planet is drawn as patches,
+/// and subtracting the camera costs six numbers instead of 8385. The function
+/// stayed precisely because a number without a second number means nothing --
+/// it is printed next to [`patch_pass_ms`], and the difference between them is
+/// the gain.
 ///
-/// Повертає мілісекунди на один прохід.
+/// Returns milliseconds per pass.
 pub fn camera_pass_ms(passes: u32) -> f64 {
     let mesh = sphere::generate(sphere::EARTH_RADIUS_M, 64, 128);
     let camera = frame::default_camera();
     let mut bytes: Vec<u8> = Vec::with_capacity(mesh.positions.len() * 12);
 
-    // Розігрів: перший прохід платить за сторінки пам'яті під `bytes`.
+    // Warm-up: the first pass pays for the memory pages behind `bytes`.
     for _ in 0..2 {
         bytes.clear();
         for &p in &mesh.positions {
@@ -118,28 +125,31 @@ pub fn camera_pass_ms(passes: u32) -> f64 {
             }
         }
     }
-    // Щоб оптимізатор не викинув цикл цілком.
+    // So the optimiser does not throw the loop away entirely.
     assert_eq!(bytes.len(), mesh.positions.len() * 12);
 
     start.elapsed().as_secs_f64() * 1000.0 / f64::from(passes)
 }
 
-/// Те саме для планети з патчів — те, що кадр робить **зараз** (R1d, R1e).
+/// The same for a planet made of patches -- what the frame does **now** (R1d,
+/// R1e).
 ///
-/// Робота тут та сама за формою (віднімання камери в `double`, звуження до
-/// `f32`) і різна за обсягом: один початок на патч замість позиції на
-/// вершину. Тому й міряється тією самою функцією ззовні: два числа з одного
-/// прогону порівнянні, з різних — ні.
+/// The work here is the same in shape (subtracting the camera in `double`,
+/// narrowing to `f32`) and different in volume: one origin per patch instead
+/// of a position per vertex. Hence it is measured by the same function from
+/// outside: two numbers from one run are comparable, from different runs they
+/// are not.
 ///
-/// З R1e у прохід додалися поворот тіла й множення на радіус — дев'ять
-/// множень на початок патча замість жодного. Це те, що кадр справді робить на
-/// **одне** тіло; на N тіл прохід множиться на N.
+/// Since R1e the pass gained the body's rotation and the multiplication by the
+/// radius -- nine multiplications per patch origin instead of none. That is
+/// what the frame really does for **one** body; for N bodies the pass is
+/// multiplied by N.
 pub fn patch_pass_ms(passes: u32) -> f64 {
     let camera = frame::default_camera();
     let eye = camera.position();
 
-    // Ті самі патчі, що й у кадрі: шість граней нульового рівня на одиничній
-    // сфері.
+    // The same patches as in the frame: six level-zero faces on the unit
+    // sphere.
     let origins: Vec<[f64; 3]> = (0..cubesphere::FACES)
         .map(|face| {
             cubesphere::Patch {
@@ -153,9 +163,9 @@ pub fn patch_pass_ms(passes: u32) -> f64 {
         })
         .collect();
 
-    // Тіло, як у сцені: радіус Землі й поворот на 45° навколо (1,1,1) —
-    // матриця без жодного нуля, щоб вимір не залежав від того, які саме числа
-    // в ній опинились.
+    // A body as in the scene: Earth's radius and a 45 deg turn about (1,1,1)
+    // -- a matrix without a single zero, so that the measurement does not
+    // depend on which particular numbers ended up in it.
     let radius = sphere::EARTH_RADIUS_M;
     let centre = [0.0, 0.0, 0.0];
     let rotation = frame::rotation([0.923_880, 0.220_942, 0.220_942, 0.220_942]);
@@ -188,23 +198,24 @@ pub fn patch_pass_ms(passes: u32) -> f64 {
     start.elapsed().as_secs_f64() * 1000.0 / f64::from(passes)
 }
 
-/// Що малюється поверх сцени в замірі.
+/// What gets drawn on top of the scene during a measurement.
 ///
-/// Інтерфейс — істотна нова вартість (ROADMAP-UI.md, U1b), і міряти його
-/// треба **тим самим прогоном**, а не окремим: різні прогони на одній машині
-/// різняться більше, ніж коштує панель.
+/// The interface is a substantial new cost (ROADMAP-UI.md, U1b), and it has to
+/// be measured **in the same run**, not a separate one: two runs on one
+/// machine differ by more than a panel costs.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {
-    /// Кадр без проходу egui — те, чим міряні всі числа до U1b.
+    /// A frame with no egui pass -- how every number before U1b was measured.
     None,
-    /// Прохід egui є, але порожній: ціна самого проводу.
+    /// The egui pass is there but empty: the price of the wiring itself.
     EmptyUi,
-    /// Прохід egui з панеллю — ціна проводу разом із чимось намальованим.
+    /// The egui pass with a panel -- the price of the wiring together with
+    /// something actually drawn.
     Panel,
 }
 
-/// Проганяє `frames` кадрів `width`×`height` без вікна й повертає статистику
-/// часу кадру в мілісекундах.
+/// Runs `frames` frames of `width`x`height` without a window and returns the
+/// frame-time statistics in milliseconds.
 pub fn measure(
     gpu: &Gpu,
     width: u32,
@@ -226,18 +237,20 @@ pub fn measure(
     )
 }
 
-/// Скільки коштує кадр із повітрям і без нього (ROADMAP-ATMOSPHERE.md, S5, S7).
+/// What a frame costs with air and without it (ROADMAP-ATMOSPHERE.md, S5, S7).
 ///
-/// Та сама сцена зондів рушія, з єдиною відмінністю — чи має тіло атмосферу.
-/// Два числа з одного прогону порівнянні, з різних — ні, і саме тому обидва
-/// міряються тут, а не в різних місцях.
+/// The same engine-probe scene, with one single difference -- whether the body
+/// has an atmosphere. Two numbers from one run are comparable, from different
+/// runs they are not, and that is exactly why both are measured here rather
+/// than in different places.
 ///
-/// **Висоти навколо умови S5 не круглі, і це навмисно.** Умова — товщина шару
-/// в пікселях кадру, і вона перетинає одиницю на 6.24·10⁷ м: сто кілометрів
-/// повітря на такій відстані займають рівно піксель. Тобто 6.0·10⁷ і 6.5·10⁷ —
-/// це та сама сцена з точністю до восьми відсотків відстані, у якій об'єм
-/// аеральної перспективи рахується й не рахується. Різниця між ними і є ціна
-/// об'єму; на 10⁹ м вона та сама, і саме її пропуск економить.
+/// **The altitudes around the S5 condition are not round, and that is
+/// deliberate.** The condition is the layer's thickness in frame pixels, and
+/// it crosses one at 6.24e7 m: a hundred kilometres of air at that distance
+/// take up exactly one pixel. So 6.0e7 and 6.5e7 are the same scene to within
+/// eight per cent of the distance, in which the aerial-perspective volume is
+/// and is not computed. The difference between them is the price of the
+/// volume; at 1e9 m it is the same, and that is what skipping it saves.
 pub fn air_cost(
     gpu: &Gpu,
     width: u32,
@@ -257,17 +270,18 @@ pub fn air_cost(
     measure_scene(gpu, width, height, frames, Overlay::None, &scene)
 }
 
-/// Скільки коштує кадр із кораблем і без нього (етап V, крок V6).
+/// What a frame costs with a ship and without one (stage V, step V6).
 ///
-/// Та сама сцена зондів рушія, з єдиною відмінністю — чи стоїть перед камерою
-/// корабель і на якій відстані. Обидва числа з одного прогону: з різних вони
-/// не порівнянні.
+/// The same engine-probe scene, with one single difference -- whether a ship
+/// stands in front of the camera and at what range. Both numbers from one run:
+/// from different runs they are not comparable.
 ///
-/// ⚠ **Різниця тут — не ціна півтори тисячі вершин.** Корабель за метри від
-/// камери тягне за собою `near` (V2), а `near` разом із розмахом сцени
-/// вирішує, скільки буде проходів глибини (V3). Тобто на низькій орбіті
-/// кадр із кораблем малює планету **двічі**, і саме це в різниці головне.
-/// Число без цього пояснення читалося б як «корабель дорогий».
+/// WARNING: **The difference here is not the price of fifteen hundred
+/// vertices.** A ship metres from the camera drags `near` along with it (V2),
+/// and `near` together with the scene's span decides how many depth passes
+/// there will be (V3). So in low orbit a frame with a ship draws the planet
+/// **twice**, and that is the main thing in the difference. Without this
+/// explanation the number would read as "a ship is expensive".
 pub fn ship_cost(
     gpu: &Gpu,
     width: u32,
@@ -281,8 +295,8 @@ pub fn ship_cost(
     let camera = crate::camera::Camera::look_at(eye, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
     let mut scene = frame::default_scene(camera);
     if let Some(range) = range_m {
-        // Перед камерою, тобто між нею й планетою — там, де він і буває у
-        // вигляді від третьої особи.
+        // In front of the camera, i.e. between it and the planet -- where it
+        // does sit in the third-person view.
         scene.ships.push(crate::scene::Ship {
             centre: [eye[0] - range, 0.0, 0.0],
             orientation: [1.0, 0.0, 0.0, 0.0],
@@ -296,15 +310,15 @@ pub fn ship_cost(
     measure_scene(gpu, width, height, frames, Overlay::None, &scene)
 }
 
-/// Скільки коштує кадр із колірними тайлами й без них (етап T, крок T8).
+/// What a frame costs with colour tiles and without them (stage T, step T8).
 ///
-/// Та сама сцена, та сама піраміда висот, єдина відмінність — чи
-/// завантажений колір. Два числа з одного прогону: з різних вони не
-/// порівнянні, і це головна причина, чому обидва міряються тут.
+/// The same scene, the same height pyramid, the only difference being whether
+/// the colour is loaded. Two numbers from one run: from different runs they
+/// are not comparable, and that is the main reason both are measured here.
 ///
-/// ⚠ **Тайли беруться справжні, а не синтетичні.** Ціна кольору — це
-/// друга bindless-вибірка на фрагмент **і** восьмі тисячі текстур у групі
-/// прив'язки; синтетична піраміда на два рівні не мала б ні того, ні того.
+/// WARNING: **The tiles are real, not synthetic.** The price of colour is a
+/// second bindless fetch per fragment **and** the eighth thousand of textures
+/// in the bind group; a synthetic two-level pyramid would have neither.
 pub fn tile_cost(
     gpu: &Gpu,
     width: u32,
@@ -316,9 +330,9 @@ pub fn tile_cost(
 ) -> Result<Stats, String> {
     let radius = terrain.reference_m;
     let distance = radius + altitude_m;
-    // Камера навскіс, а не над центром грані куба: симетрична точка ховає
-    // помилки геометрії (D13, D14), а тут ще й дає інший набір патчів,
-    // тобто інший обсяг роботи.
+    // The camera is off to the side rather than above the centre of a cube
+    // face: a symmetric point hides geometry errors (D13, D14), and here it
+    // also yields a different set of patches, i.e. a different amount of work.
     let camera = crate::camera::Camera::look_at(
         [distance * 0.82, distance * 0.42, distance * 0.39],
         [0.0, 0.0, 0.0],
@@ -349,18 +363,20 @@ pub fn tile_cost(
     )
 }
 
-/// Скільки коштує кадр із **двома** тілами, у яких свої тайли (T7h, борг D19).
+/// What a frame costs with **two** bodies that have tiles of their own (T7h,
+/// debt D19).
 ///
-/// Питання боргу дослівне: масив текстур платить щокадру за свій розмір, а не
-/// за намальоване, тож два тіла з пірамідами платять двічі. T8 виміряв це на
-/// одному тілі й передбачив суму; тут вона перевіряється.
+/// The debt's question is literal: a texture array pays every frame for its
+/// size rather than for what is drawn, so two bodies with pyramids pay twice.
+/// T8 measured this on one body and predicted the sum; here the sum is
+/// checked.
 ///
-/// Обидва тіла в кадрі малі — камера стоїть так, що кожне займає кілька
-/// пікселів. Це навмисно: інакше в різницю ввійшла б робота другого набору
-/// патчів, а питання не про неї.
+/// Both bodies in frame are small -- the camera stands so that each takes a
+/// few pixels. That is deliberate: otherwise the work of the second set of
+/// patches would enter the difference, and the question is not about that.
 ///
-/// Тіла рознесені по осі `x` на десять своїх радіусів: ближче вони перекрили б
-/// одне одного, далі — вийшли б за кадр.
+/// The bodies are separated along the `x` axis by ten of their radii: closer
+/// and they would overlap, further and they would leave the frame.
 pub fn two_body_cost(
     gpu: &Gpu,
     width: u32,
@@ -413,7 +429,7 @@ pub fn two_body_cost(
     )
 }
 
-/// Те саме для сцени, яку зібрав хтось інший.
+/// The same for a scene somebody else assembled.
 pub fn measure_scene(
     gpu: &Gpu,
     width: u32,
@@ -426,7 +442,8 @@ pub fn measure_scene(
     measure_with_frame(gpu, &mut frame, width, height, frames, overlay, scene)
 }
 
-/// Вимір кадром, який уже підготував викликач — з асетами, наприклад.
+/// A measurement with a frame the caller has already prepared -- with assets,
+/// for instance.
 pub fn measure_with_frame(
     gpu: &Gpu,
     frame: &mut Frame,
@@ -437,16 +454,18 @@ pub fn measure_with_frame(
     scene: &crate::scene::Scene,
 ) -> Result<Stats, String> {
     let mut interface = crate::ui::Ui::new(gpu, shot::FORMAT);
-    // Сцена без ламаних: вимір лишається порівнюваним із числами I3, де їх
-    // ще не було. Коли прогноз стане частиною сцени, це буде окремий рядок
-    // таблиці, а не тихо інше число в тому самому (скіл `perf-probe`).
-    // Висота параметром, а не сталою (R8): від неї залежить кількість патчів,
-    // тобто головне, що LOD додав до вартості кадру. Один рядок таблиці більше
-    // не описує кадру — потрібні два, здалеку й з низької орбіти.
-    // COPY_SRC свідомо відсутній: цей вимір не читає пікселі назад, а
-    // читання назад — окрема вартість, якої немає в реальному кадрі
-    // (той іде в surface, не в буфер). Додавати її сюди означало б міряти
-    // не кадр, а кадр-плюс-щось-чужe.
+    // A scene without polylines: the measurement stays comparable with the I3
+    // numbers, where there were none yet. When the prediction becomes part of
+    // the scene, that will be a separate row of the table rather than quietly
+    // a different number in the same one (the `perf-probe` skill).
+    // The altitude is a parameter rather than a constant (R8): the patch count
+    // depends on it, i.e. the main thing LOD added to the cost of a frame. One
+    // row of the table no longer describes the frame -- two are needed, from
+    // afar and from low orbit.
+    // COPY_SRC is deliberately absent: this measurement does not read the
+    // pixels back, and reading back is a separate cost that a real frame does
+    // not have (that one goes to a surface, not to a buffer). Adding it here
+    // would mean measuring not the frame but the frame plus something foreign.
     let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("perf probe"),
         size: wgpu::Extent3d {
@@ -483,9 +502,9 @@ pub fn measure_with_frame(
                 viewport.quiet_input(),
                 |ui| {
                     if overlay == Overlay::Panel {
-                        // Стільки ж, скільки займе панель часу з U2b:
-                        // прямокутник і рядок тексту, тобто і геометрія,
-                        // і вибірка з атласа шрифта.
+                        // As much as the time panel from U2b will take: a
+                        // rectangle and a line of text, i.e. both geometry and
+                        // a fetch from the font atlas.
                         let rect =
                             egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 180.0));
                         ui.painter()
@@ -509,7 +528,7 @@ pub fn measure_with_frame(
                 submission_index: None,
                 timeout: None,
             })
-            .map_err(|e| format!("не дочекалися GPU: {e}"))?;
+            .map_err(|e| format!("gave up waiting for the GPU: {e}"))?;
 
         Ok(start.elapsed().as_secs_f64() * 1000.0)
     };
