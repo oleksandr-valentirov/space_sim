@@ -1,22 +1,22 @@
-//! Ввід має власника на кожен кадр (ROADMAP-UI.md, U1c, правило 4).
+//! Input has an owner every frame (ROADMAP-UI.md, U1c, rule 4).
 //!
-//! Твердження перевіряється **обома боками**, і це не формальність: тест лише
-//! на «тягнення в панелі не крутить камеру» пройшов би й на камері, яка не
-//! рухається взагалі.
+//! The statement is checked from **both sides**, and that is not a formality: a
+//! test only for "a drag in the panel does not turn the camera" would pass on a
+//! camera that does not move at all.
 //!
-//! Вікна тут немає — як і скрізь на етапі. `egui-winit` збирає `RawInput` із
-//! подій winit, але сам `RawInput` — звичайна структура, тож клік у тесті
-//! робиться руками.
+//! There is no window here -- as everywhere in this stage. `egui-winit`
+//! assembles `RawInput` from winit events, but `RawInput` itself is an ordinary
+//! struct, so a click in a test is made by hand.
 //!
-//! ## Що з'ясував вимір
+//! ## What the measurement established
 //!
-//! `egui_wants_pointer_input()` — це `is_using_pointer() || is_pointer_over_egui()`,
-//! і перша половина **липка**: доки кнопка миші не відпущена, інтерфейс
-//! вважає мишу своєю, навіть коли курсор зійшов з панелі. Це не вада, а те,
-//! чого хочеться: почав тягнути повзунок — тягнеш його далі, куди б не
-//! поїхала рука. Але тест, який тисне кнопку щокадру й ніколи не відпускає,
-//! отримає `true` в будь-якій точці екрана — і саме так виглядав перший
-//! варіант цього файлу.
+//! `egui_wants_pointer_input()` is `is_using_pointer() || is_pointer_over_egui()`,
+//! and the first half is **sticky**: until the mouse button is released the
+//! interface considers the mouse its own, even when the cursor has left the
+//! panel. That is not a defect but what one wants: start dragging a slider and
+//! you keep dragging it, wherever the hand goes. But a test that presses the
+//! button every frame and never releases it will get `true` anywhere on screen
+//! -- and that is exactly what the first version of this file looked like.
 
 use engine::egui;
 use engine::gpu::Gpu;
@@ -26,28 +26,29 @@ use engine::ui::{Ui, Viewport};
 
 const SIZE: u32 = 256;
 
-/// Бічна панель займає ліву чверть екрана. Саме панель, а не вікно: у панелі
-/// геометрія точна, а вікно стискається до свого вмісту — і перевірка
-/// «за 50 пікселів убік» міряла б не те, що думає той, хто її читає.
+/// The side panel takes the left quarter of the screen. A panel specifically,
+/// not a window: a panel's geometry is exact, while a window shrinks to its
+/// contents -- and a check "50 pixels to the side" would then measure something
+/// other than what its reader thinks.
 const PANEL: f32 = 128.0;
 
-/// Точка на повзунку — другий віджет панелі, приблизно посередині його
-/// доріжки. Кнопка вище й тягнення не тримає.
+/// A point on the slider -- the panel's second widget, roughly in the middle of
+/// its track. The button is above it and does not hold a drag.
 const SLIDER: egui::Pos2 = egui::Pos2::new(60.0, 45.0);
 
 fn gpu() -> Option<Gpu> {
-    // Спільний помічник рушія: він же вирішує, чи пропуск дозволений
-    // (`SPACE_SIM_REQUIRE_GPU`, U6c), і друкує назву адаптера в лог.
+    // The engine's shared helper: it also decides whether skipping is allowed
+    // (`SPACE_SIM_REQUIRE_GPU`, U6c) and prints the adapter name into the log.
     Gpu::for_tests()
 }
 
-/// Що робить миша цього кадру.
+/// What the mouse does this frame.
 enum Mouse {
-    /// Курсор просто там.
+    /// The cursor is simply there.
     Hover,
-    /// Натиснули й відпустили — повний клік, без липкого стану після нього.
+    /// Pressed and released -- a full click, with no sticky state after it.
     Click,
-    /// Натиснули й тримають: саме той стан, у якому власник липкий.
+    /// Pressed and held: exactly the state in which the owner is sticky.
     Hold,
 }
 
@@ -68,10 +69,11 @@ fn input(viewport: Viewport, at: egui::Pos2, mouse: &Mouse) -> egui::RawInput {
     raw
 }
 
-/// Один кадр інтерфейсу з бічною панеллю. Повертає, чи забрав інтерфейс мишу.
+/// One interface frame with a side panel. Returns whether the interface took
+/// the mouse.
 ///
-/// `slider` живе поза кадром, бо повзунок — це стан: саме він робить тягнення
-/// липким, і без нього перевірка липкості нічого не міряла б.
+/// `slider` lives outside the frame because a slider is state: it is what makes
+/// a drag sticky, and without it the stickiness check would measure nothing.
 fn owner_asks(gpu: &Gpu, ui: &mut Ui, at: egui::Pos2, mouse: Mouse, slider: &mut f32) -> bool {
     let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("ui input"),
@@ -103,15 +105,15 @@ fn owner_asks(gpu: &Gpu, ui: &mut Ui, at: egui::Pos2, mouse: Mouse, slider: &mut
         viewport,
         input(viewport, at, &mouse),
         |ui| {
-            egui::Panel::left("панель")
+            egui::Panel::left("panel")
                 .exact_size(PANEL)
                 .resizable(false)
                 .show(ui, |ui| {
-                    // Справжні віджети, а не намальований прямокутник:
-                    // питання «чия це подія» ставиться до того, з чим гравець
-                    // взаємодіє. Повзунок тут не для краси — він єдиний, хто
-                    // вміє тримати тягнення довше за один кадр.
-                    let _ = ui.button("пауза");
+                    // Real widgets, not a painted rectangle: the question
+                    // "whose event is this" is asked of what the player
+                    // interacts with. The slider is not here for looks -- it is
+                    // the only one able to hold a drag longer than one frame.
+                    let _ = ui.button("pause");
                     let _ = ui.add(egui::Slider::new(slider, 0.0..=1.0));
                 });
         },
@@ -121,15 +123,15 @@ fn owner_asks(gpu: &Gpu, ui: &mut Ui, at: egui::Pos2, mouse: Mouse, slider: &mut
     ui.wants_pointer()
 }
 
-/// Панель забирає мишу над собою й не забирає поза собою.
+/// The panel takes the mouse over itself and does not take it outside itself.
 #[test]
 fn the_interface_takes_the_pointer_only_over_itself() {
     let Some(gpu) = gpu() else { return };
     let mut ui = Ui::new(&gpu, shot::FORMAT);
     let mut slider = 0.5;
 
-    // Кадр-розігрів: egui знає розміри віджетів лише намалювавши їх один раз,
-    // тож у першому кадрі панель ще не знає, де вона.
+    // A warm-up frame: egui knows widget sizes only after drawing them once, so
+    // in the first frame the panel does not yet know where it is.
     owner_asks(
         &gpu,
         &mut ui,
@@ -146,8 +148,8 @@ fn the_interface_takes_the_pointer_only_over_itself() {
             Mouse::Hover,
             &mut slider
         ),
-        "курсор у панелі, а інтерфейс миші не хоче — гра крутила б камеру \
-         поверх власної кнопки"
+        "the cursor is in the panel and the interface does not want the mouse \
+         -- the game would turn the camera on top of its own button"
     );
     assert!(
         !owner_asks(
@@ -157,16 +159,16 @@ fn the_interface_takes_the_pointer_only_over_itself() {
             Mouse::Hover,
             &mut slider
         ),
-        "курсор за 50 пікселів від панелі, а інтерфейс усе одно забрав мишу — \
-         камера не оберталася б ніколи"
+        "the cursor is 50 pixels away from the panel and the interface took the \
+         mouse anyway -- the camera would never rotate"
     );
 }
 
-/// Почате в панелі тягнення лишається її, навіть коли курсор зійшов з неї.
+/// A drag started in the panel stays with it, even when the cursor has left it.
 ///
-/// Це не побічний ефект, а те, чого хочеться: повзунок не має губитися під
-/// рукою. Перевірка існує, щоб липкість була **виміряною** властивістю, а не
-/// сюрпризом, який колись поясниться сам.
+/// This is not a side effect but what one wants: a slider must not get lost
+/// under the hand. The check exists so that the stickiness is a **measured**
+/// property rather than a surprise that will one day explain itself.
 #[test]
 fn a_drag_that_started_in_the_panel_stays_with_it() {
     let Some(gpu) = gpu() else { return };
@@ -180,11 +182,11 @@ fn a_drag_that_started_in_the_panel_stays_with_it() {
         &mut slider,
     );
 
-    // Саме по повзунку, а не по кнопці: кнопка тягнення не тримає, і
-    // «липкість» на ній не з'явилася б навіть у правильному коді.
+    // On the slider specifically, not on the button: a button does not hold a
+    // drag, and "stickiness" would not appear on it even in correct code.
     assert!(
         owner_asks(&gpu, &mut ui, SLIDER, Mouse::Hold, &mut slider),
-        "натискання на повзунку мало належати панелі"
+        "a press on the slider should have belonged to the panel"
     );
     assert!(
         owner_asks(
@@ -194,14 +196,14 @@ fn a_drag_that_started_in_the_panel_stays_with_it() {
             Mouse::Hover,
             &mut slider
         ),
-        "курсор виїхав з панелі з затиснутою кнопкою, і тягнення загубилося"
+        "the cursor left the panel with the button held down, and the drag was lost"
     );
 }
 
-/// Камера повертається лише тоді, коли подію не забрав інтерфейс.
+/// The camera turns only when the interface did not take the event.
 ///
-/// Обидва твердження обов'язкові — і що камера стоїть, коли власник
-/// інтерфейс, і що вона рухається, коли власник світ.
+/// Both statements are mandatory -- that the camera stands still when the owner
+/// is the interface, and that it moves when the owner is the world.
 #[test]
 fn the_camera_turns_only_when_the_interface_did_not_take_the_drag() {
     let Some(gpu) = gpu() else { return };
@@ -218,7 +220,8 @@ fn the_camera_turns_only_when_the_interface_did_not_take_the_drag() {
     let mut orbit = Orbit::default();
     let before = orbit.camera().position();
 
-    // Клік у панелі: власник — інтерфейс, світ події не бачить.
+    // A click in the panel: the owner is the interface, the world does not see
+    // the event.
     if !owner_asks(
         &gpu,
         &mut ui,
@@ -231,10 +234,10 @@ fn the_camera_turns_only_when_the_interface_did_not_take_the_drag() {
     assert_eq!(
         orbit.camera().position(),
         before,
-        "тягнення в панелі повернуло камеру"
+        "a drag in the panel turned the camera"
     );
 
-    // Той самий клік осторонь: власник — світ.
+    // The same click to the side: the owner is the world.
     if !owner_asks(
         &gpu,
         &mut ui,
@@ -247,6 +250,6 @@ fn the_camera_turns_only_when_the_interface_did_not_take_the_drag() {
     assert_ne!(
         orbit.camera().position(),
         before,
-        "тягнення поза панеллю камери не зрушило"
+        "a drag outside the panel did not move the camera"
     );
 }
