@@ -123,18 +123,45 @@ impl Orbit {
         self.altitude = (self.altitude * factor).clamp(MIN_ALTITUDE_M, MAX_ALTITUDE_M);
     }
 
+    /// What the altitude is measured above, changed without moving the camera
+    /// otherwise.
+    ///
+    /// Its own method rather than a new `Orbit`, because the yaw and the pitch
+    /// are the player's and must survive: rebuilding through [`around`] would
+    /// snap the view back to the default direction every time the target
+    /// changed, which reads as the camera jumping rather than as the target
+    /// changing.
+    ///
+    /// [`around`]: Orbit::around
+    pub fn set_reference(&mut self, reference_m: f64) {
+        self.reference_m = reference_m;
+    }
+
     pub fn camera(&self) -> Camera {
+        self.camera_about([0.0, 0.0, 0.0])
+    }
+
+    /// The same camera, orbiting a point that is not the origin.
+    ///
+    /// The scene the game builds is geocentric (`game::view`), so the origin is
+    /// Earth and [`camera`] can only ever look at it. Everything else -- the
+    /// Moon above all -- needs its centre passed in, and passed in **per
+    /// frame**: a body moves, and a centre captured once would leave the camera
+    /// aiming at where the Moon used to be.
+    ///
+    /// [`camera`]: Orbit::camera
+    pub fn camera_about(&self, centre: [f64; 3]) -> Camera {
         let distance = self.distance();
         let (sin_pitch, cos_pitch) = self.pitch.sin_cos();
         let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
 
         let position = [
-            distance * cos_pitch * cos_yaw,
-            distance * cos_pitch * sin_yaw,
-            distance * sin_pitch,
+            centre[0] + distance * cos_pitch * cos_yaw,
+            centre[1] + distance * cos_pitch * sin_yaw,
+            centre[2] + distance * sin_pitch,
         ];
 
-        Camera::look_at(position, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0])
+        Camera::look_at(position, centre, [0.0, 0.0, 1.0])
     }
 }
 
@@ -169,6 +196,82 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The chosen centre stays dead ahead, wherever it is.
+    ///
+    /// The same claim as above and deliberately the same shape, because the
+    /// mistake it guards against is the one that looks right: a camera moved to
+    /// the body while still **aiming at the origin** gives a picture of the
+    /// Moon's neighbourhood with the Moon off to one side, which reads as a
+    /// misaligned scene rather than as a camera bug. So both halves are
+    /// checked -- the distance from the centre, and the centre on the axis.
+    ///
+    /// The centre is off every axis of symmetry on purpose: with `[d, 0, 0]` a
+    /// forgotten component would pass.
+    #[test]
+    fn the_chosen_centre_stays_dead_ahead() {
+        let moon = [3.6e8, -1.2e8, 4.0e7];
+
+        for yaw_steps in 0..8 {
+            for pitch_steps in -3..=3 {
+                let mut orbit = Orbit::default();
+                orbit.drag(f64::from(yaw_steps) * 100.0, f64::from(pitch_steps) * 100.0);
+
+                let camera = orbit.camera_about(moon);
+                let centre = camera.relative(moon);
+                let distance = orbit.distance();
+
+                assert!(
+                    centre[0].abs() < 1.0 && centre[1].abs() < 1.0,
+                    "the centre drifted aside: {centre:?}"
+                );
+                assert!(
+                    ((-f64::from(centre[2])) - distance).abs() / distance < 1e-6,
+                    "distance to the centre {} against the expected {distance}",
+                    -f64::from(centre[2])
+                );
+            }
+        }
+    }
+
+    /// Orbiting the origin is orbiting a centre of zero, not a second
+    /// implementation.
+    ///
+    /// Cheap, and it is what keeps the old camera from drifting away from the
+    /// new one: every existing oracle in the engine stands on `camera()`.
+    #[test]
+    fn the_origin_is_just_a_centre_of_zero() {
+        let mut orbit = Orbit::default();
+        orbit.drag(137.0, -42.0);
+
+        let point = [1.0e7, 2.0e7, -3.0e6];
+        assert_eq!(
+            orbit.camera().relative(point),
+            orbit.camera_about([0.0, 0.0, 0.0]).relative(point),
+            "the origin camera and a zero centre must agree bitwise"
+        );
+    }
+
+    /// Changing what the altitude is measured above keeps the direction the
+    /// player dragged to.
+    #[test]
+    fn retargeting_keeps_the_players_angles() {
+        let mut orbit = Orbit::default();
+        orbit.drag(220.0, 90.0);
+        let before = orbit.camera().relative([0.0, 0.0, 0.0]);
+
+        orbit.set_reference(1.7374e6);
+
+        let after = orbit.camera().relative([0.0, 0.0, 0.0]);
+        assert!(
+            after[0].abs() < 1.0 && after[1].abs() < 1.0,
+            "the centre left the axis after retargeting: {after:?}"
+        );
+        assert!(
+            before[2] != after[2],
+            "a smaller reference radius must bring the camera closer"
+        );
     }
 
     /// Past the pole the camera neither flips over nor turns into NaN.
