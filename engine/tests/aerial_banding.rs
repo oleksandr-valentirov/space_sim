@@ -164,10 +164,11 @@ fn residual(shot: &Shot) -> f64 {
 /// if the limb banded too, the cause would not be the slice distribution, and
 /// every cure aimed at it would be aimed wrong.
 ///
-/// The ceiling is set **above today's measurement**, not at the value the fix
-/// should reach. Until the fix lands this test says "the banding does not get
-/// worse"; the commit that closes D17 lowers the ceiling to the airless
-/// residual, and the number left behind here is what it was before.
+/// The ceiling **is now the airless residual** (D17d). Until the fix landed it
+/// sat above the defect and this test only said "the banding does not get
+/// worse". The depth axis moved from distance to optical depth, the nadir
+/// residual went 27.0 -> 14.3 -> **1.3 bytes**, and the ceiling came down with
+/// it: from here on, air that bands the frame at all is a regression.
 #[test]
 fn the_air_bands_the_nadir_and_not_the_limb() {
     let Some(gpu) = gpu() else { return };
@@ -201,19 +202,21 @@ fn the_air_bands_the_nadir_and_not_the_limb() {
 
     let nadir = report[0].1;
     let limb = report[1].1;
-    // Measured on this fixture when D17 was diagnosed: 27 bytes. The ceiling
-    // leaves a byte of quantisation over it and no more.
+    // The history this number carries: 27.0 bytes when D17 was diagnosed (32
+    // slices), 14.3 after doubling them, 1.3 once the depth axis became optical
+    // depth. The ceiling is the airless bound, because the residual is now at
+    // the quantisation floor and there is nothing left to leave room for.
     //
     // The Earth screenshot that named D17 read 5.9 on the same metric, and the
     // difference is the fixture, not a disagreement: there the mosaic and the
     // relief carry most of the row, and the staircase rides on top of them. Here
     // the surface is uniform and dark, so nothing masks it. That is the point of
-    // a fixture -- it is built to be sensitive, and 27 discriminates between
+    // a fixture -- it is built to be sensitive, and 27 discriminated between
     // candidate cures where 5.9 would not.
     assert!(
-        nadir <= 28.0,
-        "looking down the banding grew to {nadir:.1} bytes -- worse than when \
-         D17 was measured"
+        nadir <= 3.0,
+        "looking down the air bands the frame by {nadir:.1} bytes -- D17 was \
+         closed at 1.3, so this is a regression in the depth axis"
     );
     assert!(
         limb <= 4.0,
