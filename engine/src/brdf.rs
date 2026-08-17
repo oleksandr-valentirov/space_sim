@@ -1,36 +1,38 @@
-//! Матеріал корпусу: Cook-Torrance з GGX (ROADMAP, T5c).
+//! The hull material: Cook-Torrance with GGX (ROADMAP, T5c).
 //!
-//! Дослівний двійник `ship.slang`, рівно як [`crate::atmosphere`] проти
-//! `sky.slang` і [`crate::cull`] проти `cull.slang`. Оракул той самий: числа з
-//! обох боків мусять збігтися, і це перевіряє тест.
+//! A literal twin of `ship.slang`, exactly like [`crate::atmosphere`] against
+//! `sky.slang` and [`crate::cull`] against `cull.slang`. The oracle is the
+//! same: the numbers from both sides must agree, and a test checks that.
 //!
-//! **Аналітика, а не семплювання, і саме тому це оракул.** GGX має замкнену
-//! форму, тож двійник дає число без експозиції, тонмапера й будь-яких
-//! налаштувань вигляду — отже розбіжність означає помилку, а не інші
-//! налаштування. Порівняння з рендером у Blender такої властивості не має
-//! (ROADMAP, T5).
+//! **Analytic rather than sampled, and that is why it is an oracle.** GGX has
+//! a closed form, so the twin gives a number without exposure, tonemapper or
+//! any look settings -- so a divergence means an error rather than different
+//! settings. Comparison with a Blender render has no such property (ROADMAP,
+//! T5).
 //!
-//! ## Формулювання — Karis 2013 / Filament, і кожен вибір має ціну
+//! ## The formulation is Karis 2013 / Filament, and every choice has a price
 //!
-//! - **`α = roughness²`.** Не сам `roughness`: художній параметр мусить бути
-//!   рівномірним на око, а не в математиці, і квадрат — та угода, яку розуміють
-//!   і Blender, і glTF. Оскільки з Blender параметри й приїдуть (T5d), взяти
-//!   іншу означало б тихо перефарбувати кожен імпортований матеріал.
-//! - **Smith з кореляцією висот**, і одразу поділений на `4(n·l)(n·v)`. Окремо
-//!   G і окремий знаменник дають нуль на нуль на дотичних кутах — той самий
-//!   клас, що `max(x, 1e-30)` у повітрі.
-//! - **`F0 = 0.04` для діелектрика.** Це не «магічне 4%», а нормальне
-//!   відбиття для показника заломлення ~1.5, тобто для фарби, скла й пластику.
-//!   Метал бере `F0` з базового кольору й не має дифузного члена взагалі.
+//! - **`alpha = roughness^2`.** Not `roughness` itself: an artistic parameter
+//!   must be uniform to the eye rather than in the maths, and the square is the
+//!   convention both Blender and glTF understand. Since the parameters will
+//!   come from Blender (T5d), taking a different one would silently repaint
+//!   every imported material.
+//! - **Smith with height correlation**, already divided by `4(n.l)(n.v)`. A
+//!   separate G and a separate denominator give zero over zero at grazing
+//!   angles -- the same class as `max(x, 1e-30)` in the atmosphere.
+//! - **`F0 = 0.04` for a dielectric.** Not a "magic 4%" but the normal
+//!   reflectance for a refractive index of ~1.5, that is for paint, glass and
+//!   plastic. Metal takes `F0` from the base colour and has no diffuse term at
+//!   all.
 
-/// Нормальне відбиття діелектрика — показник заломлення близько 1.5.
+/// Normal reflectance of a dielectric -- refractive index around 1.5.
 pub const DIELECTRIC_F0: f64 = 0.04;
 
-/// Найменша шорсткість, нижче якої відблиск стає дельта-функцією.
+/// The smallest roughness, below which the highlight becomes a delta function.
 ///
-/// ⚠ Не косметика: при `α → 0` знаменник `D` прямує до нуля в одній точці, і
-/// на `f32` це нескінченність в одному пікселі й нуль у сусідньому. Межа
-/// поставлена так, щоб пік `D` лишався в межах `f32` з великим запасом.
+/// WARNING: not cosmetic: as `alpha -> 0` the denominator of `D` tends to zero
+/// at a single point, and in `f32` that is infinity in one pixel and zero in
+/// the next. The bound is set so the peak of `D` stays well inside `f32`.
 pub const MIN_ROUGHNESS: f64 = 0.045;
 
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -42,7 +44,7 @@ fn normalise(v: [f64; 3]) -> [f64; 3] {
     [v[0] / n, v[1] / n, v[2] / n]
 }
 
-/// Розподіл нормалей мікрограней, GGX / Trowbridge-Reitz.
+/// Microfacet normal distribution, GGX / Trowbridge-Reitz.
 pub fn distribution(n_dot_h: f64, roughness: f64) -> f64 {
     let a = (roughness.max(MIN_ROUGHNESS)).powi(2);
     let a2 = a * a;
@@ -50,7 +52,8 @@ pub fn distribution(n_dot_h: f64, roughness: f64) -> f64 {
     a2 / (std::f64::consts::PI * d * d)
 }
 
-/// Видимість Сміта з кореляцією висот, **уже поділена** на `4(n·l)(n·v)`.
+/// Smith visibility with height correlation, **already divided** by
+/// `4(n.l)(n.v)`.
 pub fn visibility(n_dot_v: f64, n_dot_l: f64, roughness: f64) -> f64 {
     let a2 = (roughness.max(MIN_ROUGHNESS)).powi(2).powi(2);
     let v = n_dot_l * (n_dot_v * n_dot_v * (1.0 - a2) + a2).sqrt();
@@ -58,20 +61,21 @@ pub fn visibility(n_dot_v: f64, n_dot_l: f64, roughness: f64) -> f64 {
     0.5 / (v + l).max(1e-30)
 }
 
-/// Френель за Шліком.
+/// Schlick's Fresnel.
 pub fn fresnel(f0: f64, v_dot_h: f64) -> f64 {
     f0 + (1.0 - f0) * (1.0 - v_dot_h).clamp(0.0, 1.0).powi(5)
 }
 
-/// Скільки світла йде в око з одиниці опромінення — на канал.
+/// How much light goes to the eye per unit irradiance -- per channel.
 ///
-/// * `normal`, `view`, `light` — одиничні; `view` дивиться **від поверхні до
-///   ока**, `light` — від поверхні до світила;
-/// * `base` — базовий колір каналу, `0…1`;
-/// * `roughness`, `metallic` — `0…1`.
+/// * `normal`, `view`, `light` are unit vectors; `view` points **from the
+///   surface to the eye**, `light` from the surface to the light;
+/// * `base` is the channel's base colour, `0..1`;
+/// * `roughness`, `metallic` are `0..1`.
 ///
-/// Повертає вже помножене на `n·l`, тобто те, що йде в піксель при одиничному
-/// опроміненні. Нуль, коли поверхня відвернута від світила або від ока.
+/// Returns the value already multiplied by `n.l`, that is what goes into the
+/// pixel at unit irradiance. Zero when the surface is turned away from the
+/// light or from the eye.
 pub fn radiance(
     normal: [f64; 3],
     view: [f64; 3],
@@ -93,7 +97,7 @@ pub fn radiance(
     let n_dot_h = dot(n, h).clamp(0.0, 1.0);
     let v_dot_h = dot(v, h).clamp(0.0, 1.0);
 
-    // Метал не має дифузного відбиття, а його `F0` — це базовий колір.
+    // Metal has no diffuse reflection, and its `F0` is the base colour.
     let f0 = DIELECTRIC_F0 * (1.0 - metallic) + base * metallic;
     let f = fresnel(f0, v_dot_h);
     let specular = distribution(n_dot_h, roughness) * visibility(n_dot_v, n_dot_l, roughness) * f;
@@ -106,7 +110,8 @@ pub fn radiance(
 mod tests {
     use super::*;
 
-    /// Дзеркальний напрямок — і тільки він — дає пік розподілу.
+    /// The mirror direction -- and only it -- gives the peak of the
+    /// distribution.
     #[test]
     fn the_lobe_peaks_where_the_mirror_direction_is() {
         for roughness in [0.05, 0.2, 0.5, 1.0] {
@@ -115,16 +120,16 @@ mod tests {
                 let got = distribution(n_dot_h, roughness);
                 assert!(
                     got <= peak,
-                    "шорсткість {roughness}: при n·h = {n_dot_h} розподіл {got} > піку {peak}"
+                    "roughness {roughness}: at n.h = {n_dot_h} the distribution {got} > the peak {peak}"
                 );
             }
         }
     }
 
-    /// Гладша поверхня дає вужчий і вищий відблиск.
+    /// A smoother surface gives a narrower and taller highlight.
     ///
-    /// Це те, що взагалі робить `roughness` параметром: якби пік не залежав
-    /// від нього монотонно, повзунок нічого б не означав.
+    /// This is what makes `roughness` a parameter at all: if the peak did not
+    /// depend on it monotonically, the slider would mean nothing.
     #[test]
     fn a_smoother_surface_has_a_sharper_highlight() {
         let mut previous = f64::INFINITY;
@@ -133,20 +138,23 @@ mod tests {
             let peak = distribution(1.0, roughness);
             assert!(
                 peak < previous,
-                "шорсткість {roughness} дала пік {peak}, не менший за {previous}"
+                "roughness {roughness} gave the peak {peak}, not smaller than {previous}"
             );
             previous = peak;
         }
     }
 
-    /// Розподіл нормований: інтеграл `D · (n·h)` по півсфері дорівнює одиниці.
+    /// The distribution is normalised: the integral of `D * (n.h)` over the
+    /// hemisphere equals one.
     ///
-    /// Це і є те, що робить GGX **розподілом**, а не просто дзвоном; помилка в
-    /// показнику знаменника чи в `α²` ламає рівно це й більше нічого видимого.
+    /// This is what makes GGX a **distribution** rather than just a bell; an
+    /// error in the denominator's exponent or in `alpha^2` breaks exactly this
+    /// and nothing else visible.
     #[test]
     fn the_distribution_integrates_to_one() {
         for roughness in [0.1, 0.3, 0.6, 1.0] {
-            // Півсфера в сферичних координатах: `∫ D cosθ sinθ dθ dφ`.
+            // The hemisphere in spherical coordinates:
+            // integral of D cos(theta) sin(theta) d(theta) d(phi).
             let steps = 20_000;
             let mut sum = 0.0;
             for k in 0..steps {
@@ -157,15 +165,16 @@ mod tests {
                     * (std::f64::consts::FRAC_PI_2 / f64::from(steps));
             }
             let total = sum * 2.0 * std::f64::consts::PI;
-            println!("  шорсткість {roughness}: інтеграл {total:.6}");
+            println!("  roughness {roughness}: integral {total:.6}");
             assert!(
                 (total - 1.0).abs() < 1e-3,
-                "шорсткість {roughness}: інтеграл {total:.6}, а мусить бути одиниця"
+                "roughness {roughness}: integral {total:.6}, and it must be one"
             );
         }
     }
 
-    /// Френель на дотичному куті — повне відбиття, на нормалі — `F0`.
+    /// Fresnel at a grazing angle is full reflection, at the normal it is
+    /// `F0`.
     #[test]
     fn fresnel_goes_from_f0_to_one() {
         assert!((fresnel(DIELECTRIC_F0, 1.0) - DIELECTRIC_F0).abs() < 1e-12);
@@ -173,11 +182,11 @@ mod tests {
         assert!((fresnel(0.9, 0.0) - 1.0).abs() < 1e-12);
     }
 
-    /// Взаємність Гельмгольца: поміняти око зі світилом нічого не змінює.
+    /// Helmholtz reciprocity: swapping the eye with the light changes nothing.
     ///
-    /// Фізичний закон, а не властивість формули, — і саме тому це перевірка:
-    /// несиметричний `visibility` (класична помилка в Сміті) ламає її, і
-    /// більше нічого.
+    /// A physical law rather than a property of the formula -- which is why it
+    /// is a check: an asymmetric `visibility` (the classic Smith mistake)
+    /// breaks it, and nothing else.
     #[test]
     fn swapping_the_eye_and_the_light_changes_nothing() {
         let normal = [0.0, 0.0, 1.0];
@@ -191,43 +200,44 @@ mod tests {
                 for roughness in [0.1, 0.4, 0.9] {
                     let here = radiance(normal, view, light, 0.5, roughness, 0.0);
                     let there = radiance(normal, light, view, 0.5, roughness, 0.0);
-                    // Множник `n·l` не симетричний, тож ділиться назад.
+                    // The `n.l` factor is not symmetric, so divide it out.
                     let here = here / dot(normal, light);
                     let there = there / dot(normal, view);
                     worst = worst.max((here - there).abs() / here.max(1e-12));
                 }
             }
         }
-        println!("  найгірша несиметрія {worst:.3e}");
-        assert!(worst < 1e-12, "взаємність порушена на {worst:.3e}");
+        println!("  worst asymmetry {worst:.3e}");
+        assert!(worst < 1e-12, "reciprocity broken by {worst:.3e}");
     }
 
-    /// Метал не має дифузного відбиття, діелектрик має.
+    /// Metal has no diffuse reflection, a dielectric has.
     #[test]
     fn metal_reflects_only_its_highlight() {
         let normal = [0.0, 0.0, 1.0];
-        // ⚠ Пара напрямків мусить бути **далеко від дзеркальної**, і симетрія
-        // тут — пастка: `v = (s, 0, c)` разом з `l = (−s, 0, c)` дає
-        // `h = normalize(v + l) = n`, тобто рівно дзеркало й пік відблиску.
-        // Перша редакція тесту взяла саме її й міряла метал на його максимумі.
-        // Півсфера розводиться полярним кутом, не азимутом.
+        // WARNING: the pair of directions must be **far from the mirror one**,
+        // and symmetry is a trap here: `v = (s, 0, c)` together with
+        // `l = (-s, 0, c)` gives `h = normalize(v + l) = n`, that is exactly
+        // the mirror and the peak of the highlight. The first version of this
+        // test took that pair and measured metal at its maximum. The hemisphere
+        // is spread by the polar angle, not the azimuth.
         let view = normalise([0.174, 0.0, 0.985]);
         let light = normalise([-0.940, 0.0, 0.342]);
         let rough = 0.35;
         let metal = radiance(normal, view, light, 0.9, rough, 1.0);
         let paint = radiance(normal, view, light, 0.9, rough, 0.0);
         println!(
-            "  метал {metal:.5}, фарба {paint:.5}, у {:.1} раза",
+            "  metal {metal:.5}, paint {paint:.5}, by a factor of {:.1}",
             paint / metal
         );
         assert!(
             paint > 4.0 * metal,
-            "метал {metal:.5} світиться майже як фарба {paint:.5} — дифузний \
-             член не прибрано"
+            "metal {metal:.5} shines almost like paint {paint:.5} -- the \
+             diffuse term was not removed"
         );
     }
 
-    /// Поверхня, відвернута від світила або від ока, не світиться.
+    /// A surface turned away from the light or from the eye does not shine.
     #[test]
     fn a_surface_turned_away_is_black() {
         let n = [0.0, 0.0, 1.0];
@@ -237,19 +247,19 @@ mod tests {
         assert_eq!(radiance(n, down, up, 0.8, 0.3, 0.0), 0.0);
     }
 
-    /// Матеріал не віддає більше, ніж отримав.
+    /// The material never gives back more than it got.
     ///
-    /// Груба, але справжня межа: інтеграл вихідної яскравості по півсфері
-    /// напрямків ока не може перевищити одиницю при одиничному опроміненні.
-    /// Порушення тут означає, що поверхня світиться сама.
+    /// A crude but real bound: the integral of outgoing radiance over the
+    /// hemisphere of eye directions cannot exceed one at unit irradiance. A
+    /// violation here means the surface emits light of its own.
     ///
-    /// ⚠ Знизу межі немає навмисно, і числа це показують: шорсткий метал
-    /// віддає лише 0.32 з одиниці. Це **відома** властивість одноразового
-    /// розсіяння в GGX — світло, що відбилося між мікрогранями двічі,
-    /// формула не повертає взагалі, — а не помилка. Компенсація існує
-    /// (Kulla-Conty), коштує ще однієї таблиці й потрібна там, де шорсткий
-    /// метал несе вигляд; корпус із `roughness ≈ 0.35` втрачає одиниці
-    /// відсотків, тож поки не платимо.
+    /// WARNING: there is deliberately no lower bound, and the numbers show why:
+    /// rough metal gives back only 0.32 of one. That is a **known** property of
+    /// single scattering in GGX -- light that bounced twice between microfacets
+    /// is not returned by the formula at all -- rather than an error.
+    /// Compensation exists (Kulla-Conty), costs one more table and is needed
+    /// where rough metal carries the look; a hull at `roughness ~ 0.35` loses
+    /// single percent, so we do not pay yet.
     #[test]
     fn the_material_never_gives_back_more_than_it_got() {
         let normal = [0.0, 0.0, 1.0];
@@ -271,8 +281,9 @@ mod tests {
                             theta.sin() * phi.sin(),
                             theta.cos(),
                         ];
-                        // Вихідна яскравість без множника `n·l`, помножена на
-                        // `cos` напрямку ока — це і є потік назовні.
+                        // Outgoing radiance without the `n.l` factor, times
+                        // the cosine of the eye direction -- that is the flux
+                        // going out.
                         ring += radiance(normal, view, light, 1.0, roughness, metallic)
                             / dot(normal, light)
                             * theta.cos();
@@ -283,11 +294,11 @@ mod tests {
                         * theta.sin()
                         * (std::f64::consts::FRAC_PI_2 / f64::from(steps));
                 }
-                println!("  шорсткість {roughness}, метал {metallic}: віддано {total:.4}");
+                println!("  roughness {roughness}, metallic {metallic}: gave back {total:.4}");
                 assert!(
                     total <= 1.0 + 1e-3,
-                    "шорсткість {roughness}, метал {metallic}: віддано {total:.4} \
-                     з одиниці — поверхня світиться сама"
+                    "roughness {roughness}, metallic {metallic}: gave back \
+                     {total:.4} of one -- the surface emits light of its own"
                 );
             }
         }

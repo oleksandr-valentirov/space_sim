@@ -1,41 +1,45 @@
-//! Провід інтерфейсу (ROADMAP-UI.md, U1b). Віджети пише гра, не рушій.
+//! The interface wiring (ROADMAP-UI.md, U1b). The game writes widgets, not the
+//! engine.
 //!
-//! ## Чому це не порушує «рушій не знає про гру»
+//! ## Why this does not break "the engine does not know about the game"
 //!
-//! `egui::Context` — тип бібліотеки, такий самий сторонній, як
-//! `wgpu::Device`. Тут немає ні апарата, ні плану, ні часу: [`Ui::draw`]
-//! бере замикання, яке малює **щось**, і не питає, що саме. Напрямок
-//! лишається `game → engine`.
+//! `egui::Context` is a library type, as third-party as `wgpu::Device`. There
+//! is no vessel here, no plan and no time: [`Ui::draw`] takes a closure that
+//! draws **something** and does not ask what. The direction stays
+//! `game -> engine`.
 //!
-//! ## Чому вікна тут теж немає
+//! ## Why there is no window here either
 //!
-//! Ввід приходить [`egui::RawInput`]ом **ззовні**, а не збирається всередині:
-//! у вікні його дає `egui-winit` (U1c), у тесті — синтетична структура.
-//! Це те саме рішення, що вже діє для кадру: `engine::frame` пише в текстуру
-//! й нічого не знає про поверхню. Панель із правильними числами й панель із
-//! NaN виглядають однаково, поки на них не подивитись, — тож дивитись треба
-//! знімком, а знімок вікна не має.
+//! Input arrives as an [`egui::RawInput`] **from outside** rather than being
+//! collected inside: in a window `egui-winit` provides it (U1c), in a test a
+//! synthetic struct does. The same decision that already holds for the frame:
+//! `engine::frame` writes into a texture and knows nothing about a surface. A
+//! panel with correct numbers and a panel with NaN look the same until someone
+//! looks at them -- so looking must be done with a shot, and a shot has no
+//! window.
 //!
-//! ## Порядок проходу
+//! ## Pass order
 //!
-//! Прохід egui — **останній**, у ту саму текстуру, `load` замість `clear`,
-//! без глибини: кадр малює сцену, потім поверх неї — інтерфейс. Глибина тут
-//! не потрібна взагалі, бо порядок віджетів задає egui своєю тесселяцією, а
-//! не z-буфер.
+//! The egui pass is **last**, into the same texture, `load` instead of `clear`,
+//! with no depth: the frame draws the scene, then the interface on top of it.
+//! Depth is not needed at all here, because widget order is set by egui's own
+//! tessellation rather than by a z-buffer.
 
 use crate::gpu::Gpu;
 
-/// Куди малюємо: розмір цілі в пікселях і масштаб інтерфейсу.
+/// Where we draw: target size in pixels and the interface scale.
 ///
-/// Трійка разом, а не трьома аргументами поспіль, і причина проста: два `u32`
-/// підряд переставляються місцями мовчки, а кадр 720×1280 виглядає як помилка
-/// лише на широкому екрані. Текстура сюди не входить — структура з
-/// посиланням вимагала б лайфтайма (CLAUDE.md, стиль Rust).
+/// The three together rather than three arguments in a row, and the reason is
+/// simple: two consecutive `u32`s get swapped silently, and a 720x1280 frame
+/// looks like an error only on a wide screen. The texture is not part of it --
+/// a struct holding a reference would need a lifetime (CLAUDE.md, Rust
+/// style).
 #[derive(Clone, Copy)]
 pub struct Viewport {
     pub width: u32,
     pub height: u32,
-    /// Пікселів на точку. Вікно бере його з `scale_factor`, знімок — 1.0.
+    /// Pixels per point. A window takes it from `scale_factor`, a shot uses
+    /// 1.0.
     pub scale: f32,
 }
 
@@ -48,12 +52,12 @@ impl Viewport {
         }
     }
 
-    /// Ввід, у якому нічого не відбувається.
+    /// Input in which nothing happens.
     ///
-    /// Потрібен усім, хто малює інтерфейс без вікна: знімкам, тестам, зондам.
-    /// Живе тут, а не в тесті, бо `screen_rect` задається **в точках**, не в
-    /// пікселях, — саме той перерахунок, який кожен викликач зробив би
-    /// по-своєму.
+    /// Needed by everyone who draws the interface without a window: shots,
+    /// tests, probes. Lives here rather than in a test because `screen_rect` is
+    /// given **in points**, not in pixels -- exactly the conversion every caller
+    /// would do its own way.
     pub fn quiet_input(&self) -> egui::RawInput {
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -68,8 +72,9 @@ impl Viewport {
     }
 }
 
-/// Контекст egui й рендерер до нього. Один на ціль: пайплайн прив'язаний до
-/// формату, рівно як у [`crate::frame::Frame`] і з тієї ж причини.
+/// The egui context and its renderer. One per target: the pipeline is tied to
+/// the format, exactly as in [`crate::frame::Frame`] and for the same
+/// reason.
 pub struct Ui {
     context: egui::Context,
     renderer: egui_wgpu::Renderer,
@@ -84,10 +89,11 @@ impl Ui {
                 format,
                 egui_wgpu::RendererOptions {
                     msaa_samples: 1,
-                    // Глибини в інтерфейсі немає — порядок задає тесселяція.
+                    // No depth in the interface -- tessellation sets the
+                    // order.
                     depth_stencil_format: None,
-                    // Дизеринг додає шум у пікселі, тобто робить «бітово те
-                    // саме» недосяжним там, де нічого не намальовано (U1a).
+                    // Dithering adds noise to pixels, making "bitwise the
+                    // same" unreachable where nothing was drawn (U1a).
                     dithering: false,
                     predictable_texture_filtering: true,
                 },
@@ -95,43 +101,44 @@ impl Ui {
         }
     }
 
-    /// Контекст — для того, хто збирає ввід (`egui-winit` у U1c). Більше він
-    /// нікому не потрібен: усе, що малюється, малюється в [`Ui::draw`].
+    /// The context is for whoever collects input (`egui-winit` in U1c). Nobody
+    /// else needs it: everything that is drawn is drawn in [`Ui::draw`].
     pub fn context(&self) -> &egui::Context {
         &self.context
     }
 
-    /// Чи забрав інтерфейс мишу цього кадру (ROADMAP-UI.md, U1c).
+    /// Whether the interface took the mouse this frame (ROADMAP-UI.md, U1c).
     ///
-    /// Питається **після** [`Ui::draw`]: відповідь залежить від того, що
-    /// намальовано й де курсор, а обидва відомі лише тоді. Одне місце, один
-    /// порядок — правило 4 етапу забороняє розкладати цю перевірку по
-    /// обробниках.
+    /// Asked **after** [`Ui::draw`]: the answer depends on what was drawn and
+    /// where the cursor is, and both are known only then. One place, one order
+    /// -- rule 4 of the stage forbids spreading this check across handlers.
     pub fn wants_pointer(&self) -> bool {
         self.context.egui_wants_pointer_input()
     }
 
-    /// Те саме для клавіатури: поле вводу з фокусом з'їдає натискання, і
-    /// гра не має бачити «w» як команду, поки гравець пише число.
+    /// The same for the keyboard: a focused text field eats keystrokes, and
+    /// the game must not see "w" as a command while the player types a
+    /// number.
     pub fn wants_keyboard(&self) -> bool {
         self.context.egui_wants_keyboard_input()
     }
 
-    /// Чи стоїть курсор над областю egui взагалі.
+    /// Whether the cursor is over an egui area at all.
     ///
-    /// Ширше за [`Ui::wants_pointer`]: та каже «егуй користується мишею»,
-    /// ця — «миша над панеллю». Розвилка U1c називала цей варіант запасним;
-    /// що з них правильне, вирішує вимір, а не смак.
+    /// Broader than [`Ui::wants_pointer`]: that one says "egui is using the
+    /// mouse", this one "the mouse is over a panel". The U1c fork called this
+    /// variant the fallback; which of them is right is decided by measurement,
+    /// not taste.
     pub fn pointer_over_panel(&self) -> bool {
         self.context.is_pointer_over_egui()
     }
 
-    /// Малює інтерфейс поверх уже намальованого кадру.
+    /// Draws the interface on top of an already drawn frame.
     ///
-    /// Повертає [`egui::PlatformOutput`] — те, що egui просить зробити
-    /// **платформу**: змінити курсор, покласти щось у буфер обміну. Рушій
-    /// цього не робить сам, бо це вже про вікно; у знімка воно просто
-    /// пропадає, і це правильно.
+    /// Returns an [`egui::PlatformOutput`] -- what egui asks the **platform** to
+    /// do: change the cursor, put something in the clipboard. The engine does
+    /// not do that itself, because that is already about a window; for a shot it
+    /// simply disappears, and that is right.
     pub fn draw(
         &mut self,
         gpu: &Gpu,
@@ -148,9 +155,9 @@ impl Ui {
             .context
             .tessellate(output.shapes, output.pixels_per_point);
 
-        // Текстури приїжджають навіть тоді, коли не намальовано нічого: атлас
-        // шрифта — теж текстура (U1a). Одна може приїхати кількома клаптями,
-        // звідси внутрішній цикл.
+        // Textures arrive even when nothing was drawn: the font atlas is a
+        // texture too (U1a). One can arrive in several patches, hence the inner
+        // loop.
         let mut deltas = output.textures_delta;
         for (id, patches) in &deltas.set {
             for patch in patches {
@@ -174,8 +181,8 @@ impl Ui {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        // Саме `Load`: сцену вже намальовано, і прохід
-                        // інтерфейсу її не стирає.
+                        // `Load` on purpose: the scene is already drawn, and
+                        // the interface pass does not erase it.
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     },
@@ -192,23 +199,24 @@ impl Ui {
         for id in &deltas.free {
             self.renderer.free_texture(id);
         }
-        // `TexturesDelta` падає в `Drop`, якщо її не застосували, — і це
-        // корисно: мовчазно пропущена текстура виглядала б як зниклий текст.
+        // `TexturesDelta` panics in `Drop` if it was not applied -- and that is
+        // useful: a silently skipped texture would look like vanished text.
         deltas.clear();
 
         output.platform_output
     }
 }
 
-/// Збирач вводу з вікна (ROADMAP-UI.md, U2b).
+/// Input collector from a window (ROADMAP-UI.md, U2b).
 ///
-/// Обгортка над `egui-winit`, і саме тому гра його не бачить: інтерфейс
-/// приходить із рушія цілком — і малювання, і ввід, — інакше в грі з'явилася б
-/// друга залежність на ту саму бібліотеку, а разом із нею й спосіб отримати
-/// дві її версії.
+/// A wrapper over `egui-winit`, and that is why the game does not see it: the
+/// interface comes from the engine whole -- both drawing and input -- otherwise
+/// the game would gain a second dependency on the same library, and with it a
+/// way to end up with two versions of it.
 ///
-/// Тут же й межа знання: `WindowInput` знає про вікно, [`Ui`] — ні. Тому
-/// знімок без вікна лишається можливим і після того, як з'явилось вікно.
+/// Here too is the boundary of knowledge: `WindowInput` knows about a window,
+/// [`Ui`] does not. That is why a shot without a window stays possible even
+/// after a window appeared.
 pub struct WindowInput {
     state: egui_winit::State,
 }
@@ -227,10 +235,10 @@ impl WindowInput {
         }
     }
 
-    /// Віддає подію egui й каже, чи вона спожита.
+    /// Hands the event to egui and says whether it was consumed.
     ///
-    /// `true` означає «гра цієї події не бачить». Питати треба **до** того, як
-    /// подія піде далі, і рівно в одному місці — правило 4.
+    /// `true` means "the game does not see this event". It must be asked
+    /// **before** the event goes on, and in exactly one place -- rule 4.
     pub fn on_window_event(
         &mut self,
         window: &winit::window::Window,
@@ -239,12 +247,12 @@ impl WindowInput {
         self.state.on_window_event(window, event).consumed
     }
 
-    /// Ввід, накопичений з попереднього кадру.
+    /// Input accumulated since the previous frame.
     pub fn take(&mut self, window: &winit::window::Window) -> egui::RawInput {
         self.state.take_egui_input(window)
     }
 
-    /// Те, що egui просить зробити платформу: курсор, буфер обміну.
+    /// What egui asks the platform to do: cursor, clipboard.
     pub fn apply(&mut self, window: &winit::window::Window, output: egui::PlatformOutput) {
         self.state.handle_platform_output(window, output);
     }
