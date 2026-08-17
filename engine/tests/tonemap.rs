@@ -120,7 +120,7 @@ fn the_exposure_reaches_the_shader_and_one_changes_nothing() {
 
     let mut scene_one = scene([colour; 4]);
     scene_one.exposure = 1.0;
-    let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene_one).expect("кадр");
+    let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene_one).expect("frame");
     let at_one = shot.pixel(SIZE / 2, SIZE / 2)[0];
     let expected = srgb::linear_to_byte(f64::from(colour));
     println!("  exposure 1.0 -> byte {at_one}, expected {expected}");
@@ -131,7 +131,7 @@ fn the_exposure_reaches_the_shader_and_one_changes_nothing() {
 
     let mut scene_two = scene([colour; 4]);
     scene_two.exposure = 2.0;
-    let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene_two).expect("кадр");
+    let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene_two).expect("frame");
     let at_two = shot.pixel(SIZE / 2, SIZE / 2)[0];
     let doubled = srgb::linear_to_byte(tonemap::expose(f64::from(colour), 2.0));
     println!("  exposure 2.0 -> byte {at_two}, expected {doubled}");

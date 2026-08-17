@@ -357,9 +357,9 @@ impl Tonemap {
                         binding: 0,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
-                            // Нефільтрована: прохід один в один по пікселях, тож
-                            // семплера немає взагалі, а `Load` фільтрації не
-                            // потребує.
+                            // Unfilterable: the pass is one to one in pixels,
+                            // so there is no sampler at all and `Load` needs
+                            // no filtering.
                             sample_type: wgpu::TextureSampleType::Float { filterable: false },
                             view_dimension: wgpu::TextureViewDimension::D2,
                             multisampled: false,
