@@ -704,6 +704,16 @@ impl Frame {
         Ok(scene::TerrainId(self.planet.terrains.len() - 1))
     }
 
+    /// How many resident-set bind groups this frame has built (Y1c).
+    ///
+    /// Unlike `drawn_patches`, this costs nothing to read -- it is a CPU
+    /// counter, not a buffer on the GPU. It exists for the oracle: "the group
+    /// is rebuilt only when the set changes" is a claim about work **not**
+    /// done, and the only honest check of that is counting.
+    pub fn tile_rebuilds(&self) -> u64 {
+        self.planet.rebuilds
+    }
+
     /// Скільки патчів GPU справді намалював для кожного тіла останнього кадру
     /// (ROADMAP-PLANETS.md, R6b).
     ///
@@ -1367,6 +1377,14 @@ struct Planet {
     /// Завантажені рельєфи: по текстурі на тайл.
     terrains: Vec<TerrainSlot>,
 
+    /// How many resident-set bind groups have been built since the frame was
+    /// created (Y1c).
+    ///
+    /// Exists for the oracle and for nothing else: "the group is rebuilt only
+    /// when the set changes" is a claim about work **not** done, and the only
+    /// honest way to check that is to count. A still camera must add zero.
+    rebuilds: u64,
+
     cache: PatchCache,
 
     /// По слоту на тіло сцени. Ростуть за потребою й не спадають — та сама
@@ -1446,6 +1464,16 @@ struct BodySlot {
     /// a pyramid declares. `None` means this body has no terrain, and then the
     /// empty group is bound instead.
     tiles: Option<wgpu::BindGroup>,
+    /// What `tiles` was built from, so it is not built again (Y1c).
+    ///
+    /// The set barely moves between neighbouring frames -- LOD changes it by a
+    /// patch at a time -- while building the group costs the driver a walk over
+    /// every view in it. Keeping the ids is what turns "per frame" into "per
+    /// change"; the terrain id is here too, because a body can be pointed at a
+    /// different surface without its patch set moving at all.
+    bound_terrain: Option<usize>,
+    bound_heights: Vec<usize>,
+    bound_colours: Vec<usize>,
 }
 
 /// The views of one resident set, in the set's own order (Y1b).
@@ -1918,6 +1946,7 @@ impl Planet {
             cull_pipeline,
             cull_layout,
             no_tiles,
+            rebuilds: 0,
             cache: PatchCache::new(gpu, MIN_PATCHES),
             bodies: Vec::new(),
             selections: Vec::new(),
@@ -2050,6 +2079,9 @@ impl Planet {
             bind_group,
             terrain: None,
             tiles: None,
+            bound_terrain: None,
+            bound_heights: Vec::new(),
+            bound_colours: Vec::new(),
         }
     }
 
@@ -2374,34 +2406,53 @@ impl Planet {
                 origin_bytes.extend_from_slice(&(colour_uv[1] as f32).to_le_bytes());
             }
 
-            // The resident set, bound (Y1b).
+            // The resident set, bound (Y1b) -- but only when it moved (Y1c).
+            //
+            // Between neighbouring frames the set is almost always the same
+            // one: LOD changes it a patch at a time, and a still camera does
+            // not change it at all. Building the group costs the driver a walk
+            // over every view in it, so doing that per frame would spend a good
+            // part of what Y1b just saved.
             //
             // An empty array cannot be bound, so an empty set falls back to one
             // view -- the same trick `load_surface` uses for a body with no
             // colour. It happens for real: a body entirely behind the camera
             // selects no patches at all.
-            let tiles_group = terrain.map(|t| {
-                let heights = resident_views(&t.heights, &height_ids);
-                let colours = resident_views(&t.colours, &colour_ids);
-                gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("resident tiles"),
-                    layout: self
-                        .tile_layout
-                        .as_ref()
-                        .expect("макет масиву є рівно тоді, коли є пайплайн рельєфу"),
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureViewArray(&heights),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::TextureViewArray(&colours),
-                        },
-                    ],
-                })
-            });
-            self.bodies[index].tiles = tiles_group;
+            let stale = self.bodies[index].tiles.is_none()
+                || self.bodies[index].bound_terrain != wanted
+                || self.bodies[index].bound_heights != height_ids
+                || self.bodies[index].bound_colours != colour_ids;
+            if stale {
+                let tiles_group = terrain.map(|t| {
+                    let heights = resident_views(&t.heights, &height_ids);
+                    let colours = resident_views(&t.colours, &colour_ids);
+                    gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("resident tiles"),
+                        layout: self
+                            .tile_layout
+                            .as_ref()
+                            .expect("макет масиву є рівно тоді, коли є пайплайн рельєфу"),
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureViewArray(&heights),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::TextureViewArray(&colours),
+                            },
+                        ],
+                    })
+                });
+                if tiles_group.is_some() {
+                    self.rebuilds += 1;
+                }
+                let slot = &mut self.bodies[index];
+                slot.tiles = tiles_group;
+                slot.bound_terrain = wanted;
+                slot.bound_heights = height_ids;
+                slot.bound_colours = colour_ids;
+            }
 
             let slot = &self.bodies[index];
             gpu.queue
