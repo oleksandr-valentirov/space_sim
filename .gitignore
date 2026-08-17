@@ -24,6 +24,14 @@
 /data/etopo/*.tif
 /data/bmng/*.jpg
 
+# The star catalogue, same rule again (stage Z, Z2). Here git keeps **only**
+# the README: unlike WAC and ETOPO, nothing in this directory is the input to a
+# check -- the cooker's oracle carries three real catalogue lines as constants
+# in the test itself. Provenance and SHA-256: data/bsc5/README.md.
+/data/bsc5/catalog
+/data/bsc5/catalog.gz
+/data/bsc5/ReadMe
+
 # ...except the fixture asset. It is DELIBERATELY in git: the cross-platform
 # hash comparison (ROADMAP C5) must compare the runtime, not the cooker. The
 # cooker uses cos() in its Chebyshev fit, so another machine would produce
