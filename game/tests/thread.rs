@@ -1,15 +1,15 @@
-//! Нитка нічого не змінила, крім того, хто рахує (ROADMAP J4).
+//! The thread changed nothing but who does the computing (ROADMAP J4).
 //!
-//! Найважливіше тут — те, чого перевіряти **не** довелося. Гонки даних немає
-//! не тому, що ми її шукали, а тому, що спільного мутабельного стану немає
-//! взагалі: світ належить нитці, назовні йдуть незмінні снапшоти, всередину —
-//! команди каналом (PROJECT.md §6). Перевіряти лишається дві речі: що числа
-//! ті самі й що читач не блокується.
+//! What matters most here is what did **not** have to be checked. There is no
+//! data race, not because we went looking for one, but because there is no
+//! shared mutable state at all: the world belongs to the thread, immutable
+//! snapshots go out, commands come in over a channel (PROJECT.md §6). That
+//! leaves two things: the numbers are the same, and the reader never blocks.
 //!
-//! Числа мусять збігтися **бітово** з однонитковим прогоном J3, і це не
-//! самоочевидно: нитка міряє власний `dt`, крутиться зі своїм тіком і робить
-//! іншу кількість роботи за прохід. Усе це J2 уже оголосив безпечним; тут
-//! воно перевіряється в тій формі, у якій справді працюватиме.
+//! The numbers must match the single-threaded run of J3 **bitwise**, and that
+//! is not self-evident: the thread measures its own `dt`, spins on its own
+//! tick and does a different amount of work per pass. J2 already declared all
+//! of that safe; here it is checked in the form it will actually run in.
 
 use std::time::{Duration, Instant};
 
@@ -22,10 +22,10 @@ use game::world::{PlanRejected, VesselId};
 
 const DAY: f64 = 86400.0;
 
-/// Скільки чекати на нитку, перш ніж визнати тест зламаним.
+/// How long to wait on the thread before calling the test broken.
 ///
-/// Місія на максимальному warp — це близько секунди; десять означає «щось
-/// стало», а не «машина повільна».
+/// The mission at maximum warp takes about a second; ten means "something
+/// stopped", not "the machine is slow".
 const PATIENCE: Duration = Duration::from_secs(10);
 
 fn spawn(demo_plan: bool) -> Sim {
@@ -34,10 +34,10 @@ fn spawn(demo_plan: bool) -> Sim {
     } else {
         mission::world
     };
-    Sim::spawn(build(&mission::default_asset()).expect("світ")).expect("нитка піднімається")
+    Sim::spawn(build(&mission::default_asset()).expect("world")).expect("the thread starts")
 }
 
-/// Крутить нитку на максимальному warp, доки місія не скінчиться.
+/// Spins the thread at maximum warp until the mission ends.
 fn run_to_end(sim: &Sim) -> std::sync::Arc<WorldSnapshot> {
     sim.send(Command::SetWarp(MAX_WARP));
 
@@ -49,7 +49,7 @@ fn run_to_end(sim: &Sim) -> std::sync::Arc<WorldSnapshot> {
         }
         assert!(
             Instant::now() < deadline,
-            "нитка не довела місію до кінця за {PATIENCE:?}: доба {:.2}, stall {:?}",
+            "the thread did not finish the mission in {PATIENCE:?}: day {:.2}, stall {:?}",
             (snapshot.t - mission::start().t) / DAY,
             snapshot.stall
         );
@@ -66,14 +66,14 @@ fn samples_of(snapshot: &WorldSnapshot) -> Vec<core_rs::State> {
         .collect()
 }
 
-/// Головна перевірка J4: та сама траєкторія, до останнього біта.
+/// The main check of J4: the same trajectory, down to the last bit.
 #[test]
 fn the_thread_computes_what_one_thread_computes() {
     let threaded = samples_of(&run_to_end(&spawn(true)));
 
-    // Оракул — той самий світ, порахований на цій нитці, без каналів і
-    // публікацій.
-    let mut world = mission::world_with_demo_plan(&mission::default_asset()).expect("світ");
+    // The oracle is the same world computed on this thread, with no channels
+    // and no publications.
+    let mut world = mission::world_with_demo_plan(&mission::default_asset()).expect("world");
     world.run_to_end(1.0, 8);
     let plain: Vec<core_rs::State> = world.vessels()[0]
         .trajectory
@@ -86,11 +86,14 @@ fn the_thread_computes_what_one_thread_computes() {
     assert_eq!(
         threaded.len(),
         plain.len(),
-        "{} семплів з нитки проти {} однониткових",
+        "{} samples from the thread against {} single-threaded",
         threaded.len(),
         plain.len()
     );
-    assert!(threaded.len() > 1000, "замало семплів, щоб щось доводити");
+    assert!(
+        threaded.len() > 1000,
+        "too few samples to prove anything with"
+    );
 
     for (i, (a, b)) in threaded.iter().zip(plain.iter()).enumerate() {
         for (name, p, q) in [
@@ -105,20 +108,20 @@ fn the_thread_computes_what_one_thread_computes() {
             assert_eq!(
                 p.to_bits(),
                 q.to_bits(),
-                "семпл {i}, {name}: {p:e} проти {q:e}"
+                "sample {i}, {name}: {p:e} against {q:e}"
             );
         }
     }
 }
 
-/// Читач ніколи не чекає на письменника.
+/// The reader never waits for the writer.
 ///
-/// Це і є вся причина, з якої снапшоти — `arc-swap`, а не `Mutex`: під
-/// мьютексом кадр чекав би на тік симуляції, і 60 fps трималися б рівно доти,
-/// доки нитка не візьметься за довгу ланку.
+/// This is the whole reason snapshots are `arc-swap` and not a `Mutex`: under
+/// a mutex the frame would wait for the simulation tick, and 60 fps would
+/// hold exactly until the thread took on a long leg.
 ///
-/// Вимір робиться при насиченій нитці (максимальний warp), тобто в тих
-/// умовах, у яких мьютекс і почав би блокувати.
+/// The measurement runs with the thread saturated (maximum warp), i.e. under
+/// the conditions in which a mutex would start blocking.
 #[test]
 fn reading_a_snapshot_never_waits_for_the_writer() {
     let sim = spawn(false);
@@ -133,26 +136,30 @@ fn reading_a_snapshot_never_waits_for_the_writer() {
         let snapshot = sim.snapshot();
         worst = worst.max(at.elapsed());
         reads += 1;
-        // Снапшот справді читається, а не оптимізується геть.
+        // The snapshot really is read, not optimised away.
         assert!(snapshot.t.is_finite());
     }
 
-    println!("  {reads} читань, найгірше {worst:?}");
+    println!("  {reads} reads, worst {worst:?}");
 
-    // Поріг навмисно щедрий: на завантаженому CI-раннері планувальник може
-    // відібрати нитку будь-коли, і тест має ловити блокування, а не
-    // планувальник. Реально це десятки наносекунд.
+    // The threshold is deliberately generous: on a loaded CI runner the
+    // scheduler can take the thread away at any moment, and the test should
+    // catch blocking, not the scheduler. In practice this is tens of
+    // nanoseconds.
     assert!(
         worst < Duration::from_millis(50),
-        "найдовше читання снапшоту тривало {worst:?} — читач на когось чекає"
+        "the longest snapshot read took {worst:?} -- the reader waits for someone"
     );
-    assert!(reads > 1000, "читань замало, щоб вимір щось означав");
+    assert!(
+        reads > 1000,
+        "too few reads for the measurement to mean much"
+    );
 }
 
-/// На команду приходить подія, і саме та.
+/// A command is answered by an event, and by the right one.
 ///
-/// Канал назад існує заради дискретного: снапшот не сказав би, що план
-/// відхилено, — він показав би просто нічого не змінилося.
+/// The channel back exists for the discrete: a snapshot could not say that a
+/// plan was rejected -- it would simply show that nothing changed.
 #[test]
 fn a_command_is_answered_by_an_event() {
     let sim = spawn(false);
@@ -170,7 +177,8 @@ fn a_command_is_answered_by_an_event() {
         plan: future,
     });
 
-    // Маневр у момент старту — це минуле: курсор стоїть саме там.
+    // A manoeuvre at the start instant is in the past: the cursor stands
+    // exactly there.
     let mut past = Plan::new();
     past.insert(Manoeuvre {
         t: start.t,
@@ -188,7 +196,7 @@ fn a_command_is_answered_by_an_event() {
         seen.extend(sim.events());
         assert!(
             Instant::now() < deadline,
-            "нитка не відповіла за {PATIENCE:?}: {seen:?}"
+            "the thread did not answer in {PATIENCE:?}: {seen:?}"
         );
         std::thread::yield_now();
     }
@@ -201,7 +209,7 @@ fn a_command_is_answered_by_an_event() {
                 from: Some(_)
             }
         ),
-        "перша відповідь мала бути про прийнятий план: {:?}",
+        "the first answer should have been about the accepted plan: {:?}",
         seen[0]
     );
     assert_eq!(
@@ -210,29 +218,29 @@ fn a_command_is_answered_by_an_event() {
             vessel: VesselId(0),
             why: PlanRejected::InThePast
         },
-        "маневр у момент курсора мав бути відхилений"
+        "a manoeuvre at the cursor instant should have been rejected"
     );
 }
 
-/// Пауза, надіслана каналом, доходить і зупиняє курсор.
+/// Pause sent over the channel arrives and stops the cursor.
 #[test]
 fn pause_reaches_the_thread_and_stops_the_cursor() {
     let sim = spawn(false);
     sim.send(Command::SetWarp(MAX_WARP));
 
-    // Дати часу зрушити, щоб «стоїть» не означало «ще не почав».
+    // Give it time to move, so that "standing" does not mean "not started".
     let deadline = Instant::now() + PATIENCE;
     while sim.snapshot().t <= mission::start().t {
-        assert!(Instant::now() < deadline, "курсор так і не зрушив");
+        assert!(Instant::now() < deadline, "the cursor never moved");
         std::thread::yield_now();
     }
 
     sim.send(Command::TogglePause);
 
-    // Дочекатися, доки пауза долетить.
+    // Wait for the pause to arrive.
     let deadline = Instant::now() + PATIENCE;
     while sim.snapshot().stall != Some(Stall::Paused) {
-        assert!(Instant::now() < deadline, "пауза не дійшла");
+        assert!(Instant::now() < deadline, "the pause did not arrive");
         std::thread::yield_now();
     }
 
@@ -243,17 +251,17 @@ fn pause_reaches_the_thread_and_stops_the_cursor() {
     assert_eq!(
         still.t.to_bits(),
         stopped.to_bits(),
-        "курсор рухався на паузі: {} -> {}",
+        "the cursor moved while paused: {} -> {}",
         stopped,
         still.t
     );
     assert_eq!(still.stall, Some(Stall::Paused));
 }
 
-/// Нитка спиняється разом із ручкою.
+/// The thread stops together with the handle.
 ///
-/// Без цього процес із закритим вікном лишався б із живою ниткою, яка й далі
-/// рахує; помітно це стало б лише в диспетчері задач.
+/// Without this a process with a closed window would keep a live thread
+/// computing away; it would only show up in the task manager.
 #[test]
 fn dropping_the_handle_stops_the_thread() {
     let sim = spawn(false);
@@ -261,19 +269,20 @@ fn dropping_the_handle_stops_the_thread() {
 
     let deadline = Instant::now() + PATIENCE;
     while sim.snapshot().t <= mission::start().t {
-        assert!(Instant::now() < deadline, "курсор так і не зрушив");
+        assert!(Instant::now() < deadline, "the cursor never moved");
         std::thread::yield_now();
     }
 
-    // `Drop` шле Shutdown і чекає на нитку. Якби вона не виходила, тест не
-    // впав би — він завис би, і саме тому тут стеля терпіння всього тесту.
+    // `Drop` sends Shutdown and joins the thread. If it never exited the test
+    // would not fail but hang -- which is why the whole test has a patience
+    // ceiling.
     let at = Instant::now();
     drop(sim);
     let took = at.elapsed();
 
-    println!("  нитка спинилася за {took:?}");
+    println!("  the thread stopped in {took:?}");
     assert!(
         took < Duration::from_secs(1),
-        "нитка виходила {took:?} — Shutdown її не будить"
+        "the thread took {took:?} to exit -- Shutdown does not wake it"
     );
 }

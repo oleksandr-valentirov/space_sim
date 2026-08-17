@@ -1,14 +1,14 @@
-//! Тягнення вузла маневру (ROADMAP-UI.md, U4b).
+//! Dragging a manoeuvre node (ROADMAP-UI.md, U4b).
 //!
-//! Перевірка кроку дослівно: **тягнення на N пікселів уздовж ручки prograde
-//! дає зміну Δv, лінійну за N і з правильним знаком; тягнення уздовж normal
-//! не чіпає prograde.** Друге твердження ловить переплутані осі базису — ту
-//! саму помилку, під яку L4 будував окремий оракул у фізиці.
+//! The step verbatim: **a drag of N pixels along the prograde handle changes
+//! dv linearly in N and with the right sign; a drag along normal does not
+//! touch prograde.** The second claim catches swapped basis axes -- the very
+//! bug L4 built a separate oracle for down in the physics.
 //!
-//! Тут вона ловиться інакше й дешевше: осі VNB на екрані **не ортогональні**,
-//! тож розкладання довільного тягнення на всі три відразу міняло б prograde
-//! при русі вздовж normal. Ручки роблять вимогу істинною за побудовою — і
-//! тест перевіряє, що так воно й лишилось.
+//! Here it is caught more cheaply: the VNB axes on screen are **not
+//! orthogonal**, so decomposing an arbitrary drag onto all three at once
+//! would move prograde when dragging along normal. Handles make the
+//! requirement true by construction, and the test checks it stayed that way.
 
 use engine::camera::Camera;
 use engine::frame::FOV_Y;
@@ -18,10 +18,11 @@ use game::node::{self, Grab, NodeOnScreen, GRAB_PX, HANDLE_PX, M_S_PER_PX};
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 720;
 
-/// Вузол із наперед заданими осями — без камери й без снапшоту.
+/// A node with axes given up front -- no camera and no snapshot.
 ///
-/// Осі свідомо не ортогональні: саме так вони й виглядають на екрані після
-/// проєкції, і саме на такому вузлі помилка «розкласти на всі три» видна.
+/// The axes are deliberately not orthogonal: that is how they look on screen
+/// after projection, and it is on such a node that "decompose onto all three"
+/// shows up.
 fn node() -> NodeOnScreen {
     let diagonal = (0.5f32).sqrt();
     NodeOnScreen {
@@ -31,7 +32,7 @@ fn node() -> NodeOnScreen {
     }
 }
 
-/// Тягнення вздовж ручки лінійне за довжиною й має правильний знак.
+/// Dragging a handle is linear in length and has the right sign.
 #[test]
 fn dragging_a_handle_is_linear_in_pixels() {
     let node = node();
@@ -42,34 +43,34 @@ fn dragging_a_handle_is_linear_in_pixels() {
 
     assert!(
         (ten - 10.0 * M_S_PER_PX).abs() < 1e-9,
-        "десять пікселів дали {ten} м/с"
+        "ten pixels gave {ten} m/s"
     );
     assert!(
         (twenty - 2.0 * ten).abs() < 1e-9,
-        "подвоєне тягнення мало дати подвоєну зміну: {twenty} проти {ten}"
+        "a doubled drag should have doubled the change: {twenty} against {ten}"
     );
     assert!(
         (back + ten).abs() < 1e-9,
-        "тягнення назад мало дати протилежний знак: {back} проти {ten}"
+        "dragging back should have flipped the sign: {back} against {ten}"
     );
 }
 
-/// Рух упоперек ручки не робить нічого.
+/// Moving across a handle does nothing.
 ///
-/// Це та половина, без якої «лінійне за N» пройшло б і для тягнення, яке
-/// рахує довжину руху, а не його напрямок.
+/// This is the half without which "linear in N" would also pass for a drag
+/// that measures the length of the motion rather than its direction.
 #[test]
 fn dragging_across_a_handle_does_nothing() {
     let node = node();
     let across = node::drag_to_delta(&node, 0, [0.0, 25.0]);
-    assert!(across.abs() < 1e-9, "упоперек ручки вийшло {across} м/с");
+    assert!(across.abs() < 1e-9, "across the handle gave {across} m/s");
 }
 
-/// Схоплена ручка normal міняє **лише** свою компоненту.
+/// A grabbed normal handle changes **only** its own component.
 ///
-/// Осі тут неортогональні навмисно: проєкція того самого тягнення на
-/// prograde дала б помітне число, і саме його поява означала б, що ручки
-/// перестали бути ручками.
+/// The axes are non-orthogonal on purpose: projecting the same drag onto
+/// prograde would give a noticeable number, and that number appearing is what
+/// would mean the handles stopped being handles.
 #[test]
 fn a_normal_handle_never_moves_prograde() {
     let node = node();
@@ -78,70 +79,73 @@ fn a_normal_handle_never_moves_prograde() {
     let mut dv = [0.0f64; 3];
     dv[1] += node::drag_to_delta(&node, 1, drag);
 
-    assert!(dv[1] > 0.0, "normal мав вирости, а вийшло {}", dv[1]);
-    assert_eq!(dv[0], 0.0, "prograde зрушив разом із normal");
-    assert_eq!(dv[2], 0.0, "outward зрушив разом із normal");
+    assert!(dv[1] > 0.0, "normal should have grown, but gave {}", dv[1]);
+    assert_eq!(dv[0], 0.0, "prograde moved along with normal");
+    assert_eq!(dv[2], 0.0, "outward moved along with normal");
 
-    // І доказ, що перевірка не тавтологічна: те саме тягнення, розкладене
-    // проєкцією на prograde, дало б помітне число.
+    // And proof the check is not a tautology: the same drag, projected onto
+    // prograde, would give a noticeable number.
     let leak = node::drag_to_delta(&node, 0, drag);
     assert!(
         leak.abs() > 1.0,
-        "перевірка порожня: проєкція на prograde дала б {leak} м/с"
+        "the check is empty: projection onto prograde would give {leak} m/s"
     );
 }
 
-/// Хапається найближча ручка, і лише в межах радіуса.
+/// The nearest handle is picked, and only within the radius.
 #[test]
 fn picking_takes_the_nearest_handle_and_only_nearby() {
     let node = node();
     let nodes = [node];
 
-    // Точно на ручці prograde.
+    // Exactly on the prograde handle.
     let on_prograde = node.handle(0);
     assert_eq!(
         node::pick_handle(&nodes, on_prograde),
         Some(Grab { node: 0, axis: 0 })
     );
 
-    // Точно на ручці outward — інша вісь того самого вузла.
+    // Exactly on the outward handle -- another axis of the same node.
     let on_outward = node.handle(2);
     assert_eq!(
         node::pick_handle(&nodes, on_outward),
         Some(Grab { node: 0, axis: 2 })
     );
 
-    // На пів радіуса від ручки — ще хапається.
+    // Half a radius away -- still grabbed.
     let near = [on_prograde[0] + GRAB_PX * 0.5, on_prograde[1]];
     assert_eq!(
         node::pick_handle(&nodes, near),
         Some(Grab { node: 0, axis: 0 })
     );
 
-    // А за радіусом — ні, і це не «нічого не сталося»: без цієї межі клік
-    // будь-де на екрані хапав би найближчу ручку й тягнув маневр.
+    // Beyond the radius, no -- and this is not "nothing happened": without the
+    // bound a click anywhere on screen would grab the nearest handle and drag
+    // the manoeuvre.
     let far = [on_prograde[0] + GRAB_PX * 3.0, on_prograde[1]];
     assert_eq!(node::pick_handle(&nodes, far), None);
 }
 
-/// Вісь, що дивиться в камеру, ручки не має.
+/// An axis pointing at the camera has no handle.
 ///
-/// Інакше три ручки злиплися б в одній точці, і вибір між ними став би
-/// випадковим — гравець тягнув би не ту вісь, не розуміючи чому.
+/// Otherwise the three handles would collapse into one point and the choice
+/// between them would be arbitrary -- the player would drag the wrong axis
+/// without understanding why.
 #[test]
 fn an_axis_pointing_at_the_camera_has_no_handle() {
     let mut node = node();
     node.axes[1] = [0.0, 0.0];
 
     let nodes = [node];
-    // Курсор рівно там, де була б вироджена ручка — тобто в самому вузлі.
+    // The cursor exactly where the degenerate handle would be, i.e. on the node.
     assert_eq!(node::pick_handle(&nodes, node.at), None);
 }
 
-/// Вузли беруться з порахованих семплів, а не вигадуються.
+/// Nodes come from computed samples rather than being invented.
 ///
-/// Перевірка проєкції як такої вже є в `engine` (`tests/camera.rs`); тут
-/// важливе інше: маневр, до якого прогноз ще не дійшов, вузла **не має**.
+/// Projection as such is already checked in `engine` (`tests/camera.rs`);
+/// what matters here is that a manoeuvre the forecast has not reached yet has
+/// **no** node.
 #[test]
 fn a_manoeuvre_beyond_the_forecast_has_no_node() {
     use core_rs::{State, Stop, Vec3d};
@@ -169,8 +173,8 @@ fn a_manoeuvre_beyond_the_forecast_has_no_node() {
     };
 
     let vessel = game::snapshot::VesselSnapshot {
-        // Константи Якобі в цій фікстурі немає: вона про вузли й панелі, а
-        // не про карту (U6b3).
+        // No Jacobi constant in this fixture: it is about nodes and panels,
+        // not about the map (U6b3).
         jacobi: None,
         id: VesselId(0),
         name: "probe".to_string(),
@@ -191,7 +195,7 @@ fn a_manoeuvre_beyond_the_forecast_has_no_node() {
         failed: None,
     };
 
-    // Камера дивиться на апарат збоку, з тисячі кілометрів.
+    // The camera looks at the vessel from the side, a thousand kilometres out.
     let camera = Camera::look_at([7.0e6, -1.0e6, 0.0], [7.0e6, 0.0, 0.0], [0.0, 0.0, 1.0]);
 
     let inside = Manoeuvre {
@@ -203,27 +207,27 @@ fn a_manoeuvre_beyond_the_forecast_has_no_node() {
     assert_eq!(
         nodes.len(),
         1,
-        "маневр усередині порахованого мав дати вузол"
+        "a manoeuvre inside the computed span should have given a node"
     );
 
-    // Ручки мусять бути напрямками, а не нулями: вузол без жодної ручки
-    // неможливо схопити, і тоді весь крок нічого не робить.
+    // The handles must be directions rather than zeros: a node with no handle
+    // at all cannot be grabbed, and then the whole step does nothing.
     //
-    // Але не всі три: камера тут дивиться вздовж швидкості апарата, тож
-    // **prograde вироджується в точку** — і це не вада тесту, а те, заради
-    // чого вироджені осі взагалі відсіюються. На реальній геометрії така
-    // камера трапляється сама собою.
+    // But not all three: the camera here looks along the vessel's velocity, so
+    // **prograde degenerates to a point** -- not a flaw of the test but the
+    // very reason degenerate axes are filtered out. On real geometry such a
+    // camera happens by itself.
     let node = nodes[0];
     let usable: Vec<usize> = (0..3).filter(|&a| node.axes[a] != [0.0, 0.0]).collect();
     assert!(
         usable.len() >= 2,
-        "вузол дав лише {} придатних ручок",
+        "the node gave only {} usable handles",
         usable.len()
     );
     assert_eq!(
         node.axes[0],
         [0.0, 0.0],
-        "камера дивиться вздовж швидкості — prograde мав виродитись"
+        "the camera looks along the velocity -- prograde should have degenerated"
     );
 
     for axis in usable {
@@ -231,7 +235,7 @@ fn a_manoeuvre_beyond_the_forecast_has_no_node() {
         let away = (handle[0] - node.at[0]).hypot(handle[1] - node.at[1]);
         assert!(
             (away - HANDLE_PX).abs() < 0.01,
-            "ручка осі {axis} відійшла на {away}, а мала на {HANDLE_PX}"
+            "the handle of axis {axis} went out {away}, but should have gone {HANDLE_PX}"
         );
     }
 }

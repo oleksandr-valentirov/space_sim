@@ -1,30 +1,34 @@
-//! Маркери, знайдені скануванням, проти озброєної події (ROADMAP-UI.md, U3a).
+//! Markers found by scanning, against an armed event (ROADMAP-UI.md, U3a).
 //!
-//! Оракул тут — **та сама подія, знайдена в ядрі пошуком кореня**: `prop_run`
-//! з озброєним `Event::Periapsis` спиняється рівно на перицентрі, і скан
-//! мусить показати той самий момент у межах кроку інтерполяції.
+//! The oracle here is **the same event found in the core by root finding**:
+//! `prop_run` with `Event::Periapsis` armed stops exactly at periapsis, and
+//! the scan must show the same instant to within an interpolation step.
 //!
-//! Порівняння робиться **один раз, у тесті**, і ніколи в грі: озброєна подія
-//! змінює послідовність кроків після себе, тож у грі вона змінила б
-//! траєкторію заради маркера на екрані (ROADMAP «Фізика й пропагація»).
+//! The comparison is made **once, in the test**, and never in the game: an
+//! armed event changes the sequence of steps after it, so in the game it
+//! would change the trajectory for the sake of a marker on screen (ROADMAP,
+//! "Фізика й пропагація").
 //!
-//! Мутація, яку це ловить: «шукати екстремум у другий бік» дає апоцентри
-//! замість перицентрів — і різниця тут не тонка, вона в пів оберту.
+//! The mutation this catches: "look for the extremum the other way" gives
+//! apoapses instead of periapses -- and the difference is not subtle, it is
+//! half a revolution.
 
 use core_rs::{Event, Propagator};
 use game::mission;
 use game::schedule::{self, Kind};
 
-/// Проганяє місію, доки не набереться `legs` ланок, і повертає снапшот.
-/// Прогін без пенсії ланок (N3a).
+/// Runs the mission until `legs` legs have accumulated, and returns the
+/// snapshot. The run has leg retirement off (N3a).
 ///
-/// Скан шукає перицентр параболою по **трьох сусідніх семплах**, а пенсія
-/// проріджує старі ланки до 8·10⁵ м — тобто до хорд у сотні секунд. Точність
-/// маркерів у минулому від цього справді падає (виміряно: 395 с проти допуску
-/// 60), і це наслідок пенсії, а не помилка скану. Тут перевіряється сам скан,
-/// тож пенсія вимкнена; наслідок для маркерів записаний у ROADMAP, N3a.
+/// The scan looks for periapsis by fitting a parabola through **three
+/// neighbouring samples**, while retirement thins old legs down to 8e5 m,
+/// i.e. to chords hundreds of seconds long. Marker accuracy in the past does
+/// fall from that (measured: 395 s against a tolerance of 60), and that is a
+/// consequence of retirement, not a scan bug. What is checked here is the
+/// scan itself, so retirement is off; the consequence for markers is written
+/// down in ROADMAP, N3a.
 fn fly(legs: usize) -> game::snapshot::WorldSnapshot {
-    let mut world = mission::world(&mission::default_asset()).expect("світ будується");
+    let mut world = mission::world(&mission::default_asset()).expect("the world builds");
     world.set_history_trimming(None);
 
     for _ in 0..100_000 {
@@ -37,7 +41,7 @@ fn fly(legs: usize) -> game::snapshot::WorldSnapshot {
     world.snapshot()
 }
 
-/// Перший перицентр скану збігається з тим, що дала озброєна подія.
+/// The first periapsis of the scan matches the one the armed event gave.
 #[test]
 fn a_scanned_periapsis_matches_an_armed_one() {
     let snapshot = fly(6);
@@ -47,14 +51,14 @@ fn a_scanned_periapsis_matches_an_armed_one() {
     let scanned = markers
         .iter()
         .find(|m| m.kind == Kind::Periapsis)
-        .expect("на кількох ланках перицентр мусить бути");
+        .expect("across several legs there must be a periapsis");
 
-    // Той самий проміжок, але з озброєною подією. Пропагатор власний: цей
-    // прогін навмисно **не** той, яким живе світ.
+    // The same span, but with the event armed. The propagator is its own: this
+    // run is deliberately **not** the one the world lives on.
     let eph = std::sync::Arc::new(
-        core_rs::Ephemeris::load(&mission::default_asset()).expect("ассет читається"),
+        core_rs::Ephemeris::load(&mission::default_asset()).expect("the asset is read"),
     );
-    let mut prop = Propagator::new(eph, mission::config()).expect("пропагатор створюється");
+    let mut prop = Propagator::new(eph, mission::config()).expect("the propagator is created");
 
     let mut step = 0.0;
     let run = prop
@@ -68,27 +72,29 @@ fn a_scanned_periapsis_matches_an_armed_one() {
             &mut [],
             &mut step,
         )
-        .expect("прогін має пройти");
+        .expect("the run should go through");
 
     let armed = run.final_state.t;
 
-    // Крок інтегратора тут — тисячі секунд, а скан уточнює час параболою по
-    // трьох семплах. Допуск у хвилину — це чверть кроку, і він про
-    // інтерполяцію, а не про запас про всяк випадок.
+    // The integrator step here is thousands of seconds, and the scan refines
+    // the time with a parabola through three samples. A tolerance of a minute
+    // is a quarter of a step, and it is about interpolation rather than slack
+    // just in case.
     assert!(
         (scanned.t - armed).abs() < 60.0,
-        "скан дав {:.3}, озброєна подія {:.3} — різниця {:.3} с",
+        "the scan gave {:.3}, the armed event {:.3} -- a difference of {:.3} s",
         scanned.t,
         armed,
         scanned.t - armed
     );
 }
 
-/// Перицентри й апоцентри чергуються, і перицентр ближчий за апоцентр.
+/// Periapses and apoapses alternate, and the periapsis is the nearer one.
 ///
-/// Це та половина перевірки, яка ловить переплутані боки: тест лише на
-/// «перицентр знайдено» пройшов би й на скані, що видає апоцентри під чужим
-/// іменем — бо збіг з озброєною подією він перевіряє на одному моменті.
+/// This is the half of the check that catches swapped sides: a test for
+/// "periapsis found" would pass for a scan that reports apoapses under
+/// another name, since it checks agreement with the armed event at one
+/// instant only.
 #[test]
 fn the_two_kinds_alternate_and_mean_what_they_say() {
     let snapshot = fly(8);
@@ -96,13 +102,13 @@ fn the_two_kinds_alternate_and_mean_what_they_say() {
 
     assert!(
         markers.len() >= 2,
-        "на восьми ланках мало знайтися принаймні два екстремуми"
+        "across eight legs at least two extrema should have been found"
     );
 
     for pair in markers.windows(2) {
         assert_ne!(
             pair[0].kind, pair[1].kind,
-            "два однакові екстремуми поспіль: {:?} і {:?}",
+            "two identical extrema in a row: {:?} and {:?}",
             pair[0], pair[1]
         );
 
@@ -112,14 +118,14 @@ fn the_two_kinds_alternate_and_mean_what_they_say() {
         };
         assert!(
             near.distance_m < far.distance_m,
-            "перицентр на {:.0} м, апоцентр на {:.0} м",
+            "periapsis at {:.0} m, apoapsis at {:.0} m",
             near.distance_m,
             far.distance_m
         );
     }
 }
 
-/// Ланка, коротша за три семпли, не дає маркерів і не падає.
+/// A leg too short to have three samples yields no markers and does not panic.
 #[test]
 fn a_leg_too_short_to_have_a_middle_says_nothing() {
     use core_rs::{State, Stop, Vec3d};
@@ -155,20 +161,20 @@ fn a_leg_too_short_to_have_a_middle_says_nothing() {
 }
 
 // ---------------------------------------------------------------------------
-// Перемотування до події (U3b)
+// Seeking to an event (U3b)
 
-/// Перемотування — це рух курсора, а не другий прогін.
+/// Seeking moves the cursor; it is not a second run.
 ///
-/// Оракул кроку дослівно: після `SeekTo` кількість порахованих ланок **не
-/// зросла**, а траєкторія бітово та сама. Якби перемотування інтегрувало, обидва
-/// числа поїхали б — і саме тому перевіряються обидва, а не одне «курсор
-/// стрибнув».
+/// The step's oracle verbatim: after `SeekTo` the number of computed legs has
+/// **not** grown, and the trajectory is bitwise the same. Had seeking
+/// integrated, both numbers would move -- which is why both are checked, not
+/// just "the cursor jumped".
 #[test]
 fn seeking_moves_the_cursor_and_computes_nothing() {
-    let mut world = mission::world(&mission::default_asset()).expect("світ будується");
+    let mut world = mission::world(&mission::default_asset()).expect("the world builds");
 
-    // Порахувати запас уперед, не рухаючи курсор далеко: warp за
-    // замовчуванням великий, тож кадри беруться крихітні.
+    // Compute some forecast without moving the cursor far: the default warp is
+    // large, so the frames taken are tiny.
     for _ in 0..200 {
         world.step(1.0 / 6000.0, 4);
     }
@@ -177,27 +183,29 @@ fn seeking_moves_the_cursor_and_computes_nothing() {
     let legs_before = world.legs_computed();
     assert!(
         legs_before > 0,
-        "нічого не пораховано — тоді й «не побільшало» нічого не значить"
+        "nothing was computed -- then \"did not grow\" means nothing either"
     );
     let markers = schedule::scan(&before.vessels[0].legs);
 
     let target = markers
         .iter()
         .find(|m| m.t > before.t)
-        .expect("попереду курсора мусить бути подія")
+        .expect("there must be an event ahead of the cursor")
         .t;
 
-    world.seek_to(target).expect("подія лежить у порахованому");
+    world
+        .seek_to(target)
+        .expect("the event lies inside the computed span");
 
     let after = world.snapshot();
     assert_eq!(
         world.legs_computed(),
         legs_before,
-        "перемотування порахувало ланки — тобто інтегрувало"
+        "seeking computed legs -- that is, it integrated"
     );
-    assert_eq!(after.t, target, "курсор не став на подію");
+    assert_eq!(after.t, target, "the cursor did not land on the event");
 
-    // Бітова рівність траєкторії: ті самі ланки, ті самі семпли.
+    // Bitwise equality of the trajectory: the same legs, the same samples.
     let samples = |snapshot: &game::snapshot::WorldSnapshot| -> Vec<game::leg::Sample> {
         snapshot.vessels[0]
             .legs
@@ -206,7 +214,7 @@ fn seeking_moves_the_cursor_and_computes_nothing() {
             .collect()
     };
     let (a, b) = (samples(&before), samples(&after));
-    assert_eq!(a.len(), b.len(), "кількість семплів змінилася");
+    assert_eq!(a.len(), b.len(), "the sample count changed");
     for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
         for (name, p, q) in [
             ("t", x.state.t, y.state.t),
@@ -216,34 +224,41 @@ fn seeking_moves_the_cursor_and_computes_nothing() {
             assert_eq!(
                 p.to_bits(),
                 q.to_bits(),
-                "семпл {i}, {name}: {p:e} проти {q:e}"
+                "sample {i}, {name}: {p:e} against {q:e}"
             );
         }
     }
 }
 
-/// Назад курсор не ходить, і відмова видима.
+/// The cursor never goes back, and the refusal is visible.
 #[test]
 fn seeking_backwards_is_refused_out_loud() {
     use game::world::SeekRejected;
 
-    let mut world = mission::world(&mission::default_asset()).expect("світ будується");
+    let mut world = mission::world(&mission::default_asset()).expect("the world builds");
     for _ in 0..200 {
         world.step(1.0 / 6000.0, 4);
     }
 
     let now = world.snapshot().t;
-    assert!(now > 0.0, "курсор мав зрушити, інакше перевірка порожня");
+    assert!(
+        now > 0.0,
+        "the cursor should have moved, or the check is empty"
+    );
 
     assert_eq!(world.seek_to(now - 1.0), Err(SeekRejected::Backwards));
-    assert_eq!(world.snapshot().t, now, "відмова все одно зрушила курсор");
+    assert_eq!(
+        world.snapshot().t,
+        now,
+        "the refusal moved the cursor anyway"
+    );
 }
 
-/// І вперед — не далі, ніж пораховано: перемотування не має права
-/// перетворитися на `t_end` (CLAUDE.md, інваріант 9).
+/// And forward, no further than what is computed: seeking has no right to
+/// turn into a `t_end` (CLAUDE.md, invariant 9).
 #[test]
 fn seeking_past_the_forecast_is_refused() {
-    let mut world = mission::world(&mission::default_asset()).expect("світ будується");
+    let mut world = mission::world(&mission::default_asset()).expect("the world builds");
     for _ in 0..200 {
         world.step(1.0 / 6000.0, 4);
     }
@@ -257,6 +272,6 @@ fn seeking_past_the_forecast_is_refused() {
     assert_eq!(
         world.legs_computed(),
         legs_before,
-        "відмова не має нічого рахувати"
+        "a refusal must compute nothing"
     );
 }

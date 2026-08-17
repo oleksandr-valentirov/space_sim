@@ -1,22 +1,18 @@
-//! Палітра доїжджає до пікселів, і обидва шляхи дають той самий колір
+//! The palette reaches the pixels, and both paths give the same colour
 //! (ROADMAP-UI.md, U7c).
 //!
-//! Тести всередині `palette` перевіряють числа: контраст рахується формулою,
-//! акцент дорівнює кольору прогнозу, панель темніша за небо. Жоден із них не
-//! доводить, що ці числа **доходять до екрана**, — а між «константа правильна»
-//! і «піксель такий» лежить увесь `egui`, увесь `egui-wgpu` і формат цілі.
+//! The tests inside `palette` check numbers: contrast follows the formula,
+//! the accent equals the forecast colour, the panel is darker than the sky.
+//! None of them proves those numbers **reach the screen** -- between "the
+//! constant is right" and "the pixel is this" lies all of `egui`, all of
+//! `egui-wgpu` and the target format.
 //!
-//! ## Твердження, заради якого цей файл існує
-//!
-//! Палітра обіцяє **один колірний простір**: `Colour::scene` ділить байт на
-//! 255 для ламаної, `Colour::egui` віддає той самий байт віджету, і жодної
-//! гамми ніде. Обіцянка перевірна рівно одним способом — намалювати той самий
-//! колір обома шляхами в одну текстуру й прочитати байти. Якщо `egui-wgpu`
-//! десь робить перетворення, якого не робить наш шейдер, кольори розійдуться,
-//! і «однакова палітра» виявиться двома різними.
-//!
-//! Це не косметика: саме на цьому стоїть рішення, що акцент інтерфейсу — той
-//! самий бурштин, що лінія прогнозу. Розійшлися байти — розійшовся зміст.
+//! The claim this file exists for: the palette promises **one colour space**.
+//! `Colour::scene` divides the byte by 255 for a polyline, `Colour::egui`
+//! hands the same byte to the widget, and there is no gamma anywhere. The
+//! only way to check that is to draw the same colour both ways into one
+//! texture and read the bytes back. This is not cosmetics: the decision that
+//! the interface accent is the same amber as the forecast line rests on it.
 
 use engine::gpu::Gpu;
 use engine::shot::{self, Shot};
@@ -31,10 +27,10 @@ fn gpu() -> Option<Gpu> {
     Gpu::for_tests()
 }
 
-/// Кадр із самою лише панеллю egui поверх звичайного неба.
+/// A frame holding nothing but an egui panel over the ordinary sky.
 ///
-/// Сцена тут порожня навмисно: перевіряється колір інтерфейсу, і планета в
-/// кадрі лише додала б пікселів, які нічого не кажуть.
+/// The scene is empty on purpose: what is checked is the interface colour,
+/// and a planet would only add pixels that say nothing.
 fn ui_shot(gpu: &Gpu, build: impl FnMut(&mut egui::Ui)) -> Shot {
     let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("palette shot"),
@@ -58,7 +54,7 @@ fn ui_shot(gpu: &Gpu, build: impl FnMut(&mut egui::Ui)) -> Shot {
             label: Some("palette shot"),
         });
 
-    // Сцена — щоб під панеллю було небо, тобто те саме тло, що в грі.
+    // A scene, so that the panel sits over sky -- the same backdrop as in game.
     let mut scene_frame = frame::Frame::new(gpu, shot::FORMAT);
     let scene = engine::scene::Scene::new(frame::default_camera());
     scene_frame.draw(gpu, &mut encoder, &view, SIZE, SIZE, &scene);
@@ -75,18 +71,19 @@ fn ui_shot(gpu: &Gpu, build: impl FnMut(&mut egui::Ui)) -> Shot {
         build,
     );
 
-    shot::read_back(gpu, encoder, &texture, SIZE, SIZE).expect("кадр мав прочитатися назад")
+    shot::read_back(gpu, encoder, &texture, SIZE, SIZE).expect("the frame should read back")
 }
 
-/// Прямокутник заданого кольору в лівому верхньому куті.
+/// A rectangle of the given colour in the top left corner.
 fn patch(ui: &mut egui::Ui, colour: egui::Color32) {
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE as f32, SIZE as f32));
     ui.painter().rect_filled(rect, 0.0, colour);
 }
 
-/// Колір із палітри доїжджає в піксель тим самим байтом.
+/// A palette colour reaches the pixel as the same byte.
 ///
-/// Найпряміше твердження кроку: `Colour::egui` не міняє числа по дорозі.
+/// The most direct claim of the step: `Colour::egui` does not alter the
+/// number on the way.
 #[test]
 fn a_colour_from_the_palette_lands_in_the_pixel_unchanged() {
     let Some(gpu) = gpu() else { return };
@@ -104,39 +101,40 @@ fn a_colour_from_the_palette_lands_in_the_pixel_unchanged() {
         assert_eq!(
             [pixel[0], pixel[1], pixel[2]],
             [colour.0, colour.1, colour.2],
-            "колір {colour:?} приїхав у піксель як {:?} — egui-wgpu перетворює \
-             його по дорозі, і палітра не є одним простором",
+            "colour {colour:?} landed in the pixel as {:?} -- egui-wgpu converts \
+             it on the way, and the palette is not one space",
             [pixel[0], pixel[1], pixel[2]]
         );
     }
 }
 
-/// Той самий колір, покладений у сцену й в інтерфейс, дає ті самі байти.
+/// The same colour put into the scene and into the interface gives the same
+/// bytes.
 ///
-/// Це вже не про egui, а про **обидва шляхи разом**: ламана йде нашим
-/// шейдером у `[f32; 4]`, панель — шейдером egui у `Color32`, і зустрічаються
-/// вони в одній текстурі. Тест вище пройшов би й тоді, коли сцена малює той
-/// самий бурштин помітно іншим.
+/// This is not about egui but about **both paths together**: the polyline
+/// goes through our shader as `[f32; 4]`, the panel through egui's shader as
+/// `Color32`, and they meet in one texture. The test above would pass even if
+/// the scene drew that amber noticeably differently.
 #[test]
 fn the_same_colour_through_the_scene_and_the_interface_matches() {
     let Some(gpu) = gpu() else { return };
 
     let colour = palette::ACCENT;
 
-    // Шлях інтерфейсу.
+    // The interface path.
     let through_ui = ui_shot(&gpu, |ui| patch(ui, colour.egui()));
     let from_ui = through_ui.pixel(SIZE / 2, SIZE / 2);
 
-    // Шлях сцени: ламана в кольорі палітри, впоперек усього кадру.
+    // The scene path: a polyline in the palette colour, right across the frame.
     //
-    // Товщина лінії — справа рушія, тож шукається не конкретний піксель, а
-    // будь-який, який не є небом: питання тесту в тому, ЯКИЙ це колір, а не
-    // де саме він лежить.
-    // Тіла в сцені немає навмисно: планета сховала б лінію за собою, а фон із
-    // самого лише неба робить пошук «першого не-неба» однозначним.
+    // Line width is the engine's business, so the search is for any pixel that
+    // is not sky rather than for a particular one: the question is WHICH
+    // colour, not where it lies. There is no body in the scene on purpose --
+    // a planet would hide the line, and a sky-only backdrop makes "the first
+    // non-sky pixel" unambiguous.
     //
-    // Камера стоїть на осі X і дивиться в початок координат, тож лінія
-    // кладеться на півдорозі перед нею й поперек погляду — по Y.
+    // The camera sits on the X axis looking at the origin, so the line is laid
+    // half way in front of it and across the view, along Y.
     let mut scene = engine::scene::Scene::new(frame::default_camera());
     let camera = scene.camera.position();
     let across = |k: f64| [camera[0] * 0.5, camera[0] * 0.2 * k, 0.0];
@@ -144,7 +142,7 @@ fn the_same_colour_through_the_scene_and_the_interface_matches() {
         points: vec![across(-1.0), across(1.0)],
         colour: colour.scene(),
     });
-    let through_scene = shot::take_scene(&gpu, SIZE, SIZE, &scene).expect("кадр сцени");
+    let through_scene = shot::take_scene(&gpu, SIZE, SIZE, &scene).expect("scene frame");
 
     let mut from_scene = None;
     for y in 0..SIZE {
@@ -159,22 +157,21 @@ fn the_same_colour_through_the_scene_and_the_interface_matches() {
             break;
         }
     }
-    let from_scene = from_scene.expect("ламана мала намалюватись хоч одним пікселем");
+    let from_scene = from_scene.expect("the polyline should have drawn at least one pixel");
 
     assert_eq!(
         [from_ui[0], from_ui[1], from_ui[2]],
         from_scene,
-        "той самий колір палітри дав {:?} в інтерфейсі й {from_scene:?} у сцені — \
-         тобто один із двох шляхів застосовує гамму, і акцент панелі перестав \
-         бути кольором лінії прогнозу",
+        "the same palette colour gave {:?} in the interface and {from_scene:?} in \
+         the scene -- one of the two paths applies gamma, and the panel accent \
+         has stopped being the colour of the forecast line",
         [from_ui[0], from_ui[1], from_ui[2]]
     );
 }
 
-/// І перевірка, що перевірка вміє провалитися: інший колір дає інші байти.
-///
-/// Без неї два тести вище були б зелені й на цілі, яка все зафарбовує однією
-/// константою.
+/// And a check that the check can fail: a different colour gives different
+/// bytes. Without it the two tests above would be green on a target that
+/// paints everything with one constant.
 #[test]
 fn two_different_colours_do_not_land_on_the_same_pixel_value() {
     let Some(gpu) = gpu() else { return };
@@ -185,6 +182,6 @@ fn two_different_colours_do_not_land_on_the_same_pixel_value() {
     assert_ne!(
         accent.pixel(SIZE / 2, SIZE / 2),
         history.pixel(SIZE / 2, SIZE / 2),
-        "бурштин і синій дали той самий піксель"
+        "amber and blue gave the same pixel"
     );
 }
