@@ -1434,10 +1434,10 @@ struct TerrainSlot {
     /// The pyramid's texture views, by tile index -- the whole of it.
     ///
     /// Views rather than a finished `bind_group` since Y1b: the group is built
-    /// per frame from the tiles the frame actually reads (debt D19), and to
-    /// build it we need the views to pick from. Nothing here is uploaded per
-    /// frame -- the textures themselves are loaded once and only their
-    /// *selection* changes.
+    /// from the tiles a frame actually reads (once debt D19), and to build it
+    /// we need the views to pick from. Nothing here is uploaded per frame --
+    /// the textures are loaded once and only their *selection* changes, and
+    /// since Y1c even that is rebuilt only when the selection moves.
     heights: Vec<wgpu::TextureView>,
     colours: Vec<wgpu::TextureView>,
     /// Метрів на одиницю зберігання — множник для вершинного зсуву.
@@ -1474,18 +1474,23 @@ struct BodySlot {
     bind_group: wgpu::BindGroup,
     /// Який рельєф зараз прив'язаний до цього слота.
     ///
-    /// Bind-група тримає **посилання на текстури**, тож змінити рельєф тіла
-    /// без її перестворення не можна. Поле тут саме для того, щоб не
-    /// перестворювати її щокадру: тіла в сцені міняються рідко, а кадр іде
-    /// шістдесят разів на секунду.
-    terrain: Option<usize>,
-    /// This frame's resident tile set, bound (Y1b, debt D19).
+    /// Read when the draw picks a pipeline: a body with tiles and a body
+    /// without are drawn by different programs, and the choice is made from
+    /// here rather than from the scene, so that a handle pointing at nothing
+    /// draws smooth instead of reading a tile that is not there.
     ///
-    /// Per body **and per frame**, unlike everything else here, because that is
-    /// what the debt costs: the driver charges for the array's length at bind
-    /// time, and a frame reads a few hundred tiles out of the tens of thousands
-    /// a pyramid declares. `None` means this body has no terrain, and then the
-    /// empty group is bound instead.
+    /// ⚠ Until Y1b this field also spared the bind group from being rebuilt
+    /// every frame. It no longer does: that job is `bound_terrain` below, and
+    /// it has to be a separate field because the group now depends on the set
+    /// of tiles as well as on which surface they come from.
+    terrain: Option<usize>,
+    /// This frame's resident tile set, bound (Y1b, once debt D19).
+    ///
+    /// Per body rather than per surface, unlike everything in `TerrainSlot`,
+    /// because that is what the debt cost: the driver charges for the array's
+    /// length at bind time, and a frame reads a few hundred tiles out of the
+    /// tens of thousands a pyramid declares. `None` means this body has no
+    /// terrain, and then the empty group is bound instead.
     tiles: Option<wgpu::BindGroup>,
     /// What `tiles` was built from, so it is not built again (Y1c).
     ///
@@ -2304,7 +2309,7 @@ impl Planet {
             let colour = terrain.and_then(|t| t.colour.as_ref());
             let colour_levels = colour.map(|c| c.levels);
 
-            // The resident tile set of this frame (Y1b, debt D19).
+            // The resident tile set of this frame (Y1b, once debt D19).
             //
             // The array is charged for at bind time by its **length**, not by
             // what is drawn: 26,616 views across two bodies cost 1.05-1.28 ms
