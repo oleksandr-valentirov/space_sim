@@ -693,31 +693,11 @@ impl Frame {
             &colour_tiles,
         );
 
-        let height_views: Vec<&wgpu::TextureView> = heights.iter().collect();
-        let colour_views: Vec<&wgpu::TextureView> = colours.iter().collect();
-        let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("terrain tiles"),
-            layout: self
-                .planet
-                .tile_layout
-                .as_ref()
-                .expect("макет масиву є рівно тоді, коли є пайплайн рельєфу"),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureViewArray(&height_views),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureViewArray(&colour_views),
-                },
-            ],
-        });
-
         self.planet.terrains.push(TerrainSlot {
             data: terrain.clone(),
             colour: colour.cloned(),
-            bind_group,
+            heights,
+            colours,
             scale_m: terrain.scale_m,
             albedo: colour.map_or([0.0; 3], |c| c.mean().map(|v| v as f32)),
         });
@@ -1410,7 +1390,15 @@ struct TerrainSlot {
     data: tiles::Terrain,
     /// Колір тієї самої поверхні, якщо асет був (етап T, T3b).
     colour: Option<tiles::Colour>,
-    bind_group: wgpu::BindGroup,
+    /// The pyramid's texture views, by tile index -- the whole of it.
+    ///
+    /// Views rather than a finished `bind_group` since Y1b: the group is built
+    /// per frame from the tiles the frame actually reads (debt D19), and to
+    /// build it we need the views to pick from. Nothing here is uploaded per
+    /// frame -- the textures themselves are loaded once and only their
+    /// *selection* changes.
+    heights: Vec<wgpu::TextureView>,
+    colours: Vec<wgpu::TextureView>,
     /// Метрів на одиницю зберігання — множник для вершинного зсуву.
     scale_m: f32,
     /// Середнє альбедо поверхні, лінійне (T7h). Рахується **раз на асет**:
@@ -1450,6 +1438,31 @@ struct BodySlot {
     /// перестворювати її щокадру: тіла в сцені міняються рідко, а кадр іде
     /// шістдесят разів на секунду.
     terrain: Option<usize>,
+    /// This frame's resident tile set, bound (Y1b, debt D19).
+    ///
+    /// Per body **and per frame**, unlike everything else here, because that is
+    /// what the debt costs: the driver charges for the array's length at bind
+    /// time, and a frame reads a few hundred tiles out of the tens of thousands
+    /// a pyramid declares. `None` means this body has no terrain, and then the
+    /// empty group is bound instead.
+    tiles: Option<wgpu::BindGroup>,
+}
+
+/// The views of one resident set, in the set's own order (Y1b).
+///
+/// A free function rather than a closure at the call site: the closure would
+/// have to name the lifetime that ties the borrowed views to its argument, and
+/// inference does not do that for closures.
+///
+/// An empty set returns one view rather than none, because an empty binding
+/// array cannot be bound at all -- and an empty set is not a corner case: a
+/// body entirely behind the camera selects no patches. Which view it is does
+/// not matter; nothing is drawn from it.
+fn resident_views<'a>(views: &'a [wgpu::TextureView], ids: &[usize]) -> Vec<&'a wgpu::TextureView> {
+    if ids.is_empty() {
+        return vec![&views[0]];
+    }
+    ids.iter().map(|&i| &views[i]).collect()
 }
 
 /// Скільки вершин у сітці одного патча.
@@ -2036,6 +2049,7 @@ impl Planet {
             candidates: 0,
             bind_group,
             terrain: None,
+            tiles: None,
         }
     }
 
@@ -2235,6 +2249,47 @@ impl Planet {
             let colour = terrain.and_then(|t| t.colour.as_ref());
             let colour_levels = colour.map(|c| c.levels);
 
+            // The resident tile set of this frame (Y1b, debt D19).
+            //
+            // The array is charged for at bind time by its **length**, not by
+            // what is drawn: 26,616 views across two bodies cost 1.05-1.28 ms
+            // every frame even when a body covers six pixels (step 0). So only
+            // the tiles this frame reads are bound, and the index written into
+            // `PatchData` below is the tile's place in **that** set.
+            //
+            // The set comes from `selection.patches`, i.e. from the CPU's own
+            // level choice, and deliberately not from the compute cull: the
+            // cull's set is smaller but lives on the GPU, and reading it back
+            // costs a frame of latency. A superset is the safe direction here
+            // -- a surplus bound tile costs its ~48 ns, a missing one is a hole
+            // in the frame.
+            //
+            // Insertion order, not sorted: the order is arbitrary as long as
+            // the map and the view list agree, and `Vec` + `HashMap` agree by
+            // construction.
+            let mut height_ids: Vec<usize> = Vec::new();
+            let mut colour_ids: Vec<usize> = Vec::new();
+            let mut height_slot: std::collections::HashMap<usize, u32> =
+                std::collections::HashMap::new();
+            let mut colour_slot: std::collections::HashMap<usize, u32> =
+                std::collections::HashMap::new();
+            for patch in &selection.patches {
+                if let Some(t) = terrain {
+                    let (tile, _, _) = t.data.window(patch);
+                    height_slot.entry(tile).or_insert_with(|| {
+                        height_ids.push(tile);
+                        (height_ids.len() - 1) as u32
+                    });
+                }
+                if let Some(levels) = colour_levels {
+                    let (tile, _, _) = tiles::window(levels, patch);
+                    colour_slot.entry(tile).or_insert_with(|| {
+                        colour_ids.push(tile);
+                        (colour_ids.len() - 1) as u32
+                    });
+                }
+            }
+
             // Початки — на **слот**, а не на позицію в наборі: так номер
             // патча живе у вершинному буфері й не переписується щокадру.
             // Слоти, не зайняті цим тілом, лишаються нулями й не малюються.
@@ -2258,10 +2313,22 @@ impl Planet {
                 // `(0, 0)` і `1`, тобто те саме, що робив точний `Load`. Для
                 // глибшого — підпрямокутник предка, і рахує його
                 // `Terrain::window`, той самий код, що й `height_m` на CPU.
+                //
+                // Since Y1b the number written is the tile's place in **this
+                // frame's** resident set, not its place in the pyramid: the
+                // bind group below holds only those tiles, in that order.
                 let (tile, origin_uv, step) = match (terrain, self.cache.resident[slot]) {
                     (Some(t), Some(patch)) => {
                         let (index, origin_uv, step) = t.data.window(&patch);
-                        (index as u32, origin_uv, step)
+                        // A slot the cache holds for **another** body has no
+                        // place in this body's set -- and no place in its draw
+                        // list either, so the index is never read. Zero is the
+                        // one index that is always bound.
+                        (
+                            height_slot.get(&index).copied().unwrap_or(0),
+                            origin_uv,
+                            step,
+                        )
                     }
                     _ => (0, [0.0, 0.0], 1.0),
                 };
@@ -2281,7 +2348,19 @@ impl Planet {
                 // колірний тайл і водночас читає висоту в предка.
                 let (colour_tile, colour_uv, colour_step) =
                     match (colour_levels, self.cache.resident[slot]) {
-                        (Some(levels), Some(patch)) => tiles::window(levels, &patch),
+                        (Some(levels), Some(patch)) => {
+                            let (index, uv, step) = tiles::window(levels, &patch);
+                            // Renumbered into the resident set, exactly as the
+                            // height above and for the same reason. The two
+                            // sets are separate because the two pyramids are:
+                            // the same patch legitimately owns its colour tile
+                            // while sharing an ancestor's height tile.
+                            (
+                                colour_slot.get(&index).copied().unwrap_or(0) as usize,
+                                uv,
+                                step,
+                            )
+                        }
                         _ => (0, [0.0, 0.0], 1.0),
                     };
                 //
@@ -2294,6 +2373,36 @@ impl Planet {
                 origin_bytes.extend_from_slice(&(colour_uv[0] as f32).to_le_bytes());
                 origin_bytes.extend_from_slice(&(colour_uv[1] as f32).to_le_bytes());
             }
+
+            // The resident set, bound (Y1b).
+            //
+            // An empty array cannot be bound, so an empty set falls back to one
+            // view -- the same trick `load_surface` uses for a body with no
+            // colour. It happens for real: a body entirely behind the camera
+            // selects no patches at all.
+            let tiles_group = terrain.map(|t| {
+                let heights = resident_views(&t.heights, &height_ids);
+                let colours = resident_views(&t.colours, &colour_ids);
+                gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("resident tiles"),
+                    layout: self
+                        .tile_layout
+                        .as_ref()
+                        .expect("макет масиву є рівно тоді, коли є пайплайн рельєфу"),
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureViewArray(&heights),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureViewArray(&colours),
+                        },
+                    ],
+                })
+            });
+            self.bodies[index].tiles = tiles_group;
+
             let slot = &self.bodies[index];
             gpu.queue
                 .write_buffer(&slot.origin_buffer, 0, &origin_bytes);
@@ -2387,8 +2496,8 @@ impl Planet {
                 _ => &self.smooth,
             });
             pass.set_bind_group(0, &body.bind_group, &[offset]);
-            match body.terrain.and_then(|id| self.terrains.get(id)) {
-                Some(slot) => pass.set_bind_group(1, &slot.bind_group, &[]),
+            match &body.tiles {
+                Some(resident) => pass.set_bind_group(1, resident, &[]),
                 None => {
                     if let Some(empty) = &self.no_tiles {
                         pass.set_bind_group(1, empty, &[]);
