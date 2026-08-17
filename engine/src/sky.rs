@@ -253,9 +253,9 @@ fn aerial_texture(gpu: &Gpu, label: &str) -> wgpu::Texture {
     gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
-            width: atmosphere::AERIAL_SIZE,
-            height: atmosphere::AERIAL_SIZE,
-            depth_or_array_layers: atmosphere::AERIAL_SIZE,
+            width: atmosphere::AERIAL_XY,
+            height: atmosphere::AERIAL_XY,
+            depth_or_array_layers: atmosphere::AERIAL_Z,
         },
         mip_level_count: 1,
         sample_count: 1,
@@ -980,7 +980,7 @@ impl Sky {
         pass.set_bind_group(1, &self.write_aerial, &[]);
         // One thread per ray, not per texel: the layers of one column lie on
         // one ray and are computed in a single sweep along it.
-        let groups = atmosphere::AERIAL_SIZE.div_ceil(GROUP);
+        let groups = atmosphere::AERIAL_XY.div_ceil(GROUP);
         pass.dispatch_workgroups(groups, groups, 1);
     }
 

@@ -747,8 +747,16 @@ pub fn skyview_coords(bottom: f64, r: f64, mu_v: f64, cos_azimuth: f64) -> (f64,
     (u.clamp(0.0, 1.0), v.clamp(0.0, 1.0))
 }
 
-/// Side of the aerial-perspective volume: 32x32x32 (S5).
-pub const AERIAL_SIZE: u32 = 32;
+/// The aerial-perspective volume (S5): [`AERIAL_XY`] columns across the screen,
+/// [`AERIAL_Z`] slices along each ray.
+///
+/// Two constants rather than one cube, and D17 is why: the two axes answer
+/// different questions -- how finely the volume follows the picture, and how
+/// finely it follows the ray -- and a single number cannot be moved without
+/// moving both. Duplicated in `shaders/sky.slang`, like every other table size
+/// here.
+pub const AERIAL_XY: u32 = 32;
+pub const AERIAL_Z: u32 = 32;
 /// How many march steps fall on one slice of the volume.
 pub const AERIAL_SLICE_STEPS: u32 = 4;
 

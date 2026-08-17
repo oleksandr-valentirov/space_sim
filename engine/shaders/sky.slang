@@ -165,8 +165,15 @@ WTexture2D<float4> multiscatter_out;
 [format("rgba16f")]
 WTexture2D<float4> skyview_out;
 
-// The aerial perspective volume: 32x32x32 (S5).
-static const uint AERIAL_SIZE = 32u;
+// The aerial perspective volume (S5): AERIAL_XY columns across the screen,
+// AERIAL_Z slices along each ray.
+//
+// Two constants rather than one cube, because the two axes answer different
+// questions and D17 had to ask them separately: the screen axis decides how
+// finely the volume follows the picture, the depth axis how finely it follows
+// the ray. A single number cannot be moved without moving both.
+static const uint AERIAL_XY = 32u;
+static const uint AERIAL_Z = 32u;
 // How many march steps fall on one slice of the volume.
 static const uint AERIAL_SLICE_STEPS = 4u;
 
@@ -884,7 +891,7 @@ float4 fragment_sky_outside(SkyVertex input) : SV_Target
 // kilometres, i.e. nothing closer than that would exist.
 float aerial_distance(float slice)
 {
-    float w = slice / float(AERIAL_SIZE - 1u);
+    float w = slice / float(AERIAL_Z - 1u);
     float near = frame.eye.w;
     return near + (frame.view.w - near) * w * w;
 }
@@ -898,14 +905,14 @@ float aerial_distance(float slice)
 [numthreads(8, 8, 1)]
 void aerial_main(uint3 id : SV_DispatchThreadID)
 {
-    if (id.x >= AERIAL_SIZE || id.y >= AERIAL_SIZE) { return; }
+    if (id.x >= AERIAL_XY || id.y >= AERIAL_XY) { return; }
 
     float bottom = air.shape.z;
     float top = air.shape.w;
     float3 pos = frame.eye.xyz;
     float3 sun = frame.sun.xyz;
 
-    float2 ndc = (float2(float(id.x) + 0.5, float(id.y) + 0.5) / float(AERIAL_SIZE)) * 2.0 - 1.0;
+    float2 ndc = (float2(float(id.x) + 0.5, float(id.y) + 0.5) / float(AERIAL_XY)) * 2.0 - 1.0;
     float3 dir = pixel_ray(ndc);
 
     float r = length(pos);
@@ -926,7 +933,7 @@ void aerial_main(uint3 id : SV_DispatchThreadID)
     float3 light = float3(0.0, 0.0, 0.0);
     float previous = 0.0;
 
-    for (uint slice = 0u; slice < AERIAL_SIZE; ++slice)
+    for (uint slice = 0u; slice < AERIAL_Z; ++slice)
     {
         float target = min(aerial_distance(float(slice)), limit);
         float step = max(0.0, target - previous) / float(AERIAL_SLICE_STEPS);
@@ -987,7 +994,7 @@ float3 aerial_coord(float2 ndc, float distance)
     float w = sqrt(clamp((distance - near) / max(frame.view.w - near, 1.0), 0.0, 1.0));
     return float3(ndc.x * 0.5 + 0.5,
                   ndc.y * 0.5 + 0.5,
-                  unit_to_texture(w, AERIAL_SIZE));
+                  unit_to_texture(w, AERIAL_Z));
 }
 
 // The first of the two composition calls: multiply the frame by the
