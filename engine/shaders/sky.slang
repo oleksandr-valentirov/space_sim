@@ -21,7 +21,11 @@ struct AirParams
     // x -- Mie scattering, y -- Mie absorption (both 1/m), z -- scale height,
     // w -- phase function asymmetry.
     float4 mie;
-    // rgb -- ozone absorption at the peak, 1/m; w -- unused.
+    // rgb -- ozone absorption at the peak, 1/m; w -- `tau0`, where the aerial
+    // perspective volume's depth axis is half spent (D17b). It lives in the AIR
+    // buffer and not in the frame's one on purpose: it is the atmosphere's
+    // whole vertical optical depth in green, i.e. a property of the air that
+    // outlives the camera, exactly like every other coefficient here.
     float4 ozone;
     // x -- centre of the ozone layer, y -- its half width (both m),
     // z -- radius of the body surface, w -- radius of the top of the air.
@@ -126,14 +130,18 @@ Texture2D<float4> multiscatter_lut;
 struct ViewParams
 {
     // x -- camera distance from the body centre, y -- cosine of the Sun's
-    // zenith angle at the camera, z -- exposure (S4b), w -- the FAR edge of the
-    // aerial perspective volume, metres along the ray (S5).
+    // zenith angle at the camera, z -- exposure (S4b), w -- spare.
+    //
+    // `w` used to carry the FAR edge of the aerial perspective volume, and its
+    // emptiness is the shape of D17c: once the depth axis is optical depth, the
+    // volume's layout stops depending on the camera at all. Where the air is
+    // dense is a fact about the air.
     float4 view;
     // xyz -- the camera relative to the BODY CENTRE, world axes. The
     // subtraction is done on the CPU in `double`; what is left here is a number
     // of order 6e6, in which `f32` gives half a metre -- sixty parts per
-    // million of an eight-kilometre scale height. w -- the NEAR edge of the
-    // aerial perspective volume (S5).
+    // million of an eight-kilometre scale height. w -- spare, and formerly the
+    // volume's NEAR edge.
     float4 eye;
     // xyz -- direction TO the Sun, world axes.
     float4 sun;
@@ -174,8 +182,13 @@ WTexture2D<float4> skyview_out;
 // the ray. A single number cannot be moved without moving both.
 static const uint AERIAL_XY = 32u;
 static const uint AERIAL_Z = 64u;
-// How many march steps fall on one slice of the volume.
+// How many march steps a column takes in total, and how many that averages per
+// slice. The march no longer walks slice by slice (the nodes are thresholds in
+// optical depth, not distances), so the per-slice number is now an average
+// rather than a loop bound -- but the budget is the one D17 was measured
+// against, so it is still expressed that way.
 static const uint AERIAL_SLICE_STEPS = 4u;
+static const uint AERIAL_STEPS = AERIAL_Z * AERIAL_SLICE_STEPS;
 
 // Two textures rather than one: the composition is `background*T + L`, i.e.
 // **a multiply and an add per channel**. Transmittance collapsed to a single
@@ -883,17 +896,82 @@ float4 fragment_sky_outside(SkyVertex input) : SV_Target
 // Aerial perspective (S5)
 // ---------------------------------------------------------------------------
 
-// The distance of slice `s` from the camera.
+// ## The depth axis is OPTICAL DEPTH, not distance (D17)
 //
-// **Quadratic, not uniform.** The volume stretches thousands of kilometres --
-// the longest ray that stays in air at all -- while what is interesting in it
-// happens near the camera. Uniform slices would put the first at seventy
-// kilometres, i.e. nothing closer than that would exist.
-float aerial_distance(float slice)
+// The paper's axis is distance, squared, anchored at the camera -- and the
+// reference volume is 128 km deep, full stop (`AP_KM_PER_SLICE` 4, 32 slices).
+// That distribution exists because the paper's camera stands IN the dense air,
+// so its finest slices land where `sigma_s` is largest.
+//
+// From orbit the same distribution is exactly wrong. Stage S5 stretched it over
+// `[r - top, tangent]` -- 300 to 3426 km from 400 km up -- which puts the finest
+// slices at the TOP of the atmosphere, the thinnest air on the ray, and the
+// coarsest at the ground. Measured (`--example aerial_slices`): the ground at
+// nadir sits in a 16.54 km slice, and the last 16.54 km before the ground carry
+// 86% of the whole ray's in-scattering. One slice held the entire signal, and
+// the linear reconstruction across it swung 33 percentage points -- the rings.
+//
+// Optical depth fixes it because it is the coordinate the air is actually
+// written in. Same 64 slices, 36.1% -> 2.3%; buying that with slice count
+// instead would need 2048 of them.
+float aerial_tau0()
 {
-    float w = slice / float(AERIAL_Z - 1u);
-    float near = frame.eye.w;
-    return near + (frame.view.w - near) * w * w;
+    return air.ozone.w;
+}
+
+// The threshold of node `slice`, in optical depth.
+//
+// `z = 1` means infinite optical depth, which no ray has -- so the last node is
+// past every threshold the march can reach, and the tail fill in `aerial_main`
+// owns it. That is deliberate: the last node must hold the whole ray.
+float aerial_z_to_tau(float z)
+{
+    z = min(z, 0.999999);
+    return aerial_tau0() * z / max(1.0 - z, 1.0e-6);
+}
+
+float aerial_tau_to_z(float tau)
+{
+    return tau / max(tau + aerial_tau0(), 1.0e-30);
+}
+
+// The optical depth from the camera to a point `distance` along `dir` -- from
+// **two** reads of the transmittance table, with no march (D17a).
+//
+// This is what makes the axis affordable: the composition pass has to turn a
+// pixel's distance into a depth coordinate, and it cannot march to do it.
+// Measured against a fine march: the worst miss is 0.135 of a slice out of 64,
+// and that single outlier is the near-tangent ray; elsewhere under 0.007.
+//
+// WARNING: the branch is on whether the ray **meets the ground**, not on the
+//   sign of `mu`, and the two are not interchangeable. The table holds the path
+//   to the TOP boundary, which is physical only when it does not cross the
+//   planet. A limb ray leaves the camera going down (`mu < 0`) and still misses
+//   the ground, so it belongs in the straight branch; reading it from the other
+//   end would ask the table for a downgoing ray, which its parameterisation
+//   does not hold. This is Bruneton's split, and it is why one table serves
+//   both directions.
+float aerial_tau(float3 dir, float distance)
+{
+    float bottom = air.shape.z;
+    float3 pos = frame.eye.xyz;
+    float r = length(pos);
+    float mu = dot(pos, dir) / max(r, 1.0);
+
+    float3 point = pos + distance * dir;
+    float r_point = max(length(point), bottom);
+    float mu_point = dot(point, dir) / max(r_point, 1.0);
+
+    float rho2 = max(0.0, r * r - bottom * bottom);
+    bool hits_ground = distance_to_ground(r, mu, rho2) >= 0.0;
+
+    // The longer path over the shorter one; both are readings of the same
+    // table, so whatever it gets wrong cancels rather than accumulates.
+    float longer = hits_ground ? sample_transmittance(r_point, -mu_point).g
+                               : sample_transmittance(r, mu).g;
+    float shorter = hits_ground ? sample_transmittance(r, -mu).g
+                                : sample_transmittance(r_point, mu_point).g;
+    return -log(clamp(longer / max(shorter, TINY), 1.0e-30, 1.0));
 }
 
 // The volume: one ray per column, slices along it.
@@ -920,10 +998,21 @@ void aerial_main(uint3 id : SV_DispatchThreadID)
     float rho2 = max(0.0, r * r - bottom * bottom);
     float shell2 = (top - bottom) * (top + bottom);
 
-    // How far there is air at all: to the surface or to the top boundary.
-    float limit = distance_to_top(r, mu, rho2, shell2);
+    // Where the air begins and ends on this ray.
+    //
+    // The march starts at the ENTRY, not at the camera. From 400 km the first
+    // three hundred kilometres of a downward ray are vacuum, and stepping
+    // through them would spend three quarters of the budget on nothing --
+    // which is what the old volume did, only it also stored slices there.
+    float discriminant = r * r * mu * mu + (shell2 - rho2);
+    float root = sqrt(max(0.0, discriminant));
+    float entry = max(0.0, -r * mu - root);
+    float limit = max(0.0, -r * mu + root);
     float ground = distance_to_ground(r, mu, rho2);
     if (ground >= 0.0) { limit = min(limit, ground); }
+    // A ray that never meets the shell: `limit <= entry` makes the span zero,
+    // the march does nothing, and the tail fill below writes a clear column.
+    if (discriminant <= 0.0) { limit = entry; }
 
     float cos_theta = dot(dir, sun);
     float phase_r = rayleigh_phase(cos_theta);
@@ -931,42 +1020,73 @@ void aerial_main(uint3 id : SV_DispatchThreadID)
 
     float3 throughput = float3(1.0, 1.0, 1.0);
     float3 light = float3(0.0, 0.0, 0.0);
-    float previous = 0.0;
+    float tau = 0.0;
 
-    for (uint slice = 0u; slice < AERIAL_Z; ++slice)
+    // Node 0 is written before the march, exactly: at the entry there is no air
+    // behind the ray yet, so it is black with full transmittance. Letting the
+    // loop below emit it instead would put one step's worth of light there.
+    aerial_inscatter_out.Store(uint3(id.x, id.y, 0u), float4(0.0, 0.0, 0.0, 1.0));
+    aerial_transmittance_out.Store(uint3(id.x, id.y, 0u), float4(1.0, 1.0, 1.0, 1.0));
+    uint slice = 1u;
+
+    // Uniform in distance over the air, and that is not a retreat to the thing
+    // just abandoned. `limit - entry` is the ray's OWN span of air, so the step
+    // scales with it: 0.4 km on the nadir ray against an 8 km scale height,
+    // 13 km along the limb where the density varies over 300. The old span was
+    // global, which is what made a uniform step meaningless there.
+    float step = max(0.0, limit - entry) / float(AERIAL_STEPS);
+
+    for (uint k = 0u; k < AERIAL_STEPS; ++k)
     {
-        float target = min(aerial_distance(float(slice)), limit);
-        float step = max(0.0, target - previous) / float(AERIAL_SLICE_STEPS);
+        float t = entry + (float(k) + 0.5) * step;
+        float3 point = pos + t * dir;
+        float rho2_here = max(0.0, rho2 + 2.0 * t * r * mu + t * t);
+        float radius = sqrt(max(0.0, rho2_here + bottom * bottom));
+        float h = rho2_here / (radius + bottom);
+        float mu_s_here = dot(point, sun) / max(radius, 1.0);
 
-        for (uint k = 0u; k < AERIAL_SLICE_STEPS; ++k)
+        bool lit = distance_to_ground(radius, mu_s_here, rho2_here) < 0.0;
+        float3 to_sun = lit ? sample_transmittance(radius, mu_s_here)
+                            : float3(0.0, 0.0, 0.0);
+        float3 psi = sample_multiscatter(radius, mu_s_here);
+
+        float3 d = density(h);
+        float3 sigma_e = extinction(h);
+        float3 sigma_r = air.rayleigh.rgb * d.x;
+        float sigma_m = air.mie.x * d.y;
+
+        float3 source = (sigma_r * phase_r + float3(sigma_m * phase_m)) * to_sun
+                      + (sigma_r + float3(sigma_m)) * psi;
+        float3 step_transmittance = exp(-sigma_e * step);
+        light += throughput * source * (float3(1.0) - step_transmittance)
+               / max(sigma_e, TINY);
+        throughput *= step_transmittance;
+        // Green, because `tau0` is green: the axis has to be one number for all
+        // three channels, and the twin measured which one (`aerial_tau0`).
+        tau += sigma_e.g * step;
+
+        // Emit every node this step just crossed. The inner bound is AERIAL_Z
+        // rather than `while`, so the loop is bounded for the compiler as well
+        // as for the argument -- `slice` only grows, so the total across the
+        // whole march is AERIAL_Z, not AERIAL_Z per step.
+        for (uint n = 0u; n < AERIAL_Z; ++n)
         {
-            float t = previous + (float(k) + 0.5) * step;
-            float3 point = pos + t * dir;
-            float rho2_here = max(0.0, rho2 + 2.0 * t * r * mu + t * t);
-            float radius = sqrt(max(0.0, rho2_here + bottom * bottom));
-            float h = rho2_here / (radius + bottom);
-            float mu_s_here = dot(point, sun) / max(radius, 1.0);
-
-            bool lit = distance_to_ground(radius, mu_s_here, rho2_here) < 0.0;
-            float3 to_sun = lit ? sample_transmittance(radius, mu_s_here)
-                                : float3(0.0, 0.0, 0.0);
-            float3 psi = sample_multiscatter(radius, mu_s_here);
-
-            float3 d = density(h);
-            float3 sigma_e = extinction(h);
-            float3 sigma_r = air.rayleigh.rgb * d.x;
-            float sigma_m = air.mie.x * d.y;
-
-            float3 source = (sigma_r * phase_r + float3(sigma_m * phase_m)) * to_sun
-                          + (sigma_r + float3(sigma_m)) * psi;
-            float3 step_transmittance = exp(-sigma_e * step);
-            light += throughput * source * (float3(1.0) - step_transmittance)
-                   / max(sigma_e, TINY);
-            throughput *= step_transmittance;
+            if (slice >= AERIAL_Z) { break; }
+            if (tau < aerial_z_to_tau(float(slice) / float(AERIAL_Z - 1u))) { break; }
+            aerial_inscatter_out.Store(uint3(id.x, id.y, slice), float4(light * frame.view.z, 1.0));
+            aerial_transmittance_out.Store(uint3(id.x, id.y, slice), float4(throughput, 1.0));
+            slice++;
         }
-        previous = target;
+    }
 
-        uint3 texel = uint3(id.x, id.y, slice);
+    // Whatever the march never reached -- always including the last node, whose
+    // threshold is infinite by construction -- carries the whole ray. This is
+    // what a pixel beyond the air reads, and it must be the total, not a
+    // partial sum.
+    for (uint n = 0u; n < AERIAL_Z; ++n)
+    {
+        if (slice + n >= AERIAL_Z) { break; }
+        uint3 texel = uint3(id.x, id.y, slice + n);
         aerial_inscatter_out.Store(texel, float4(light * frame.view.z, 1.0));
         aerial_transmittance_out.Store(texel, float4(throughput, 1.0));
     }
@@ -988,13 +1108,17 @@ float geometry_distance(int2 pixel, float3 dir)
 }
 
 // The coordinate in the volume from a pixel and a distance.
-float3 aerial_coord(float2 ndc, float distance)
+//
+// The depth coordinate is the same `z` the writer laid its nodes on, arrived at
+// from the other side: the writer accumulates `tau` by marching, the reader
+// reads it off the transmittance table. That the two agree is measured, not
+// assumed -- D17a, 0.135 of a slice at worst.
+float3 aerial_coord(float2 ndc, float3 dir, float distance)
 {
-    float near = frame.eye.w;
-    float w = sqrt(clamp((distance - near) / max(frame.view.w - near, 1.0), 0.0, 1.0));
+    float z = aerial_tau_to_z(aerial_tau(dir, distance));
     return float3(ndc.x * 0.5 + 0.5,
                   ndc.y * 0.5 + 0.5,
-                  unit_to_texture(w, AERIAL_Z));
+                  unit_to_texture(clamp(z, 0.0, 1.0), AERIAL_Z));
 }
 
 // The star background dimmed by the air (Z4).
@@ -1046,7 +1170,7 @@ float4 fragment_aerial_multiply(SkyVertex input) : SV_Target
     float distance = geometry_distance(int2(input.position.xy), dir);
     if (distance < 0.0) { discard; }
     float3 t = aerial_transmittance_lut.SampleLevel(lut_sampler,
-                                                    aerial_coord(input.ndc, distance), 0.0).rgb;
+                                                    aerial_coord(input.ndc, dir, distance), 0.0).rgb;
     return float4(t, 1.0);
 }
 
@@ -1058,6 +1182,6 @@ float4 fragment_aerial_add(SkyVertex input) : SV_Target
     float distance = geometry_distance(int2(input.position.xy), dir);
     if (distance < 0.0) { discard; }
     float3 l = aerial_inscatter_lut.SampleLevel(lut_sampler,
-                                                aerial_coord(input.ndc, distance), 0.0).rgb;
+                                                aerial_coord(input.ndc, dir, distance), 0.0).rgb;
     return float4(l, 1.0);
 }

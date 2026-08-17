@@ -165,6 +165,10 @@ pub struct Sky {
     sampler: wgpu::Sampler,
 
     transmittance: wgpu::Texture,
+    /// A view of the table above, kept rather than made on the spot: since
+    /// D17c the composition group needs it, and that group is rebuilt on every
+    /// resize.
+    transmittance_view: wgpu::TextureView,
     multiscatter: wgpu::Texture,
     skyview: wgpu::Texture,
     skyview_view: wgpu::TextureView,
@@ -404,10 +408,16 @@ impl Sky {
                     entries: &[storage_3d(3), storage_3d(4)],
                 });
 
-        // Composition reads depth as a texture, both volumes and the range
-        // parameters. It does not need the air at all: it computes nothing and
-        // only picks from what is already computed, and the layout shows that --
-        // there is no `air` here.
+        // Composition reads depth as a texture, both volumes, the range
+        // parameters -- and, since D17c, the air and the transmittance table.
+        //
+        // That last pair is a real change of character, not a plumbing detail.
+        // Until D17c this pass computed nothing: it turned a distance into a
+        // depth coordinate by inverting a formula that lived entirely in the
+        // frame's own numbers, and the layout said so by having no `air` in it.
+        // Now the coordinate IS optical depth, so the pass has to ask the air
+        // how thick it is -- two table reads and `tau0`. The layout shows the
+        // new shape as plainly as it showed the old one.
         let composite_layout =
             gpu.device
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -415,8 +425,13 @@ impl Sky {
                     entries: &[
                         wgpu::BindGroupLayoutEntry {
                             visibility: fragment,
+                            ..air_entry
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            visibility: fragment,
                             ..sampler_entry
                         },
+                        sampled_2d_for(2, fragment),
                         wgpu::BindGroupLayoutEntry {
                             visibility: fragment,
                             ..view_entry
@@ -906,6 +921,7 @@ impl Sky {
             view_buffer,
             sampler,
             transmittance,
+            transmittance_view,
             multiscatter,
             skyview,
             skyview_view,
@@ -983,16 +999,14 @@ impl Sky {
     /// while this goes where the frame's passes go, that is every frame. Whoever
     /// comes to optimise will see it from the code.
     pub fn prepare_view(&self, gpu: &Gpu, encoder: &mut wgpu::CommandEncoder, view: &View) {
-        // The depth of the aerial-perspective volume is computed here rather
-        // than in the frame: it depends on the air, and only `Sky` knows the
-        // air. The frame would have to carry a second copy of the same
-        // formula.
-        let span = match self.current {
-            Some((air, bottom, _)) => atmosphere::aerial_span(&air, bottom, view.radius()),
-            None => (0.0, 1.0),
-        };
+        // The aerial-perspective volume no longer needs anything from here
+        // (D17c): its depth axis is optical depth, so the layout is a property
+        // of the air and travels in the air buffer. What used to be computed at
+        // this line was the volume's span, and it was computed per frame
+        // because it depended on the camera -- which is exactly what made the
+        // slices land in the wrong place.
         gpu.queue
-            .write_buffer(&self.view_buffer, 0, &view_bytes(view, span));
+            .write_buffer(&self.view_buffer, 0, &view_bytes(view));
 
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("skyview"),
@@ -1073,8 +1087,16 @@ impl Sky {
             layout: &self.composite_layout,
             entries: &[
                 wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.air_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&self.transmittance_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
@@ -1295,7 +1317,10 @@ fn air_bytes(air: &Atmosphere, bottom_m: f64, albedo: [f32; 3]) -> Vec<u8> {
         air.ozone_absorption[0],
         air.ozone_absorption[1],
         air.ozone_absorption[2],
-        0.0,
+        // Where the aerial-perspective volume's depth axis is half spent
+        // (D17b). It rides with the air rather than with the camera because it
+        // is a fact about the air -- see `atmosphere::aerial_tau0`.
+        atmosphere::aerial_tau0(air, bottom_m) as f32,
     ]);
     push([
         air.ozone_centre_m,
@@ -1309,7 +1334,7 @@ fn air_bytes(air: &Atmosphere, bottom_m: f64, albedo: [f32; 3]) -> Vec<u8> {
 }
 
 /// The camera parameters in the `ViewParams` layout from `sky.slang`.
-fn view_bytes(view: &View, aerial_span: (f64, f64)) -> Vec<u8> {
+fn view_bytes(view: &View) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(VIEW_BYTES as usize);
     let mut push = |values: [f32; 4]| {
         for value in values {
@@ -1320,13 +1345,15 @@ fn view_bytes(view: &View, aerial_span: (f64, f64)) -> Vec<u8> {
         view.radius() as f32,
         view.sun_zenith_cos() as f32,
         EXPOSURE,
-        aerial_span.1 as f32,
+        // Spare: this carried the volume's far edge until D17c.
+        0.0,
     ]);
     push([
         view.eye[0] as f32,
         view.eye[1] as f32,
         view.eye[2] as f32,
-        aerial_span.0 as f32,
+        // Spare: the volume's near edge, until D17c.
+        0.0,
     ]);
     push([view.sun[0], view.sun[1], view.sun[2], 0.0]);
     push([

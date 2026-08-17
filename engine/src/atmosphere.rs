@@ -757,29 +757,15 @@ pub fn skyview_coords(bottom: f64, r: f64, mu_v: f64, cos_azimuth: f64) -> (f64,
 /// here.
 pub const AERIAL_XY: u32 = 32;
 pub const AERIAL_Z: u32 = 64;
-/// How many march steps fall on one slice of the volume.
+/// How many march steps a column takes in total, and how many that averages per
+/// slice.
+///
+/// Since D17c the march no longer walks slice by slice -- the nodes are
+/// thresholds in optical depth, not distances -- so the per-slice number is an
+/// average rather than a loop bound. It stays expressed that way because the
+/// budget is the one D17 was measured against.
 pub const AERIAL_SLICE_STEPS: u32 = 4;
-
-/// Where the air in front of the camera at distance `r` begins and ends,
-/// metres along the ray.
-///
-/// **The volume is stretched over this interval, not over "from the camera".**
-/// From orbit the difference is decisive: the air lies a million metres ahead,
-/// and a volume that starts at the camera spends thirty of its thirty-two
-/// slices on vacuum. Measured on S5: from 1000 km up, the entire
-/// hundred-kilometre layer fell into less than one slice of the volume.
-///
-/// - **The near edge** is the shortest distance to the shell: zero for a
-///   camera inside, `r - top` outside.
-/// - **The far one** is the longest ray that stays in air at all: from the
-///   camera along the tangent to the surface and on to the top boundary. One
-///   formula for both cases, and that is no coincidence: the second term is
-///   that same tangent, only from the other end.
-pub fn aerial_span(air: &Atmosphere, bottom: f64, r: f64) -> (f64, f64) {
-    let near = (r - air.top_m).max(0.0);
-    let far = rho_squared(r, bottom).sqrt() + shell_squared(air, bottom).sqrt();
-    (near, far.max(near + 1.0))
-}
+pub const AERIAL_STEPS: u32 = AERIAL_Z * AERIAL_SLICE_STEPS;
 
 /// Where the volume's depth axis is half spent: `z = tau / (tau + tau0)`
 /// (D17b).

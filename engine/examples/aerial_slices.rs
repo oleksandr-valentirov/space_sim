@@ -25,7 +25,7 @@ fn main() {
     let model = Model::build(&air, BOTTOM, 500, [0.0; 3]);
     let sun = [(1.0f64 - MU_S * MU_S).sqrt(), 0.0, MU_S];
 
-    let (near, far) = atmosphere::aerial_span(&air, BOTTOM, r);
+    let (near, far) = old_span(&air, r);
     println!(
         "camera at {:.0} km, span near {:.1} km  far {:.1} km",
         ALTITUDE / 1e3,
@@ -455,7 +455,20 @@ fn lerp_nodes(nodes: &[f64], position: f64) -> f64 {
     nodes[lo] * (1.0 - f) + nodes[hi] * f
 }
 
-/// The distance of slice `s`, exactly as `aerial_distance` in `sky.slang`.
+/// The volume's span before D17c: from the nearest point of the shell to the
+/// longest ray that stays in air at all.
+///
+/// It lives here and not in `engine::atmosphere` any more, because the engine
+/// no longer has the concept -- but the probe still needs it, since every
+/// number this example exists to report is a comparison against it.
+fn old_span(air: &Atmosphere, r: f64) -> (f64, f64) {
+    let near = (r - air.top_m).max(0.0);
+    let far =
+        atmosphere::rho_squared(r, BOTTOM).sqrt() + atmosphere::shell_squared(air, BOTTOM).sqrt();
+    (near, far.max(near + 1.0))
+}
+
+/// The distance of slice `s`, exactly as `aerial_distance` did in `sky.slang`.
 fn slice_distance(near: f64, far: f64, slice: f64) -> f64 {
     let w = slice / f64::from(atmosphere::AERIAL_Z - 1);
     near + (far - near) * w * w
