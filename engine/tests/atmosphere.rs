@@ -1,41 +1,44 @@
-//! Таблиця пропускання збігається з оракулом (ROADMAP-ATMOSPHERE.md, S2).
+//! The transmittance table agrees with the oracle (ROADMAP-ATMOSPHERE.md, S2).
 //!
-//! ## Що саме тут доводиться
+//! ## What is proved here
 //!
-//! Правило 2 етапу S: кожен LUT має **число**, а не «схоже на небо». Число
-//! приходить з `engine::atmosphere` — окремої реалізації тієї самої фізики в
-//! `f64` на CPU, — а сам оракул пришпилений замкненою формою в своїх юніт-тестах.
-//! Ланцюг цілком:
+//! Rule 2 of stage S: every LUT gets a **number**, not "looks like sky". The
+//! number comes from `engine::atmosphere` -- a separate implementation of the
+//! same physics in `f64` on the CPU -- and the oracle itself is pinned down by
+//! a closed form in its own unit tests. The chain in full:
 //!
-//! 1. `β·H·(exp(−h₀/H) − exp(−h₁/H))` ⇄ `atmosphere::optical_depth`
-//!    (`engine::atmosphere::tests`, без GPU);
-//! 2. `atmosphere::optical_depth` ⇄ таблиця на GPU — **тут**.
+//! 1. `beta*H*(exp(-h0/H) - exp(-h1/H))` vs `atmosphere::optical_depth`
+//!    (`engine::atmosphere::tests`, no GPU);
+//! 2. `atmosphere::optical_depth` vs the table on the GPU -- **here**.
 //!
-//! Обидві ланки потрібні. Без першої два чисельні інтегрування зійшлися б і на
-//! спільній помилці; без другої шейдер не перевірений узагалі.
+//! Both links are needed. Without the first, two numeric integrations would
+//! agree on a shared mistake; without the second the shader is not checked at
+//! all.
 //!
-//! ## Чому «на десятках висот і кутів», а не в одній точці
+//! ## Why "over dozens of altitudes and angles" rather than at one point
 //!
-//! Помилка в параметризації дає правильне число рівно там, де `u = 0` —
-//! вертикаль виходить із неї сама. Помилка в озоні видна лише в шарі 10–40 км.
-//! Помилка в геометрії — лише під великим кутом, де промінь довгий. Одна точка
-//! не бачить жодної з трьох.
+//! A mistake in the parametrisation gives the right number precisely where
+//! `u = 0` -- the vertical falls out of it by itself. A mistake in the ozone
+//! is visible only in the 10-40 km layer. A mistake in the geometry only at a
+//! large angle, where the ray is long. One point sees none of the three.
 //!
-//! ## Де допуск не буває відносним, і чому
+//! ## Where a tolerance cannot be relative, and why
 //!
-//! Тінь — це **сходинка**: `lit` означає «промінь до Сонця не зустрів
-//! поверхні», тобто крок, а не плавну функцію. Біля термінатора один ULP у
-//! геометрії перекидає цілий семпл маршу з одного боку сходинки на інший, і два
-//! різні пристрої мають повне право вирішити по-різному. Там, де значення й
-//! складається з кількох таких семплів — нічний бік, одиниці 10⁻⁶, — різниця
-//! виходить порядку самого значення, і жоден відсоток її не описує.
+//! A shadow is a **step**: `lit` means "the ray to the Sun did not meet the
+//! surface", i.e. a step rather than a smooth function. Near the terminator
+//! one ULP in the geometry tips a whole march sample from one side of the step
+//! to the other, and two different devices have every right to decide
+//! differently. Where the value itself is made of several such samples -- the
+//! night side, units of 1e-6 -- the difference comes out on the order of the
+//! value, and no percentage describes it.
 //!
-//! Тому в обох допусках є абсолютний доданок 3·10⁻⁶, і він не про half-float.
-//! Спіймано це на CI (llvmpipe) там, де NVIDIA сходилася; той самий клас, що
-//! «нічию на GPU не перевіряють» у F3, лише сходинка не в глибині, а в тіні.
-//! ⚠ Локально цей клас не ловиться взагалі: lavapipe на машині розробника не
-//! створює пристрій («Parent device is lost»), тож другий пристрій у цього
-//! оракула є лише в CI.
+//! That is why both tolerances carry an absolute term of 3e-6, and it is not
+//! about half-float. This was caught on CI (llvmpipe) where NVIDIA agreed; the
+//! same class as "you do not check a tie on the GPU" in F3, only the step is
+//! in the shadow rather than in the depth.
+//! WARNING: locally this class is not caught at all: lavapipe on the
+//! developer's machine does not create a device ("Parent device is lost"), so
+//! this oracle has its second device only in CI.
 
 use engine::atmosphere;
 use engine::gpu::Gpu;
@@ -44,13 +47,15 @@ use engine::sky::Sky;
 
 const BOTTOM: f64 = 6_371_000.0;
 
-/// Альбедо поверхні під небом — виміряне середнє `assets/earth.col` (T7h).
+/// The albedo of the ground under the sky -- the measured mean of
+/// `assets/earth.col` (T7h).
 ///
-/// Ненульове навмисно: із нулем звірка GPU з двійником не перевіряла б доданок
-/// відбиття взагалі, бо він у обох гілках зникав би однаково.
+/// Non-zero deliberately: with a zero, comparing the GPU against the twin
+/// would not check the reflection term at all, because it would vanish
+/// identically in both branches.
 const ALBEDO: [f32; 3] = [0.0595, 0.0595, 0.0732];
 
-/// Те саме число для двійника, який рахує в `f64`.
+/// The same number for the twin, which computes in `f64`.
 fn twin_albedo() -> [f64; 3] {
     ALBEDO.map(f64::from)
 }
@@ -59,13 +64,15 @@ fn gpu() -> Option<Gpu> {
     Gpu::for_tests()
 }
 
-/// Таблиця на GPU й оракул на CPU дають те саме пропускання.
+/// The table on the GPU and the oracle on the CPU give the same
+/// transmittance.
 ///
-/// Порівнюються **всі** 16 384 текселі, а не вибірка: таблиця мала, а помилка,
-/// що живе в одному куті, — рівно те, чого вибірка не бачить.
+/// **All** 16 384 texels are compared, not a sample: the table is small, and a
+/// mistake living in one corner is exactly what a sample does not see.
 ///
-/// Допуск — на пропускання, а не на оптичну товщу, і це навмисно: у кадр іде
-/// саме пропускання, тож похибка мусить міритися там, де вона впливає.
+/// The tolerance is on transmittance rather than on optical depth, and that is
+/// deliberate: it is transmittance that goes into the frame, so the error has
+/// to be measured where it has an effect.
 #[test]
 fn the_transmittance_table_matches_the_oracle_everywhere() {
     let Some(gpu) = gpu() else { return };
@@ -74,12 +81,12 @@ fn the_transmittance_table_matches_the_oracle_everywhere() {
     let mut sky = Sky::new(&gpu, engine::shot::FORMAT);
     assert!(
         sky.ensure(&gpu, &air, BOTTOM, ALBEDO),
-        "перший раз таблицю рахують"
+        "the first time the table is computed"
     );
 
     let table = sky
         .read_transmittance(&gpu)
-        .expect("таблиця мала прочитатися");
+        .expect("the table should have been read");
     let width = atmosphere::TRANSMITTANCE_WIDTH;
     let height = atmosphere::TRANSMITTANCE_HEIGHT;
     assert_eq!(table.len(), (width * height) as usize);
@@ -88,8 +95,8 @@ fn the_transmittance_table_matches_the_oracle_everywhere() {
     let mut worst_at = (0u32, 0u32, 0usize);
     for y in 0..height {
         for x in 0..width {
-            // Кінці одиничного діапазону — у центрах крайніх текселів, як у
-            // шейдері: ділиться на `розмір − 1`, а не на розмір.
+            // The ends of the unit range sit at the centres of the edge
+            // texels, as in the shader: divide by `size - 1`, not by the size.
             let u = f64::from(x) / f64::from(width - 1);
             let v = f64::from(y) / f64::from(height - 1);
             let (r, mu) = atmosphere::uv_to_r_mu(&air, BOTTOM, u, v);
@@ -105,23 +112,25 @@ fn the_transmittance_table_matches_the_oracle_everywhere() {
         }
     }
 
-    // 10⁻³ — виміряна стеля, а не кругле число з голови. Складається вона з
-    // двох доданків, і більший тут не той, на який думається: крок
-    // інтегрування (500 проти 2048 в оракула) дає 3.6·10⁻⁵ навіть на
-    // найгіршому промені таблиці, а решту — **зберігання**: half-float має 11
-    // значущих бітів, тобто крок 5·10⁻⁴ біля одиниці. Тобто таблицю обмежує
-    // формат, а не арифметика, і додавати шейдеру кроків не було б чого.
+    // 1e-3 is a measured ceiling, not a round number off the top of the head.
+    // It is made of two terms, and the larger one here is not the one you
+    // would think: the integration step (500 against the oracle's 2048) gives
+    // 3.6e-5 even on the worst ray of the table, and the rest is **storage**:
+    // a half-float has 11 significant bits, i.e. a step of 5e-4 near one. So
+    // the table is limited by the format, not by the arithmetic, and giving
+    // the shader more steps would buy nothing.
     assert!(
         worst < 1.0e-3,
-        "найгірша розбіжність {worst} у текселі {worst_at:?}"
+        "worst divergence {worst} at texel {worst_at:?}"
     );
 }
 
-/// Перший стовпець таблиці — вертикальний промінь, і його оракул замкнений.
+/// The first column of the table is the vertical ray, and its oracle is
+/// closed-form.
 ///
-/// Окремо від тесту вище, бо тут порівняння йде **не з чисельним
-/// інтегруванням узагалі**: `vertical_optical_depth` — формула. Отже шейдер
-/// звіряється з арифметикою, у якій кроку інтегрування немає.
+/// Separate from the test above, because here the comparison is **not against
+/// numeric integration at all**: `vertical_optical_depth` is a formula. So the
+/// shader is checked against arithmetic that has no integration step in it.
 #[test]
 fn the_vertical_column_matches_the_closed_form() {
     let Some(gpu) = gpu() else { return };
@@ -131,19 +140,20 @@ fn the_vertical_column_matches_the_closed_form() {
     sky.ensure(&gpu, &air, BOTTOM, ALBEDO);
     let table = sky
         .read_transmittance(&gpu)
-        .expect("таблиця мала прочитатися");
+        .expect("the table should have been read");
     let width = atmosphere::TRANSMITTANCE_WIDTH;
 
     let mut worst = 0.0f64;
     for y in 0..atmosphere::TRANSMITTANCE_HEIGHT {
         let v = f64::from(y) / f64::from(atmosphere::TRANSMITTANCE_HEIGHT - 1);
         let (r, mu) = atmosphere::uv_to_r_mu(&air, BOTTOM, 0.0, v);
-        // Рівно вертикаль з точністю до округлення `f64`, а не «майже»:
-        // заради цього кінці одиничного діапазону й сідають у центри крайніх
-        // текселів. До S2 найближчий до вертикалі тексель мав `mu = 0.98`.
+        // Exactly the vertical to within `f64` rounding, not "almost": that is
+        // what the ends of the unit range sitting at the centres of the edge
+        // texels is for. Before S2 the texel closest to the vertical had
+        // `mu = 0.98`.
         assert!(
             (mu - 1.0).abs() < 1.0e-12,
-            "рядок {y}: стовпець 0 має дивитися строго вгору, а mu = {mu}"
+            "row {y}: column 0 should look straight up, but mu = {mu}"
         );
 
         let closed = atmosphere::vertical_optical_depth(&air, BOTTOM, r);
@@ -153,14 +163,14 @@ fn the_vertical_column_matches_the_closed_form() {
             worst = worst.max((f64::from(got[channel]) - expected).abs());
         }
     }
-    assert!(worst < 2.0e-3, "найгірша розбіжність із формулою {worst}");
+    assert!(worst < 2.0e-3, "worst divergence from the formula {worst}");
 }
 
-/// Пропускання зростає з висотою й спадає з нахилом променя.
+/// Transmittance grows with altitude and falls as the ray tilts.
 ///
-/// Дві монотонності, які не залежать від жодного числа й ловлять переплутані
-/// осі таблиці — помилку, яку допуск не бачить, бо після перестановки обидва
-/// боки порівняння читають той самий неправильний тексель.
+/// Two monotonicities that depend on no number at all and catch swapped table
+/// axes -- a mistake a tolerance cannot see, because after a swap both sides
+/// of the comparison read the same wrong texel.
 #[test]
 fn the_table_is_monotone_in_both_of_its_axes() {
     let Some(gpu) = gpu() else { return };
@@ -170,36 +180,37 @@ fn the_table_is_monotone_in_both_of_its_axes() {
     sky.ensure(&gpu, &air, BOTTOM, ALBEDO);
     let table = sky
         .read_transmittance(&gpu)
-        .expect("таблиця мала прочитатися");
+        .expect("the table should have been read");
     let width = atmosphere::TRANSMITTANCE_WIDTH;
     let height = atmosphere::TRANSMITTANCE_HEIGHT;
     let at = |x: u32, y: u32| f64::from(table[(y * width + x) as usize][2]);
 
-    // Вище — прозоріше: над головою лишається менше повітря.
+    // Higher up is clearer: less air is left overhead.
     for y in 1..height {
         assert!(
             at(0, y) >= at(0, y - 1) - 1.0e-6,
-            "рядок {y}: {} проти {}",
+            "row {y}: {} against {}",
             at(0, y),
             at(0, y - 1)
         );
     }
-    // Полого — темніше: промінь іде крізь довший шлях.
+    // Shallower is darker: the ray goes through a longer path.
     for x in 1..width {
         assert!(
             at(x, height / 2) <= at(x - 1, height / 2) + 1.0e-6,
-            "стовпець {x}: {} проти {}",
+            "column {x}: {} against {}",
             at(x, height / 2),
             at(x - 1, height / 2)
         );
     }
 }
 
-/// Таблиця не перераховується, поки повітря те саме, і перераховується, коли
-/// не те.
+/// The table is not recomputed while the air is the same, and is recomputed
+/// when it is not.
 ///
-/// Правило 5 етапу S каже, що пропускання рахують «раз назавжди». Твердження,
-/// яке легко написати в коментарі й важко помітити зламаним, — тож воно тут.
+/// Rule 5 of stage S says transmittance is computed "once and for all". A
+/// claim easy to write in a comment and hard to notice broken -- so here it
+/// is.
 #[test]
 fn the_table_is_recomputed_only_when_the_air_changes() {
     let Some(gpu) = gpu() else { return };
@@ -208,49 +219,50 @@ fn the_table_is_recomputed_only_when_the_air_changes() {
     let mut sky = Sky::new(&gpu, engine::shot::FORMAT);
     assert!(
         sky.ensure(&gpu, &air, BOTTOM, ALBEDO),
-        "перший раз — рахуємо"
+        "the first time we compute"
     );
     assert!(
         !sky.ensure(&gpu, &air, BOTTOM, ALBEDO),
-        "те саме повітря — не рахуємо"
+        "the same air -- we do not compute"
     );
 
-    // Інший радіус того самого тіла — інша атмосфера: висота над поверхнею
-    // рахується від нього.
+    // A different radius for the same body means different air: the altitude
+    // above the surface is counted from it.
     assert!(
         sky.ensure(&gpu, &air, BOTTOM + 1000.0, ALBEDO),
-        "інший радіус — інша таблиця"
+        "a different radius -- a different table"
     );
 
     let mut thicker = air;
     thicker.rayleigh_height_m *= 2.0;
     assert!(
         sky.ensure(&gpu, &thicker, BOTTOM + 1000.0, ALBEDO),
-        "інше повітря"
+        "different air"
     );
 
-    // І альбедо теж у ключі: воно міняє таблицю багаторазового розсіювання,
-    // тож перебудова мусить статися й від нього самого (T7h).
+    // And the albedo is in the key too: it changes the multiple-scattering
+    // table, so a rebuild has to happen for it alone as well (T7h).
     assert!(
         sky.ensure(&gpu, &thicker, BOTTOM + 1000.0, [0.5, 0.5, 0.5]),
-        "інше альбедо — інша таблиця"
+        "a different albedo -- a different table"
     );
     assert!(
         !sky.ensure(&gpu, &thicker, BOTTOM + 1000.0, [0.5, 0.5, 0.5]),
-        "те саме альбедо — не рахуємо вдруге"
+        "the same albedo -- we do not compute twice"
     );
 }
 
-/// Розміри таблиці записані і в Rust, і в Slang — і мусять збігатися.
+/// The table sizes are written down in both Rust and Slang -- and have to
+/// match.
 ///
-/// Спільної константи між ними не існує, тож звіряє їх сторож, який греппить
-/// файл шейдера. Той самий прийом, що з `SIDE` у патчів (R6a).
+/// There is no constant shared between them, so a guard that greps the shader
+/// file compares them. The same trick as with `SIDE` for patches (R6a).
 #[test]
 fn the_table_size_is_the_same_on_both_sides() {
     let source = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders/sky.slang"),
     )
-    .expect("шейдер мав прочитатися");
+    .expect("the shader should have been read");
 
     for (name, value) in [
         ("TRANSMITTANCE_WIDTH", atmosphere::TRANSMITTANCE_WIDTH),
@@ -268,21 +280,22 @@ fn the_table_size_is_the_same_on_both_sides() {
         let wanted = format!("static const uint {name} = {value}u;");
         assert!(
             source.contains(&wanted),
-            "у sky.slang немає рядка «{wanted}»"
+            "sky.slang has no line \"{wanted}\""
         );
     }
 }
 
 // ---------------------------------------------------------------------------
-// S3 — багаторазове розсіювання
+// S3 -- multiple scattering
 // ---------------------------------------------------------------------------
 
-/// Таблиця й CPU-двійник дають те саме `ψ`.
+/// The table and the CPU twin give the same `psi`.
 ///
-/// Двійник читає **свою** таблицю пропускання, побудовану в `f64`, а не ту, що
-/// на GPU. Тобто в порівняння входить і похибка самої таблиці, і це навмисно:
-/// у кадрі шейдер теж читатиме таблицю, а не інтеграл, і перевіряти треба той
-/// шлях, яким небо справді малюється.
+/// The twin reads **its own** transmittance table, built in `f64`, not the one
+/// on the GPU. So the error of the table itself enters the comparison, and
+/// that is deliberate: in the frame the shader will read a table rather than
+/// an integral, and what has to be checked is the path the sky is really drawn
+/// by.
 #[test]
 fn the_multiscatter_table_matches_the_oracle() {
     let Some(gpu) = gpu() else { return };
@@ -292,13 +305,13 @@ fn the_multiscatter_table_matches_the_oracle() {
     sky.ensure(&gpu, &air, BOTTOM, ALBEDO);
     let table = sky
         .read_multiscatter(&gpu)
-        .expect("таблиця мала прочитатися");
+        .expect("the table should have been read");
     let size = atmosphere::MULTISCATTER_SIZE;
     assert_eq!(table.len(), (size * size) as usize);
 
-    // Таблиця пропускання для двійника — тими самими 500 кроками, що й у
-    // шейдері: тут перевіряється розсіювання, а точність пропускання вже
-    // перевірена вище й окремо.
+    // The transmittance table for the twin uses the same 500 steps as the
+    // shader: what is checked here is the scattering, and the precision of
+    // transmittance has already been checked above and separately.
     let transmittance = atmosphere::Table::transmittance(&air, BOTTOM, 500);
 
     let mut worst = 0.0f64;
@@ -322,28 +335,31 @@ fn the_multiscatter_table_matches_the_oracle() {
                 largest = largest.max(psi[channel]);
                 let expected = psi[channel];
                 let difference = (f64::from(got[channel]) - expected).abs();
-                // Допуск має два доданки, бо джерел похибки два, і на різних
-                // кінцях таблиці головує різне.
+                // The tolerance has two terms, because there are two sources
+                // of error, and at the two ends of the table different ones
+                // dominate.
                 //
-                // 1% — **арифметика**: двійник читає власну таблицю пропускання
-                // в `f64`, шейдер — свою в half-float, і різниця вибірок
-                // проходить крізь усі 64 напрямки. Виміряно: удень розбіжність
-                // 0.1%, тобто вдесятеро менша за допуск.
+                // 1% is **arithmetic**: the twin reads its own transmittance
+                // table in `f64`, the shader reads its own in half-float, and
+                // the difference of the samples passes through all 64
+                // directions. Measured: by day the divergence is 0.1%, i.e. a
+                // tenth of the tolerance.
                 //
-                // 3·10⁻⁶ — **розрив, а не округлення**, і це головне, що варто
-                // тут прочитати. Уночі `ψ` падає до 10⁻⁶ і складається з
-                // кількох семплів, чий внесок вирішує **сходинка**: `lit` — це
-                // «промінь до Сонця не зустрів поверхні», тобто крок, а не
-                // плавна функція. Біля термінатора один ULP у геометрії
-                // перекидає цілий семпл із одного боку сходинки на інший, і два
-                // різні пристрої мають повне право вирішити по-різному.
-                // Відносного допуску для цього не існує: різниця там —
-                // порядку самого значення.
+                // 3e-6 is **a discontinuity, not rounding**, and that is the
+                // main thing to read here. At night `psi` falls to 1e-6 and is
+                // made of a few samples whose contribution is decided by a
+                // **step**: `lit` is "the ray to the Sun did not meet the
+                // surface", i.e. a step rather than a smooth function. Near
+                // the terminator one ULP in the geometry tips a whole sample
+                // from one side of the step to the other, and two different
+                // devices have every right to decide differently. There is no
+                // relative tolerance for this: the difference there is on the
+                // order of the value itself.
                 //
-                // Спіймано на CI (llvmpipe) там, де NVIDIA сходилася: тексель
-                // (13, 16), тобто Сонце на 9° під горизонтом. Той самий клас,
-                // що «нічию на GPU не перевіряють» у F3, лише сходинка тут не
-                // в глибині, а в тіні.
+                // Caught on CI (llvmpipe) where NVIDIA agreed: texel (13, 16),
+                // i.e. the Sun 9 deg below the horizon. The same class as "you
+                // do not check a tie on the GPU" in F3, only the step here is
+                // in the shadow rather than in the depth.
                 let allowed = 3.0e-6 + 0.01 * expected.max(f64::from(got[channel]));
                 if difference - allowed > worst {
                     worst = difference - allowed;
@@ -353,19 +369,19 @@ fn the_multiscatter_table_matches_the_oracle() {
         }
     }
 
-    assert!(largest > 0.0, "таблиця порожня — усе нулі");
+    assert!(largest > 0.0, "the table is empty -- all zeroes");
     assert!(
         worst <= 0.0,
-        "тексель {worst_at:?} виходить за допуск на {worst}"
+        "texel {worst_at:?} exceeds the tolerance by {worst}"
     );
 }
 
-/// Енергія не росте: ряд розсіювань збігається скрізь.
+/// The energy does not grow: the scattering series converges everywhere.
 ///
-/// `ψ = L₂/(1 − f)` має сенс лише при `f < 1`; при `f ≥ 1` кожне наступне
-/// розсіювання додавало б не менше за попереднє, і сума розходилася б. Це і є
-/// оракул кроку, названий у ROADMAP-ATMOSPHERE.md, і саме заради нього `f`
-/// лежить в альфі таблиці.
+/// `psi = L2/(1 - f)` only makes sense while `f < 1`; at `f >= 1` every
+/// further scattering would add no less than the one before, and the sum would
+/// diverge. This is the step's oracle, named in ROADMAP-ATMOSPHERE.md, and it
+/// is exactly what `f` lives in the table's alpha for.
 #[test]
 fn every_further_scattering_adds_less_than_the_one_before() {
     let Some(gpu) = gpu() else { return };
@@ -375,44 +391,47 @@ fn every_further_scattering_adds_less_than_the_one_before() {
     sky.ensure(&gpu, &air, BOTTOM, ALBEDO);
     let table = sky
         .read_multiscatter(&gpu)
-        .expect("таблиця мала прочитатися");
+        .expect("the table should have been read");
 
     let mut largest_fraction = 0.0f32;
     for (index, texel) in table.iter().enumerate() {
         let fraction = texel[3];
         assert!(
             (0.0..1.0).contains(&fraction),
-            "тексель {index}: частка {fraction} — ряд не збігається"
+            "texel {index}: fraction {fraction} -- the series does not converge"
         );
         largest_fraction = largest_fraction.max(fraction);
         for (channel, value) in texel.iter().enumerate().take(3) {
             assert!(
                 value.is_finite() && *value >= 0.0,
-                "тексель {index}, канал {channel}: {value}"
+                "texel {index}, channel {channel}: {value}"
             );
         }
     }
-    // Виміряно: найбільша частка помітно менша за одиницю, тобто до межі
-    // збіжності повітря Землі не підходить близько. Число тут — сторож на
-    // випадок, коли хтось підніме розсіювання й тихо наблизиться до неї.
+    // Measured: the largest fraction is noticeably below one, i.e. Earth's air
+    // does not come close to the convergence limit. The number here is a guard
+    // for the case where somebody raises the scattering and quietly
+    // approaches it.
     assert!(
         largest_fraction < 0.5,
-        "найбільша частка {largest_fraction} — підозріло близько до межі"
+        "the largest fraction is {largest_fraction} -- suspiciously close to \
+         the limit"
     );
 }
 
-/// Більше сонця — не менше світла; вище за пік — менше розсіяного.
+/// More sun means no less light; above the peak means less scattered light.
 ///
-/// Дві властивості осей, які ловлять їх перестановку: після неї збіг із
-/// двійником зберігся б (обидва читають той самий неправильний тексель), а ці
-/// — ні.
+/// Two properties of the axes that catch a swap between them: after a swap the
+/// agreement with the twin would survive (both read the same wrong texel), but
+/// these would not.
 ///
-/// **Друга властивість не «монотонно спадає», і це виміряно, а не спрощено.**
-/// Профіль по висоті має максимум на ~6 км: біля самої поверхні нижня півсфера
-/// не світить нічим (альбедо нуль, S3), тож розсіяного там менше, ніж на
-/// кілька кілометрів вище. Далі повітря кінчається, і `ψ` падає монотонно аж
-/// до верхньої межі. Записати сюди «спадає скрізь» означало б підганяти
-/// твердження під зручність.
+/// **The second property is not "falls monotonically", and that is measured
+/// rather than simplified.** The altitude profile has a maximum at ~6 km: right
+/// at the surface the lower hemisphere emits nothing (albedo zero, S3), so
+/// there is less scattered light there than a few kilometres higher. Beyond
+/// that the air runs out and `psi` falls monotonically all the way to the top
+/// boundary. Writing "falls everywhere" here would mean fitting the claim to
+/// convenience.
 #[test]
 fn the_multiscatter_table_is_monotone_in_both_of_its_axes() {
     let Some(gpu) = gpu() else { return };
@@ -422,90 +441,98 @@ fn the_multiscatter_table_is_monotone_in_both_of_its_axes() {
     sky.ensure(&gpu, &air, BOTTOM, ALBEDO);
     let table = sky
         .read_multiscatter(&gpu)
-        .expect("таблиця мала прочитатися");
+        .expect("the table should have been read");
     let size = atmosphere::MULTISCATTER_SIZE;
     let at = |x: u32, y: u32| f64::from(table[(y * size + x) as usize][2]);
 
-    // Сонце вище над горизонтом — розсіяного світла не менше.
+    // The higher the Sun above the horizon, the no less scattered light there
+    // is.
     for y in 0..size {
         for x in 1..size {
             assert!(
                 at(x, y) >= at(x - 1, y) * 0.999,
-                "рядок {y}, стовпець {x}: {} проти {}",
+                "row {y}, column {x}: {} against {}",
                 at(x, y),
                 at(x - 1, y)
             );
         }
     }
 
-    // Профіль по висоті на полудні. Він **не монотонний**, і це не шум — це
-    // озон, і саме тому твердження тут таке дрібне.
+    // The altitude profile at noon. It is **not monotone**, and that is not
+    // noise -- it is the ozone, and that is exactly why the claim here is so
+    // small.
     //
-    // Виміряно: максимум на 6.5 км (біля самої поверхні нижня півсфера не
-    // світить нічим — альбедо нуль, S3), далі спад, провал на 35 км — там
-    // озоновий шар з'їдає те, що мало б розсіятись, — тоді **другий підйом** до
-    // 58 км, уже над шаром, і врешті спад до верхньої межі, де розсіювати нема
-    // на чому. Написати сюди «спадає з висотою» було б простіше й неправдою.
+    // Measured: a maximum at 6.5 km (right at the surface the lower hemisphere
+    // emits nothing -- albedo zero, S3), then a decline, a dip at 35 km --
+    // there the ozone layer eats what would otherwise have scattered -- then a
+    // **second rise** to 58 km, already above the layer, and finally a decline
+    // to the top boundary, where there is nothing left to scatter off. Writing
+    // "falls with altitude" here would have been simpler and untrue.
     let noon: Vec<f64> = (0..size).map(|y| at(size - 1, y)).collect();
     let peak = noon
         .iter()
         .enumerate()
         .max_by(|a, b| a.1.total_cmp(b.1))
         .map(|(index, _)| index)
-        .expect("стовпець не порожній");
+        .expect("the column is not empty");
     assert!(
         peak < (size / 8) as usize,
-        "пік розсіювання на рядку {peak} з {size} — це вже не приземний шар"
+        "the scattering peak is at row {peak} of {size} -- that is no longer \
+         the surface layer"
     );
 
-    // Провал в озоновому шарі: мінімум між 20 і 50 км нижчий і за те, що під
-    // ним, і за те, що над ним.
+    // The dip in the ozone layer: the minimum between 20 and 50 km is lower
+    // than both what is below it and what is above it.
     let layer = 6..16;
     let dip = layer
         .clone()
         .min_by(|a, b| noon[*a].total_cmp(&noon[*b]))
-        .expect("діапазон не порожній");
+        .expect("the range is not empty");
     assert!(
         noon[dip] < noon[4] && noon[dip] < noon[18],
-        "провалу в озоновому шарі немає: {} проти {} знизу й {} згори",
+        "there is no dip in the ozone layer: {} against {} below and {} above",
         noon[dip],
         noon[4],
         noon[18]
     );
 
-    // Але повітря таки кінчається: на верхній межі розсіяного вдвічі менше, ніж
-    // у піку. Це і є те, що перестановка осей зламала б.
+    // But the air does run out: at the top boundary there is half as much
+    // scattered light as at the peak. That is what a swap of the axes would
+    // break.
     assert!(
         noon[(size - 1) as usize] < noon[peak] * 0.5,
-        "на верхній межі {} проти піка {}",
+        "at the top boundary {} against the peak {}",
         noon[(size - 1) as usize],
         noon[peak]
     );
 }
 
 // ---------------------------------------------------------------------------
-// S4 — небо
+// S4 -- the sky
 // ---------------------------------------------------------------------------
 
-/// Земля під небом робить небо світлішим — і на скільки саме (T7h).
+/// The ground under the sky makes the sky brighter -- and by exactly how much
+/// (T7h).
 ///
-/// До T7h альбедо поверхні стояло нулем, і то було рішення: кольору поверхні
-/// в сцені не існувало взагалі, тож будь-яке число було б вигаданим. Тепер
-/// воно приходить з тайлсета (`Colour::mean`), і цей тест каже, що доданок не
-/// лише є в коді, а й доходить до яскравості.
+/// Before T7h the surface albedo was a zero, and that was a decision: the
+/// surface colour did not exist in the scene at all, so any number would have
+/// been made up. Now it comes from the tileset (`Colour::mean`), and this test
+/// says the term is not merely present in the code but reaches the brightness.
 ///
-/// Двійник, а не GPU: питання тут фізичне — «чи світліше», — і відповідає на
-/// нього та сама арифметика, яку шейдер уже звірено відтворює
-/// (`the_multiscatter_table_matches_the_oracle` ганяє обидві гілки з
-/// **ненульовим** альбедо).
+/// The twin rather than the GPU: the question here is physical -- "is it
+/// brighter" -- and it is answered by the same arithmetic the shader is
+/// already verified to reproduce
+/// (`the_multiscatter_table_matches_the_oracle` runs both branches with a
+/// **non-zero** albedo).
 #[test]
 fn the_ground_under_the_sky_makes_it_brighter() {
     let air = Atmosphere::EARTH.with_surface(BOTTOM);
     let dark = atmosphere::Model::build(&air, BOTTOM, 500, [0.0; 3]);
     let lit = atmosphere::Model::build(&air, BOTTOM, 500, twin_albedo());
 
-    // Зеніт з рівня моря, Сонце високо: там багаторазове розсіювання важить
-    // найбільше, тобто відбите знизу світло має де проявитися.
+    // The zenith from sea level, the Sun high: that is where multiple
+    // scattering weighs most, i.e. where light reflected from below has room
+    // to show.
     let r = BOTTOM + 2.0;
     let mut worst = f64::INFINITY;
     let mut best: f64 = 0.0;
@@ -516,8 +543,8 @@ fn the_ground_under_the_sky_makes_it_brighter() {
             for channel in 0..3 {
                 assert!(
                     b[channel] >= a[channel],
-                    "альбедо {:.3} зробило небо темнішим при mu_s {mu_s}, \
-                     mu_v {mu_v}, канал {channel}: {} проти {}",
+                    "albedo {:.3} made the sky darker at mu_s {mu_s}, mu_v \
+                     {mu_v}, channel {channel}: {} against {}",
                     twin_albedo()[channel],
                     b[channel],
                     a[channel]
@@ -528,20 +555,22 @@ fn the_ground_under_the_sky_makes_it_brighter() {
             }
         }
     }
-    println!("  небо світлішає в {worst:.4}…{best:.4} рази при альбедо {ALBEDO:?}");
+    println!("  the sky brightens by {worst:.4}...{best:.4} times at albedo {ALBEDO:?}");
 
-    // І приріст помітний: доданок, загублений у нулях, дав би рівно одиницю.
+    // And the gain is noticeable: a term lost among zeroes would have given
+    // exactly one.
     assert!(
         best > 1.005,
-        "найбільший приріст лише {best:.5} — доданок нікуди не дійшов"
+        "the largest gain is only {best:.5} -- the term never arrived anywhere"
     );
 }
 
-/// Таблиця неба збігається з двійником, і на трьох різних камерах.
+/// The sky table agrees with the twin, and from three different cameras.
 ///
-/// Три, а не одна: параметризація по зеніту залежить від висоти (горизонт з
-/// десяти кілометрів нижчий, ніж із рівня моря), а розподіл світла — від того,
-/// де Сонце. Одна камера перевірила б одну діагональ таблиці.
+/// Three, not one: the parametrisation along the zenith depends on the
+/// altitude (the horizon from ten kilometres up is lower than from sea level),
+/// and the distribution of light depends on where the Sun is. One camera would
+/// check one diagonal of the table.
 #[test]
 fn the_sky_table_matches_the_oracle_from_three_cameras() {
     let Some(gpu) = gpu() else { return };
@@ -550,24 +579,26 @@ fn the_sky_table_matches_the_oracle_from_three_cameras() {
     let mut sky = Sky::new(&gpu, engine::shot::FORMAT);
     sky.ensure(&gpu, &air, BOTTOM, ALBEDO);
 
-    // 500 кроків у таблиці пропускання — рівно стільки, скільки в шейдері:
-    // тут перевіряється небо, а точність пропускання вже перевірена окремо.
+    // 500 steps in the transmittance table -- exactly as many as in the
+    // shader: what is checked here is the sky, and the precision of
+    // transmittance has already been checked separately.
     let model = atmosphere::Model::build(&air, BOTTOM, 500, twin_albedo());
 
     let width = atmosphere::SKYVIEW_WIDTH;
     let height = atmosphere::SKYVIEW_HEIGHT;
 
-    // Полудень з рівня моря, захід з рівня моря, полудень із двадцяти
-    // кілометрів. `mu_s = 0` — Сонце рівно на геометричному горизонті.
+    // Noon from sea level, sunset from sea level, noon from twenty kilometres.
+    // `mu_s = 0` puts the Sun exactly on the geometric horizon.
     for (label, altitude, mu_s) in [
-        ("полудень з землі", 2.0, 1.0f64),
-        ("захід з землі", 2.0, 0.0),
-        ("полудень із 20 км", 20_000.0, 1.0),
+        ("noon from the ground", 2.0, 1.0f64),
+        ("sunset from the ground", 2.0, 0.0),
+        ("noon from 20 km", 20_000.0, 1.0),
     ] {
         let r = BOTTOM + altitude;
-        // Таблиця неба читає з камери рівно два числа — радіус і `mu_s`, — тож
-        // решта `View` тут довільна, аби була несуперечлива: Сонце в зеніті
-        // вздовж `z`, камера теж на `z`, і `mu_s` виходить сам.
+        // The sky table reads exactly two numbers off the camera -- the radius
+        // and `mu_s` -- so the rest of `View` here is arbitrary as long as it
+        // is consistent: the Sun at the zenith along `z`, the camera on `z`
+        // too, and `mu_s` follows by itself.
         let view = engine::sky::View {
             eye: [0.0, 0.0, r],
             sun: [(1.0 - mu_s * mu_s).sqrt() as f32, 0.0, mu_s as f32],
@@ -578,7 +609,7 @@ fn the_sky_table_matches_the_oracle_from_three_cameras() {
         };
         assert!(
             (view.sun_zenith_cos() - mu_s).abs() < 1.0e-9,
-            "фікстура не дає {mu_s}"
+            "the fixture does not give {mu_s}"
         );
         let mut encoder = gpu
             .device
@@ -586,16 +617,18 @@ fn the_sky_table_matches_the_oracle_from_three_cameras() {
         sky.prepare_view(&gpu, &mut encoder, &view);
         gpu.queue.submit([encoder.finish()]);
 
-        let table = sky.read_skyview(&gpu).expect("таблиця мала прочитатися");
+        let table = sky
+            .read_skyview(&gpu)
+            .expect("the table should have been read");
         assert_eq!(table.len(), (width * height) as usize);
 
         let mut worst = 0.0f64;
         let mut worst_at = (0u32, 0u32);
         let mut largest = 0.0f64;
-        // Кожен четвертий тексель: двійник рахує 32 кроки на промінь і читає
-        // дві таблиці, тобто повна сітка коштувала б хвилин. Крок 4 лишає
-        // 1296 напрямків — на два порядки більше, ніж треба, щоб побачити
-        // помилку в параметризації.
+        // Every fourth texel: the twin runs 32 steps per ray and reads two
+        // tables, so a full grid would cost minutes. A step of 4 leaves 1296
+        // directions -- two orders more than needed to see a mistake in the
+        // parametrisation.
         for y in (0..height).step_by(4) {
             for x in (0..width).step_by(4) {
                 let u = f64::from(x) / f64::from(width - 1);
@@ -605,17 +638,18 @@ fn the_sky_table_matches_the_oracle_from_three_cameras() {
                 let got = table[(y * width + x) as usize];
                 for channel in 0..3 {
                     largest = largest.max(expected[channel]);
-                    // Той самий склад допуску, що в S3, і абсолютний доданок
-                    // той самий за причиною: **сходинка тіні**, а не
-                    // округлення. Напрямки під горизонтом у бік Сонця несуть
-                    // одиниці 10⁻⁶, і в них вирішує, з якого боку від
-                    // термінатора опинився окремий семпл; llvmpipe і NVIDIA
-                    // вирішують по-різному, і обидва мають рацію.
+                    // The same composition of tolerance as in S3, and the
+                    // absolute term is the same for the same reason: **the
+                    // shadow step**, not rounding. Directions below the horizon
+                    // towards the Sun carry units of 1e-6, and in them what
+                    // decides is which side of the terminator an individual
+                    // sample landed on; llvmpipe and NVIDIA decide differently,
+                    // and both are right.
                     //
-                    // Відносний доданок більший, ніж у S3 (5% проти 1%), і теж
-                    // з названої причини: уздовж променя читаються **дві**
-                    // таблиці, обидві на GPU в half-float, і їхні похибки
-                    // складаються.
+                    // The relative term is larger than in S3 (5% against 1%),
+                    // and also for a stated reason: along the ray **two**
+                    // tables are read, both on the GPU in half-float, and
+                    // their errors add up.
                     let allowed = 3.0e-6 + 0.05 * expected[channel].max(f64::from(got[channel]));
                     let difference = (f64::from(got[channel]) - expected[channel]).abs();
                     if difference - allowed > worst {
@@ -627,20 +661,21 @@ fn the_sky_table_matches_the_oracle_from_three_cameras() {
         }
         assert!(
             largest > 1.0e-4,
-            "{label}: таблиця темна, найбільше {largest}"
+            "{label}: the table is dark, the largest is {largest}"
         );
         assert!(
             worst <= 0.0,
-            "{label}: тексель {worst_at:?} виходить за допуск на {worst}"
+            "{label}: texel {worst_at:?} exceeds the tolerance by {worst}"
         );
     }
 }
 
-/// Пряме й зворотне перетворення осей неба дають ту саму точку.
+/// The forward and inverse transforms of the sky axes give the same point.
 ///
-/// Не тавтологія: пряме читає таблицю, зворотне її пише, і саме розбіжність між
-/// ними дала б небо, зсунуте відносно Сонця, — помилку, яку в кадрі видно як
-/// «захід не там».
+/// Not a tautology: the forward one reads the table, the inverse writes it,
+/// and it is precisely a divergence between them that would give a sky offset
+/// against the Sun -- a mistake visible in the frame as "the sunset is in the
+/// wrong place".
 #[test]
 fn the_sky_parametrisation_survives_a_round_trip() {
     for altitude in [2.0, 10_000.0, 90_000.0] {
@@ -655,30 +690,32 @@ fn the_sky_parametrisation_survives_a_round_trip() {
                 worst = worst.max((u - u2).abs()).max((v - v2).abs());
             }
         }
-        assert!(worst < 1.0e-6, "висота {altitude}: розходження {worst}");
+        assert!(worst < 1.0e-6, "altitude {altitude}: mismatch {worst}");
     }
 }
 
-/// Горизонт лежить рівно посередині таблиці, і він падає з висотою.
+/// The horizon sits exactly in the middle of the table, and it drops with
+/// height.
 ///
-/// Це і є та властивість, заради якої вісь зеніту нелінійна: половина рядків
-/// віддана небу, половина — тому, що під горизонтом, а межа між ними —
-/// **горизонт цієї висоти**, а не геометрична горизонталь.
+/// This is the property the zenith axis is non-linear for: half the rows go to
+/// the sky, half to what is below the horizon, and the boundary between them
+/// is **the horizon at this altitude**, not the geometric horizontal.
 #[test]
 fn the_horizon_sits_in_the_middle_of_the_table_and_drops_with_height() {
     let mut previous = f64::INFINITY;
     for altitude in [2.0, 10_000.0, 100_000.0] {
         let r = BOTTOM + altitude;
         let (mu_v, _) = atmosphere::skyview_uv(BOTTOM, r, 0.0, 0.5);
-        // Горизонт з висоти `h` має `cos(зеніт) = −√(r²−bottom²)/r`.
+        // The horizon from altitude `h` has
+        // `cos(zenith) = -sqrt(r^2 - bottom^2)/r`.
         let expected = -(r * r - BOTTOM * BOTTOM).sqrt() / r;
         assert!(
             (mu_v - expected).abs() < 1.0e-9,
-            "висота {altitude}: {mu_v} проти {expected}"
+            "altitude {altitude}: {mu_v} against {expected}"
         );
         assert!(
             mu_v < previous,
-            "горизонт не опустився на висоті {altitude}"
+            "the horizon did not drop at altitude {altitude}"
         );
         previous = mu_v;
     }
