@@ -1,34 +1,35 @@
-//! Вершинна стадія розкладає список трикутників так само, як це робив
-//! індексний буфер (ROADMAP-PLANETS.md, R6a).
+//! The vertex stage lays the triangle list out exactly as the index buffer did
+//! (ROADMAP-PLANETS.md, R6a).
 //!
-//! ## Навіщо цей тест існує
+//! ## Why this test exists
 //!
-//! До R6a зшивання рівнів жило в `cubesphere::indices`: шістнадцять індексних
-//! наборів, виклик малювання на патч. Після R6a та сама підміна робиться
-//! арифметикою у вершинному шейдері, і кадр малюється одним викликом на тіло.
+//! Before R6a the stitching of levels lived in `cubesphere::indices`: sixteen
+//! index sets, one draw call per patch. After R6a the same substitution is done
+//! by arithmetic in the vertex shader, and the frame is drawn with one call per
+//! body.
 //!
-//! Отже одне правило тепер записане **двічі** — у Rust і в Slang. Це рівно та
-//! ситуація, у якій два записи розходяться на четвертій правці, і єдине, що
-//! від цього рятує, — сторож, який зіставляє їх напряму.
+//! So one rule is now written down **twice** -- in Rust and in Slang. That is
+//! exactly the situation in which two copies diverge at the fourth edit, and the
+//! only thing that saves you from it is a guard that compares them directly.
 //!
-//! Тут відтворено арифметику шейдера **дослівно**, у тих самих цілих, і
-//! звірено з `cubesphere::indices` для всіх шістнадцяти масок. Це не «те саме,
-//! написане двічі»: ліва частина — переклад Slang рядок у рядок, права —
-//! незалежна реалізація через таблицю вузлів. Збігтися вони можуть лише якщо
-//! обидві правильні.
+//! The shader's arithmetic is reproduced here **verbatim**, in the same
+//! integers, and checked against `cubesphere::indices` for all sixteen masks.
+//! This is not "the same thing written twice": the left-hand side is a
+//! line-by-line translation of Slang, the right-hand side an independent
+//! implementation via a node table. They can only agree if both are correct.
 //!
-//! Знімок цього не ловить, і це виміряно: `--shot` після R6a бітово той самий,
-//! що до нього, — але сцена зондів рушія має п'ять патчів, і **жодного зшитого
-//! ребра**. Тобто бітова рівність кадру доводить розкладку трикутників і
-//! нічого не каже про підміну вузлів.
+//! A screenshot does not catch this, and that is measured: `--shot` after R6a
+//! is bitwise the same as before it -- but the engine's probe scene has five
+//! patches and **not a single stitched edge**. That is, bitwise equality of the
+//! frame proves the triangle layout and says nothing about node substitution.
 
 use engine::cubesphere::{self, SIDE};
 
-/// Переклад `node_of` зі `shaders/patch.slang` рядок у рядок.
+/// A line-by-line translation of `node_of` from `shaders/patch.slang`.
 ///
-/// Свідомо незграбний: `u32`, ділення з остачею, ті самі імена. Якщо колись
-/// захочеться написати це «гарніше» — саме тоді він і перестане бути звіркою
-/// з шейдером.
+/// Deliberately clumsy: `u32`, division with remainder, the same names. If one
+/// day it feels tempting to write this "more nicely" -- that is exactly when it
+/// stops being a comparison against the shader.
 fn node_of(vertex: u32, mask: u32) -> u32 {
     const SIDE_U: u32 = SIDE as u32;
     const NODES: u32 = SIDE_U + 1;
@@ -63,8 +64,8 @@ fn node_of(vertex: u32, mask: u32) -> u32 {
     a * NODES + b
 }
 
-/// Для всіх шістнадцяти масок арифметика шейдера дає той самий список вузлів,
-/// що й індексний буфер — вершина за вершиною, у тому самому порядку.
+/// For all sixteen masks the shader's arithmetic gives the same node list as
+/// the index buffer -- vertex by vertex, in the same order.
 #[test]
 fn the_shader_walks_the_same_triangles_as_the_index_buffer() {
     let count = SIDE * SIDE * 6;
@@ -76,33 +77,33 @@ fn the_shader_walks_the_same_triangles_as_the_index_buffer() {
             let by_shader = node_of(vertex as u32, u32::from(mask));
             assert_eq!(
                 by_shader, wanted,
-                "маска {mask:04b}, вершина {vertex}: шейдер дає вузол \
-                 {by_shader}, індексний буфер — {wanted}"
+                "mask {mask:04b}, vertex {vertex}: the shader gives node \
+                 {by_shader}, the index buffer {wanted}"
             );
         }
     }
-    println!("  {count} вершин × 16 масок збіглися до одного вузла");
+    println!("  {count} vertices x 16 masks agreed down to a single node");
 }
 
-/// Сітка в шейдері й сітка в коді — те саме число.
+/// The grid in the shader and the grid in the code are the same number.
 ///
-/// `SIDE` записаний і в `cubesphere`, і в `shaders/patch.slang` як
-/// `static const uint SIDE = 32`. Спільної константи між Rust і Slang не
-/// існує, тож лишається сторож — і саме тому він дивиться в **файл шейдера**,
-/// а не повторює число.
+/// `SIDE` is written both in `cubesphere` and in `shaders/patch.slang` as
+/// `static const uint SIDE = 32`. There is no constant shared between Rust and
+/// Slang, so a guard is what is left -- and that is exactly why it looks into
+/// the **shader file** rather than repeating the number.
 #[test]
 fn the_shader_and_the_code_agree_on_the_patch_size() {
     let source = include_str!("../shaders/patch.slang");
     let wanted = format!("static const uint SIDE = {SIDE};");
     assert!(
         source.contains(&wanted),
-        "у shaders/patch.slang немає рядка «{wanted}» — сітка розійшлася з \
-         cubesphere::SIDE, і кадр малюватиме інші трикутники"
+        "shaders/patch.slang has no line \"{wanted}\" -- the grid has diverged \
+         from cubesphere::SIDE, and the frame will draw different triangles"
     );
 }
 
 // ---------------------------------------------------------------------------
-// Відбір у compute (R6b)
+// Culling in compute (R6b)
 
 use engine::camera::Camera;
 use engine::cull;
@@ -115,18 +116,19 @@ use engine::shot;
 const SIZE: u32 = 256;
 const EARTH_RADIUS_M: f64 = 6_371_000.0;
 
-/// **Оракул, заради якого R3 робився на CPU.**
+/// **The oracle R3 was done on the CPU for.**
 ///
-/// Кількість патчів, яку намалював GPU, мусить збігтися з тією, яку відібрав
-/// CPU, — на тих самих вісьмох камерах, що в R2c. Два незалежні шляхи, одне
-/// число. Без цього помилка GPU-відбору виглядає як «десь щось не
-/// намалювалось» і шукається очима.
+/// The number of patches the GPU drew must equal the number the CPU kept -- on
+/// the same eight cameras as in R2c. Two independent paths, one number. Without
+/// it an error in GPU culling looks like "something somewhere did not get
+/// drawn" and is hunted by eye.
 ///
-/// Збіг вимагається **точний**, і це не самовпевненість: обидва шляхи рахують
-/// ту саму формулу, а різниця арифметики (`f64` на CPU проти `f32` на GPU)
-/// може зіграти лише на патчі, який стоїть рівно на межі відбору. План кроку
-/// назвав цю розвилку наперед: якщо збіг не досягається, звужувати треба
-/// твердження, а не допуск. Виміряно — звужувати не довелося.
+/// The agreement demanded is **exact**, and that is not overconfidence: both
+/// paths compute the same formula, and the difference in arithmetic (`f64` on
+/// the CPU against `f32` on the GPU) can only play out on a patch standing
+/// exactly on the culling boundary. The step's plan named that fork in advance:
+/// if agreement is not reached, it is the statement that should be narrowed,
+/// not the tolerance. Measured -- narrowing was not needed.
 #[test]
 fn the_gpu_draws_exactly_as_many_patches_as_the_cpu_kept() {
     let Some(gpu) = Gpu::for_tests() else { return };
@@ -165,7 +167,7 @@ fn the_gpu_draws_exactly_as_many_patches_as_the_cpu_kept() {
                     ];
                     let camera = Camera::look_at(eye, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
 
-                    // Шлях CPU: той самий вибір рівня, той самий відбір.
+                    // The CPU path: the same level selection, the same culling.
                     let body = lod::Body::still([0.0, 0.0, 0.0], EARTH_RADIUS_M);
                     let selection = lod::select(&body, &camera, focal, None);
                     let occluder =
@@ -180,7 +182,7 @@ fn the_gpu_draws_exactly_as_many_patches_as_the_cpu_kept() {
                         aspect,
                     );
 
-                    // Шлях GPU: намалювати кадр і спитати лічильник indirect.
+                    // The GPU path: draw the frame and ask the indirect counter.
                     let mut scene =
                         Scene::new(Camera::look_at(eye, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]));
                     scene.bodies.push(Body {
@@ -201,13 +203,13 @@ fn the_gpu_draws_exactly_as_many_patches_as_the_cpu_kept() {
 
                     let drawn = frame
                         .drawn_patches(&gpu)
-                        .expect("лічильник мав прочитатися");
+                        .expect("the counter should have been read");
 
                     assert_eq!(
                         drawn[0] as usize,
                         visibility.drawn(),
-                        "напрямок ({x}, {y}, {z}), висота {altitude:.1e} м: GPU \
-                         намалював {} патчів, CPU лишив {} з {}",
+                        "direction ({x}, {y}, {z}), altitude {altitude:.1e} m: the \
+                         GPU drew {} patches, the CPU kept {} of {}",
                         drawn[0],
                         visibility.drawn(),
                         selection.patches.len()
@@ -218,5 +220,5 @@ fn the_gpu_draws_exactly_as_many_patches_as_the_cpu_kept() {
         }
     }
 
-    println!("  {checked} камер: GPU і CPU відібрали порівну на кожній");
+    println!("  {checked} cameras: GPU and CPU culled equally on every one");
 }
