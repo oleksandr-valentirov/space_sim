@@ -1,78 +1,87 @@
-//! Проліт повз Місяць по еліптичній орбіті — анімація (зонд етапу T).
+//! A flyby past the Moon on an elliptical orbit -- an animation (stage T
+//! probe).
 //!
-//! Той самий жанр, що [`crate::ship_demo`] і [`crate::moon_demo`], і з тієї
-//! самої причини: показати **тим самим** [`Frame`], який іде у вікно, те, що
-//! етап щойно зробив можливим. Тут воно показано разом, бо разом його ще
-//! ніде не було видно:
+//! The same genre as [`crate::ship_demo`] and [`crate::moon_demo`], and for
+//! the same reason: to show, through the **very same** [`Frame`] that goes to
+//! the window, what the stage has just made possible. Here it is shown all
+//! together, because together it had not been visible anywhere yet:
 //!
-//! - колір поверхні з мозаїки LROC WAC і рельєф LOLA під самим кораблем;
-//! - корпус із Blender (T5d) з GGX-матеріалом металу (T5c);
-//! - **сяйво Місяця на тіньовий бік корпусу** (T6): воно міняється і з
-//!   висотою — форм-фактор диска падає як `sin²θ`, — і з тим, над чим
-//!   корабель летить, бо альбедо береться з асета;
-//! - тонмапер (T5c3): відблиск на корпусі виходить за одиницю й без нього
-//!   злипся б у білу пляму;
-//! - **два тіла в кадрі з різницею відстаней у два порядки**: Місяць за
-//!   тисячі кілометрів і Земля за 384 400 км (R1e й діапазони глибини V3).
+//! - surface colour from the LROC WAC mosaic and LOLA terrain right under the
+//!   ship;
+//! - the hull from Blender (T5d) with a GGX metal material (T5c);
+//! - **the Moon's shine on the shadowed side of the hull** (T6): it changes
+//!   both with altitude -- the disc form factor falls off as `sin^2(theta)` --
+//!   and with whatever the ship is flying over, because the albedo comes from
+//!   the asset;
+//! - the tonemapper (T5c3): the highlight on the hull goes past one and
+//!   without it would clip into a white blob;
+//! - **two bodies in frame two orders of magnitude apart in distance**: the
+//!   Moon a few thousand kilometres away and the Earth at 384 400 km (R1e and
+//!   the depth ranges of V3).
 //!
 //!     cargo run --release -p engine -- --flyby-demo build/flyby.apng
 //!
-//! ## Композиція вибрана числами, а не оком
+//! ## The composition was chosen by numbers, not by eye
 //!
-//! Три вимоги: Місяць у центрі кадру, Земля на тлі, плавний рух. Кожна щось
-//! визначає, і жодну не можна виконати «приблизно».
+//! Three requirements: the Moon centred in frame, the Earth behind it, smooth
+//! motion. Each one pins something down, and none can be met "approximately".
 //!
-//! **Місяць у центрі** означає, що камера дивиться на його центр, а не на
-//! корабель, тобто це вже не [`crate::chase`]: камера третьої особи завжди
-//! тримає в центрі апарат. Корабель відсунуто рівно на [`SHIP_OFF_AXIS`] —
-//! око стоїть радіально над ним і трохи вбік, а кут між цим зсувом і радіусом
-//! і є кут, під яким корабель видно від центра кадру.
+//! **The Moon centred** means the camera looks at its centre rather than at
+//! the ship, i.e. this is no longer [`crate::chase`]: a third-person camera
+//! always keeps the vessel in the middle. The ship is offset by exactly
+//! [`SHIP_OFF_AXIS`] -- the eye stands radially above it and a little to the
+//! side, and the angle between that offset and the radius is the angle at
+//! which the ship is seen from the centre of frame.
 //!
-//! **Земля на тлі — це вимога до орбіти, а не до камери.** Місяць у
-//! припливному захопленні дивиться на Землю довготою 0, і мозаїка в асеті це
-//! відображає; отже камера, спрямована на центр Місяця, бачить за ним Землю
-//! лише тоді, коли корабель летить над **зворотним** боком. Звідси лінія
-//! апсид: апогей на довготі 180° − [`EARTH_MARGIN`], тобто за 20° від
-//! антиземної точки.
+//! **The Earth behind it is a requirement on the orbit, not on the camera.**
+//! The tidally locked Moon faces the Earth with longitude 0, and the mosaic in
+//! the asset reflects that; so a camera aimed at the Moon's centre sees the
+//! Earth behind it only when the ship is flying over the **far** side. Hence
+//! the line of apsides: apoapsis at longitude 180 deg - [`EARTH_MARGIN`], i.e.
+//! 20 deg away from the anti-Earth point.
 //!
-//! ⚠ **Знизу Земля в кадр не потрапляє взагалі, і це геометрія, а не вада
-//! композиції.** Диск Місяця має кутовий радіус 63.7° на висоті 200 км —
-//! ширший за весь кадр, — тож коли камера націлена на центр Місяця, поза
-//! диском не лишається неба. Виміряна доріжка вздовж витка:
+//! WARNING: **From down low the Earth does not enter the frame at all, and
+//! that is geometry, not a flaw in the composition.** The Moon's disc has an
+//! angular radius of 63.7 deg at 200 km altitude -- wider than the whole frame
+//! -- so with the camera aimed at the Moon's centre no sky is left outside the
+//! disc. The measured track along one revolution:
 //!
-//! | висота | Земля від осі | лімб | що в кадрі |
+//! | altitude | Earth off axis | limb | what is in frame |
 //! |---|---|---|---|
-//! | 6000 км (апогей) | 19.7° | 13.0° | Земля з-за лімба |
-//! | 5472 км | 9.6° | 13.9° | **покриття**: Земля за диском |
-//! | 4280 км | 20.5° | 16.8° | Земля знову видима |
-//! | 3048 км | 37.1° | 21.3° | Земля вийшла за край кадру |
-//! | 200 км (перигей) | 159.8° | 63.7° | Земля позаду камери |
+//! | 6000 km (apoapsis) | 19.7 deg | 13.0 deg | Earth clear of the limb |
+//! | 5472 km | 9.6 deg | 13.9 deg | **occultation**: Earth behind the disc |
+//! | 4280 km | 20.5 deg | 16.8 deg | Earth visible again |
+//! | 3048 km | 37.1 deg | 21.3 deg | Earth past the edge of frame |
+//! | 200 km (periapsis) | 159.8 deg | 63.7 deg | Earth behind the camera |
 //!
-//! Тобто Земля в кадрі приблизно чверть витка — у високій його частині, — і
-//! всередині цієї чверті встигає **зайти за лімб і вийти назад**. Покриття
-//! тут справжнє, а не зникнення з кадру, і його оракул — перетин двох кутів.
+//! So the Earth is in frame for roughly a quarter of the revolution -- the
+//! high part of it -- and within that quarter it manages to **go behind the
+//! limb and come back out**. The occultation here is real rather than a
+//! departure from frame, and its oracle is the crossing of two angles.
 //!
-//! Перигей лягає на видимий бік (довгота −20°) — там, де в мозаїці лежать
-//! моря, тобто найбільший контраст альбедо, який має що показати правилу
-//! матеріалу (T4) і сяйву (T6).
+//! Periapsis falls on the near side (longitude -20 deg) -- where the mosaic
+//! holds the maria, i.e. the greatest albedo contrast, which is what gives the
+//! material rule (T4) and the shine (T6) something to show.
 //!
-//! **Плавність — це вибір параметра, за яким беруться кадри.** Рівномірно за
-//! часом апарат майже стоїть біля апогею; рівномірно за ексцентричною
-//! аномалією кутова швидкість стрибає вдвічі на перигеї (`dν/dE` там
-//! `√((1+e)/(1−e))`). Кадри беруться рівномірно за **істинною аномалією**:
-//! тоді напрямок на корабель від центра Місяця повзе зі сталою кутовою
-//! швидкістю. «Верх» камери — стала нормаль орбіти, тож у русі немає ні
-//! ривків, ні крену, і петля замикається без стрибка.
+//! **Smoothness is the choice of the parameter the frames are taken over.**
+//! Uniformly in time the vessel nearly stands still near apoapsis; uniformly
+//! in eccentric anomaly the angular rate doubles at periapsis (`dnu/dE` there
+//! is `sqrt((1+e)/(1-e))`). Frames are taken uniformly in **true anomaly**:
+//! then the direction to the ship from the Moon's centre creeps at a constant
+//! angular rate. The camera's "up" is the constant orbit normal, so the motion
+//! has neither jerks nor roll, and the loop closes without a jump.
 //!
-//! ⚠ **Читати анімацію як швидкість не можна**: час у ній нерівномірний за
-//! побудовою. Сама орбіта при цьому точна — задача двох тіл має замкнену
-//! форму, і жодного інтегрування тут немає.
+//! WARNING: **The animation must not be read as speed** -- time in it is
+//! non-uniform by construction. The orbit itself is exact, though -- the
+//! two-body problem has a closed form, and there is no integration here at
+//! all.
 //!
-//! Це свідомо не `prop_run`. Зонд показує **кадр**, і брати для нього
-//! інтегратор означало б тягнути в анімацію ефемериду, рухомий Місяць і
-//! вибір фрейму — тобто три речі, жодна з яких на картинку не впливає.
-//! Оракул інтегратора живе окремо (`tests/live.rs`, `--live-probe`), і
-//! підмінювати його анімацією не можна: анімація не перевіряє нічого.
+//! This is deliberately not `prop_run`. The probe shows a **frame**, and
+//! taking an integrator for it would mean dragging the ephemeris, a moving
+//! Moon and a choice of frame into the animation -- three things, none of
+//! which affects the picture. The integrator's oracle lives separately
+//! (`tests/live.rs`, `--live-probe`), and substituting an animation for it is
+//! not allowed: an animation checks nothing.
 
 use std::path::Path;
 
@@ -82,97 +91,103 @@ use crate::gpu::Gpu;
 use crate::scene::{Body, Scene, Ship, TerrainId, TileSet};
 use crate::{demo, ship, ship_demo, shot, sphere, tiles};
 
-/// Радіус Місяця, метри — той самий, що в решті зондів.
+/// Radius of the Moon, metres -- the same as in the other probes.
 const RADIUS_M: f64 = 1_737_400.0;
 
-/// Гравітаційний параметр Місяця, м³/с² (DE440).
+/// Gravitational parameter of the Moon, m^3/s^2 (DE440).
 const MU: f64 = 4.902_800_118e12;
 
-/// Висоти апогею й перигею над поверхнею, метри.
+/// Apoapsis and periapsis altitudes above the surface, metres.
 const APOAPSIS_M: f64 = 6_000_000.0;
 const PERIAPSIS_M: f64 = 200_000.0;
 
-/// Середня відстань до Землі, метри.
+/// Mean distance to the Earth, metres.
 const EARTH_RANGE_M: f64 = 384_400_000.0;
 
-/// На скільки апогей відведений від антиземної точки, радіани.
+/// How far apoapsis is led away from the anti-Earth point, radians.
 ///
-/// **Виміряне число, не смак.** Земля має бути далі за лімб (кутовий радіус
-/// диска в апогеї 12.9°) і ближче за півкут камери по вертикалі (30°).
-/// Двадцять градусів лишають запас з обох боків — і саме цей запас з'їдає
-/// зниження: на висоті 3.3·10⁶ м диск доростає до 20°, і Земля ховається.
+/// **A measured number, not taste.** The Earth has to be beyond the limb (the
+/// disc's angular radius at apoapsis is 12.9 deg) and inside the camera's
+/// vertical half-angle (30 deg). Twenty degrees leave margin on both sides --
+/// and it is exactly that margin the descent eats up: at 3.3e6 m the disc
+/// grows to 20 deg and the Earth hides.
 const EARTH_MARGIN: f64 = 0.35;
 
-/// Нахилення орбіти до екватора Місяця, радіани.
+/// Inclination of the orbit to the Moon's equator, radians.
 ///
-/// Не нуль і не 90°: полярна орбіта пройшла б над полюсами, де мозаїка WAC
-/// знята при найгірших кутах, а екваторіальна — уздовж одного пояса. Поворот
-/// іде **навколо лінії апсид**, тож апогей і перигей лишаються на екваторі —
-/// а на їхніх довготах стоїть уся композиція.
+/// Neither zero nor 90 deg: a polar orbit would pass over the poles, where the
+/// WAC mosaic was shot at the worst angles, and an equatorial one would run
+/// along a single belt. The rotation goes **about the line of apsides**, so
+/// apoapsis and periapsis stay on the equator -- and the whole composition
+/// rests on their longitudes.
 const INCLINATION: f64 = 0.52;
 
-/// Кут світила від перигею, радіани.
+/// Angle of the light source from periapsis, radians.
 ///
-/// 70°, тобто низьке сонце над точкою найнижчого прольоту: саме там рельєф
-/// дає найдовші тіні. Світило над головою зробило б поверхню пласкою.
+/// 70 deg, i.e. a low sun over the point of the lowest pass: that is where the
+/// terrain casts the longest shadows. A light overhead would make the surface
+/// flat.
 const SOLAR_ZENITH: f64 = 1.22;
 
-/// Скільки габаритів корпусу від камери до корабля.
+/// How many hull extents from the camera to the ship.
 const RANGES: f64 = 3.2;
 
-/// На який кут корабель відведений від центра кадру, радіани.
+/// The angle by which the ship is led away from the centre of frame, radians.
 ///
-/// Центр кадру зайнятий Місяцем, тож корабель мусить стояти збоку — але в
-/// кадрі: 0.28 рад це 16°, трохи більше за половину півкута камери.
+/// The centre of frame is taken by the Moon, so the ship has to stand aside --
+/// but inside the frame: 0.28 rad is 16 deg, a little over half the camera's
+/// half-angle.
 const SHIP_OFF_AXIS: f64 = 0.28;
 
-/// Хвилина відео: кадрів рівно стільки, скільки їх у хвилині при [`FPS`].
+/// A minute of video: exactly as many frames as a minute holds at [`FPS`].
 ///
-/// Один повний виток за анімацію, тобто 8.39 години орбітального часу на
-/// шістдесят секунд. Менше кадрів дало б ту саму траєкторію швидше — це
+/// One full revolution per animation, i.e. 8.39 hours of orbital time in sixty
+/// seconds. Fewer frames would give the same trajectory faster -- that is
 /// `--frames`.
 pub const FRAMES: u32 = 3600;
 pub const FPS: u16 = 60;
 
-/// Велика піввісь і ексцентриситет із двох висот.
+/// Semi-major axis and eccentricity from the two altitudes.
 fn elements() -> (f64, f64) {
     let apo = RADIUS_M + APOAPSIS_M;
     let peri = RADIUS_M + PERIAPSIS_M;
     (0.5 * (apo + peri), (apo - peri) / (apo + peri))
 }
 
-/// Ексцентрична аномалія за істинною — точна форма, без ітерацій.
+/// Eccentric anomaly from the true one -- exact form, no iteration.
 fn eccentric_from_true(true_anomaly: f64) -> f64 {
     let (_, e) = elements();
     2.0 * (((1.0 - e) / (1.0 + e)).sqrt() * (0.5 * true_anomaly).tan()).atan()
 }
 
-/// Стан на ексцентричній аномалії: позиція й швидкість, світові осі.
+/// State at an eccentric anomaly: position and velocity, world axes.
 ///
-/// Замкнена форма задачі двох тіл: перифокальна площина, поворот на
-/// нахилення навколо лінії апсид, поворот усієї орбіти навколо полярної осі
-/// на [`EARTH_MARGIN`]. Швидкість потрібна не фізиці, а **орієнтації**: ніс
-/// корабля дивиться вздовж неї.
+/// The closed form of the two-body problem: the perifocal plane, a rotation by
+/// the inclination about the line of apsides, a rotation of the whole orbit
+/// about the polar axis by [`EARTH_MARGIN`]. The velocity is needed not by the
+/// physics but by the **orientation**: the ship's nose looks along it.
 fn state_at(e_anomaly: f64) -> ([f64; 3], [f64; 3]) {
     let (a, e) = elements();
     let (sin_e, cos_e) = e_anomaly.sin_cos();
 
-    // Перифокальна система: перигей на осі `+x`.
+    // Perifocal frame: periapsis on the `+x` axis.
     let r = a * (1.0 - e * cos_e);
     let plane = [a * (cos_e - e), a * (1.0 - e * e).sqrt() * sin_e];
 
-    // Похідна тієї самої параметризації: `dE/dt = n·a/r`, де `n = √(μ/a³)`.
+    // Derivative of that same parametrisation: `dE/dt = n*a/r`, where
+    // `n = sqrt(mu/a^3)`.
     let n = (MU / (a * a * a)).sqrt();
     let rate = n * a / r;
     let speed = [-a * sin_e * rate, a * (1.0 - e * e).sqrt() * cos_e * rate];
 
-    // Нахилення — навколо `x`, тобто навколо лінії апсид: апогей і перигей
-    // лишаються на екваторі, а на їхніх довготах стоїть композиція.
+    // The inclination goes about `x`, i.e. about the line of apsides: apoapsis
+    // and periapsis stay on the equator, and the composition rests on their
+    // longitudes.
     let (sin_i, cos_i) = INCLINATION.sin_cos();
     let lift = |v: [f64; 2]| [v[0], v[1] * cos_i, v[1] * sin_i];
 
-    // І поворот усієї орбіти навколо `z`: перигей їде на довготу
-    // `−EARTH_MARGIN`, апогей — на `180° − EARTH_MARGIN`.
+    // And a rotation of the whole orbit about `z`: periapsis moves to
+    // longitude `-EARTH_MARGIN`, apoapsis to `180 deg - EARTH_MARGIN`.
     let (sin_arg, cos_arg) = (-EARTH_MARGIN).sin_cos();
     let turn = |v: [f64; 3]| {
         [
@@ -197,27 +212,29 @@ fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     ]
 }
 
-/// Нормаль площини орбіти — стала, і саме тому камера не хитається.
+/// The orbit plane's normal -- constant, and that is exactly why the camera
+/// does not wobble.
 fn orbit_normal() -> [f64; 3] {
     let (position, velocity) = state_at(0.3);
     unit(cross(position, velocity))
 }
 
-/// Куди від Місяця стоїть Земля.
+/// Where the Earth stands as seen from the Moon.
 ///
-/// Довгота 0: Місяць у припливному захопленні дивиться на Землю саме нею, і
-/// мозаїка в асеті це відображає. Тобто напрямок не вибраний, а заданий тим,
-/// що вже лежить у тайлах.
+/// Longitude 0: the tidally locked Moon faces the Earth with precisely that
+/// one, and the mosaic in the asset reflects it. So the direction is not
+/// chosen but dictated by what already lies in the tiles.
 fn earth_centre() -> [f64; 3] {
     [EARTH_RANGE_M, 0.0, 0.0]
 }
 
-/// Напрямок на світило — виведений з орбіти, а не поставлений на око.
+/// The direction to the light source -- derived from the orbit, not set by
+/// eye.
 ///
-/// Береться в площині орбіти під кутом [`SOLAR_ZENITH`] до перигею, з боку
-/// **підльоту**: корабель знижується над освітленою поверхнею, проходить
-/// перигей при низькому світилі, а далі йде до термінатора, за яким сяйво на
-/// корпусі гасне (T6).
+/// Taken in the orbit plane at [`SOLAR_ZENITH`] from periapsis, on the
+/// **approach** side: the ship descends over the lit surface, passes periapsis
+/// under a low light, and then goes on towards the terminator, past which the
+/// shine on the hull dies out (T6).
 fn sun() -> [f64; 3] {
     let (periapsis, ahead) = state_at(0.0);
     let p = unit(periapsis);
@@ -230,15 +247,15 @@ fn sun() -> [f64; 3] {
     ])
 }
 
-/// Кватерніон `[w, x, y, z]`, що переводить корабельний `+Z` у `forward`, а
-/// корабельний `+Y` — якнайближче до `up`.
+/// The quaternion `[w, x, y, z]` taking the ship's `+Z` to `forward` and the
+/// ship's `+Y` as close to `up` as it can.
 fn look_along(forward: [f64; 3], up: [f64; 3]) -> [f64; 4] {
     let z = unit(forward);
     let x = unit(cross(up, z));
     let y = cross(z, x);
 
-    // Стовпці матриці — образи корабельних осей у світі; далі стандартне
-    // перетворення матриці в кватерніон через найбільший слід.
+    // The matrix columns are the images of the ship's axes in the world; then
+    // the standard matrix-to-quaternion conversion through the largest trace.
     let m = [[x[0], y[0], z[0]], [x[1], y[1], z[1]], [x[2], y[2], z[2]]];
     let trace = m[0][0] + m[1][1] + m[2][2];
     if trace > 0.0 {
@@ -276,15 +293,16 @@ fn look_along(forward: [f64; 3], up: [f64; 3]) -> [f64; 4] {
     }
 }
 
-/// Сцена на кадр номер `k` з `frames`.
+/// The scene for frame number `k` out of `frames`.
 ///
-/// Будується з нуля щокадру навмисно: сцена — це дані, і зонд, який тримав би
-/// її між кадрами, перевіряв би свій кеш, а не кадр.
+/// Built from scratch every frame on purpose: a scene is data, and a probe
+/// that held one between frames would be checking its cache rather than the
+/// frame.
 pub fn scene_at(k: u32, frames: u32, tiles: TileSet, earth: TileSet, extent: f64) -> Scene {
     let t = f64::from(k) / f64::from(frames.max(2));
 
-    // Рівномірно за **істинною** аномалією: від апогею через перигей і назад.
-    // Саме вона дає сталу кутову швидкість у кадрі, тобто плавність.
+    // Uniformly in **true** anomaly: from apoapsis through periapsis and back.
+    // That is the one giving a constant angular rate in frame, i.e. smoothness.
     let true_anomaly = std::f64::consts::PI * (2.0 * t - 1.0);
     let (position, velocity) = state_at(eccentric_from_true(true_anomaly));
 
@@ -300,10 +318,10 @@ pub fn scene_at(k: u32, frames: u32, tiles: TileSet, earth: TileSet, extent: f64
         metallic: ship::HULL_METALLIC,
     };
 
-    // Око — над кораблем і трохи вбік від площини орбіти. Кут між цим зсувом
-    // і радіусом дорівнює куту, під яким корабель видно від центра кадру:
-    // камера дивиться на центр Місяця, а корабель від неї — рівно назад по
-    // зсуву.
+    // The eye sits above the ship and a little off the orbit plane. The angle
+    // between that offset and the radius equals the angle at which the ship is
+    // seen from the centre of frame: the camera looks at the Moon's centre,
+    // and the ship lies exactly back along the offset from it.
     let (sin_off, cos_off) = SHIP_OFF_AXIS.sin_cos();
     let offset = [
         cos_off * up[0] + sin_off * normal[0],
@@ -316,8 +334,9 @@ pub fn scene_at(k: u32, frames: u32, tiles: TileSet, earth: TileSet, extent: f64
         position[1] + range * offset[1],
         position[2] + range * offset[2],
     ];
-    // «Верх» кадру — нормаль орбіти, стала на всю анімацію: будь-який верх,
-    // виведений з положення, крутив би кадр разом із рухом.
+    // The frame's "up" is the orbit normal, constant for the whole animation:
+    // any up derived from the position would roll the frame along with the
+    // motion.
     let camera = Camera::look_at(eye, [0.0, 0.0, 0.0], normal);
 
     let mut scene = Scene::new(camera);
@@ -327,14 +346,15 @@ pub fn scene_at(k: u32, frames: u32, tiles: TileSet, earth: TileSet, extent: f64
         radius_m: RADIUS_M,
         orientation: [1.0, 0.0, 0.0, 0.0],
         tiles,
-        // Сірий, а не синій колір фікстур: без колірного асета Місяць має
-        // лишитись Місяцем.
+        // Grey rather than the blue of the fixtures: without a colour asset
+        // the Moon still has to look like the Moon.
         colour: [0.55, 0.55, 0.56, 1.0],
         air: None,
     });
-    // Земля — друге тіло сцени, за два порядки далі. Гладка й без повітря:
-    // з такої відстані диск має 1.9°, і ні рельєф, ні шар повітря в ньому не
-    // мають де проявитись (умова S5 однаково пропустила б повітря).
+    // The Earth is the scene's second body, two orders of magnitude further
+    // out. Smooth and without air: from that distance the disc is 1.9 deg, and
+    // neither terrain nor a layer of air has anywhere to show in it (the S5
+    // condition would have skipped the air anyway).
     scene.bodies.push(Body {
         centre: earth_centre(),
         radius_m: sphere::EARTH_RADIUS_M,
@@ -347,7 +367,7 @@ pub fn scene_at(k: u32, frames: u32, tiles: TileSet, earth: TileSet, extent: f64
     scene
 }
 
-/// Малює `frames` кадрів і складає їх в анімований PNG.
+/// Draws `frames` frames and assembles them into an animated PNG.
 pub fn render(gpu: &Gpu, width: u32, height: u32, frames: u32, path: &Path) -> Result<(), String> {
     let mut frame = Frame::new(gpu, shot::FORMAT);
     let surface = load_surface(gpu, &mut frame)?;
@@ -356,7 +376,7 @@ pub fn render(gpu: &Gpu, width: u32, height: u32, frames: u32, path: &Path) -> R
         None => TileSet::Smooth,
     };
 
-    // Корпус з асета, якщо він скукований; інакше заглушка V1.
+    // The hull from the asset if it has been cooked; otherwise the V1 stub.
     let hull = ship_demo::hull();
     if let Some(model) = &hull {
         frame.load_ship(gpu, model);
@@ -414,14 +434,14 @@ pub fn render(gpu: &Gpu, width: u32, height: u32, frames: u32, path: &Path) -> R
     Ok(())
 }
 
-/// Друкує елементи орбіти й кути композиції — щоб число в кадрі можна було
-/// звірити з числом.
+/// Prints the orbital elements and the composition angles -- so that a number
+/// in the frame can be checked against a number.
 fn report() {
     let (a, e) = elements();
     let period = 2.0 * std::f64::consts::PI * (a * a * a / MU).sqrt();
     let speed = |r: f64| (MU * (2.0 / r - 1.0 / a)).sqrt();
     println!(
-        "орбіта: {:.0} × {:.0} км над поверхнею, a = {:.1} км, e = {:.4}, нахилення {:.0}°",
+        "orbit: {:.0} x {:.0} km above the surface, a = {:.1} km, e = {:.4}, inclination {:.0} deg",
         PERIAPSIS_M / 1000.0,
         APOAPSIS_M / 1000.0,
         a / 1000.0,
@@ -429,44 +449,45 @@ fn report() {
         INCLINATION.to_degrees()
     );
     println!(
-        "  період {:.2} год; швидкість {:.0} м/с у перигеї, {:.0} м/с в апогеї",
+        "  period {:.2} h; speed {:.0} m/s at periapsis, {:.0} m/s at apoapsis",
         period / 3600.0,
         speed(RADIUS_M + PERIAPSIS_M),
         speed(RADIUS_M + APOAPSIS_M)
     );
     println!(
-        "  Земля на {:.0}° від осі погляду; диск Місяця — {:.1}° в апогеї, {:.1}° у перигеї",
+        "  Earth {:.0} deg off the view axis; Moon disc {:.1} deg at apoapsis, {:.1} deg at periapsis",
         EARTH_MARGIN.to_degrees(),
         (RADIUS_M / (RADIUS_M + APOAPSIS_M)).asin().to_degrees(),
         (RADIUS_M / (RADIUS_M + PERIAPSIS_M)).asin().to_degrees()
     );
 }
 
-/// Рельєф і колір Місяця з готових асетів.
+/// The Moon's terrain and colour from the cooked assets.
 fn load_surface(gpu: &Gpu, frame: &mut Frame) -> Result<TerrainId, String> {
     let bytes = std::fs::read(demo::TERRAIN_ASSET)
-        .map_err(|e| format!("{}: {e}\nполікувати: make cook-dem", demo::TERRAIN_ASSET))?;
+        .map_err(|e| format!("{}: {e}\nto fix: make cook-dem", demo::TERRAIN_ASSET))?;
     let terrain = tiles::Terrain::from_bytes(&bytes)?;
 
     let bytes = std::fs::read(demo::COLOUR_ASSET)
-        .map_err(|e| format!("{}: {e}\nполікувати: make cook-colour", demo::COLOUR_ASSET))?;
+        .map_err(|e| format!("{}: {e}\nto fix: make cook-colour", demo::COLOUR_ASSET))?;
     let colour = tiles::Colour::from_bytes(&bytes)?;
     frame.load_surface(gpu, &terrain, Some(&colour))
 }
 
-/// Поверхня Землі — **друге** тіло з тайлами в одному кадрі (T7g).
+/// The Earth's surface -- the **second** tiled body in one frame (T7g).
 ///
-/// Мовчки повертає `None`, коли асета немає: він поза git (Q5), а зонд має
-/// малюватись і без нього — тоді Земля лишається гладкою кулею, як була до
-/// цього кроку. Це та сама поблажливість, що в `game::app::load_surface`, і
-/// та сама причина: відсутній ассет не є поламаним рушієм.
+/// Silently returns `None` when the asset is missing: it lives outside git
+/// (Q5), and the probe has to draw without it too -- the Earth then stays a
+/// smooth ball, as it was before this step. The same leniency as in
+/// `game::app::load_surface`, and for the same reason: a missing asset is not
+/// a broken engine.
 fn load_earth(gpu: &Gpu, frame: &mut Frame) -> Option<TerrainId> {
     let terrain = tiles::Terrain::from_bytes(&std::fs::read(EARTH_TERRAIN_ASSET).ok()?).ok()?;
     let colour = tiles::Colour::from_bytes(&std::fs::read(EARTH_COLOUR_ASSET).ok()?).ok()?;
     frame.load_surface(gpu, &terrain, Some(&colour)).ok()
 }
 
-/// Скукована поверхня Землі (T7d, T7e).
+/// The cooked surface of the Earth (T7d, T7e).
 const EARTH_TERRAIN_ASSET: &str = "assets/earth.dem";
 const EARTH_COLOUR_ASSET: &str = "assets/earth.col";
 
@@ -478,12 +499,12 @@ mod tests {
         a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
     }
 
-    /// Кут між двома напрямками, радіани.
+    /// The angle between two directions, radians.
     fn angle(a: [f64; 3], b: [f64; 3]) -> f64 {
         dot(unit(a), unit(b)).clamp(-1.0, 1.0).acos()
     }
 
-    /// Висоти в апогеї й перигеї — ті, що замовлені.
+    /// The apoapsis and periapsis altitudes are the ones ordered.
     #[test]
     fn the_orbit_has_the_two_altitudes_it_promises() {
         let radius = |e_anomaly: f64| {
@@ -492,16 +513,17 @@ mod tests {
         };
         let peri = radius(0.0) - RADIUS_M;
         let apo = radius(std::f64::consts::PI) - RADIUS_M;
-        println!("  перигей {peri:.1} м, апогей {apo:.1} м");
+        println!("  periapsis {peri:.1} m, apoapsis {apo:.1} m");
         assert!((peri - PERIAPSIS_M).abs() < 1.0);
         assert!((apo - APOAPSIS_M).abs() < 1.0);
     }
 
-    /// Швидкість — справді похідна позиції, а не окрема формула.
+    /// The velocity really is the derivative of the position, not a separate
+    /// formula.
     ///
-    /// Дві незалежні дороги до одного числа: замкнена форма проти
-    /// центральної різниці за часом. Вони мусять зійтися, інакше ніс корабля
-    /// дивиться не туди, куди він летить.
+    /// Two independent roads to one number: the closed form against a central
+    /// difference in time. They have to meet, otherwise the ship's nose looks
+    /// somewhere other than where it flies.
     #[test]
     fn the_velocity_is_the_derivative_of_the_position() {
         let (a, e) = elements();
@@ -526,14 +548,14 @@ mod tests {
                 let numeric = (after[k] - before[k]) / (2.0 * step);
                 assert!(
                     (numeric - velocity[k]).abs() < 1e-3 * velocity[k].abs().max(1.0),
-                    "аномалія {probe}, вісь {k}: {numeric} проти {}",
+                    "anomaly {probe}, axis {k}: {numeric} vs {}",
                     velocity[k]
                 );
             }
         }
     }
 
-    /// Ніс корабля дивиться вздовж швидкості.
+    /// The ship's nose looks along the velocity.
     #[test]
     fn the_ship_points_where_it_flies() {
         for k in [0u32, 37, 180, 300] {
@@ -543,19 +565,23 @@ mod tests {
                 std::f64::consts::PI * (2.0 * f64::from(k) / f64::from(FRAMES) - 1.0);
             let (_, velocity) = state_at(eccentric_from_true(true_anomaly));
             let r = crate::frame::rotation(ship.orientation);
-            // Образ корабельного `+Z` — третій стовпець матриці повороту.
+            // The image of the ship's `+Z` is the third column of the rotation
+            // matrix.
             let nose = [r[0][2], r[1][2], r[2][2]];
             let along = dot(nose, unit(velocity));
-            println!("  кадр {k}: ніс уздовж швидкості на {along:.6}");
-            assert!(along > 0.999_999, "ніс дивиться не вздовж швидкості");
+            println!("  frame {k}: nose along the velocity to {along:.6}");
+            assert!(
+                along > 0.999_999,
+                "the nose does not look along the velocity"
+            );
         }
     }
 
-    /// Місяць у центрі кадру, а корабель — рівно збоку від нього.
+    /// The Moon is in the middle of the frame and the ship right beside it.
     ///
-    /// Два твердження одним числом: центр тіла лежить на осі погляду, а
-    /// корабель — на [`SHIP_OFF_AXIS`] від неї, тобто в кадрі й не поверх
-    /// центра.
+    /// Two claims in one number: the body's centre lies on the view axis, and
+    /// the ship is [`SHIP_OFF_AXIS`] away from it, i.e. inside the frame and
+    /// not on top of the centre.
     #[test]
     fn the_moon_is_in_the_middle_and_the_ship_beside_it() {
         for k in [0u32, 600, 1200, 1800, 2400, 3000] {
@@ -568,26 +594,29 @@ mod tests {
             };
             let off = angle(to_moon, to_ship);
             println!(
-                "  кадр {k}: корабель на {:.2}° від центра",
+                "  frame {k}: ship {:.2} deg off the centre",
                 off.to_degrees()
             );
             assert!(
                 (off - SHIP_OFF_AXIS).abs() < 0.02,
-                "корабель поїхав з місця: {off} проти {SHIP_OFF_AXIS}"
+                "the ship left its place: {off} vs {SHIP_OFF_AXIS}"
             );
-            // Півкут кадру по вертикалі — 30°, і корабель мусить бути в ньому.
+            // The frame's vertical half-angle is 30 deg, and the ship has to be
+            // inside it.
             assert!(off < 0.5 * frame::FOV_Y);
         }
     }
 
-    /// Земля виходить з-за лімба в апогеї, ховається за диском невдовзі по
-    /// ньому й зникає з кадру на зниженні.
+    /// The Earth clears the limb at apoapsis, hides behind the disc shortly
+    /// after it, and leaves the frame on the descent.
     ///
-    /// Три різні причини, і тест розрізняє саме їх, а не «Земля десь є»:
-    /// **за диском** — коли кут до неї менший за кутовий радіус лімба;
-    /// **поза кадром** — коли він більший за півкут камери; **видима** — між
-    /// ними. Остання перевірка й записує геометричну межу композиції: знизу
-    /// диск ширший за кадр, тож неба поза ним не лишається взагалі.
+    /// Three different causes, and the test tells them apart rather than
+    /// settling for "the Earth is somewhere": **behind the disc** -- when the
+    /// angle to it is smaller than the limb's angular radius; **out of frame**
+    /// -- when it is larger than the camera's half-angle; **visible** --
+    /// between the two. The last check is what records the geometric limit of
+    /// the composition: down low the disc is wider than the frame, so no sky
+    /// is left outside it at all.
     #[test]
     fn the_earth_clears_the_limb_high_up_and_hides_behind_it_low_down() {
         let separation = |k: u32| {
@@ -600,48 +629,63 @@ mod tests {
             (angle(to_moon, to_earth), (RADIUS_M / distance).asin())
         };
 
-        // Апогей: Земля за лімбом і в кадрі.
+        // Apoapsis: the Earth is clear of the limb and inside the frame.
         let (apart, limb) = separation(0);
         println!(
-            "  апогей: Земля на {:.1}°, лімб на {:.1}°",
+            "  apoapsis: Earth at {:.1} deg, limb at {:.1} deg",
             apart.to_degrees(),
             limb.to_degrees()
         );
-        assert!(apart > limb, "в апогеї Земля за диском Місяця");
-        assert!(apart < 0.5 * frame::FOV_Y, "в апогеї Земля поза кадром");
+        assert!(
+            apart > limb,
+            "at apoapsis the Earth is behind the Moon's disc"
+        );
+        assert!(
+            apart < 0.5 * frame::FOV_Y,
+            "at apoapsis the Earth is out of frame"
+        );
 
-        // Невдовзі по апогею траса проходить під Землею — покриття.
+        // Shortly after apoapsis the track passes under the Earth -- an
+        // occultation.
         let (apart, limb) = separation(180);
         println!(
-            "  кадр 180: Земля на {:.1}°, лімб на {:.1}°",
+            "  frame 180: Earth at {:.1} deg, limb at {:.1} deg",
             apart.to_degrees(),
             limb.to_degrees()
         );
-        assert!(apart < limb, "покриття зникло — Земля не зайшла за диск");
+        assert!(
+            apart < limb,
+            "the occultation is gone -- the Earth never went behind the disc"
+        );
 
-        // Перигей: Земля позаду камери, бо камера дивиться на центр Місяця,
-        // а корабель уже над видимим боком.
+        // Periapsis: the Earth is behind the camera, because the camera looks
+        // at the Moon's centre while the ship is already over the near side.
         let (apart, limb) = separation(FRAMES / 2);
         println!(
-            "  перигей: Земля на {:.1}°, лімб на {:.1}°",
+            "  periapsis: Earth at {:.1} deg, limb at {:.1} deg",
             apart.to_degrees(),
             limb.to_degrees()
         );
         assert!(
             apart > 0.5 * frame::FOV_Y,
-            "у перигеї Земля не може бути в кадрі"
+            "at periapsis the Earth cannot be in frame"
         );
-        // І це не «не влізла»: диск ширший за півкут камери, тобто неба поза
-        // ним у кадрі немає взагалі.
-        assert!(limb > 0.5 * frame::FOV_Y, "лімб мав би накрити весь кадр");
+        // And this is not a mere "did not fit": the disc is wider than the
+        // camera's half-angle, i.e. there is no sky outside it in frame at all.
+        assert!(
+            limb > 0.5 * frame::FOV_Y,
+            "the limb should have covered the whole frame"
+        );
     }
 
-    /// Рух плавний: кутовий крок камери між кадрами не гуляє.
+    /// The motion is smooth: the camera's angular step between frames does not
+    /// wander.
     ///
-    /// Оракул числовий, а не «виглядає добре». Рівномірність за **істинною**
-    /// аномалією саме це й дає: за ексцентричною відношення найбільшого кроку
-    /// до найменшого було б `√((1+e)/(1−e))` ≈ 2, а за часом — на порядки.
-    /// Останній крок перевіряється окремо: петля мусить замикатися.
+    /// A numeric oracle, not "looks good". Uniformity in **true** anomaly is
+    /// exactly what gives that: in eccentric anomaly the ratio of the largest
+    /// step to the smallest would be `sqrt((1+e)/(1-e))` ~ 2, and in time it
+    /// would be orders of magnitude. The last step is checked separately: the
+    /// loop has to close.
     #[test]
     fn the_camera_moves_without_jerks() {
         let direction = |k: u32| {
@@ -655,19 +699,19 @@ mod tests {
         let smallest = steps.iter().copied().fold(f64::INFINITY, f64::min);
         let largest = steps.iter().copied().fold(0.0, f64::max);
         println!(
-            "  крок камери: {:.4}° … {:.4}°, відношення {:.4}",
+            "  camera step: {:.4} deg ... {:.4} deg, ratio {:.4}",
             smallest.to_degrees(),
             largest.to_degrees(),
             largest / smallest
         );
         assert!(
             largest / smallest < 1.05,
-            "кутова швидкість гуляє в {:.2} рази",
+            "the angular rate wanders by a factor of {:.2}",
             largest / smallest
         );
         assert!(
             steps[FRAMES as usize - 1] < 1.05 * smallest,
-            "петля з розривом"
+            "the loop has a gap"
         );
     }
 }
