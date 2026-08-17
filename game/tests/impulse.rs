@@ -1,43 +1,45 @@
-//! Фізика імпульсу проти зовнішніх задач (ROADMAP L4, борг D1).
+//! The physics of an impulse against external problems (ROADMAP L4, debt D1).
 //!
-//! `plan.rs` перевіряє, що світ виконує план так само, як зшиті руками
-//! виклики `prop_run`. Це перевірка **машинерії**, і вона нічого не каже про
-//! те, чи має імпульс фізичний сенс: обидві сторони там роблять `v += Δv` за
-//! однією формулою, і обидві помилилися б однаково.
+//! `plan.rs` checks that the world flies a plan the way hand-stitched
+//! `prop_run` calls do. That is a check of the **machinery**, and it says
+//! nothing about whether the impulse makes physical sense: both sides there
+//! do `v += dv` by the same formula and would both be wrong in the same way.
 //!
-//! Борг D1 називав цю дірку одним твердженням. Розібравшись, у ній видно
-//! **два різні твердження**, і одним тестом вони не покриваються.
+//! Debt D1 named this hole as one claim. On closer look there are **two**,
+//! and one test does not cover them.
 //!
-//! ## 1. Імпульс приводить апарат туди, куди обіцяно
+//! ## 1. The impulse takes the vessel where it promised
 //!
-//! Оракул — зовнішня задача: Ламберт (тепер на межі, L3) дає початкове
-//! наближення, `prop_run_stm` виправляє його в повній моделі сил, і апарат
-//! мусить прилетіти в **позицію Місяця з ассета**. Ціль тут не вигадана й не
-//! порахована тією ж машинерією, що перевіряється: це число з ефемериди.
+//! The oracle is an external problem: Lambert (now at the boundary, L3) gives
+//! the initial approximation, `prop_run_stm` corrects it in the full force
+//! model, and the vessel must arrive at **the Moon's position from the
+//! asset**. The target is neither invented nor computed by the machinery
+//! under test: it is a number from the ephemeris.
 //!
-//! Маневр подається у `Frame::Inertial` навмисно — щоб ця перевірка нічого не
-//! знала про базис VNB. Її предмет — застосування імпульсу й сегментний цикл
-//! навколо нього.
+//! The manoeuvre is given in `Frame::Inertial` on purpose -- so that this
+//! check knows nothing about the VNB basis. Its subject is applying the
+//! impulse and the segment loop around it.
 //!
-//! ## 2. VNB означає те, що написано
+//! ## 2. VNB means what it says
 //!
-//! А ось тут зовнішня задача з пункту 1 не годиться, і це головне, що
-//! з'ясувалося при плануванні L4. Якщо перекласти інерціальний Δv у VNB тим
-//! самим базисом, яким гра його потім розгортає назад, помилка в базисі
-//! **скоротиться сама із собою** — переставлені `normal` і `outward`
-//! пройшли б таку перевірку бездоганно.
+//! Here the external problem of point 1 will not do, and that is the main
+//! thing planning L4 turned up. If an inertial dv is expressed in VNB by the
+//! same basis the game then unfolds it with, an error in the basis
+//! **cancels against itself** -- swapped `normal` and `outward` would pass
+//! such a check flawlessly.
 //!
-//! Тому оракул інший, підручниковий, і жодне з його тверджень не походить із
-//! `dv_inertial`:
+//! So the oracle is a different, textbook one, and none of its claims comes
+//! from `dv_inertial`:
 //!
-//! - чисто **прямий** імпульс паралельний швидкості, отже `|v+Δv| = |v|+|Δv|`
-//!   і площина орбіти не змінюється;
-//! - чисто **нормальний** перпендикулярний до неї, отже `|v+Δv|² = |v|²+|Δv|²`,
-//!   а площина — змінюється;
-//! - чисто **назовні** лежить у площині орбіти й дивиться **від** тіла.
+//! - a pure **prograde** impulse is parallel to the velocity, so
+//!   `|v+dv| = |v|+|dv|` and the orbital plane does not change;
+//! - a pure **normal** one is perpendicular to it, so `|v+dv|^2 =
+//!   |v|^2+|dv|^2`, and the plane does change;
+//! - a pure **outward** one lies in the orbital plane and points **away**
+//!   from the body.
 //!
-//! Прямий і нормальний розрізняються тим, як росте швидкість — лінійно проти
-//! квадратично, — а не тим, як їх порахували.
+//! Prograde and normal are told apart by how the speed grows -- linearly
+//! against quadratically -- and not by how they were computed.
 
 use std::sync::Arc;
 
@@ -49,19 +51,20 @@ use game::world::{VesselId, World, EARTH};
 const DAY: f64 = 86400.0;
 const MOON: i32 = 4;
 
-/// GM Землі, `data/horizons/obj_earth.txt` — те саме число, що в
-/// `core/bench/bench_field.c` і в C-тестах. Ассет його через межу не віддає
-/// (`eph_body_mu` на межі немає), тож воно тут виписане, а не прочитане.
+/// Earth's GM, `data/horizons/obj_earth.txt` -- the same number as in
+/// `core/bench/bench_field.c` and the C tests. The asset does not hand it
+/// across the boundary (there is no `eph_body_mu` there), so it is written
+/// out here rather than read.
 const MU_EARTH: f64 = 3.98600435436e14;
 
-/// Низька навколоземна орбіта, колова.
+/// A low circular Earth orbit.
 const R_LEO: f64 = 6.678e6;
 
-/// Коли палимо і коли прилітаємо. Три доби — типовий переліт до Місяця, і
-/// саме на цьому масштабі двотільний Ламберт помиляється настільки, що
-/// корекція має що виправляти. Старт за десять хвилин до запалення: маневр
-/// мусить бути в майбутньому відносно того, з чого апарат почався, інакше
-/// його нікуди застосовувати.
+/// When we burn and when we arrive. Three days is a typical transfer to the
+/// Moon, and it is at this scale that two-body Lambert is wrong enough for
+/// the correction to have something to correct. The start is ten minutes
+/// before ignition: the manoeuvre must be in the future relative to where the
+/// vessel began, or there is nowhere to apply it.
 const T0: f64 = T_BURN - 600.0;
 const T_BURN: f64 = 2.0 * DAY;
 const T_ARRIVE: f64 = T_BURN + 3.0 * DAY;
@@ -118,18 +121,21 @@ fn config() -> PropConfig {
     }
 }
 
-/// Кругова орбіта відльоту **в площині перельоту**, і це не косметика.
+/// A circular departure orbit **in the transfer plane**, and that is not
+/// cosmetics.
 ///
-/// Перша версія тесту брала готові числа з `core-sys/oracle.c` — і Ламберт
-/// зажадав 11.7 км/с замість реалістичних чотирьох з половиною, бо площина
-/// тієї орбіти не містила цілі, тобто половина Δv ішла на поворот площини.
-/// Ньютон на такій задачі не збігався взагалі. Так само й будують реальні
-/// місії: спершу площина, потім вікно.
+/// The first version of the test took ready numbers from `core-sys/oracle.c`
+/// -- and Lambert demanded 11.7 km/s instead of a realistic four and a half,
+/// because that orbit's plane did not contain the target, so half the dv went
+/// into a plane change. Newton did not converge on such a problem at all.
+/// Real missions are built the same way: the plane first, then the window.
 ///
-/// Точка старту — приблизно навпроти цілі (~170°), щоб переліт був близький
-/// до гомановського, а не до дуги в чверть оберту.
+/// The starting point is roughly opposite the target (~170 degrees), so that
+/// the transfer is close to Hohmann rather than a quarter-revolution arc.
 fn leo_start(eph: &Ephemeris, target_dir: Vec3d) -> State {
-    let earth = eph.body_state(EARTH, T0).expect("Земля в межах ассета");
+    let earth = eph
+        .body_state(EARTH, T0)
+        .expect("Earth within the asset's span");
 
     let sideways = unit(cross(
         target_dir,
@@ -150,8 +156,9 @@ fn leo_start(eph: &Ephemeris, target_dir: Vec3d) -> State {
     }
 }
 
-/// Розв'язує 3×3 за Крамером. Тут це доречно саме тому, що система маленька
-/// й фіксована: жодних півотів, жодної бібліотеки, і видно, що саме рахується.
+/// Solves a 3x3 system by Cramer's rule. Appropriate here precisely because
+/// the system is small and fixed: no pivoting, no library, and what is being
+/// computed is visible.
 fn solve3(a: [[f64; 3]; 3], b: [f64; 3]) -> [f64; 3] {
     let det = |m: [[f64; 3]; 3]| {
         m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
@@ -162,7 +169,8 @@ fn solve3(a: [[f64; 3]; 3], b: [f64; 3]) -> [f64; 3] {
     let d = det(a);
     assert!(
         d.abs() > 0.0,
-        "матриця чутливості вироджена — це не збіг корекції, а її відсутність"
+        "the sensitivity matrix is singular -- that is not a converged correction \
+         but the absence of one"
     );
 
     let mut out = [0.0; 3];
@@ -176,57 +184,61 @@ fn solve3(a: [[f64; 3]; 3], b: [f64; 3]) -> [f64; 3] {
     out
 }
 
-/// Оракул №1: імпульс, знайдений Ламбертом і виправлений матрицею переходу,
-/// приводить апарат у позицію Місяця з ассета.
+/// Oracle 1: an impulse found by Lambert and corrected by the state
+/// transition matrix takes the vessel to the Moon's position from the asset.
 ///
-/// Чому це зовнішня задача, а не ще один прогін тієї самої машинерії: ціль —
-/// число з ефемериди, початкове наближення — з `lambert_solve`, тобто з коду,
-/// який нічого не знає ні про план, ні про світ. Якби імпульс застосовувався
-/// не так, як тут вважається, апарат просто не прилетів би.
+/// Why this is an external problem and not another run of the same machinery:
+/// the target is a number from the ephemeris, the initial approximation comes
+/// from `lambert_solve`, i.e. from code that knows nothing about the plan or
+/// the world. Were the impulse applied differently from what is assumed here,
+/// the vessel simply would not arrive.
 #[test]
 fn a_lambert_burn_corrected_by_the_stm_arrives_where_the_moon_is() {
-    let eph = Arc::new(Ephemeris::load(&mission::default_asset()).expect("ассет"));
-    let mut prop = Propagator::new(eph.clone(), config()).expect("пропагатор");
+    let eph = Arc::new(Ephemeris::load(&mission::default_asset()).expect("asset"));
+    let mut prop = Propagator::new(eph.clone(), config()).expect("propagator");
 
-    let earth_arrive = eph.body_state(EARTH, T_ARRIVE).expect("Земля");
-    let moon_arrive = eph.body_state(MOON, T_ARRIVE).expect("Місяць");
+    let earth_arrive = eph.body_state(EARTH, T_ARRIVE).expect("Earth");
+    let moon_arrive = eph.body_state(MOON, T_ARRIVE).expect("Moon");
     let target = sub(moon_arrive.r, earth_arrive.r);
 
     let start = leo_start(&eph, unit(target));
 
-    // Стан у момент запалення — пропагацією з [`T0`], бо саме там гра його
-    // й візьме.
+    // The state at ignition comes by propagating from [`T0`], because that is
+    // where the game will take it from.
     let mut step = 0.0;
     let (at_burn, _) = prop
         .run_stm(&start, None, T_BURN, &mut step)
-        .expect("прогін до запалення");
+        .expect("the run to ignition");
 
-    let earth_burn = eph.body_state(EARTH, T_BURN).expect("Земля");
+    let earth_burn = eph.body_state(EARTH, T_BURN).expect("Earth");
     let r1 = sub(at_burn.r, earth_burn.r);
 
-    // `prograde` — знак z-компоненти моменту імпульсу, і саме так це тут і
-    // рахується, а не вгадується прапорцем. Помилитися в ньому означало б
-    // отримати розв'язок іншої задачі, який теж збігається.
+    // `prograde` is the sign of the z component of the angular momentum, and
+    // that is how it is computed here rather than guessed with a flag. Getting
+    // it wrong would mean solving a different problem that also converges.
     let prograde = cross(r1, target).z > 0.0;
 
     let (v1, _v2) = lambert_solve(r1, target, T_ARRIVE - T_BURN, MU_EARTH, prograde, 0)
-        .expect("двотільний переліт до Місяця існує");
+        .expect("a two-body transfer to the Moon exists");
 
     let mut dv = sub(add(earth_burn.v, v1), at_burn.v);
     assert!(
         norm(dv) < 6.0e3,
-        "Ламберт зажадав {:.4e} м/с — стільки коштує поворот площини, а не          переліт. Орбіта відльоту не в площині цілі.",
+        "Lambert demanded {:.4e} m/s -- that is the price of a plane change, not \
+         of a transfer. The departure orbit is not in the target's plane.",
         norm(dv)
     );
 
-    // Ньютон по Δv: нев'язка — промах по позиції в момент прильоту, похідна —
-    // блок ∂r_кінц/∂v_поч матриці переходу.
+    // Newton on dv: the residual is the position miss at arrival, the
+    // derivative is the d r_final / d v_initial block of the state transition
+    // matrix.
     //
-    // **Крок половинний, і це виміряно, а не обережність.** З повним кроком
-    // послідовність промахів стрибає (1.2e7 → 4.4e6 → 2.2e6 → 6.2e6): біля
-    // Місяця задача помітно нелінійна, і Ньютон перелітає. З половинним вона
-    // монотонна й падає на три порядки. Це та сама нелінійність, через яку
-    // реальні місії роблять корекції, а не один точний імпульс.
+    // **The step is halved, and that is measured rather than caution.** At
+    // full step the sequence of misses jumps (1.2e7 -> 4.4e6 -> 2.2e6 ->
+    // 6.2e6): near the Moon the problem is noticeably non-linear and Newton
+    // overshoots. Halved, it is monotone and falls by three orders. This is
+    // the same non-linearity for which real missions make corrections instead
+    // of one exact impulse.
     const DAMPING: f64 = 0.5;
     let mut miss = Vec::new();
     for _ in 0..8 {
@@ -239,7 +251,7 @@ fn a_lambert_burn_corrected_by_the_stm_arrives_where_the_moon_is() {
         let mut step = 0.0;
         let (arrived, phi) = prop
             .run_stm(&burned, None, T_ARRIVE, &mut step)
-            .expect("прогін до прильоту");
+            .expect("the run to arrival");
 
         let residual = sub(arrived.r, moon_arrive.r);
         miss.push(norm(residual));
@@ -265,12 +277,12 @@ fn a_lambert_burn_corrected_by_the_stm_arrives_where_the_moon_is() {
         );
     }
 
-    // Двотільне наближення промахується настільки, що виправляти є що; після
-    // корекції промах падає на порядки. Обидва твердження потрібні: без
-    // першого тест проходив би і на задачі, у якій нічого не робиться.
-    // Останнє виправлення ще не перевірене: цикл рахує нев'язку, потім
-    // править Δv. Тому фінальний прогін окремо — він дає і промах, і
-    // передбачення, з яким далі звіряється гра.
+    // The two-body approximation misses by enough that there is something to
+    // correct; after the correction the miss falls by orders. Both claims are
+    // needed: without the first the test would pass on a problem where nothing
+    // happens. The last correction is not checked yet: the loop computes the
+    // residual and then fixes dv. Hence a final run of its own -- it gives
+    // both the miss and the prediction the game is compared against below.
     let mut step = 0.0;
     let (predicted, _) = prop
         .run_stm(
@@ -283,26 +295,26 @@ fn a_lambert_burn_corrected_by_the_stm_arrives_where_the_moon_is() {
             T_ARRIVE,
             &mut step,
         )
-        .expect("фінальний прогін");
+        .expect("the final run");
     let final_miss = norm(sub(predicted.r, moon_arrive.r));
     assert!(
         miss[0] > 1.0e6,
-        "двотільний Ламберт промахнувся лише на {:.3e} м — тоді корекція \
-         нічого не доводить",
+        "two-body Lambert missed by only {:.3e} m -- then the correction proves \
+         nothing",
         miss[0]
     );
     assert!(
         final_miss < 5.0e4,
-        "після семи корекцій промах {final_miss:.3e} м. Послідовність: {miss:?}"
+        "after seven corrections the miss is {final_miss:.3e} m. The sequence: {miss:?}"
     );
 
-    // --- і те саме через гру ---
+    // --- and the same through the game ---
     //
-    // Той самий Δv, поданий планом. Якщо світ застосовує імпульс інакше, ніж
-    // це щойно зробив прогін, апарат прилетить не туди — і байдуже, що обидва
-    // рахують той самий інтегратор.
+    // The same dv, given as a plan. If the world applies the impulse
+    // differently from the run just made, the vessel arrives elsewhere -- no
+    // matter that both use the same integrator.
     let mut world = World::with_ephemeris(eph.clone(), config(), T0, mission::DEFAULT_WARP)
-        .expect("світ будується");
+        .expect("the world builds");
     let id = world.add_vessel("lambert", start, T_ARRIVE, None);
     assert_eq!(id, VesselId(0));
 
@@ -312,46 +324,49 @@ fn a_lambert_burn_corrected_by_the_stm_arrives_where_the_moon_is() {
         dv: [dv.x, dv.y, dv.z],
         frame: Frame::Inertial,
     });
-    world.commit_plan(id, plan).expect("маневр у майбутньому");
+    world
+        .commit_plan(id, plan)
+        .expect("a manoeuvre in the future");
     world.run_to_end(1.0, 64);
 
     let flown = world.vessels()[0].trajectory.state_at(T_ARRIVE);
 
-    // Звіряється з **передбаченням прогону**, а не з Місяцем, і це не
-    // послаблення. Питання цього тесту — чи застосовує світ імпульс так само,
-    // як його застосував прогін; наскільки точно обидва влучили в Місяць, уже
-    // сказано вище. Порівняння з Місяцем змішало б дві різні похибки.
+    // Compared against **the run's prediction** rather than against the Moon,
+    // and that is no weakening. The question of this test is whether the world
+    // applies the impulse the way the run did; how closely either hit the Moon
+    // was said above. Comparing with the Moon would mix two different errors.
     let drift = norm(sub(flown.r, predicted.r));
     let game_miss = norm(sub(flown.r, moon_arrive.r));
 
-    // Поріг з виміру, не з обережності. Власний дрейф — 25 м: світ ріже
-    // прогін на ланки по заповненому буферу, а прогін вище йшов одним
-    // викликом, тож послідовності кроків різні, а біля Місяця різниця
-    // підсилюється. Помилка в 10⁻⁶ від Δv дає вже 1194 м, у 10⁻⁵ — 1.1·10⁴.
-    // П'ятсот метрів лишає двадцятикратний запас над власним дрейфом і все
-    // одно ловить найменшу з трьох виміряних мутацій.
+    // The threshold comes from measurement, not from caution. The intrinsic
+    // drift is 25 m: the world cuts the run into legs by buffer fill, while
+    // the run above went in one call, so the step sequences differ and near
+    // the Moon the difference is amplified. An error of 1e-6 of dv already
+    // gives 1194 m, one of 1e-5 gives 1.1e4. Five hundred metres leaves a
+    // twentyfold margin over the intrinsic drift and still catches the
+    // smallest of the three measured mutations.
     assert!(
         drift < 5.0e2,
-        "гра прилетіла за {drift:.3e} м від того, що передбачив прогін із тим \
-         самим Δv (промах по Місяцю {game_miss:.3e} м проти {final_miss:.3e} м). \
-         Різниця тут — це сегментний цикл або момент застосування імпульсу, \
-         а не фізика."
+        "the game arrived {drift:.3e} m from what the run with the same dv \
+         predicted (Moon miss {game_miss:.3e} m against {final_miss:.3e} m). The \
+         difference here is the segment loop or the moment the impulse is \
+         applied, not the physics."
     );
 }
 
-/// Оракул №2: базис VNB означає те, що написано.
+/// Oracle 2: the VNB basis means what it says.
 ///
-/// Три твердження підручникової двотільної механіки, жодне з яких не
-/// виводиться з `dv_inertial`. Головне з них — що прямий і нормальний
-/// імпульси **по-різному** міняють швидкість: лінійно проти квадратично.
-/// Переставити їх місцями й пройти цей тест неможливо.
+/// Three claims of textbook two-body mechanics, none of them derived from
+/// `dv_inertial`. The main one is that prograde and normal impulses change
+/// the speed **differently**: linearly against quadratically. Swapping them
+/// and passing this test is impossible.
 #[test]
 fn the_vnb_basis_means_what_it_says() {
-    let eph = Ephemeris::load(&mission::default_asset()).expect("ассет");
-    let moon = eph.body_state(MOON, T_ARRIVE).expect("Місяць");
-    let earth_arrive = eph.body_state(EARTH, T_ARRIVE).expect("Земля");
+    let eph = Ephemeris::load(&mission::default_asset()).expect("asset");
+    let moon = eph.body_state(MOON, T_ARRIVE).expect("Moon");
+    let earth_arrive = eph.body_state(EARTH, T_ARRIVE).expect("Earth");
     let vessel = leo_start(&eph, unit(sub(moon.r, earth_arrive.r)));
-    let earth = eph.body_state(EARTH, T0).expect("Земля");
+    let earth = eph.body_state(EARTH, T0).expect("Earth");
 
     let rel_r = sub(vessel.r, earth.r);
     let rel_v = sub(vessel.v, earth.v);
@@ -368,7 +383,7 @@ fn the_vnb_basis_means_what_it_says() {
         .dv_inertial(&vessel, Some(&earth))
     };
 
-    // --- прямий: паралельний швидкості ---
+    // --- prograde: parallel to the velocity ---
     let prograde = inertial([burn, 0.0, 0.0]);
     let after = Vec3d {
         x: rel_v.x + prograde[0],
@@ -378,8 +393,8 @@ fn the_vnb_basis_means_what_it_says() {
 
     assert!(
         (norm(after) - (speed + burn)).abs() < 1e-6,
-        "прямий імпульс мав дати |v|+Δv = {:.9e}, дав {:.9e}. Це не швидкість \
-         уздовж вектора швидкості.",
+        "the prograde impulse should have given |v|+dv = {:.9e}, gave {:.9e}. That \
+         is not speed along the velocity vector.",
         speed + burn,
         norm(after)
     );
@@ -388,11 +403,11 @@ fn the_vnb_basis_means_what_it_says() {
     let tilt = norm(cross(h, h_after)) / (norm(h) * norm(h_after));
     assert!(
         tilt < 1e-12,
-        "прямий імпульс повернув площину орбіти на {tilt:.3e} — а він не має \
-         виходити з неї взагалі"
+        "the prograde impulse turned the orbital plane by {tilt:.3e} -- it must not \
+         leave the plane at all"
     );
 
-    // --- нормальний: перпендикулярний, отже за Піфагором ---
+    // --- normal: perpendicular, hence Pythagoras ---
     let normal = inertial([0.0, burn, 0.0]);
     let after = Vec3d {
         x: rel_v.x + normal[0],
@@ -403,8 +418,8 @@ fn the_vnb_basis_means_what_it_says() {
     let pythagoras = (speed * speed + burn * burn).sqrt();
     assert!(
         (norm(after) - pythagoras).abs() < 1e-6,
-        "нормальний імпульс мав дати sqrt(|v|²+Δv²) = {pythagoras:.9e}, дав \
-         {:.9e}. Якщо вийшло |v|+Δv — нормаль і прямий напрямок переставлені.",
+        "the normal impulse should have given sqrt(|v|^2+dv^2) = {pythagoras:.9e}, \
+         gave {:.9e}. If it came out as |v|+dv, normal and prograde are swapped.",
         norm(after)
     );
 
@@ -412,11 +427,11 @@ fn the_vnb_basis_means_what_it_says() {
     let tilt = norm(cross(h, h_after)) / (norm(h) * norm(h_after));
     assert!(
         tilt > 1e-3,
-        "нормальний імпульс не повернув площину орбіти (нахил {tilt:.3e}) — \
-         тоді він не нормальний"
+        "the normal impulse did not turn the orbital plane (tilt {tilt:.3e}) -- then \
+         it is not normal"
     );
 
-    // --- назовні: у площині орбіти й ВІД тіла ---
+    // --- outward: in the orbital plane and AWAY from the body ---
     let outward = inertial([0.0, 0.0, burn]);
     let outward = Vec3d {
         x: outward[0],
@@ -426,16 +441,17 @@ fn the_vnb_basis_means_what_it_says() {
 
     assert!(
         dot(outward, rel_r) > 0.0,
-        "«назовні» вказує до тіла, а не від нього: r·Δv = {:.3e}. Це знак у \
-         cross(prograde, normal), тобто орієнтація трійки.",
+        "\"outward\" points towards the body rather than away from it: r.dv = \
+         {:.3e}. That is the sign in cross(prograde, normal), i.e. the \
+         orientation of the triple.",
         dot(outward, rel_r)
     );
     assert!(
         dot(outward, h).abs() / (burn * norm(h)) < 1e-12,
-        "«назовні» вийшло з площини орбіти"
+        "\"outward\" left the orbital plane"
     );
     assert!(
         dot(outward, rel_v).abs() / (burn * speed) < 1e-12,
-        "«назовні» має складову вздовж швидкості"
+        "\"outward\" has a component along the velocity"
     );
 }
