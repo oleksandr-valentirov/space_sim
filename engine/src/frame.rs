@@ -1430,30 +1430,30 @@ fn narrow_sun(scene: &Scene) -> [f32; 4] {
 ///   cache. That becomes expensive when the patches number in the thousands, and
 ///   the answer to it is already named: R6 and `draw_indexed_indirect`.
 struct Planet {
-    /// Два пайплайни, а не гілка в шейдері: гладке тіло й тіло з рельєфом
-    /// малюються різними програмами (R5c). Причина — уже спіймана пастка
-    /// F6: рантайм-перемикач за uniform-ом у вершинній стадії на ACO читався
-    /// мовчки неправильно. Друга причина простіша: у гладкого тіла немає
-    /// тайла, і `textureLoad` за невизначеним індексом не мусить навіть
-    /// потрапити в його програму.
+    /// Two pipelines rather than a branch in the shader: a smooth body and a
+    /// body with terrain are drawn by different programs (R5c). The reason is a
+    /// trap already caught in F6: a runtime switch on a uniform in the vertex
+    /// stage was read silently wrong on ACO. The second reason is simpler: a
+    /// smooth body has no tile, and a `textureLoad` at an undefined index must
+    /// not even make it into its program.
     smooth: wgpu::RenderPipeline,
     terrain: Option<wgpu::RenderPipeline>,
     bind_layout: wgpu::BindGroupLayout,
     tile_layout: Option<wgpu::BindGroupLayout>,
-    /// Відбір у compute (R6b): та сама арифметика, що в `crate::cull`, але
-    /// на тих даних, які вже лежать на GPU.
+    /// Culling in compute (R6b): the same arithmetic as in `crate::cull`, but on
+    /// the data that already lies on the GPU.
     cull_pipeline: wgpu::ComputePipeline,
     cull_layout: wgpu::BindGroupLayout,
-    /// Група висот для тіла **без** рельєфу.
+    /// The heights group for a body **without** terrain.
     ///
-    /// Обидва пайплайни ділять один макет, тож група 1 мусить бути
-    /// прив'язана завжди — навіть у гладкої програми, яка до неї не
-    /// звертається. Один тайл 1×1 з нулем: `PARTIALLY_BOUND` дозволив би й
-    /// порожній масив, але порожній масив — це ще один шлях, який працює
-    /// не всюди однаково, а один нульовий тексель коштує чотирьох байтів.
+    /// Both pipelines share one layout, so group 1 must always be bound -- even
+    /// for the smooth program, which never touches it. One 1x1 tile holding zero:
+    /// `PARTIALLY_BOUND` would allow an empty array too, but an empty array is
+    /// one more path that does not behave the same everywhere, while one zero
+    /// texel costs four bytes.
     no_tiles: Option<wgpu::BindGroup>,
 
-    /// Завантажені рельєфи: по текстурі на тайл.
+    /// The loaded terrains: one texture per tile.
     terrains: Vec<TerrainSlot>,
 
     /// How many resident-set bind groups have been built since the frame was
@@ -1466,26 +1466,28 @@ struct Planet {
 
     cache: PatchCache,
 
-    /// По слоту на тіло сцени. Ростуть за потребою й не спадають — та сама
-    /// причина, що в [`Lines`]: тіла в кадрі з'являються й зникають (Місяць
-    /// за обрієм), а перестворювати буфери щокадру означало б платити за це
-    /// щокадру.
+    /// One slot per body of the scene. They grow on demand and never shrink --
+    /// the same reason as in [`Lines`]: bodies appear and disappear in the frame
+    /// (the Moon below the horizon), and re-creating the buffers every frame
+    /// would mean paying for that every frame.
     bodies: Vec<BodySlot>,
 
-    /// Набори цього кадру — поле, а не змінна, щоб не виділяти вектор щокадру.
+    /// This frame's selections -- a field rather than a local, so as not to
+    /// allocate a vector every frame.
     selections: Vec<lod::Selection>,
 }
 
-/// Завантажений рельєф: по текстурі на тайл плюс сам тайлсет.
+/// A loaded terrain: one texture per tile plus the tileset itself.
 ///
-/// Текстура на тайл, а не один шар масиву на тайл: правило 6 етапу R вимагає
-/// **bindless-масив**, а не `texture_2d_array`. Різниця не термінологічна —
-/// у масиву шарів спільний розмір і жорстка стеля (256 у downlevel-лімітах),
-/// у bindless-масиву ні того, ні того, і саме тому на нього й перейшли
-/// (PROJECT.md §7, розвідка P0: 10⁶ елементів на цій машині).
+/// A texture per tile, not one array layer per tile: rule 6 of stage R demands a
+/// **bindless array**, not a `texture_2d_array`. The difference is not
+/// terminological -- a layer array has a shared size and a hard ceiling (256 in
+/// the downlevel limits), a bindless array has neither, and that is exactly why
+/// we moved to it (PROJECT.md section 7, reconnaissance P0: 1e6 elements on this
+/// machine).
 struct TerrainSlot {
     data: tiles::Terrain,
-    /// Колір тієї самої поверхні, якщо асет був (етап T, T3b).
+    /// The colour of the same surface, if the asset was there (stage T, T3b).
     colour: Option<tiles::Colour>,
     /// The pyramid's texture views, by tile index -- the whole of it.
     ///
@@ -1496,39 +1498,40 @@ struct TerrainSlot {
     /// since Y1c even that is rebuilt only when the selection moves.
     heights: Vec<wgpu::TextureView>,
     colours: Vec<wgpu::TextureView>,
-    /// Метрів на одиницю зберігання — множник для вершинного зсуву.
+    /// Metres per storage unit -- the multiplier for the vertex offset.
     scale_m: f32,
-    /// Середнє альбедо поверхні, лінійне (T7h). Рахується **раз на асет**:
-    /// `Colour::mean` розкодовує sRGB у кожному з 22 050 вузлів найгрубішого
-    /// рівня, тобто це десятки тисяч `powf` — щокадру такого робити не можна,
-    /// а щоразу при завантаженні можна.
+    /// The surface's mean albedo, linear (T7h). Computed **once per asset**:
+    /// `Colour::mean` decodes sRGB at each of the 22 050 nodes of the coarsest
+    /// level, i.e. tens of thousands of `powf` -- that must not be done every
+    /// frame, but may be done on every load.
     ///
-    /// Нуль без колірного тайлсета, і це те саме рішення, що діяло до T7h:
-    /// небо над тілом, кольору якого ми не знаємо, не має звідки взяти
-    /// відбите знизу світло.
+    /// Zero without a colour tileset, and that is the same decision that held
+    /// before T7h: the sky above a body whose colour we do not know has nowhere
+    /// to take the light reflected from below.
     albedo: [f32; 3],
 }
 
-/// Те, чим одне тіло відрізняється від іншого на GPU: своя матриця й свої
-/// початки патчів.
+/// What makes one body different from another on the GPU: its own matrix and its
+/// own patch origins.
 ///
-/// Виклик малювання на тіло — свідома ціна R1e. Якщо десятки тіл виявляться
-/// дорогими, відповідь не «повернути одне тіло», а R6: патчі всіх тіл одним
-/// буфером і `draw_indirect` (ROADMAP-PLANETS.md).
+/// A draw call per body is R1e's deliberate price. If dozens of bodies turn out
+/// to be expensive, the answer is not "go back to one body" but R6: the patches
+/// of all bodies in one buffer and `draw_indirect` (ROADMAP-PLANETS.md).
 struct BodySlot {
     uniform_buffer: wgpu::Buffer,
     origin_buffer: wgpu::Buffer,
-    /// Кандидати на малювання: увесь вибраний набір, до відбору.
+    /// The candidates for drawing: the whole selected set, before culling.
     candidate_buffer: wgpu::Buffer,
-    /// Параметри відбору на цей кадр.
+    /// This frame's culling parameters.
     cull_uniform: wgpu::Buffer,
-    /// Аргументи `draw_indirect`; друге слово — лічильник вижилих.
+    /// The `draw_indirect` arguments; the second word is the survivors' count.
     indirect_buffer: wgpu::Buffer,
     cull_bind_group: wgpu::BindGroup,
-    /// Скільки кандидатів подано цього кадру — стільки треба груп compute.
+    /// How many candidates were submitted this frame -- that is how many compute
+    /// groups are needed.
     candidates: u32,
     bind_group: wgpu::BindGroup,
-    /// Який рельєф зараз прив'язаний до цього слота.
+    /// Which terrain is currently bound to this slot.
     ///
     /// Read when the draw picks a pipeline: a body with tiles and a body
     /// without are drawn by different programs, and the choice is made from
@@ -1577,54 +1580,56 @@ fn resident_views<'a>(views: &'a [wgpu::TextureView], ids: &[usize]) -> Vec<&'a 
     ids.iter().map(|&i| &views[i]).collect()
 }
 
-/// Скільки вершин у сітці одного патча.
+/// How many vertices are in one patch's grid.
 const PATCH_VERTICES: usize = (cubesphere::SIDE + 1) * (cubesphere::SIDE + 1);
-/// Скільки вершин у списку трикутників патча — по три на трикутник, по два
-/// трикутники на клітинку.
+/// How many vertices are in a patch's triangle list -- three per triangle, two
+/// triangles per cell.
 const PATCH_INDICES: usize = cubesphere::SIDE * cubesphere::SIDE * 6;
 
-/// Скільки байтів займає `PatchVertex` у std430: два `vec3` з вирівнюванням 16.
+/// How many bytes `PatchVertex` takes in std430: two `vec3` at alignment 16.
 const VERTEX_BYTES: u64 = 32;
 
-/// Скільки байтів займає `Cone` у std430.
+/// How many bytes `Cone` takes in std430.
 const CONE_BYTES: u64 = 32;
 
-/// Скільки байтів займає `CullParams`: сім `vec4`.
+/// How many bytes `CullParams` takes: seven `vec4`.
 const CULL_BYTES: u64 = 112;
 
-/// Скільки патчів обробляє одна група compute — те саме число, що в
-/// `[numthreads(64, 1, 1)]` у `shaders/cull.slang`.
+/// How many patches one compute group handles -- the same number as in
+/// `[numthreads(64, 1, 1)]` in `shaders/cull.slang`.
 const CULL_GROUP: u32 = 64;
-/// З чого починається місткість кеша — далі вона тільки росте.
+/// What the cache's capacity starts at -- from there it only grows.
 const MIN_PATCHES: usize = 64;
 
-/// Скільки елементів оголошує bindless-масив тайлів.
+/// How many elements the bindless tile array declares.
 ///
-/// Стеля макета, не кількість тайлів: `PARTIALLY_BOUND_BINDING_ARRAY` дозволяє
-/// прив'язати менше. Число взяте з найглибшої піраміди, яка справді існує:
-/// **колір Місяця на шести рівнях — 8190 тайлів** (T2a), висоти на п'яти —
-/// 2046. Отже 8192, і запасу тут рівно нуль: сьомий рівень коштував би 32 766
-/// тайлів, і T2a виміряв, що він того не вартий (256 МіБ відеопам'яті проти
-/// 32).
+/// A ceiling of the layout, not a count of tiles: `PARTIALLY_BOUND_BINDING_ARRAY`
+/// allows binding fewer. The number is taken from the deepest pyramid that
+/// really exists: **the Moon's colour at six levels is 8190 tiles** (T2a),
+/// heights at five are 2046. Hence 8192, and the margin here is exactly zero: a
+/// seventh level would cost 32 766 tiles, and T2a measured that it is not worth
+/// it (256 MiB of video memory against 32).
 ///
-/// Апаратна межа на порядки вища — 10⁶ на найскромнішому з адаптерів цієї
-/// машини (`--tile-probe`), — тож упертися тут можна лише в асет, а не в GPU.
-/// Ціна самого оголошення при цьому не нульова: дескрипторний набір росте
-/// пропорційно, тож стеля «про запас» коштувала б пам'яті на кожен тайлсет.
+/// The hardware limit is orders of magnitude higher -- 1e6 on the most modest of
+/// this machine's adapters (`--tile-probe`) -- so what one can run into here is
+/// the asset, not the GPU. The cost of the declaration itself is not zero,
+/// though: the descriptor set grows in proportion, so a ceiling "just in case"
+/// would cost memory for every tileset.
 const MAX_TILES: u32 = 8192;
 
-/// Формат колірного тайла в пам'яті GPU — рівно те, що лежить в асеті.
+/// The format of a colour tile in GPU memory -- exactly what lies in the asset.
 ///
-/// Одноканальний (Місяць): мозаїка LROC WAC монохромна, і три канали
-/// зберігали б той самий байт тричі — 12–16 КіБ на тайл проти 4 (T2a).
-/// Чотириканальний (Земля, T7g): трибайтового формату текстури немає ні в
-/// wgpu, ні у Vulkan, тож четвертий байт існує в будь-якому разі.
+/// Single-channel (the Moon): the LROC WAC mosaic is monochrome, and three
+/// channels would store the same byte three times -- 12-16 KiB per tile against 4
+/// (T2a). Four-channel (Earth, T7g): a three-byte texture format exists neither
+/// in wgpu nor in Vulkan, so the fourth byte is there in any case.
 ///
-/// **Простір бере з асета** (`Colour::srgb`), а не з кількості каналів:
-/// апаратне розкодування sRGB відбувається при читанні текселя, тобто
-/// `Load` у шейдері вже віддає лінійне значення — і саме тому формат тут
-/// мусить сказати правду про те, що в байті. Помилка в цьому полі не падає
-/// нічим: поверхня просто виходить світлішою чи темнішою, ніж є.
+/// **The colour space comes from the asset** (`Colour::srgb`), not from the
+/// channel count: hardware sRGB decoding happens when the texel is read, i.e.
+/// `Load` in the shader already hands back a linear value -- and that is exactly
+/// why the format here has to tell the truth about what is in the byte. An error
+/// in this field breaks nothing loudly: the surface simply comes out lighter or
+/// darker than it is.
 fn colour_format(colour: &tiles::Colour) -> wgpu::TextureFormat {
     match (colour.channels, colour.srgb) {
         (1, _) => wgpu::TextureFormat::R8Unorm,
@@ -1633,49 +1638,51 @@ fn colour_format(colour: &tiles::Colour) -> wgpu::TextureFormat {
     }
 }
 
-/// Формат тайла-заглушки для тіла без кольору — найдешевший з можливих.
+/// The format of the stub tile for a body without colour -- the cheapest
+/// possible.
 const NO_COLOUR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 
-/// Кеш геометрії патчів: слот на патч, спільний для всіх тіл.
+/// The patch geometry cache: one slot per patch, shared by all bodies.
 ///
-/// ## Чому кеш, а не перерахунок
+/// ## Why a cache rather than recomputation
 ///
-/// Зсуви вершин патча не залежать ні від камери, ні від тіла: геометрія —
-/// одинична сфера (R1e), а патч на ній стоїть нерухомо. Отже єдине, що
-/// змінюється щокадру, — **які** патчі потрібні, і це рівно та задача, під
-/// яку кеш і існує. Сусідні кадри ділять майже весь набір: LOD міняє його
-/// по одному патчу, а не цілком.
+/// A patch's vertex offsets depend neither on the camera nor on the body: the
+/// geometry is the unit sphere (R1e), and a patch stands still on it. So the only
+/// thing that changes every frame is **which** patches are needed, and that is
+/// exactly the problem the cache exists for. Neighbouring frames share almost the
+/// whole set: LOD changes it one patch at a time, not wholesale.
 ///
-/// ## Витіснення — курсором, а не історією звернень
+/// ## Eviction by a cursor, not by access history
 ///
-/// Місткість тримається щонайменше вдвічі більшою за потребу кадру, тож
-/// слот, не потрібний **цього** кадру, знайдеться завжди. Шукає його курсор,
-/// що йде по колу: LRU тут дав би той самий результат за більші гроші, бо
-/// набір міняється поступово, а не стрибками.
+/// The capacity is kept at least twice the frame's demand, so a slot not needed
+/// **this** frame is always there. A cursor going round finds it: LRU would give
+/// the same result here for more money, because the set changes gradually rather
+/// than in jumps.
 struct PatchCache {
     capacity: usize,
     slot: std::collections::HashMap<Patch, u32>,
     resident: Vec<Option<Patch>>,
-    /// Номер кадру, у якому слот востаннє знадобився.
+    /// The frame number in which the slot was last needed.
     stamp: Vec<u64>,
-    /// Початок патча на **одиничній** сфері, за слотом.
+    /// The patch's origin on the **unit** sphere, by slot.
     origins: Vec<[f64; 3]>,
     cursor: usize,
     frame: u64,
 
-    /// Зсуви й нормалі всіх патчів кеша одним **storage**-буфером (R6a).
+    /// The offsets and normals of all the cache's patches in one **storage**
+    /// buffer (R6a).
     ///
-    /// Не вершинними атрибутами: зшивання рівнів — це підміна індексу вузла,
-    /// а атрибути приходять уже вибраними. Читаючи вузол сам, шейдер робить
-    /// підміну арифметикою, і шістнадцять індексних наборів разом із викликом
-    /// малювання на патч зникають обидва.
+    /// Not vertex attributes: stitching levels is a substitution of a node's
+    /// index, and attributes arrive already selected. By reading the node itself,
+    /// the shader makes the substitution by arithmetic, and both the sixteen
+    /// index sets and the draw call per patch disappear.
     vertex_buffer: wgpu::Buffer,
-    /// Конус кожного патча в системі **тіла** — те, з чого compute рахує
-    /// відбір за лімбом (R6b).
+    /// Each patch's cone in the **body's** frame -- what compute computes limb
+    /// culling from (R6b).
     ///
-    /// За слотом кеша, а не за позицією в наборі: конус не залежить ні від
-    /// камери, ні від тіла, тож рахується раз при заселенні слота — там же,
-    /// де й геометрія.
+    /// By cache slot rather than by position in the set: the cone depends neither
+    /// on the camera nor on the body, so it is computed once when the slot is
+    /// populated -- in the same place as the geometry.
     cone_buffer: wgpu::Buffer,
 }
 
@@ -1706,15 +1713,16 @@ impl PatchCache {
         }
     }
 
-    /// Слот патча — той, що вже є, або щойно зайнятий і заповнений.
+    /// A patch's slot -- the one that already exists, or one just taken and
+    /// filled.
     fn intern(&mut self, gpu: &Gpu, patch: Patch) -> u32 {
         if let Some(&slot) = self.slot.get(&patch) {
             self.stamp[slot as usize] = self.frame;
             return slot;
         }
 
-        // Слот, не потрібний цього кадру. Він є завжди: місткість тримається
-        // вдвічі більшою за потребу (див. `Planet::reserve`).
+        // A slot not needed this frame. There is always one: the capacity is
+        // kept at twice the demand (see `Planet::reserve`).
         let slot = loop {
             let candidate = self.cursor;
             self.cursor = (self.cursor + 1) % self.capacity;
