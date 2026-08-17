@@ -1,24 +1,27 @@
-//! Матеріал корпусу в кадрі проти аналітичного двійника (етап T, крок T5c).
+//! The hull material in the frame against an analytic twin (stage T, step
+//! T5c).
 //!
-//! Той самий оракул, що `engine::cull` проти `cull.slang` і
-//! `engine::atmosphere` проти `sky.slang`: **число проти числа**. GGX має
-//! замкнену форму, тож [`engine::brdf`] дає точну відповідь без експозиції й
-//! без будь-яких налаштувань вигляду, і розбіжність означає помилку.
+//! The same oracle as `engine::cull` against `cull.slang` and
+//! `engine::atmosphere` against `sky.slang`: **a number against a number**.
+//! GGX has a closed form, so [`engine::brdf`] gives an exact answer with no
+//! exposure and no look settings of any kind, and a divergence means a
+//! mistake.
 //!
-//! ## Порівнюються центри трикутників, а не вершини
+//! ## Triangle centres are compared, not vertices
 //!
-//! Вершина лежить на межі кількох трикутників, тобто в точці, де інтерполяція
-//! нормалі стрибає (у плоских нормалей) або де округлення растеризатора
-//! вирішує, кому належить піксель. Центр трикутника не має ні того, ні того: у
-//! ньому інтерпольована нормаль — це середнє трьох вершинних, і воно ж
-//! рахується на CPU.
+//! A vertex lies on the boundary of several triangles, i.e. at a point where
+//! the normal interpolation jumps (with flat normals) or where the
+//! rasteriser's rounding decides which pixel it belongs to. A triangle centre
+//! has neither: in it the interpolated normal is the mean of the three vertex
+//! normals, and that is what the CPU computes too.
 //!
-//! ## Простір — камерний, і це не деталь реалізації
+//! ## The space is the camera's, and that is not an implementation detail
 //!
-//! Позиції вершин корабля приходять уже поверненими в осі камери
-//! (`Camera::relative`), тож нормаль і напрямок на світило теж камерні (T5c).
-//! Двійник мусить рахувати в тому самому просторі, інакше він звірятиме
-//! правильну формулу з правильною формулою на різних векторах.
+//! The ship's vertex positions arrive already rotated into the camera axes
+//! (`Camera::relative`), so the normal and the direction to the light source
+//! are in camera space too (T5c). The twin has to compute in the same space,
+//! otherwise it would be comparing a correct formula with a correct formula on
+//! different vectors.
 
 use engine::camera::Camera;
 use engine::gpu::Gpu;
@@ -28,44 +31,45 @@ use engine::{brdf, frame, ship, shot, srgb, tonemap};
 
 const SIZE: u32 = 768;
 
-/// Розмір корабля й відстань до нього, метри.
+/// The ship's size and the distance to it, metres.
 const HEIGHT_M: f64 = 20.0;
 const RANGE_M: f64 = 45.0;
 
-/// Базовий колір корпусу — три різні канали навмисно.
+/// The hull's base colour -- three different channels deliberately.
 ///
-/// Однакові канали пропустили б перестановку каналів у шейдері, а вона тут
-/// цілком можлива: `F0` металу — це і є базовий колір, тобто колір входить у
-/// формулу двічі й різними шляхами.
+/// Equal channels would let a channel swap in the shader through, and one is
+/// entirely possible here: a metal's `F0` **is** the base colour, i.e. the
+/// colour enters the formula twice and by different routes.
 const BASE: [f32; 4] = [0.55, 0.70, 0.85, 1.0];
 
 fn gpu() -> Option<Gpu> {
     Gpu::for_tests()
 }
 
-/// Сцена: корабель перед камерою, більше нічого.
+/// The scene: the ship in front of the camera and nothing else.
 ///
-/// Без планети й без повітря: обидва додали б у піксель світло, якого двійник
-/// не рахує, і оракул перестав би бути числом проти числа.
+/// No planet and no air: both would add light to the pixel that the twin does
+/// not compute, and the oracle would stop being a number against a number.
 fn scene(sun: [f64; 3], roughness: f32, metallic: f32) -> Scene {
-    // ⚠ Камера стоїть **навскіс**, і це не для краси. З камерою на осі `z`
-    // базис камери збігається зі світовим, `Camera::rotate` стає тотожністю —
-    // і найгрубіша з можливих помилок, освітлення в двох різних просторах,
-    // робиться в такій фікстурі невидимою. Перша редакція так і стояла, і
-    // навмисний злам «світило у світових осях» вона пропустила.
+    // WARNING: the camera stands **off-axis**, and not for looks. With the
+    // camera on the `z` axis the camera basis coincides with the world one,
+    // `Camera::rotate` becomes the identity -- and the crudest possible
+    // mistake, lighting in two different spaces, becomes invisible in such a
+    // fixture. The first edition stood exactly that way, and it let a
+    // deliberate "light in world axes" break through.
     let eye = [RANGE_M * 0.42, RANGE_M * 0.31, RANGE_M * 0.85];
     let camera = Camera::look_at(eye, [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
     let mut scene = Scene::new(camera);
     scene.sun = sun;
     scene.ships.push(Ship {
         centre: [0.0, 0.0, 0.0],
-        // Чверть оберту навколо `x`: корабель стає до камери **боком**.
+        // A quarter turn about `x`: the ship stands **side-on** to the camera.
         //
-        // ⚠ Не косметика. Ніс — конус, і носом до камери жодна грань не
-        // дивиться в неї достатньо прямо, щоб дзеркальний пік узагалі
-        // потрапив у кадр: при `roughness = 0.08` пік `D` — це 7768, а
-        // найближча грань ловить 0.13. Бік корпусу — тіло обертання, і його
-        // центральна смуга звернена до камери точно.
+        // WARNING: not cosmetic. The nose is a cone, and nose-on no facet
+        // faces the camera directly enough for the specular peak to enter the
+        // frame at all: at `roughness = 0.08` the peak of `D` is 7768 while
+        // the nearest facet catches 0.13. The side of the hull is a solid of
+        // revolution, and its central band faces the camera exactly.
         orientation: [
             std::f64::consts::FRAC_PI_4.cos(),
             std::f64::consts::FRAC_PI_4.sin(),
@@ -86,14 +90,14 @@ fn normalise(v: [f64; 3]) -> [f64; 3] {
     [v[0] / n, v[1] / n, v[2] / n]
 }
 
-/// Похибки по всіх перевірених гранях, у байтах.
+/// The errors over every checked facet, in bytes.
 struct Agreement {
     errors: Vec<i32>,
-    /// Скільки граней вийшли **понад коліно** тонмапера.
+    /// How many facets came out **above the knee** of the tonemapper.
     ///
-    /// Без цього числа оракул міг би мовчки перевіряти лише тотожну частину
-    /// кривої: нижче коліна стиснення не робить нічого, тож його помилка там
-    /// невидима.
+    /// Without this number the oracle could silently be checking only the
+    /// identity part of the curve: below the knee the compression does
+    /// nothing, so a mistake in it is invisible there.
     compressed: usize,
 }
 
@@ -102,11 +106,12 @@ impl Agreement {
         self.errors.len()
     }
 
-    /// Медіана — головне число оракула.
+    /// The median is the oracle's headline number.
     ///
-    /// Помилка у **формулі** зсуває кожну грань, тобто й медіану. Перекриття
-    /// геометрією псує окремі грані, лишаючи медіану нулем; саме тому оракул
-    /// питає про неї, а не про максимум.
+    /// A mistake in the **formula** shifts every facet, and hence the median
+    /// too. Occlusion by geometry spoils individual facets while leaving the
+    /// median at zero; that is exactly why the oracle asks about the median
+    /// rather than the maximum.
     fn median(&self) -> i32 {
         let mut sorted = self.errors.clone();
         sorted.sort_unstable();
@@ -125,12 +130,13 @@ impl Agreement {
 
 fn compare(gpu: &Gpu, sun: [f64; 3], roughness: f32, metallic: f32) -> Agreement {
     let scene = scene(sun, roughness, metallic);
-    let shot: Shot = shot::take_scene(gpu, SIZE, SIZE, &scene).expect("кадр мав намалюватися");
+    let shot: Shot =
+        shot::take_scene(gpu, SIZE, SIZE, &scene).expect("the frame should have drawn");
     let camera = &scene.camera;
     let ship = &scene.ships[0];
     let mesh = ship::generate(ship.height_m);
-    // Той самий поворот, що застосовує кадр (`frame::rotation`), — інакше
-    // двійник рахував би для іншої геометрії.
+    // The same rotation the frame applies (`frame::rotation`) -- otherwise the
+    // twin would be computing for different geometry.
     let turn = |v: [f64; 3]| {
         let q = ship.orientation;
         let (w, x, y, z) = (q[0], q[1], q[2], q[3]);
@@ -159,8 +165,8 @@ fn compare(gpu: &Gpu, sun: [f64; 3], roughness: f32, metallic: f32) -> Agreement
     for triangle in mesh.indices.chunks_exact(3) {
         let corners: Vec<usize> = triangle.iter().map(|i| *i as usize).collect();
 
-        // Центр трикутника у світі й середня нормаль — рівно те, що дає
-        // інтерполяція в тій самій точці.
+        // The triangle's centre in the world and the mean normal -- exactly
+        // what interpolation gives at that same point.
         let mut centre = [0.0f64; 3];
         let mut normal = [0.0f64; 3];
         for &k in &corners {
@@ -175,8 +181,9 @@ fn compare(gpu: &Gpu, sun: [f64; 3], roughness: f32, metallic: f32) -> Agreement
         let centre = turn(centre);
         let normal = turn(normal);
 
-        // Трикутник мусить бути помітно більший за піксель: у дрібного центр
-        // ділять сусіди, і кадр там показує суміш кількох граней.
+        // The triangle has to be noticeably larger than a pixel: in a small
+        // one the neighbours share the centre, and the frame there shows a
+        // mixture of several facets.
         let mut corner_px = Vec::with_capacity(3);
         for &k in &corners {
             let world = turn(mesh.positions[k]);
@@ -209,8 +216,9 @@ fn compare(gpu: &Gpu, sun: [f64; 3], roughness: f32, metallic: f32) -> Agreement
         }
         let (x, y) = (x as u32, y as u32);
 
-        // Трикутник мусить накривати свій піксель разом із сусідами: на межі
-        // силуету частина з них — небо, і порівнювати там нема чого.
+        // The triangle has to cover its pixel together with the neighbours: on
+        // the silhouette boundary some of them are sky, and there is nothing
+        // to compare there.
         let neighbours = [
             shot.pixel(x, y),
             shot.pixel(x - 1, y),
@@ -224,8 +232,9 @@ fn compare(gpu: &Gpu, sun: [f64; 3], roughness: f32, metallic: f32) -> Agreement
         {
             continue;
         }
-        // І сусіди мусять бути близькі один до одного: різкий перепад означає
-        // ребро або край перекриття, тобто піксель, який належить іншій грані.
+        // And the neighbours have to be close to one another: a sharp step
+        // means an edge or the boundary of an occlusion, i.e. a pixel that
+        // belongs to a different facet.
         let spread = neighbours
             .iter()
             .map(|p| i32::from(p[1]))
@@ -244,16 +253,18 @@ fn compare(gpu: &Gpu, sun: [f64; 3], roughness: f32, metallic: f32) -> Agreement
         let view = normalise([-position[0], -position[1], -position[2]]);
         let n = camera.rotate(normal);
         let n = normalise([f64::from(n[0]), f64::from(n[1]), f64::from(n[2])]);
-        // ⚠ **Грані, відвернуті від камери, відкидаються, і це головний
-        // фільтр оракула.** Корпус — тіло обертання, тож рівно половина його
-        // граней лежить на дальньому боці; їхні центри проєктуються в ті самі
-        // пікселі, що й ближні, і кадр там показує **іншу** грань. Перша
-        // редакція цього не відсіювала й дістала 28% збігів; друга розвертала
-        // нормаль до ока, як шейдер, і дістала 69% — правдоподібні числа з
-        // чужих пікселів. Правильна відповідь — не рахувати їх узагалі.
+        // WARNING: **facets turned away from the camera are discarded, and
+        // that is the oracle's main filter.** The hull is a solid of
+        // revolution, so exactly half its facets lie on the far side; their
+        // centres project into the same pixels as the near ones, and the frame
+        // there shows a **different** facet. The first edition did not filter
+        // them out and got 28% agreement; the second flipped the normal
+        // towards the eye, as the shader does, and got 69% -- plausible
+        // numbers taken from somebody else's pixels. The right answer is not
+        // to count them at all.
         //
-        // Запас 0.15 прибирає ще й грані, майже паралельні променю: там
-        // піксель ділять кілька граней одразу.
+        // The 0.15 margin also removes facets nearly parallel to the ray:
+        // there several facets share a pixel at once.
         if n[0] * view[0] + n[1] * view[1] + n[2] * view[2] < 0.15 {
             continue;
         }
@@ -272,14 +283,14 @@ fn compare(gpu: &Gpu, sun: [f64; 3], roughness: f32, metallic: f32) -> Agreement
             if value > tonemap::KNEE {
                 compressed = true;
             }
-            // ⚠ Стиснення входить у передбачення (T5c3). Без нього оракул
-            // розійшовся б рівно на відблиску — тобто там, де матеріал
-            // найцікавіший.
+            // WARNING: the compression is part of the prediction (T5c3).
+            // Without it the oracle would diverge precisely on the highlight
+            // -- i.e. where the material is most interesting.
             let expected = i32::from(srgb::linear_to_byte(tonemap::compress(value)));
             let got = i32::from(neighbours[0][channel]);
             worst = worst.max((expected - got).abs());
         }
-        // Дзеркальний пік не порівнюється — див. пояснення в тесті.
+        // The specular peak is not compared -- see the explanation in the test.
         if compressed {
             out.compressed += 1;
             continue;
@@ -289,32 +300,35 @@ fn compare(gpu: &Gpu, sun: [f64; 3], roughness: f32, metallic: f32) -> Agreement
     out
 }
 
-/// Кадр дає те саме число, що аналітичний двійник, на кожній грані корпусу.
+/// The frame gives the same number as the analytic twin, on every facet of
+/// the hull.
 ///
-/// Прогін по чотирьох матеріалах і двох світилах: помилка в одному доданку
-/// формули майже завжди лишає інший правильним, тож дзеркальний метал і
-/// матовий діелектрик мусять зійтися **обидва**.
+/// A sweep over four materials and two light sources: a mistake in one term of
+/// the formula almost always leaves the other correct, so a mirror metal and a
+/// matte dielectric both have to agree.
 ///
-/// ⚠ Ідеальної згоди тут бути не може, і причина геометрична, а не числова:
-/// корпус несе стабілізатори, тож частина граней **перекрита** іншими, і центр
-/// такої грані падає в піксель, який належить не їй. Глибину з кадру не
-/// прочитати, тож ці випадки не відсіюються — звідси й головне число оракула
-/// **медіана**, а не максимум: помилка у формулі зсуває кожну грань, перекриття
-/// псує окремі.
+/// WARNING: perfect agreement is impossible here, and the reason is geometric
+/// rather than numeric: the hull carries fins, so some facets are **occluded**
+/// by others, and such a facet's centre falls into a pixel that does not
+/// belong to it. Depth cannot be read out of the frame, so these cases are not
+/// filtered out -- hence the oracle's headline number is the **median** rather
+/// than the maximum: a mistake in the formula shifts every facet, occlusion
+/// spoils individual ones.
 ///
-/// ⚠ **Що цей оракул не ловить, перевірено зламом:**
+/// WARNING: **what this oracle does not catch, verified by breaking it:**
 ///
-/// * **показник Френеля** (`t⁵` замість `t⁴`). У металу `F0` — це базовий
-///   колір, тобто 0.55…0.85, і доданок `(1 − F0)·t⁵` лишається дрібним; у
-///   діелектрика він великий лише при дотичному куті, де самого відблиску мало
-///   проти дифузного члена. Тобто в цій фікстурі показник не спостережний, і
-///   стереже його [`the_shader_carries_the_same_material_numbers`];
-/// * **розворот нормалі до ока** — за побудовою: грані, відвернуті від камери,
-///   оракул відкидає. Стереже його `tests/sun.rs`, де без розвороту корпус
-///   дістає чорні плями.
+/// * **the Fresnel exponent** (`t^5` instead of `t^4`). For a metal `F0` is
+///   the base colour, i.e. 0.55...0.85, and the `(1 - F0)*t^5` term stays
+///   small; for a dielectric it is large only at a grazing angle, where the
+///   highlight itself is small against the diffuse term. So in this fixture
+///   the exponent is not observable, and what guards it is
+///   [`the_shader_carries_the_same_material_numbers`];
+/// * **flipping the normal towards the eye** -- by construction: the oracle
+///   discards facets turned away from the camera. What guards it is
+///   `tests/sun.rs`, where without the flip the hull gets black patches.
 ///
-/// Ловить він те, заради чого й існує: `α = roughness` замість `roughness²`
-/// валить медіану одразу.
+/// What it does catch is what it exists for: `alpha = roughness` instead of
+/// `roughness^2` breaks the median immediately.
 #[test]
 fn every_facet_shows_the_number_the_analytic_brdf_predicts() {
     let Some(gpu) = gpu() else { return };
@@ -323,9 +337,9 @@ fn every_facet_shows_the_number_the_analytic_brdf_predicts() {
         for sun in [[0.0, 0.0, 1.0], [0.55, 0.3, 0.78]] {
             let got = compare(&gpu, sun, roughness, metallic);
             println!(
-                "  шорсткість {roughness}, метал {metallic}, світило {sun:?}: \
-                 {} граней, медіана {}, у межах 2 байтів {:.1}%, найгірша {}, \
-                 понад коліном {}",
+                "  roughness {roughness}, metallic {metallic}, light {sun:?}: \
+                 {} facets, median {}, within 2 bytes {:.1}%, worst {}, \
+                 above the knee {}",
                 got.checked(),
                 got.median(),
                 got.within(2) * 100.0,
@@ -334,44 +348,49 @@ fn every_facet_shows_the_number_the_analytic_brdf_predicts() {
             );
             assert!(
                 got.checked() > 40,
-                "перевірено лише {} граней — фікстура не працює",
+                "only {} facets were checked -- the fixture does not work",
                 got.checked()
             );
-            // ⚠ Грані **дзеркального піку** з порівняння викидаються, і це не
-            // послаблення оракула, а межа методу. Пік `D` при `roughness =
-            // 0.35` вищий за схил у сотні разів, тож різниця між середньою
-            // нормаллю трьох вершин (те, що рахує двійник) і перспективно
-            // інтерпольованою в центрі пікселя (те, що бачить шейдер) дає там
-            // сотні байтів при тих самих формулах. Виміряно: без цього
-            // фільтра медіана лишається нулем, а найгірша грань — 235 байтів.
-            // ⚠ Один байт, а не нуль, і причина названа: точка порівняння —
-            // проєкція **просторового** центра трикутника, а растеризатор
-            // інтерполює атрибути перспективно-коректно, тобто з вагами, що
-            // не дорівнюють третинам, коли вершини лежать на різній глибині.
-            // Корпус боком до камери — тіло обертання, і в нього таких
-            // трикутників більшість. Помилка у формулі дає тут не одиницю, а
-            // десятки.
+            // WARNING: facets on the **specular peak** are dropped from the
+            // comparison, and that is a limit of the method rather than a
+            // weakening of the oracle. The peak of `D` at `roughness = 0.35`
+            // is hundreds of times higher than its flank, so the difference
+            // between the mean normal of three vertices (what the twin
+            // computes) and the perspective-interpolated one at the pixel
+            // centre (what the shader sees) gives hundreds of bytes there with
+            // the very same formulas. Measured: without this filter the median
+            // stays zero and the worst facet is 235 bytes.
+            //
+            // WARNING: one byte rather than zero, and the reason is named: the
+            // comparison point is the projection of the triangle's **spatial**
+            // centre, while the rasteriser interpolates attributes in a
+            // perspective-correct way, i.e. with weights that are not thirds
+            // when the vertices lie at different depths. A hull side-on to the
+            // camera is a solid of revolution, and most of its triangles are
+            // like that. A mistake in the formula gives not one here but
+            // tens.
             assert!(
                 got.median() <= 1,
-                "медіана розбіжності {} байтів: шейдер розійшовся з \
-                 `engine::brdf` на кожній грані, а не на окремих",
+                "a median divergence of {} bytes: the shader has diverged from \
+                 `engine::brdf` on every facet, not on individual ones",
                 got.median()
             );
             assert!(
                 got.within(2) > 0.8,
-                "у межах 2 байтів лише {:.1}% граней",
+                "only {:.1}% of facets are within 2 bytes",
                 got.within(2) * 100.0
             );
         }
     }
 }
 
-/// Числа матеріалу записані двічі — у Rust і в шейдері — і мусять збігатися.
+/// The material's numbers are written down twice -- in Rust and in the shader
+/// -- and have to match.
 ///
-/// Той самий сторож, що звіряє `SIDE` у `gpu_driven.rs` і сталі правила
-/// матеріалу в `material.rs`. Тут він несе більше, ніж звичайно: показник
-/// Френеля в кадрі не спостережний (див. вище), тож єдине, що взагалі стоїть
-/// між ним і тихою розбіжністю, — цей рядок.
+/// The same guard that compares `SIDE` in `gpu_driven.rs` and the material
+/// rule's constants in `material.rs`. Here it carries more than usual: the
+/// Fresnel exponent is not observable in the frame (see above), so this line
+/// is the only thing standing between it and a silent divergence.
 #[test]
 fn the_shader_carries_the_same_material_numbers() {
     let source = include_str!("../shaders/ship.slang");
@@ -382,13 +401,14 @@ fn the_shader_carries_the_same_material_numbers() {
         let wanted = format!("static const float {name} = {value};");
         assert!(
             source.contains(&wanted),
-            "у shaders/ship.slang немає рядка «{wanted}» — матеріал розійшовся \
-             з `engine::brdf`"
+            "shaders/ship.slang has no line \"{wanted}\" -- the material has \
+             diverged from `engine::brdf`"
         );
     }
-    // П'ятий степінь Шліка: у кадрі його не видно, і саме тому він тут.
+    // Schlick's fifth power: it is invisible in the frame, and that is exactly
+    // why it is here.
     assert!(
         source.contains("float t5 = t * t * t * t * t;"),
-        "у shaders/ship.slang немає п'ятого степеня Шліка"
+        "shaders/ship.slang has no Schlick fifth power"
     );
 }
