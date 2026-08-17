@@ -138,22 +138,85 @@ fn main() {
         println!("{count:>6} slices: {worst:>7.2}%");
     }
 
+    // D17a: can the reader get tau without marching? The shader has to, and it
+    // has only the transmittance table to do it with.
+    println!("\n-- tau from two table reads vs a fine march --");
+    // WARNING: the column that decides is `d slices`, not `err %`. Early on the
+    //   ray tau is 1e-5, so a relative error there divides by nothing and reads
+    //   -100% while the absolute miss is 1e-5. What the axis actually cares
+    //   about is where the reader LANDS -- so the last column is the difference
+    //   converted through `tau_to_z` into slices of a 64-slice volume, which is
+    //   the unit the reconstruction is paid in.
+    println!(
+        "{:>8} {:>10} {:>12} {:>12} {:>9} {:>9}",
+        "angle deg", "at km", "march", "table", "err %", "d slices"
+    );
+    // WARNING: the sample points are fractions of the AIR segment, not of the
+    //   ray. Fractions of the ray put the first probe exactly on the entry into
+    //   the shell, where tau is zero and a relative error is a division by
+    //   nothing -- the first version of this table printed -100% there and said
+    //   nothing at all. For the same reason the angles stop at the limb: from
+    //   400 km the horizon is at 70.2 degrees, and a ray above it never touches
+    //   air, so there is no tau to compare.
+    let mut worst_tau: f64 = 0.0;
+    for i in [0, 20, 40, 60, 68, 70] {
+        let theta = f64::from(i);
+        let dir = [theta.to_radians().sin(), 0.0, -theta.to_radians().cos()];
+        let Some((entry, exit)) = air_segment(&air, r, dir) else {
+            continue;
+        };
+        let profile = optical_profile(&air, r, dir, exit, 4096);
+        for frac in [0.25, 0.5, 1.0] {
+            let d = entry + (exit - entry) * frac;
+            let marched = value_of(&profile, d / exit);
+            let tabled = tau_from_table(&model, &air, r, dir, d);
+            let err = (tabled - marched) / marched.max(1e-30) * 100.0;
+            let slices =
+                (tau_to_z(tabled, 0.1) - tau_to_z(marched, 0.1)) * f64::from(atmosphere::AERIAL_Z);
+            worst_tau = worst_tau.max(slices.abs());
+            println!(
+                "{:>8.0} {:>10.2} {:>12.6} {:>12.6} {:>9.3} {:>9.4}",
+                theta,
+                d / 1e3,
+                marched,
+                tabled,
+                err,
+                slices
+            );
+        }
+    }
+    println!("worst miss on the axis: {worst_tau:.4} of a slice out of 64");
+
     // The same count, but the depth axis laid out in optical depth instead of
     // distance: nodes where the air is, not where the camera is.
+    //
+    // Measured twice: with tau from a march (what the axis is worth) and with
+    // tau from the table (what the shader can actually afford). If the two
+    // columns agree, D17a is proven and the axis is implementable.
     println!("\n-- worst |err| over the frame, depth axis in optical depth --");
     println!("tau0 is the half-way point of the axis: z = tau/(tau + tau0)");
+    println!(
+        "{:>6} {:>8} {:>12} {:>12}",
+        "tau0", "slices", "tau marched", "tau from LUT"
+    );
     for tau0 in [0.05f64, 0.1, 0.2, 0.4] {
         for count in [16u32, 32, 64] {
-            let mut worst: f64 = 0.0;
+            let mut worst = [0.0f64; 2];
             for i in 0..=70 {
                 let theta = f64::from(i);
                 let dir = [theta.to_radians().sin(), 0.0, -theta.to_radians().cos()];
                 let d = ground_distance(r, dir);
                 let exact = march(&model, &air, r, dir, sun, d, 2048).last().unwrap().1[1];
-                let volume = read_optical(&air, &model, r, dir, sun, d, count, tau0);
-                worst = worst.max(((volume - exact) / exact * 100.0).abs());
+                for (slot, from_table) in [false, true].into_iter().enumerate() {
+                    let volume =
+                        read_optical(&air, &model, r, dir, sun, d, count, tau0, from_table);
+                    worst[slot] = worst[slot].max(((volume - exact) / exact * 100.0).abs());
+                }
             }
-            println!("tau0 {tau0:>4} {count:>6} slices: {worst:>7.2}%");
+            println!(
+                "{tau0:>6} {count:>8} {:>11.2}% {:>11.2}%",
+                worst[0], worst[1]
+            );
         }
     }
 }
@@ -227,10 +290,14 @@ fn read_optical(
     distance: f64,
     count: u32,
     tau0: f64,
+    tau_from_lut: bool,
 ) -> f64 {
     let limit = ground_distance(r, dir);
     let profile = optical_profile(air, r, dir, limit, 4096);
     let tau_at = |d: f64| -> f64 {
+        if tau_from_lut {
+            return tau_from_table(model, air, r, dir, d);
+        }
         let x = (d / limit * 4096.0).clamp(0.0, 4095.0);
         let i = x.floor() as usize;
         let f = x - i as f64;
@@ -260,6 +327,68 @@ fn read_optical(
     }
     let z = tau_to_z(tau_at(distance), tau0).clamp(0.0, 1.0) * f64::from(count - 1);
     lerp_nodes(&nodes, z)
+}
+
+/// The optical depth from the camera to a point at `distance` -- from **two**
+/// reads of the transmittance table, with no march at all (D17a).
+///
+/// This is what makes the optical-depth axis affordable in the shader: the
+/// composition pass has to turn a pixel's distance into a depth coordinate, and
+/// it cannot march to do it. `sample_transmittance` already exists there.
+///
+/// WARNING: the branch is on **whether the ray meets the ground**, not on the
+///   sign of `mu`. The table holds the path to the TOP boundary, and that path
+///   is only physical when it does not cross the planet. A limb ray leaves the
+///   camera going down (`mu < 0`) and still misses the ground, and it belongs
+///   in the first branch; reading it from the other end would ask the table for
+///   a downgoing ray, which its parameterisation does not hold. This is
+///   Bruneton's split, and it is the whole reason one table can serve both.
+fn tau_from_table(model: &Model, air: &Atmosphere, r: f64, dir: [f64; 3], distance: f64) -> f64 {
+    let mu = dir[2];
+    let point = [distance * dir[0], distance * dir[1], r + distance * dir[2]];
+    let r_d = (point[0] * point[0] + point[1] * point[1] + point[2] * point[2])
+        .sqrt()
+        .max(BOTTOM);
+    let mu_d = (point[0] * dir[0] + point[1] * dir[1] + point[2] * dir[2]) / r_d;
+
+    let hits_ground =
+        atmosphere::distance_to_ground(r, mu, atmosphere::rho_squared(r, BOTTOM)).is_some();
+    let table = &model.transmittance;
+    let ratio = if hits_ground {
+        // Read from the other end: both halves then go up.
+        table.transmittance_at(air, BOTTOM, r_d, -mu_d)[1]
+            / table.transmittance_at(air, BOTTOM, r, -mu)[1]
+    } else {
+        table.transmittance_at(air, BOTTOM, r, mu)[1]
+            / table.transmittance_at(air, BOTTOM, r_d, mu_d)[1]
+    };
+    -ratio.clamp(1.0e-30, 1.0).ln()
+}
+
+/// Where the ray enters and leaves the air, metres along it. `None` if it never
+/// meets the shell at all -- from 400 km that is every ray above the limb.
+fn air_segment(air: &Atmosphere, r: f64, dir: [f64; 3]) -> Option<(f64, f64)> {
+    let mu = dir[2];
+    let rho2 = atmosphere::rho_squared(r, BOTTOM);
+    let shell2 = atmosphere::shell_squared(air, BOTTOM);
+    let discriminant = r * r * mu * mu + (shell2 - rho2);
+    if discriminant < 0.0 || mu > 0.0 {
+        return None;
+    }
+    let entry = (-r * mu - discriminant.sqrt()).max(0.0);
+    let exit = match atmosphere::distance_to_ground(r, mu, rho2) {
+        Some(ground) => ground,
+        None => -r * mu + discriminant.sqrt(),
+    };
+    (exit > entry).then_some((entry, exit))
+}
+
+/// A value from a profile at a unit position along it.
+fn value_of(profile: &[f64], unit: f64) -> f64 {
+    let x = (unit * (profile.len() - 1) as f64).clamp(0.0, (profile.len() - 1) as f64);
+    let i = (x.floor() as usize).min(profile.len() - 2);
+    let f = x - i as f64;
+    profile[i] * (1.0 - f) + profile[i + 1] * f
 }
 
 /// Cumulative optical depth along the ray, `steps + 1` samples over `[0, span]`.
