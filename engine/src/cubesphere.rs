@@ -1,59 +1,62 @@
-//! Кубосфера: грань куба, спроєктована на сферу (ROADMAP-PLANETS.md, R1a).
+//! The cubesphere: a cube face projected onto a sphere (ROADMAP-PLANETS.md,
+//! R1a).
 //!
-//! ## Чому не UV-сфера
+//! ## Why not a UV sphere
 //!
-//! У UV-сфери на полюсах сходяться всі меридіани: там вершини стоять
-//! упритул, а на екваторі — розтягнуті. Для F5 це було байдуже (перевірявся
-//! масштаб, не якість), для планети з LOD — ні: рівень патча вибирається за
-//! екранною похибкою, а вона в такій сітці різна в різних місцях однієї
-//! оболонки.
+//! On a UV sphere all meridians converge at the poles: vertices stand shoulder
+//! to shoulder there and are stretched at the equator. For F5 that did not
+//! matter (scale was being checked, not quality); for a planet with LOD it does:
+//! a patch's level is chosen by screen-space error, and in such a grid the error
+//! differs from place to place on one shell.
 //!
-//! ## Чому варп, і чому саме тангенс
+//! ## Why a warp, and why the tangent specifically
 //!
-//! Наївна проєкція — просто нормалізувати точку грані куба — стискає сітку до
-//! центра грані й розтягує до кутів. Тангенційний варп (`tan(u·π/4)`) розтягує
-//! параметр так, що **кутовий** крок стає майже рівномірним. Ціна — `tan` при
-//! породженні сітки, і правило 4 етапу R це прямо дозволяє: кукер і генерація
-//! патча — офлайн і CPU поза інтегратором.
+//! The naive projection -- simply normalising a point of the cube face --
+//! compresses the grid towards the face centre and stretches it towards the
+//! corners. The tangential warp (`tan(u*pi/4)`) stretches the parameter so that
+//! the **angular** step becomes nearly uniform. The price is a `tan` while
+//! generating the grid, and rule 4 of stage R allows exactly that: the cooker
+//! and patch generation are offline and CPU outside the integrator.
 //!
-//! Наскільки краще — не постулюється, а міряється: [`ratio`] рахує відношення
-//! найдовшого ребра до найкоротшого, і тест друкує його **для обох**
-//! проєкцій. Одне число без другого не означало б нічого.
+//! How much better is not postulated but measured: [`ratio`] computes the ratio
+//! of the longest edge to the shortest, and the test prints it **for both**
+//! projections. One number without the other would mean nothing.
 //!
-//! ## Шов, якого немає
+//! ## The seam that is not there
 //!
-//! Вершина на спільному ребрі двох граней мусить збігатися **бітово** — це
-//! правило 5 етапу R (тріщина ловиться рівністю на CPU, а не пікселями). Тут
-//! воно тримається трьома рішеннями, і жодне з них не косметичне:
+//! A vertex on the shared edge of two faces must match **bitwise** -- rule 5 of
+//! stage R (a crack is caught by equality on the CPU, not by pixels). Here that
+//! rests on three decisions, none of them cosmetic:
 //!
-//! 1. **Одна таблиця параметрів на всі грані** ([`grid`]), а не формула, яку
-//!    кожна грань обчислює для себе. Дві симетричні формули дали б числа, що
-//!    різняться в останньому біті.
-//! 2. **Таблиця точно симетрична**: `w[n − k] = −w[k]` за побудовою, бо
-//!    `tan(−x) == −tan(x)` жодна бібліотека не гарантує бітово. Половина
-//!    рахується, друга — дзеркалиться відніманням.
-//! 3. **Кінці точно ±1.** Інакше вершина на ребрі мала б `1.0` з нерухомої
-//!    осі однієї грані й `tan(π/4) = 0.999999999999999889…` з рухомої осі
-//!    сусідньої — і шов розійшовся б рівно на цей епсилон, помножений на
-//!    радіус: сім міліметрів на Землі, тобто якраз стільки, щоб не побачити
-//!    оком і побачити тестом.
+//! 1. **One parameter table for all faces** ([`grid`]) rather than a formula
+//!    each face evaluates for itself. Two symmetric formulas would give numbers
+//!    differing in the last bit.
+//! 2. **The table is exactly symmetric**: `w[n - k] = -w[k]` by construction,
+//!    because no library guarantees `tan(-x) == -tan(x)` bitwise. Half is
+//!    computed, the other half mirrored by subtraction.
+//! 3. **The ends are exactly +-1.** Otherwise a vertex on an edge would have
+//!    `1.0` from one face's fixed axis and
+//!    `tan(pi/4) = 0.999999999999999889...` from the neighbour's moving axis --
+//!    and the seam would part by exactly that epsilon times the radius: seven
+//!    millimetres on Earth, that is just enough not to see by eye and to see by
+//!    test.
 //!
-//! Далі точка збирається **в осях** (значення кладуться в слоти x, y, z), і
-//! лише потім нормалізується — довжина рахується в незмінному порядку
-//! `x·x + y·y + z·z`. Якби кожна грань додавала свої компоненти у своєму
-//! порядку, сума округлилася б по-різному, і бітова рівність зникла б після
-//! всіх трьох рішень вище.
+//! Then the point is assembled **in axes** (values are put into the x, y, z
+//! slots), and only then normalised -- the length is computed in the unchanging
+//! order `x*x + y*y + z*z`. If each face added its components in its own order,
+//! the sum would round differently, and bitwise equality would vanish despite
+//! all three decisions above.
 
-/// Скільки граней у куба. Не магічна шістка по коду.
+/// How many faces a cube has. Not a magic six scattered through the code.
 pub const FACES: usize = 6;
 
-/// Осі грані: у які слоти `[x, y, z]` кладуться `u`, `v` і нерухома
-/// координата, і який у неї знак.
+/// A face's axes: which `[x, y, z]` slots `u`, `v` and the fixed coordinate go
+/// into, and what sign the fixed one has.
 ///
-/// Порядок слотів однаковий для всіх граней однієї осі (`+X` і `−X` мають
-/// той самий розклад, різниться лише знак), і саме це робить вершину на
-/// спільному ребрі однаковою з обох боків: значення потрапляють в один і той
-/// самий слот, а не переставляються дорогою.
+/// The slot order is the same for both faces of one axis (`+X` and `-X` have the
+/// same arrangement, only the sign differs), and that is what makes a vertex on
+/// a shared edge identical from both sides: the values land in the very same
+/// slot rather than being permuted on the way.
 struct Axes {
     u: usize,
     v: usize,
@@ -62,7 +65,7 @@ struct Axes {
 }
 
 const AXES: [Axes; FACES] = [
-    // +X, −X: u → y, v → z
+    // +X, -X: u -> y, v -> z
     Axes {
         u: 1,
         v: 2,
@@ -75,7 +78,7 @@ const AXES: [Axes; FACES] = [
         w: 0,
         sign: -1.0,
     },
-    // +Y, −Y: u → x, v → z
+    // +Y, -Y: u -> x, v -> z
     Axes {
         u: 0,
         v: 2,
@@ -88,7 +91,7 @@ const AXES: [Axes; FACES] = [
         w: 1,
         sign: -1.0,
     },
-    // +Z, −Z: u → x, v → y
+    // +Z, -Z: u -> x, v -> y
     Axes {
         u: 0,
         v: 1,
@@ -103,39 +106,40 @@ const AXES: [Axes; FACES] = [
     },
 ];
 
-/// Один вузол сітки з `n` відрізків: `k` від 0 до `n`, значення від −1 до 1.
+/// One node of a grid with `n` segments: `k` from 0 to `n`, the value from -1
+/// to 1.
 ///
-/// **Одна формула на все** — і на грань, і на патч, і на будь-який рівень.
-/// Патч не має права рахувати свої вузли по-своєму: сусідні патчі ділять
-/// вершини, і два способи дійти до того самого числа дали б різні біти.
+/// **One formula for everything** -- for a face, for a patch and for any level.
+/// A patch has no right to compute its nodes its own way: neighbouring patches
+/// share vertices, and two routes to the same number would give different bits.
 ///
-/// `warped == false` дає рівномірний поділ — він потрібен не як запасний
-/// варіант, а як **друге число** для порівняння (див. [`ratio`]).
+/// `warped == false` gives a uniform subdivision -- needed not as a fallback but
+/// as the **second number** for comparison (see [`ratio`]).
 pub fn parameter(k: usize, n: usize, warped: bool) -> f64 {
-    assert!(n > 0, "сітка з нуля відрізків — це не сітка");
-    assert!(k <= n, "вузол {k} поза сіткою з {n} відрізків");
+    assert!(n > 0, "a grid of zero segments is not a grid");
+    assert!(k <= n, "node {k} is outside a grid of {n} segments");
 
-    // Кінці точно ±1: `tan(π/4)` промахується на епсилон, і саме на цей
-    // епсилон розійшовся б шов між гранями.
+    // The ends are exactly +-1: `tan(pi/4)` misses by an epsilon, and it is by
+    // exactly that epsilon that the seam between faces would part.
     if k == 0 {
         return -1.0;
     }
     if k == n {
         return 1.0;
     }
-    // Середина парної сітки — рівно `+0.0`, а не `−0.0`, яким її лишило б
-    // дзеркало. Знак нуля тут не педантизм: вершини порівнюються бітами, а
-    // `(-0.0).to_bits() != (0.0).to_bits()`.
+    // The middle of an even grid is exactly `+0.0`, not the `-0.0` the mirror
+    // would leave. The sign of zero is not pedantry here: vertices are compared
+    // by bits, and `(-0.0).to_bits() != (0.0).to_bits()`.
     if 2 * k == n {
         return 0.0;
     }
-    // Друга половина — дзеркало першої, відніманням, а не другим викликом
-    // `tan`: бітова непарність тангенса не гарантована.
+    // The second half is a mirror of the first, by subtraction rather than a
+    // second `tan` call: the tangent's bitwise oddness is not guaranteed.
     if 2 * k > n {
         return -parameter(n - k, n, warped);
     }
 
-    let t = 2.0 * k as f64 / n as f64 - 1.0; // −1 … 0
+    let t = 2.0 * k as f64 / n as f64 - 1.0; // -1 ... 0
     if warped {
         (t * std::f64::consts::FRAC_PI_4).tan()
     } else {
@@ -143,16 +147,17 @@ pub fn parameter(k: usize, n: usize, warped: bool) -> f64 {
     }
 }
 
-/// Уся таблиця параметрів грані: `n + 1` значень від −1 до 1 включно.
+/// A face's whole parameter table: `n + 1` values from -1 to 1 inclusive.
 pub fn grid(n: usize, warped: bool) -> Vec<f64> {
     (0..=n).map(|k| parameter(k, n, warped)).collect()
 }
 
-/// Вершина на сфері за гранню й двома значеннями з [`grid`].
+/// A vertex on the sphere from a face and two values out of [`grid`].
 ///
-/// `a` й `b` — уже готові координати на грані куба (тобто вже варповані, якщо
-/// сітка варпована): варп живе в таблиці, а не тут, бо інакше він виконався б
-/// двічі для тієї самої вершини з двох сусідніх граней.
+/// `a` and `b` are already-made coordinates on the cube face (that is, already
+/// warped if the grid is warped): the warp lives in the table rather than here,
+/// because otherwise it would be applied twice for the same vertex from two
+/// neighbouring faces.
 pub fn vertex(face: usize, a: f64, b: f64, radius: f64) -> [f64; 3] {
     let axes = &AXES[face];
 
@@ -161,18 +166,19 @@ pub fn vertex(face: usize, a: f64, b: f64, radius: f64) -> [f64; 3] {
     cube[axes.v] = b;
     cube[axes.w] = axes.sign;
 
-    // Порядок доданків незмінний і не залежить від грані — див. вступ модуля.
+    // The order of the terms is fixed and does not depend on the face -- see
+    // the module introduction.
     let length = (cube[0] * cube[0] + cube[1] * cube[1] + cube[2] * cube[2]).sqrt();
     let scale = radius / length;
     [cube[0] * scale, cube[1] * scale, cube[2] * scale]
 }
 
-/// Куди дивиться напрямок: грань і положення на її сітці.
+/// Where a direction points: the face and the position on its grid.
 ///
-/// `s` і `t` — у параметрі **сітки**, тобто в тих одиницях, у яких рахує
-/// [`parameter`]: обидва від 0 до 1, і вузол `k` сітки з `n` відрізків стоїть
-/// рівно на `k/n`. Помножити на `Patch::face_nodes(level)` — і виходить
-/// дробовий номер вузла на грані.
+/// `s` and `t` are in the **grid** parameter, that is in the units [`parameter`]
+/// works in: both from 0 to 1, and node `k` of a grid with `n` segments sits
+/// exactly at `k/n`. Multiply by `Patch::face_nodes(level)` and you get the
+/// fractional node number on the face.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Location {
     pub face: usize,
@@ -180,24 +186,26 @@ pub struct Location {
     pub t: f64,
 }
 
-/// Обернене до [`vertex`]: з напрямку — грань і місце на ній.
+/// The inverse of [`vertex`]: from a direction to a face and a place on it.
 ///
-/// Потрібне там, де питання йде **від точки простору до асета**, а не
-/// навпаки: сяйво планети питає, яка відбивна здатність під кораблем (T6), і
-/// відповісти на це прямим відображенням не можна — воно вміє лише
-/// перелічувати вузли.
+/// Needed where the question goes **from a point in space to an asset** rather
+/// than the other way: planetshine asks what the reflectance under the ship is
+/// (T6), and the forward mapping cannot answer that -- it can only enumerate
+/// nodes.
 ///
-/// Довжина вектора не має значення: грань і місце на ній визначає напрямок.
-/// Варп знімається аналітично — `parameter` кладе `tan(t·π/4)`, тож назад іде
-/// `atan(a)·4/π`, і це точна обернена, а не підбір.
+/// The vector's length does not matter: the direction determines the face and
+/// the place on it. The warp is undone analytically -- `parameter` puts
+/// `tan(t*pi/4)`, so back goes `atan(a)*4/pi`, and that is an exact inverse
+/// rather than a search.
 ///
-/// ⚠ **На ребрі куба відповідь неоднозначна за побудовою**, і це не вада:
-/// точка на спільному ребрі належить обом граням, а вершина там бітово одна
-/// (див. вступ модуля). Береться грань з найбільшою за модулем координатою,
-/// перша при рівності — тобто відповідь стала, але сусідня грань дала б ту
-/// саму точку.
+/// WARNING: **on a cube edge the answer is ambiguous by construction**, and that
+/// is not a flaw: a point on a shared edge belongs to both faces, while the
+/// vertex there is bitwise one (see the module introduction). The face with the
+/// largest coordinate by absolute value is taken, the first one on a tie -- so
+/// the answer is stable, but the neighbouring face would give the same point.
 pub fn locate(direction: [f64; 3]) -> Location {
-    // Нерухома вісь — найбільша за модулем: саме вона впирається в грань.
+    // The fixed axis is the largest by absolute value: it is the one that
+    // hits the face.
     let mut w = 0;
     for k in 1..3 {
         if direction[k].abs() > direction[w].abs() {
@@ -207,8 +215,8 @@ pub fn locate(direction: [f64; 3]) -> Location {
     let face = 2 * w + usize::from(direction[w] < 0.0);
     let axes = &AXES[face];
 
-    // Куб масштабується так, щоб нерухома координата стала `sign`; знак
-    // `direction[w]` збігається зі знаком грані, тож ділиться на модуль.
+    // The cube is scaled so the fixed coordinate becomes `sign`; the sign of
+    // `direction[w]` matches the face's sign, so we divide by the modulus.
     let scale = 1.0 / direction[w].abs();
     let unwarp = |v: f64| (v * scale).atan() * (4.0 / std::f64::consts::PI);
     Location {
@@ -218,11 +226,11 @@ pub fn locate(direction: [f64; 3]) -> Location {
     }
 }
 
-/// Відношення найдовшого ребра сітки грані до найкоротшого.
+/// The ratio of the longest edge of a face's grid to the shortest.
 ///
-/// Міра нерівномірності, і єдина, яка тут щось означає: абсолютні довжини
-/// залежать від радіуса, а це відношення — ні. Рахується по обох напрямках
-/// сітки, бо варп діє на обидва.
+/// A measure of non-uniformity, and the only one that means anything here:
+/// absolute lengths depend on the radius, this ratio does not. Computed along
+/// both grid directions, because the warp acts on both.
 pub fn ratio(n: usize, warped: bool, radius: f64) -> f64 {
     let values = grid(n, warped);
     let mut shortest = f64::INFINITY;
@@ -232,7 +240,7 @@ pub fn ratio(n: usize, warped: bool, radius: f64) -> f64 {
         ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
     };
 
-    // Одна грань — решта п'ять такі самі з точністю до перестановки осей.
+    // One face -- the other five are the same up to a permutation of axes.
     for i in 0..=n {
         for j in 0..=n {
             let here = vertex(0, values[i], values[j], radius);
@@ -252,39 +260,41 @@ pub fn ratio(n: usize, warped: bool, radius: f64) -> f64 {
     longest / shortest
 }
 
-/// Скільки відрізків на бік патча. Вершин, отже, `SIDE + 1` у кожен бік.
+/// How many segments per patch side. So there are `SIDE + 1` vertices each way.
 ///
-/// Тридцять два — те саме число, на якому міряний варп (R1a), і воно ж дає
-/// 1089 вершин на патч: досить, щоб патч був вартий окремого рисунка, і
-/// мало, щоб їх були тисячі. Стеля жодна з нього не випливає — це параметр
-/// сітки, не архітектури.
+/// Thirty-two is the same number the warp was measured on (R1a), and it also
+/// gives 1089 vertices per patch: enough for a patch to be worth its own draw,
+/// and few enough for there to be thousands of them. No ceiling follows from it
+/// -- it is a grid parameter, not an architectural one.
 pub const SIDE: usize = 32;
 
-/// Патч: чверть, шістнадцята, … грані куба, залежно від рівня.
+/// A patch: a quarter, a sixteenth, ... of a cube face, depending on the level.
 ///
-/// **Одиниця всього** (правило 1 етапу R): позиція живе в `f64` тут, вершини
-/// — у `f32` відносно неї, і на патч же далі вішається вибір рівня, відбір,
-/// відвантаження на GPU й тайл DEM.
+/// **The unit of everything** (rule 1 of stage R): the position lives in `f64`
+/// here, the vertices in `f32` relative to it, and level selection, culling,
+/// GPU upload and the DEM tile all hang off the patch too.
 ///
-/// Своїх вершин патч не вигадує: вузли беруться з тієї самої [`parameter`],
-/// що й для цілої грані, лише з дрібнішої сітки. Тому вершина на межі двох
-/// патчів — **той самий біт** з обох боків, і так само на межі рівнів:
-/// сітка рівня `L + 1` містить сітку рівня `L` рівно у своїх парних вузлах.
+/// A patch does not invent vertices of its own: the nodes come from the same
+/// [`parameter`] as for a whole face, only on a finer grid. So a vertex on the
+/// boundary of two patches is **the same bit** from both sides, and likewise at
+/// a level boundary: the grid of level `L + 1` contains the grid of level `L`
+/// exactly in its even nodes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Patch {
     pub face: usize,
-    /// Скільки разів грань поділена навпіл: 0 — уся грань, 1 — чверть, …
+    /// How many times the face has been halved: 0 is the whole face, 1 a
+    /// quarter, ...
     pub level: u32,
-    /// Індекси патча на грані, обидва від 0 до `2^level − 1`.
+    /// The patch's indices on the face, both from 0 to `2^level - 1`.
     pub i: u32,
     pub j: u32,
 }
 
-/// Ребро патча, назване координатою, яка на ньому стала.
+/// A patch edge, named by the coordinate that is constant on it.
 ///
-/// Іменування навмисно те саме, що в [`Patch::vertex`]: ребро `AMin` — це
-/// вершини `(0, b)`, `BMax` — вершини `(a, SIDE)`. Ребро «ліворуч» чи
-/// «згори» тут не існує: на кубосфері немає верху, а є `a` й `b`.
+/// The naming is deliberately the same as in [`Patch::vertex`]: edge `AMin` is
+/// the vertices `(0, b)`, `BMax` the vertices `(a, SIDE)`. There is no "left" or
+/// "top" edge here: a cubesphere has no top, it has `a` and `b`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Edge {
     AMin,
@@ -293,14 +303,16 @@ pub enum Edge {
     BMax,
 }
 
-/// Усі чотири ребра в сталому порядку — щоб обхід не залежав від місця виклику.
+/// All four edges in a fixed order -- so that traversal does not depend on the
+/// call site.
 pub const EDGES: [Edge; 4] = [Edge::AMin, Edge::AMax, Edge::BMin, Edge::BMax];
 
-/// Ребра, за якими сусід **грубіший**, бітами [`Edge::bit`].
+/// The edges across which the neighbour is **coarser**, as [`Edge::bit`] bits.
 ///
-/// Шістнадцять значень, і це не «поки що»: комбінацій чотирьох ребер рівно
-/// стільки, вони відомі наперед, і саме тому індексні набори можна
-/// побудувати всі до першого кадру, а не з'ясовувати під час налагодження.
+/// Sixteen values, and that is not "for now": there are exactly that many
+/// combinations of four edges, they are known in advance, and that is why all
+/// index sets can be built before the first frame rather than worked out during
+/// debugging.
 pub type EdgeMask = u8;
 
 impl Edge {
@@ -313,7 +325,7 @@ impl Edge {
         }
     }
 
-    /// Протилежне ребро того самого патча.
+    /// The opposite edge of the same patch.
     fn opposite(self) -> Edge {
         match self {
             Edge::AMin => Edge::AMax,
@@ -332,18 +344,20 @@ impl Edge {
     }
 }
 
-/// Сусід через ребро: сам патч і те **його** ребро, яким він торкається нас.
+/// The neighbour across an edge: the patch itself and **its** edge that touches
+/// us.
 ///
-/// Друге поле не зручність: за ребром куба «моє `AMax`» стає в сусіда то `BMin`,
-/// то `BMax`, і вгадати це з боку того, хто питає, не можна.
+/// The second field is not a convenience: across a cube edge "my `AMax`" becomes
+/// the neighbour's `BMin` or `BMax`, and that cannot be guessed from the asking
+/// side.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Neighbour {
     pub patch: Patch,
     pub edge: Edge,
 }
 
-/// Конус навколо патча на **одиничній** сфері: вісь із центра тіла й
-/// піврозхил, заданий косинусом і синусом.
+/// A cone around a patch on the **unit** sphere: an axis from the body centre
+/// and a half-spread given by its cosine and sine.
 #[derive(Clone, Copy, Debug)]
 pub struct Cone {
     pub axis: [f64; 3],
@@ -351,34 +365,36 @@ pub struct Cone {
     pub sin_half: f64,
 }
 
-/// Сітка патча: початок у `f64`, вершини — зсуви від нього у `f32`.
+/// A patch's grid: the origin in `f64`, the vertices as `f32` offsets from
+/// it.
 pub struct PatchMesh {
-    /// Центр патча у світових координатах тіла.
+    /// The patch centre in the body's world coordinates.
     ///
-    /// Центр, а не кут: зсуви від нього вдвічі коротші, а `f32` дає сталу
-    /// **відносну** похибку, тож удвічі коротший зсув — це вдвічі точніша
-    /// вершина.
+    /// The centre rather than a corner: offsets from it are half as long, and
+    /// `f32` has a constant **relative** error, so an offset half as long is a
+    /// vertex twice as precise.
     pub origin: [f64; 3],
-    /// Вершини як `позиція − origin`. Рядок — сталий `i`.
+    /// Vertices as `position - origin`. A row is a constant `i`.
     pub offsets: Vec<[f32; 3]>,
-    /// Нормалі — напрямки, тож `f32` тут не наближення, а сама величина.
+    /// Normals are directions, so `f32` here is not an approximation but the
+    /// quantity itself.
     pub normals: Vec<[f32; 3]>,
 }
 
 impl Patch {
-    /// Скільки вузлів на бік грані при цьому рівні.
+    /// How many nodes per face side at this level.
     pub fn face_nodes(level: u32) -> usize {
         SIDE << level
     }
 
-    /// Вузол `(a, b)` цього патча в системі всієї грані.
+    /// This patch's node `(a, b)` in the whole face's coordinates.
     fn node(&self, a: usize, b: usize) -> (usize, usize) {
         (self.i as usize * SIDE + a, self.j as usize * SIDE + b)
     }
 
-    /// Патч, що накриває цей — тобто на рівень грубіший.
+    /// The patch covering this one -- that is, one level coarser.
     ///
-    /// Для нульового рівня предка немає: грань куба нікуди не вкладена.
+    /// Level zero has no parent: a cube face is nested in nothing.
     pub fn parent(&self) -> Option<Patch> {
         if self.level == 0 {
             return None;
@@ -391,7 +407,8 @@ impl Patch {
         })
     }
 
-    /// Четверо дітей у сталому порядку — тому самому, що в обході вибору рівня.
+    /// The four children in a fixed order -- the same one as in the
+    /// level-selection traversal.
     pub fn children(&self) -> [Patch; 4] {
         [(0, 0), (0, 1), (1, 0), (1, 1)].map(|(di, dj)| Patch {
             face: self.face,
@@ -401,25 +418,26 @@ impl Patch {
         })
     }
 
-    /// Сусід того самого рівня через задане ребро.
+    /// The same-level neighbour across a given edge.
     ///
-    /// ## Чому тут немає таблиці з двадцяти чотирьох рядків
+    /// ## Why there is no twenty-four-row table here
     ///
-    /// Ребро куба зазвичай описують таблицею «грань, ребро → грань, ребро,
-    /// напрямок», і вона завжди виявляється переписаною двічі. Тут її немає,
-    /// бо вона **виводиться** з [`AXES`], тобто з того самого джерела, яким
-    /// рахуються вершини. Розійтися їм ніде.
+    /// A cube edge is usually described by a "face, edge -> face, edge,
+    /// direction" table, and it always turns out to have been written twice.
+    /// There is none here, because it is **derived** from [`AXES`], that is from
+    /// the same source the vertices are computed with. They have nowhere to
+    /// diverge.
     ///
-    /// Міркування ціле: вийти за грань через `a == +1` означає, що координата
-    /// в слоті `u` дорівнює `+1`. Отже сусідня грань — та, у якої цей самий
-    /// слот **нерухомий** і з тим самим знаком. На ній колишній `v` лишається
-    /// тим самим числом (у [`AXES`] `u` й `v` ніколи не міняють знака —
-    /// знак має лише нерухома вісь), а колишня нерухома вісь стає рухомою й
-    /// притискає патч до дальнього краю.
+    /// The argument in full: leaving the face through `a == +1` means the
+    /// coordinate in slot `u` equals `+1`. So the neighbouring face is the one
+    /// whose very same slot is **fixed** and with the same sign. On it the
+    /// former `v` stays the same number (in [`AXES`] `u` and `v` never change
+    /// sign -- only the fixed axis has a sign), while the former fixed axis
+    /// becomes moving and pins the patch to the far edge.
     ///
-    /// Звідси головний наслідок, який рятує зшивання: **індекс уздовж
-    /// спільного ребра не перевертається ніколи**. Вершина `k` з одного боку
-    /// — вершина `k` з другого, тими самими бітами.
+    /// Hence the main consequence that saves stitching: **the index along a
+    /// shared edge is never reversed**. Vertex `k` from one side is vertex `k`
+    /// from the other, with the same bits.
     pub fn neighbour(&self, edge: Edge) -> Neighbour {
         let side = 1i64 << self.level;
         let (i, j) = (i64::from(self.i), i64::from(self.j));
@@ -443,7 +461,7 @@ impl Patch {
         }
 
         let axes = &AXES[self.face];
-        // Слот, що впирається в ±1, і слот, який лишається рухомим.
+        // The slot that hits +-1, and the slot that stays moving.
         let exit = if edge.along_a() { axes.u } else { axes.v };
         let keep = if edge.along_a() { axes.v } else { axes.u };
         let along = if edge.along_a() { j } else { i };
@@ -451,13 +469,15 @@ impl Patch {
 
         let far = (0..FACES)
             .find(|&f| AXES[f].w == exit && AXES[f].sign == sign)
-            .expect("у куба на кожну вісь є грань з кожним знаком");
-        // Колишня нерухома вісь стала рухомою: `+1` — це дальній край сітки.
+            .expect("a cube has a face of each sign on every axis");
+        // The former fixed axis became moving: `+1` is the far edge of the
+        // grid.
         let outer = axes.sign > 0.0;
         let pinned = if outer { side - 1 } else { 0 };
 
         let (i, j, edge) = if AXES[far].u == keep {
-            // Рухомий індекс поїхав у `a`, отже спільне ребро — по `b`.
+            // The moving index went into `a`, so the shared edge runs along
+            // `b`.
             (along, pinned, if outer { Edge::BMax } else { Edge::BMin })
         } else {
             (pinned, along, if outer { Edge::AMax } else { Edge::AMin })
@@ -474,29 +494,32 @@ impl Patch {
         }
     }
 
-    /// Вузол, що лежить на **один крок за краєм** патча через задане ребро —
-    /// у сусіда (R7b).
+    /// The node lying **one step past the edge** of the patch across a given
+    /// edge -- in the neighbour (R7b).
     ///
-    /// Повертає сусідній патч і його вузол; напрямок цього вузла беруть із
-    /// [`Self::vertex`] сусіда, а не з продовження власної параметризації.
-    /// Різниця не косметична: за ребром куба грань змінюється, а разом із нею
-    /// й тангенційний варп, тож `a = −1` у власних координатах вказувало б у
-    /// точку, якої на сфері немає в тому місці, де її чекають.
+    /// Returns the neighbouring patch and its node; that node's direction is
+    /// taken from the neighbour's [`Self::vertex`] rather than from continuing
+    /// our own parameterisation. The difference is not cosmetic: across a cube
+    /// edge the face changes, and with it the tangential warp, so `a = -1` in
+    /// our own coordinates would point at a place on the sphere where the
+    /// expected point is not.
     ///
-    /// `along` — індекс уздовж спільного ребра, від 0 до `SIDE`. Він **не
-    /// перевертається**: вузол `k` з нашого боку — вузол `k` з їхнього, і це
-    /// властивість `AXES`, доведена в R2b, а не збіг.
+    /// `along` is the index along the shared edge, from 0 to `SIDE`. It is **not
+    /// reversed**: node `k` on our side is node `k` on theirs, and that is a
+    /// property of `AXES`, proved in R2b rather than a coincidence.
     ///
-    /// ## Кути патча сюди не входять
+    /// ## Patch corners are not covered here
     ///
-    /// `(−1, −1)` і решта трьох — не «за ребром», а «за кутом», і сусіда через
-    /// ребро в них немає взагалі: на куті куба сходяться **три** патчі, не
-    /// чотири. Градієнту в вузлі вони не потрібні (центральна різниця питає
-    /// про `±1` по кожній осі окремо), тож функція про них і не знає.
+    /// `(-1, -1)` and the other three are not "past an edge" but "past a
+    /// corner", and there is no across-edge neighbour for them at all: at a cube
+    /// corner **three** patches meet, not four. The gradient at a node does not
+    /// need them (a central difference asks about `+-1` along each axis
+    /// separately), so the function does not know about them.
     pub fn halo_node(&self, edge: Edge, along: usize) -> (Patch, usize, usize) {
         let neighbour = self.neighbour(edge);
-        // Крок усередину від ребра, яким сусід нас торкається. Коли те ребро
-        // йде по `b`, рухомим у сусіда стає `a`, і `along` лягає в нього.
+        // A step inward from the edge by which the neighbour touches us. When
+        // that edge runs along `b`, the neighbour's moving index is `a`, and
+        // `along` goes into it.
         let (a, b) = match neighbour.edge {
             Edge::AMin => (1, along),
             Edge::AMax => (SIDE - 1, along),
@@ -506,11 +529,11 @@ impl Patch {
         (neighbour.patch, a, b)
     }
 
-    /// Вершина патча у світових координатах — повний `f64`, без зсувів.
+    /// A patch vertex in world coordinates -- full `f64`, no offsets.
     ///
-    /// Це та сама формула, якою користується [`Self::mesh`] для початку
-    /// координат, і саме тому перевірка «`origin` + зсув ≈ пряме обчислення»
-    /// щось означає: права частина не бере участі в лівій.
+    /// This is the same formula [`Self::mesh`] uses for the origin, and that is
+    /// exactly why the check "`origin` + offset ~ direct computation" means
+    /// something: the right-hand side takes no part in the left.
     pub fn vertex(&self, a: usize, b: usize, radius: f64) -> [f64; 3] {
         let n = Self::face_nodes(self.level);
         let (u, v) = self.node(a, b);
@@ -522,21 +545,23 @@ impl Patch {
         )
     }
 
-    /// Конус, у який патч уміщається цілком: вісь і кут при вершині.
+    /// The cone the patch fits into entirely: the axis and the apex angle.
     ///
-    /// Потрібен відбору (R3): «чи весь патч за лімбом» — це питання про
-    /// найближчу до камери точку патча, і конус відповідає на нього одним
-    /// скалярним добутком замість обходу тисячі вершин.
+    /// Needed by culling (R3): "is the whole patch past the limb" is a question
+    /// about the patch point nearest the camera, and a cone answers it with one
+    /// dot product instead of walking a thousand vertices.
     ///
-    /// Кут береться по **чотирьох кутах** патча, і це не наближення заради
-    /// дешевизни: параметризація грані монотонна, тож найдальша від центра
-    /// точка патча — саме кут. Твердження перевірене перебором усіх вузлів
-    /// (`tests/cull.rs`), а не залишене міркуванням, і перебір показує запас
-    /// рівно нуль: кут не «десь близько» до межі, він і є межа.
+    /// The angle is taken over the patch's **four corners**, and that is not an
+    /// approximation for cheapness: the face parameterisation is monotonic, so
+    /// the patch point farthest from the centre is exactly a corner. The claim
+    /// is verified by walking all nodes (`tests/cull.rs`) rather than left as an
+    /// argument, and the walk shows a margin of exactly zero: a corner is not
+    /// "somewhere near" the bound, it is the bound.
     ///
-    /// Віддається косинус і синус піврозхилу, а не сам кут: далі вони входять
-    /// у `cos(β − α) = cos β cos α + sin β sin α`, і тригонометрії в кадрі не
-    /// лишається взагалі.
+    /// The cosine and sine of the half-spread are returned rather than the angle
+    /// itself: further on they enter
+    /// `cos(beta - alpha) = cos(beta)cos(alpha) + sin(beta)sin(alpha)`, and no
+    /// trigonometry is left in the frame at all.
     pub fn cone(&self) -> Cone {
         let axis = self.vertex(SIDE / 2, SIDE / 2, 1.0);
         let mut cos_half: f64 = 1.0;
@@ -553,10 +578,10 @@ impl Patch {
         }
     }
 
-    /// Сітка патча — те, що поїде на GPU.
+    /// The patch grid -- what will go to the GPU.
     pub fn mesh(&self, radius: f64) -> PatchMesh {
-        // Початок — центральна вершина патча. `SIDE` парний, тож вона є
-        // насправді, а не інтерполюється.
+        // The origin is the patch's central vertex. `SIDE` is even, so it
+        // really exists rather than being interpolated.
         let origin = self.vertex(SIDE / 2, SIDE / 2, radius);
 
         let mut offsets = Vec::with_capacity((SIDE + 1) * (SIDE + 1));
@@ -569,8 +594,9 @@ impl Patch {
                     (p[1] - origin[1]) as f32,
                     (p[2] - origin[2]) as f32,
                 ]);
-                // Нормаль сфери — напрямок із центра, тобто позиція, поділена
-                // на радіус. Ділення, а не нормалізація: довжина вже відома.
+                // A sphere's normal is the direction from the centre, that is
+                // the position divided by the radius. A division rather than a
+                // normalisation: the length is already known.
                 normals.push([
                     (p[0] / radius) as f32,
                     (p[1] / radius) as f32,
@@ -587,46 +613,48 @@ impl Patch {
     }
 }
 
-/// Скільки індексних наборів існує — по одному на комбінацію чотирьох ребер.
+/// How many index sets exist -- one per combination of four edges.
 pub const MASKS: usize = 16;
 
-/// Індекси патча, зшиті з грубішими сусідами за маскою ребер.
+/// A patch's indices, stitched to coarser neighbours by an edge mask.
 ///
-/// ## Одна підміна замість шістнадцяти тріангуляцій
+/// ## One substitution instead of sixteen triangulations
 ///
-/// На ребрі, за яким сусід грубіший, наша сітка має вдвічі більше вузлів, ніж
-/// його: він дає лише **парні**. Класичний спосіб — вирізати біля такого
-/// ребра смугу й замінити її віялом, окремо для кожної з шістнадцяти
-/// комбінацій, з окремим випадком у кожному куті патча.
+/// On an edge whose neighbour is coarser, our grid has twice as many nodes as
+/// theirs: they provide only the **even** ones. The classic way is to cut a
+/// strip near such an edge and replace it with a fan, separately for each of the
+/// sixteen combinations, with a special case at every patch corner.
 ///
-/// Тут те саме робиться однією підміною індексу: непарний вузол на зшитому
-/// ребрі **не існує**, і всюди, де він згаданий, стоїть сусідній парний.
-/// Наслідки, і кожен вартий того, щоб бути названим:
+/// Here the same thing is done by one index substitution: an odd node on a
+/// stitched edge **does not exist**, and wherever it is mentioned the
+/// neighbouring even one stands instead. The consequences, each worth naming:
 ///
-/// - **край стає точно хордою сусіда.** Наша ламана з вузлів `0, 0, 2, 2, 4…`
-///   — це геометрично відрізки `0→2→4`, тобто рівно ті самі відрізки, що малює
-///   грубіший патч, між тими самими вершинами. Бітово тими самими: сітка
-///   рівня `L` лежить у парних вузлах сітки `L + 1` (R1a);
-/// - **тріангуляція лишається однією формулою.** Клітинки біля ребра
-///   породжують по одному виродженому трикутнику, який растеризатор
-///   відкидає, і по два справжніх — разом те саме віяло, яке довелося б
-///   виписувати руками;
-/// - **кути патча не є окремим випадком.** Вузол може лежати на двох зшитих
-///   ребрах одразу, але тоді він кутовий, а `SIDE` парний — отже обидва його
-///   індекси парні, і підміна не спрацьовує взагалі. Непарний же вузол
-///   лежить строго всередині свого ребра й на друге не потрапляє. Дві
-///   підміни ніколи не сперечаються — не за домовленістю, а за парністю.
+/// - **the edge becomes exactly the neighbour's chord.** Our polyline of nodes
+///   `0, 0, 2, 2, 4...` is geometrically the segments `0->2->4`, that is exactly
+///   the segments the coarser patch draws, between the same vertices. Bitwise
+///   the same: the grid of level `L` lies in the even nodes of the grid of level
+///   `L + 1` (R1a);
+/// - **the triangulation stays one formula.** Cells near the edge each produce
+///   one degenerate triangle, which the rasteriser discards, and two real ones
+///   -- together the same fan that would otherwise have to be written out by
+///   hand;
+/// - **patch corners are not a special case.** A node can lie on two stitched
+///   edges at once, but then it is a corner node, and `SIDE` is even -- so both
+///   its indices are even and the substitution does not fire at all. An odd node
+///   lies strictly inside its own edge and never reaches the second. Two
+///   substitutions never argue -- by parity rather than by agreement.
 ///
-/// Ціна — `SIDE / 2` вироджених трикутників на зшите ребро з 2048, тобто
-/// відсоток у найгіршому разі.
+/// The price is `SIDE / 2` degenerate triangles per stitched edge out of 2048,
+/// that is a percent in the worst case.
 pub fn indices(mask: EdgeMask) -> Vec<u32> {
-    // Не перевірка часу виконання, а умова існування самого способу: у
-    // непарного боку кути були б непарними вузлами, і підміна почала б
-    // з'їдати кут патча.
+    // Not a runtime check but the condition for the method to exist at all:
+    // with an odd side the corners would be odd nodes, and the substitution
+    // would start eating the patch corner.
     const _: () = assert!(SIDE.is_multiple_of(2));
     let stride = (SIDE + 1) as u32;
 
-    // Вузол → індекс у сітці патча, з підміною непарних на зшитих ребрах.
+    // Node -> index in the patch grid, substituting odd nodes on stitched
+    // edges.
     let node = |a: usize, b: usize| -> u32 {
         let odd_on_b_edge = a % 2 == 1
             && ((b == 0 && mask & Edge::BMin.bit() != 0)
