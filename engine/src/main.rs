@@ -1,12 +1,12 @@
-//! Запуск рушія (ROADMAP F1).
+//! Starting the engine (ROADMAP F1).
 //!
-//!     cargo run -p engine                        вікно
-//!     cargo run -p engine -- --frames 60         вікно, 60 кадрів і вихід
-//!     cargo run -p engine -- --shot build/f1.png знімок без вікна
-//!     cargo run -p engine -- --demo build/demo   серія знімків з підписами
+//!     cargo run -p engine                        a window
+//!     cargo run -p engine -- --frames 60         a window, 60 frames and exit
+//!     cargo run -p engine -- --shot build/f1.png a shot with no window
+//!     cargo run -p engine -- --demo build/demo   a captioned series of shots
 //!
-//! Розбір аргументів свій і навмисно дурний: три прапорці не варті
-//! залежності, а `clap` приїде тоді, коли їх стане двадцять.
+//! The argument parsing is ours and deliberately dumb: three flags are not
+//! worth a dependency, and `clap` arrives when there are twenty of them.
 
 use std::path::PathBuf;
 
@@ -34,7 +34,7 @@ fn main() {
     while let Some(arg) = args.next() {
         let mut value = |name: &str| -> String {
             args.next()
-                .unwrap_or_else(|| fail(&format!("{name} без значення")))
+                .unwrap_or_else(|| fail(&format!("{name} without a value")))
         };
 
         match arg.as_str() {
@@ -65,12 +65,12 @@ fn main() {
                 println!("{}", HELP);
                 return;
             }
-            other => fail(&format!("невідомий аргумент {other}\n\n{HELP}")),
+            other => fail(&format!("unknown argument {other}\n\n{HELP}")),
         }
     }
 
-    // Обмежений прогін за замовчуванням без vsync: інакше він зависає там,
-    // де вікно фактично не показується (див. app::Options::vsync).
+    // A bounded run defaults to no vsync: otherwise it hangs where the window
+    // is not actually shown (see app::Options::vsync).
     if options.frames.is_some() && !vsync_asked {
         options.vsync = false;
     }
@@ -111,31 +111,31 @@ fn main() {
 }
 
 const HELP: &str = "\
-  --demo <каталог>  серія знімків поточного стану рендера, з підписами
-  --shot <файл>     намалювати один кадр у PNG, без вікна
-  --ship-demo <файл> анімація корабля на орбіті в APNG, 60 fps
-  --moon-demo <файл> анімація підльоту до Місяця в APNG, 60 fps
-  --frames <N>      намалювати N кадрів і вийти (вимикає vsync)
-  --vsync           чекати на вертикальну синхронізацію
-  --no-vsync        не чекати
-  --depth-probe     заміряти роздільність глибини (ROADMAP F3)
-  --perf-probe      заміряти час кадру рендера (скіл perf-probe)
-  --flight-probe    проліт 10 м -> 10⁷ м над сферою (ROADMAP F5)
-  --trajectory-probe  halo-орбіта з фікстури, два фрейми (ROADMAP F6)
-  --live-probe      та сама орбіта, порахована зараз через core-rs (ROADMAP H5)
-  --rotating-probe  де рахувати обертовий фрейм: f32 на GPU чи f64 на CPU (U6a1)
-  --tile-probe      скільки тайлів витримує bindless-масив і чого це коштує (T2)
-  --width <px>      ширина, типово 1280
-  --height <px>     висота, типово 720";
+  --demo <dir>      a captioned series of shots of the renderer's current state
+  --shot <file>     draw one frame into a PNG, with no window
+  --ship-demo <file> an APNG animation of the ship in orbit, 60 fps
+  --moon-demo <file> an APNG animation of the approach to the Moon, 60 fps
+  --frames <N>      draw N frames and exit (disables vsync)
+  --vsync           wait for vertical sync
+  --no-vsync        do not wait
+  --depth-probe     measure depth resolution (ROADMAP F3)
+  --perf-probe      measure render frame time (the perf-probe skill)
+  --flight-probe    a flight from 10 m to 1e7 m above a sphere (ROADMAP F5)
+  --trajectory-probe  the halo orbit from the fixture, two frames (ROADMAP F6)
+  --live-probe      the same orbit computed now through core-rs (ROADMAP H5)
+  --rotating-probe  where to compute the rotating frame: f32 on the GPU or f64 on the CPU (U6a1)
+  --tile-probe      how many tiles a bindless array takes and what it costs (T2)
+  --width <px>      width, 1280 by default
+  --height <px>     height, 720 by default";
 
-/// Серія знімків поточного стану рендера (демка).
+/// A series of shots of the renderer's current state (the demo).
 ///
-/// Друкує поруч підписи, бо картинка без підпису не каже, що саме на ній
-/// доводиться. Каталог перезаписується; манiфест пишеться туди ж, щоб
-/// підписи не жили окремо від файлів.
+/// Prints the captions alongside, because a picture without a caption does not
+/// say what it proves. The directory is overwritten; the manifest is written
+/// there too, so the captions do not live apart from the files.
 fn run_demo(dir: &std::path::Path) -> Result<(), String> {
     let gpu = Gpu::new(wgpu::Instance::default(), None)?;
-    println!("адаптер: {}", gpu.describe());
+    println!("adapter: {}", gpu.describe());
 
     let frames = engine::demo::render(&gpu, dir)?;
 
@@ -146,12 +146,13 @@ fn run_demo(dir: &std::path::Path) -> Result<(), String> {
         manifest.push_str(&format!("{}.png\n    {}\n\n", frame.name, frame.caption));
     }
     std::fs::write(dir.join("manifest.txt"), manifest).map_err(|e| e.to_string())?;
-    println!("{} кадрів у {}", frames.len(), dir.display());
+    println!("{} frames in {}", frames.len(), dir.display());
     Ok(())
 }
 
-/// Анімація корабля на орбіті (етап V, V2). Кількість кадрів бере `--frames`,
-/// типово [`engine::ship_demo::FRAMES`] — чотири секунди при 60 fps.
+/// An animation of the ship in orbit (stage V, V2). The frame count comes from
+/// `--frames`, [`engine::ship_demo::FRAMES`] by default -- four seconds at
+/// 60 fps.
 fn run_ship_demo(
     path: &std::path::Path,
     width: u32,
@@ -159,7 +160,7 @@ fn run_ship_demo(
     frames: Option<u32>,
 ) -> Result<(), String> {
     let gpu = Gpu::new(wgpu::Instance::default(), None)?;
-    println!("адаптер: {}", gpu.describe());
+    println!("adapter: {}", gpu.describe());
     let frames = frames.unwrap_or(engine::ship_demo::FRAMES);
 
     let started = std::time::Instant::now();
@@ -167,7 +168,7 @@ fn run_ship_demo(
     let seconds = started.elapsed().as_secs_f64();
 
     println!(
-        "анімація: {} ({}×{}, {} кадрів, {} fps — {:.1} с відео)",
+        "animation: {} ({}x{}, {} frames, {} fps -- {:.1} s of video)",
         path.display(),
         width,
         height,
@@ -176,15 +177,14 @@ fn run_ship_demo(
         f64::from(frames) / f64::from(engine::ship_demo::FPS)
     );
     println!(
-        "малювання: {seconds:.1} с, {:.1} мс на кадр",
+        "drawing: {seconds:.1} s, {:.1} ms per frame",
         seconds * 1000.0 / f64::from(frames)
     );
     Ok(())
 }
 
-/// Анімація підльоту до Місяця (етап T). Кількість кадрів бере `--frames`,
-/// типово [`engine::moon_demo::FRAMES`] — чотири секунди при 60 fps.
-/// Проліт повз Місяць по еліптичній орбіті (зонд етапу T).
+/// A flyby past the Moon on an elliptical orbit (a stage-T probe). The frame
+/// count comes from `--frames`, [`engine::flyby_demo::FRAMES`] by default.
 fn run_flyby_demo(
     path: &std::path::Path,
     width: u32,
@@ -192,7 +192,7 @@ fn run_flyby_demo(
     frames: Option<u32>,
 ) -> Result<(), String> {
     let gpu = Gpu::new(wgpu::Instance::default(), None)?;
-    println!("адаптер: {}", gpu.describe());
+    println!("adapter: {}", gpu.describe());
     let frames = frames.unwrap_or(engine::flyby_demo::FRAMES);
 
     let started = std::time::Instant::now();
@@ -200,7 +200,7 @@ fn run_flyby_demo(
     let seconds = started.elapsed().as_secs_f64();
 
     println!(
-        "анімація: {} ({}×{}, {} кадрів, {:.1} с відео)",
+        "animation: {} ({}x{}, {} frames, {:.1} s of video)",
         path.display(),
         width,
         height,
@@ -208,7 +208,7 @@ fn run_flyby_demo(
         f64::from(frames) / f64::from(engine::flyby_demo::FPS)
     );
     println!(
-        "малювання: {:.1} с, {:.1} мс на кадр",
+        "drawing: {:.1} s, {:.1} ms per frame",
         seconds,
         1000.0 * seconds / f64::from(frames)
     );
@@ -222,7 +222,7 @@ fn run_moon_demo(
     frames: Option<u32>,
 ) -> Result<(), String> {
     let gpu = Gpu::new(wgpu::Instance::default(), None)?;
-    println!("адаптер: {}", gpu.describe());
+    println!("adapter: {}", gpu.describe());
     let frames = frames.unwrap_or(engine::moon_demo::FRAMES);
 
     let started = std::time::Instant::now();
@@ -230,7 +230,7 @@ fn run_moon_demo(
     let seconds = started.elapsed().as_secs_f64();
 
     println!(
-        "анімація: {} ({}×{}, {} кадрів, {:.1} с відео)",
+        "animation: {} ({}x{}, {} frames, {:.1} s of video)",
         path.display(),
         width,
         height,
@@ -238,7 +238,7 @@ fn run_moon_demo(
         f64::from(frames) / f64::from(engine::moon_demo::FPS)
     );
     println!(
-        "малювання: {seconds:.1} с, {:.1} мс на кадр",
+        "drawing: {seconds:.1} s, {:.1} ms per frame",
         seconds * 1000.0 / f64::from(frames)
     );
     Ok(())
@@ -246,19 +246,19 @@ fn run_moon_demo(
 
 fn take_shot(path: &std::path::Path, width: u32, height: u32) -> Result<(), String> {
     let gpu = Gpu::new(wgpu::Instance::default(), None)?;
-    println!("адаптер: {}", gpu.describe());
+    println!("adapter: {}", gpu.describe());
 
     let shot = shot::take(&gpu, width, height)?;
     shot.write_png(path)?;
 
-    println!("знімок: {} ({}×{})", path.display(), width, height);
-    println!("піксель у центрі: {:?}", shot.pixel(width / 2, height / 2));
+    println!("shot: {} ({}x{})", path.display(), width, height);
+    println!("centre pixel: {:?}", shot.pixel(width / 2, height / 2));
     Ok(())
 }
 
 fn parse(text: &str, name: &str) -> u32 {
     text.parse()
-        .unwrap_or_else(|_| fail(&format!("{name}: '{text}' не є числом")))
+        .unwrap_or_else(|_| fail(&format!("{name}: '{text}' is not a number")))
 }
 
 fn fail(message: &str) -> ! {
@@ -266,25 +266,25 @@ fn fail(message: &str) -> ! {
     std::process::exit(1);
 }
 
-/// Замір роздільності глибини (ROADMAP F3).
+/// Measuring depth resolution (ROADMAP F3).
 ///
-/// Друкує таблицю «відстань × зазор» для reversed-Z і для звичайної
-/// проєкції поруч. Без другого стовпця перший був би твердженням без
-/// порівняння.
+/// Prints a "distance x gap" table for reversed-Z and for the conventional
+/// projection side by side. Without the second column the first would be a
+/// claim without a comparison.
 fn run_depth_probe() -> Result<(), String> {
     use engine::depth;
     use engine::depth_probe::{measure, Setup};
 
     let gpu = Gpu::new(wgpu::Instance::default(), None)?;
-    println!("адаптер: {}\n", gpu.describe());
+    println!("adapter: {}\n", gpu.describe());
 
     let near = 0.1;
-    println!("Частка кадру, де ближча поверхня попереду. 1.000 — глибина");
-    println!("роздільна; 0.000 — виграв порядок малювання; між — z-fighting.\n");
-    println!("near = {near} м, Depth32Float, поле зору 60°\n");
+    println!("Share of the frame where the nearer surface is in front. 1.000 --");
+    println!("depth resolves; 0.000 -- draw order won; between -- z-fighting.\n");
+    println!("near = {near} m, Depth32Float, 60 degree field of view\n");
     println!(
         "{:>12} {:>10} {:>12} {:>12} {:>10}",
-        "відстань, м", "зазор, м", "reversed-Z", "звичайна", "межа, м"
+        "distance, m", "gap, m", "reversed-Z", "conventional", "limit, m"
     );
 
     for distance in [1e4, 1e5, 1e6, 1e7, 1e8] {
@@ -308,8 +308,8 @@ fn run_depth_probe() -> Result<(), String> {
         }
     }
 
-    // Знімок найцікавішого випадку: там, де reversed-Z ще тримає, а
-    // звичайна проєкція вже ні.
+    // A shot of the most interesting case: where reversed-Z still holds and
+    // the conventional projection no longer does.
     let shown = measure(
         &gpu,
         480,
@@ -324,70 +324,72 @@ fn run_depth_probe() -> Result<(), String> {
     shown
         .shot
         .write_png(std::path::Path::new("build/f3_reversed.png"))?;
-    println!("\nзнімок: build/f3_reversed.png (10⁷ м, зазор 1 м, reversed-Z)");
+    println!("\nshot: build/f3_reversed.png (1e7 m, 1 m gap, reversed-Z)");
 
     Ok(())
 }
 
-/// Замір часу кадру рендера (скіл `perf-probe`).
+/// Measuring render frame time (the `perf-probe` skill).
 ///
-/// Друкує min/mean/p95/max у мс і запас до бюджетів 60 fps (16.6 мс) та
-/// 30 fps (33.3 мс) для кількох роздільностей. Метод і його межі — див.
-/// `engine::perf_probe`.
+/// Prints min/mean/p95/max in ms and the headroom against the 60 fps (16.6 ms)
+/// and 30 fps (33.3 ms) budgets for several resolutions. The method and its
+/// limits -- see `engine::perf_probe`.
 fn run_perf_probe() -> Result<(), String> {
     use engine::perf_probe::{camera_pass_ms, measure, patch_pass_ms, Overlay};
 
     const FRAMES: u32 = 300;
 
-    // Дві висоти, а не одна (R8): здалеку LOD віддає планеті кілька патчів,
-    // з низької орбіти — десятки. Одне число тут перестало описувати кадр
-    // рівно тоді, коли набір патчів став залежати від камери.
+    // Two altitudes rather than one (R8): from afar LOD gives the planet a
+    // handful of patches, from low orbit dozens. One number stopped describing
+    // the frame exactly when the patch set began to depend on the camera.
     const ALTITUDES_M: [(f64, &str); 2] = [
-        (engine::frame::DEFAULT_ALTITUDE_M, "10⁷ м"),
-        (1.0e5, "100 км"),
+        (engine::frame::DEFAULT_ALTITUDE_M, "1e7 m"),
+        (1.0e5, "100 km"),
     ];
     const BUDGET_60: f64 = 1000.0 / 60.0;
     const BUDGET_30: f64 = 1000.0 / 30.0;
 
     let gpu = Gpu::new(wgpu::Instance::default(), None)?;
-    println!("адаптер: {}\n", gpu.describe());
-    // Профіль друкується поруч із числами, і це не косметика: вимір
-    // CPU-зв'язаний, а між debug і release тут тринадцятикратна різниця в
-    // часі кадру. Число без профілю непорівнянне з жодним іншим.
+    println!("adapter: {}\n", gpu.describe());
+    // The profile is printed next to the numbers, and that is not cosmetic:
+    // the measurement is CPU-bound, and between debug and release there is a
+    // thirteenfold difference in frame time. A number without its profile is
+    // comparable with nothing.
     let profile = if cfg!(debug_assertions) {
         "debug (cargo run)"
     } else {
         "release (cargo run --release)"
     };
     println!(
-        "{FRAMES} кадрів на роздільність, синхронний submit+poll (верхня межа, не конвеєр).\n\
-         профіль: {profile}\n\
-         сцена: одне тіло радіуса Землі, патчі 32×32, набір вибирає LOD за \
-         екранною похибкою (R2a); відбір за лімбом і кадром — у compute, \
-         малювання — `draw_indirect`, один виклик на тіло (R6)\n"
+        "{FRAMES} frames per resolution, synchronous submit+poll (an upper bound, not a pipeline).\n\
+         profile: {profile}\n\
+         scene: one body of Earth's radius, 32x32 patches, the set chosen by LOD \
+         from screen-space error (R2a); limb and frustum culling in compute, \
+         drawing by `draw_indirect`, one call per body (R6)\n"
     );
     println!(
         "{:>8} {:>10} {:>10} {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>9}",
-        "висота",
-        "розд.",
-        "інтерфейс",
-        "min мс",
-        "mean мс",
-        "p95 мс",
-        "max мс",
+        "altitude",
+        "res.",
+        "overlay",
+        "min ms",
+        "mean ms",
+        "p95 ms",
+        "max ms",
         "fps",
-        "запас60",
-        "запас30"
+        "head60",
+        "head30"
     );
 
-    // Три рядки на роздільність в одному прогоні, а не три прогони: різниця
-    // між прогонами на одній машині більша за те, що коштує панель.
+    // Three rows per resolution in one run rather than three runs: the
+    // difference between runs on one machine is larger than what a panel
+    // costs.
     for (altitude, altitude_label) in ALTITUDES_M {
         for (width, height) in [(1280, 720), (1920, 1080)] {
             for (overlay, label) in [
-                (Overlay::None, "немає"),
-                (Overlay::EmptyUi, "порожній"),
-                (Overlay::Panel, "панель"),
+                (Overlay::None, "none"),
+                (Overlay::EmptyUi, "empty"),
+                (Overlay::Panel, "panel"),
             ] {
                 let stats = measure(&gpu, width, height, FRAMES, overlay, altitude)?;
                 println!(
@@ -408,25 +410,26 @@ fn run_perf_probe() -> Result<(), String> {
         }
     }
 
-    // Окремо — ціна повітря (етап S). П'ять висот: три «звичайні» й дві по
-    // обидва боки умови S5, на якій об'єм аеральної перспективи перестає
-    // рахуватися. Остання пара — це та сама сцена з точністю до восьми
-    // відсотків відстані, тож різниця між її рядками і є ціна об'єму.
+    // Separately -- the cost of air (stage S). Five altitudes: three "ordinary"
+    // ones and two on either side of the S5 condition at which the
+    // aerial-perspective volume stops being computed. The last pair is the same
+    // scene to within eight percent of the distance, so the difference between
+    // its rows is the cost of the volume.
     println!(
-        "\nПовітря (етап S). Умова: воно малюється, лише коли товщина шару в кадрі\n\
-         не менша за піксель — для Землі це 6.24·10⁷ м.\n"
+        "\nAir (stage S). The condition: it is drawn only when the layer's thickness\n\
+         in the frame is at least a pixel -- for Earth that is 6.24e7 m.\n"
     );
     println!(
         "{:>10} {:>12} {:>10} {:>10} {:>10} {:>8}",
-        "висота", "повітря", "без, мс", "з повітрям", "різниця", "разів"
+        "altitude", "air", "without, ms", "with air", "difference", "times"
     );
     for (altitude, label, note) in [
-        (1.0e4, "10 км", "малюється"),
-        (5.0e5, "500 км", "малюється"),
-        (1.0e7, "10⁷ м", "малюється"),
-        (6.0e7, "6.0·10⁷ м", "малюється"),
-        (6.5e7, "6.5·10⁷ м", "пропущено"),
-        (1.0e9, "10⁹ м", "пропущено"),
+        (1.0e4, "10 km", "drawn"),
+        (5.0e5, "500 km", "drawn"),
+        (1.0e7, "1e7 m", "drawn"),
+        (6.0e7, "6.0e7 m", "drawn"),
+        (6.5e7, "6.5e7 m", "skipped"),
+        (1.0e9, "1e9 m", "skipped"),
     ] {
         let bare = engine::perf_probe::air_cost(&gpu, 1280, 720, FRAMES, altitude, false)?;
         let with_air = engine::perf_probe::air_cost(&gpu, 1280, 720, FRAMES, altitude, true)?;
@@ -441,24 +444,25 @@ fn run_perf_probe() -> Result<(), String> {
         );
     }
 
-    // Окремо — ціна корабля в кадрі (етап V). Дві висоти, і різниця між ними
-    // тут головна: на низькій орбіті корабель додає **прохід глибини**, бо
-    // `near` приходить від корпусу, а не від висоти.
+    // Separately -- the cost of the ship in the frame (stage V). Two altitudes,
+    // and the difference between them is the main thing: in low orbit the ship
+    // adds a **depth pass**, because `near` comes from the hull rather than
+    // from the altitude.
     println!(
-        "\nКорабель у кадрі (етап V). Різниця — не сама лише ціна 1614 вершин:\n\
-         корпус за п'ятнадцять метрів тягне `near`, а `near` вирішує кількість\n\
-         проходів глибини. Третій рядок відділяє одне від одного.\n"
+        "\nThe ship in the frame (stage V). The difference is not only the cost of\n\
+         1614 vertices: a hull fifteen metres away pulls `near`, and `near` decides\n\
+         the number of depth passes. The third row separates one from the other.\n"
     );
     println!(
         "{:>10} {:>20} {:>10} {:>12} {:>10} {:>8}",
-        "висота", "корабель", "без, мс", "з кораблем", "різниця", "разів"
+        "altitude", "ship", "without, ms", "with ship", "difference", "times"
     );
     for (altitude, label, range, note) in [
-        (4.0e5, "400 км", 15.0, "15 м, два проходи"),
-        (1.0e7, "10⁷ м", 15.0, "15 м, два проходи"),
-        // Той самий меш, але далеко: `near` лишається великою, проходів один.
-        // Тобто цей рядок — ціна самого малювання, без діапазону.
-        (1.0e7, "10⁷ м", 1.0e6, "10⁶ м, один прохід"),
+        (4.0e5, "400 km", 15.0, "15 m, two passes"),
+        (1.0e7, "1e7 m", 15.0, "15 m, two passes"),
+        // The same mesh but far away: `near` stays large and there is one pass.
+        // So this row is the cost of the drawing alone, without a range.
+        (1.0e7, "1e7 m", 1.0e6, "1e6 m, one pass"),
     ] {
         let bare = engine::perf_probe::ship_cost(&gpu, 1280, 720, FRAMES, altitude, None)?;
         let with_ship =
@@ -474,27 +478,29 @@ fn run_perf_probe() -> Result<(), String> {
         );
     }
 
-    // Окремо — ціна колірних тайлів (етап T, T8). Асета може не бути на
-    // диску (`/assets/` не в git), і тоді рядка просто немає: вигадати його
-    // не можна, а синтетична піраміда міряла б не те.
+    // Separately -- the cost of colour tiles (stage T, T8). The asset may not be
+    // on disk (`/assets/` is not in git), and then the row simply is not there:
+    // it cannot be invented, and a synthetic pyramid would measure the wrong
+    // thing.
     match tile_assets() {
         Some((terrain, colour)) => {
             println!(
-                "\nКолірні тайли в кадрі (етап T). Різниця — друга bindless-вибірка\n\
-                 на фрагмент і вдвічі більший масив текстур у групі прив'язки.\n"
+                "\nColour tiles in the frame (stage T). The difference is a second\n\
+                 bindless sample per fragment and twice the texture array in the bind group.\n"
             );
             println!(
                 "{:>10} {:>10} {:>12} {:>10} {:>8}",
-                "висота", "без, мс", "з кольором", "різниця", "разів"
+                "altitude", "without, ms", "with colour", "difference", "times"
             );
-            // Останній рядок — той, що розділяє два пояснення різниці. Якщо
-            // ціна кольору у вибірці, вона мусить упасти разом із кількістю
-            // накритих пікселів; якщо в прив'язці масиву текстур — лишиться.
+            // The last row is the one that separates the two explanations of
+            // the difference. If the cost of colour is in the sampling, it must
+            // fall along with the number of covered pixels; if it is in binding
+            // the texture array, it will remain.
             for (altitude, label) in [
-                (1.0e5, "100 км"),
-                (1.0e6, "10⁶ м"),
-                (1.0e7, "10⁷ м"),
-                (1.0e9, "10⁹ м"),
+                (1.0e5, "100 km"),
+                (1.0e6, "1e6 m"),
+                (1.0e7, "1e7 m"),
+                (1.0e9, "1e9 m"),
             ] {
                 let bare = engine::perf_probe::tile_cost(
                     &gpu, 1280, 720, FRAMES, altitude, &terrain, None,
@@ -519,19 +525,20 @@ fn run_perf_probe() -> Result<(), String> {
             }
         }
         None => println!(
-            "\nКолірні тайли: асетів немає на диску — рядок пропущено.\n               полікувати: make cook-dem && make cook-colour"
+            "\nColour tiles: the assets are not on disk -- the row is skipped.\n               to fix: make cook-dem && make cook-colour"
         ),
     }
 
-    // І окремо — від чого та ціна залежить. Піраміда обрізається по рівнях,
-    // тобто міняється **тільки кількість текстур у масиві**: сцена, камера,
-    // висота й кількість накритих пікселів лишаються ті самі.
+    // And separately -- what that cost depends on. The pyramid is truncated by
+    // levels, so **only the number of textures in the array** changes: the
+    // scene, the camera, the altitude and the number of covered pixels stay the
+    // same.
     if let Some((terrain, colour)) = tile_assets() {
         println!(
-            "\nВід чого залежить ціна кольору: камера на 10⁹ м, тіло в кілька\n\
-             пікселів, міняється лише глибина піраміди.\n"
+            "\nWhat the cost of colour depends on: the camera at 1e9 m, the body a\n\
+             few pixels across, only the pyramid depth changing.\n"
         );
-        println!("{:>8} {:>10} {:>10}", "рівнів", "тайлів", "кадр, мс");
+        println!("{:>8} {:>10} {:>10}", "levels", "tiles", "frame, ms");
         for levels in 1..=colour.levels {
             let short = truncated(&colour, levels);
             let stats = engine::perf_probe::tile_cost(
@@ -552,9 +559,9 @@ fn run_perf_probe() -> Result<(), String> {
         }
     }
 
-    // Борг D19 на його власному порозі: два тіла з тайлами в одному кадрі
-    // (T7h). Питання боргу дослівне — масив текстур платить за свій розмір, а
-    // не за намальоване, — тож перевіряється саме сума.
+    // Debt D19 on its own threshold: two tiled bodies in one frame (T7h). The
+    // debt's question is literal -- a texture array pays for its size rather
+    // than for what is drawn -- so it is the sum that is checked.
     match (
         surface_assets("assets/moon.dem", "assets/moon.col"),
         surface_assets("assets/earth.dem", "assets/earth.col"),
@@ -566,27 +573,27 @@ fn run_perf_probe() -> Result<(), String> {
             let moon_textures = textures(&moon_dem, &moon_col);
             let earth_textures = textures(&earth_dem, &earth_col);
             println!(
-                "\nДва тіла з тайлами (борг D19): камера на 10⁹ м, обидва тіла\n\
-                 в кілька пікселів — різниця це прив'язка масивів, не малювання.\n\n\
-                 Місяць {moon_textures} текстур, Земля {earth_textures}, разом {}.\n",
+                "\nTwo tiled bodies (debt D19): the camera at 1e9 m, both bodies a\n\
+                 few pixels across -- the difference is array binding, not drawing.\n\n\
+                 Moon {moon_textures} textures, Earth {earth_textures}, {} together.\n",
                 moon_textures + earth_textures
             );
-            println!("{:>16} {:>10} {:>12}", "сцена", "кадр, мс", "нс/текстуру");
+            println!("{:>16} {:>10} {:>12}", "scene", "frame, ms", "ns/texture");
             for (label, first, second, count) in [
                 (
-                    "лише Місяць",
+                    "Moon only",
                     (&moon_dem, Some(&moon_col)),
                     None,
                     moon_textures,
                 ),
                 (
-                    "лише Земля",
+                    "Earth only",
                     (&earth_dem, Some(&earth_col)),
                     None,
                     earth_textures,
                 ),
                 (
-                    "обидва",
+                    "both",
                     (&moon_dem, Some(&moon_col)),
                     Some((&earth_dem, Some(&earth_col))),
                     moon_textures + earth_textures,
@@ -604,21 +611,22 @@ fn run_perf_probe() -> Result<(), String> {
             }
         }
         _ => println!(
-            "\nДва тіла з тайлами (D19): немає обох асетів на диску — рядок пропущено.\n\
-             \x20              полікувати: make cook-dem && make cook-colour, потім\n\
+            "\nTwo tiled bodies (D19): both assets are missing from disk -- row skipped.\n\
+             \x20              to fix: make cook-dem && make cook-colour, then\n\
              \x20              cargo run -p dem-cook -- --body earth [--colour]"
         ),
     }
 
-    // Окремо — CPU-прохід планети, до й після R1d. Два числа, бо одне без
-    // другого не каже, чи виграш узагалі є.
+    // Separately -- the planet's CPU pass, before and after R1d. Two numbers,
+    // because one without the other does not say whether there is a gain at
+    // all.
     let was_ms = camera_pass_ms(200);
     let now_ms = patch_pass_ms(200);
     println!(
-        "\nCPU-прохід планети:\n  \
-         було (UV-сфера, 8385 вершин щокадру): {:.1} мкс = {:.2}% бюджету 60 Hz\n  \
-         стало (по одному початку на патч): {:.3} мкс = {:.4}%\n  \
-         виграш: у {:.0} разів",
+        "\nThe planet's CPU pass:\n  \
+         was (UV sphere, 8385 vertices per frame): {:.1} us = {:.2}% of the 60 Hz budget\n  \
+         now (one origin per patch): {:.3} us = {:.4}%\n  \
+         gain: {:.0} times",
         was_ms * 1000.0,
         100.0 * was_ms / BUDGET_60,
         now_ms * 1000.0,
@@ -629,27 +637,27 @@ fn run_perf_probe() -> Result<(), String> {
     Ok(())
 }
 
-/// Скуковані тайли Місяця, якщо вони є на диску.
+/// The Moon's cooked tiles, if they are on disk.
 ///
-/// Обидва разом або жодного: вимір порівнює кадр **з кольором і без**, і
-/// половина пари не дає ні того, ні того.
+/// Both together or neither: the measurement compares a frame **with colour and
+/// without**, and half the pair gives neither.
 fn tile_assets() -> Option<(engine::tiles::Terrain, engine::tiles::Colour)> {
     surface_assets("assets/moon.dem", "assets/moon.col")
 }
 
-/// Скукована поверхня з диска — рельєф і колір разом, або нічого.
+/// A cooked surface from disk -- terrain and colour together, or nothing.
 fn surface_assets(dem: &str, col: &str) -> Option<(engine::tiles::Terrain, engine::tiles::Colour)> {
     let terrain = engine::tiles::Terrain::from_bytes(&std::fs::read(dem).ok()?).ok()?;
     let colour = engine::tiles::Colour::from_bytes(&std::fs::read(col).ok()?).ok()?;
     Some((terrain, colour))
 }
 
-/// Та сама піраміда кольору, обрізана до `levels` рівнів.
+/// The same colour pyramid, truncated to `levels` levels.
 ///
-/// Потрібна одному вимірові: скільки коштує **розмір масиву текстур** сам по
-/// собі. Обрізання по рівнях лишає геометрію піраміди правильною — тайли
-/// лежать рівень за рівнем (`tiles::index`), тож перші `count(levels)` з них
-/// і є повна піраміда меншої глибини.
+/// Needed by one measurement: what the **size of the texture array** costs by
+/// itself. Truncating by levels keeps the pyramid's geometry correct -- the
+/// tiles lie level by level (`tiles::index`), so the first `count(levels)` of
+/// them are a complete pyramid of smaller depth.
 fn truncated(colour: &engine::tiles::Colour, levels: u32) -> engine::tiles::Colour {
     let grids: Vec<Vec<u8>> = (0..engine::tiles::count(levels))
         .map(|i| colour.tile_bytes(i).to_vec())
@@ -657,11 +665,11 @@ fn truncated(colour: &engine::tiles::Colour, levels: u32) -> engine::tiles::Colo
     engine::tiles::Colour::build(levels, colour.channels, colour.scale, colour.srgb, &grids)
 }
 
-/// Проліт від поверхні до орбіти (ROADMAP F5).
+/// A flight from the surface to orbit (ROADMAP F5).
 ///
-/// Друкує таблицю «висота × покриття кадру» — виміряне проти аналітичного
-/// (`asin(R/(R+висота))`, точна формула для опуклої сфери) там, де його
-/// можна порахувати без наближень.
+/// Prints an "altitude x frame coverage" table -- measured against analytic
+/// (`asin(R/(R+altitude))`, the exact formula for a convex sphere) wherever it
+/// can be computed without approximations.
 fn run_flight_probe() -> Result<(), String> {
     use engine::flight_probe::{expected_coverage, sweep};
     use engine::sphere;
@@ -670,21 +678,21 @@ fn run_flight_probe() -> Result<(), String> {
     const STEPS: u32 = 15;
 
     let gpu = Gpu::new(wgpu::Instance::default(), None)?;
-    println!("адаптер: {}\n", gpu.describe());
+    println!("adapter: {}\n", gpu.describe());
 
     let mesh = sphere::generate(sphere::EARTH_RADIUS_M, 64, 128);
     println!(
-        "меш: R = {:.0} м, {} вершин, {} трикутників\n",
+        "mesh: R = {:.0} m, {} vertices, {} triangles\n",
         sphere::EARTH_RADIUS_M,
         mesh.positions.len(),
         mesh.indices.len() / 3
     );
 
-    println!("Частка кадру, яку займає сфера. Виміряне проти аналітичного диска");
-    println!("силуету — там, де його можна порахувати без наближень.\n");
+    println!("Share of the frame the sphere takes. Measured against the analytic");
+    println!("silhouette disc -- where it can be computed without approximations.\n");
     println!(
         "{:>12} {:>10} {:>12} {:>12}",
-        "висота, м", "покриття", "аналітично", "різниця"
+        "altitude, m", "coverage", "analytic", "difference"
     );
 
     let samples = sweep(&gpu, SIZE, &mesh, STEPS)?;
@@ -702,8 +710,8 @@ fn run_flight_probe() -> Result<(), String> {
         if let Some(previous) = previous_coverage {
             if s.coverage > previous + 1e-9 {
                 println!(
-                    "  ПОПЕРЕДЖЕННЯ: покриття зросло з висотою ({previous:.4} -> {:.4}) — \
-                     не має бути стрибків",
+                    "  WARNING: coverage grew with altitude ({previous:.4} -> {:.4}) -- \
+                     there must be no jumps",
                     s.coverage
                 );
             }
@@ -716,7 +724,7 @@ fn run_flight_probe() -> Result<(), String> {
             .shot
             .write_png(std::path::Path::new("build/f5_surface.png"))?;
         println!(
-            "знімок: build/f5_surface.png (висота {:.0e} м)",
+            "shot: build/f5_surface.png (altitude {:.0e} m)",
             first.altitude
         );
     }
@@ -725,7 +733,7 @@ fn run_flight_probe() -> Result<(), String> {
         last.shot
             .write_png(std::path::Path::new("build/f5_flight.png"))?;
         println!(
-            "знімок: build/f5_flight.png (висота {:.0e} м)",
+            "shot: build/f5_flight.png (altitude {:.0e} m)",
             last.altitude
         );
     }
@@ -733,11 +741,11 @@ fn run_flight_probe() -> Result<(), String> {
     Ok(())
 }
 
-/// Halo-орбіта з етапу C, два фрейми з тих самих вершинних буферів
+/// The halo orbit from stage C, two frames from the same vertex buffers
 /// (ROADMAP F6).
 ///
-/// Обидва знімки йдуть з ОДНОГО завантаження й ОДНОГО набору буферів —
-/// перемикання фрейму це прапорець в uniform, не перезавантаження вершин.
+/// Both shots come from ONE load and ONE set of buffers -- switching frames is a
+/// flag in a uniform, not a re-upload of vertices.
 fn run_trajectory_probe() -> Result<(), String> {
     use engine::trajectory;
     use engine::trajectory_render::{geocentric_framing, render, rotating_framing, Params};
@@ -745,11 +753,11 @@ fn run_trajectory_probe() -> Result<(), String> {
     const SIZE: u32 = 720;
 
     let gpu = Gpu::new(wgpu::Instance::default(), None)?;
-    println!("адаптер: {}\n", gpu.describe());
+    println!("adapter: {}\n", gpu.describe());
 
     let samples = trajectory::load();
     println!(
-        "траєкторія: {} семплів, {:.1} діб, mu = {}\n",
+        "trajectory: {} samples, {:.1} days, mu = {}\n",
         samples.len(),
         samples.last().unwrap().t / 86400.0,
         trajectory::MU
@@ -767,7 +775,7 @@ fn run_trajectory_probe() -> Result<(), String> {
         },
     )?;
     geocentric.write_png(std::path::Path::new("build/f6_geocentric.png"))?;
-    println!("знімок: build/f6_geocentric.png (інерціальний, геоцентричний)");
+    println!("shot: build/f6_geocentric.png (inertial, geocentric)");
 
     let rotating = render(
         &gpu,
@@ -781,17 +789,18 @@ fn run_trajectory_probe() -> Result<(), String> {
         },
     )?;
     rotating.write_png(std::path::Path::new("build/f6_rotating.png"))?;
-    println!("знімок: build/f6_rotating.png (обертовий, синодичний, біля L2)");
+    println!("shot: build/f6_rotating.png (rotating, synodic, near L2)");
 
     Ok(())
 }
 
-/// Траєкторія, порахована зараз, а не прочитана з CSV (ROADMAP H5).
+/// A trajectory computed now rather than read from a CSV (ROADMAP H5).
 ///
-/// Перший зонд, у якому рушій викликає ядро: стан апарата береться з першого
-/// семпла фікстури, а далі все рахує `prop_run` — і поруч, тим самим
-/// рендером, малюється сама фікстура, щоб різницю було видно оком, а не лише
-/// у числах з `engine/tests/live.rs`.
+/// The first probe in which the engine calls the core: the vessel state is taken
+/// from the fixture's first sample, and everything after that is computed by
+/// `prop_run` -- with the fixture itself drawn alongside by the same renderer,
+/// so the difference is visible by eye and not only in the numbers from
+/// `engine/tests/live.rs`.
 fn run_live_probe() -> Result<(), String> {
     use engine::live;
     use engine::trajectory;
@@ -801,21 +810,22 @@ fn run_live_probe() -> Result<(), String> {
     const DAYS: f64 = 101.79;
 
     let gpu = Gpu::new(wgpu::Instance::default(), None)?;
-    println!("адаптер: {}\n", gpu.describe());
+    println!("adapter: {}\n", gpu.describe());
 
     let start = live::fixture_start();
     let live = live::propagate(&start, DAYS, &live::repo_asset())
-        .map_err(|e| format!("прогноз не порахувався: {e}"))?;
+        .map_err(|e| format!("the prediction did not compute: {e}"))?;
 
     println!(
-        "прогноз: {} семплів за {} викликів prop_run, {:.1} діб",
+        "prediction: {} samples over {} prop_run calls, {:.1} days",
         live.samples.len(),
         live.legs,
         (live.samples.last().unwrap().t - start.t) / 86400.0
     );
 
-    // Кадрування спільне — від еталона, — інакше дві картинки мали б різні
-    // масштаби й порівнювати їх було б ні до чого.
+    // The framing is shared -- taken from the reference -- otherwise the two
+    // pictures would have different scales and comparing them would be
+    // pointless.
     let reference = trajectory::load();
     let framing = rotating_framing(&reference);
 
@@ -831,7 +841,7 @@ fn run_live_probe() -> Result<(), String> {
         },
     )?;
     shot.write_png(std::path::Path::new("build/h5_live.png"))?;
-    println!("знімок: build/h5_live.png (порахований зараз)");
+    println!("shot: build/h5_live.png (computed now)");
 
     let shot = render(
         &gpu,
@@ -845,7 +855,7 @@ fn run_live_probe() -> Result<(), String> {
         },
     )?;
     shot.write_png(std::path::Path::new("build/h5_reference.png"))?;
-    println!("знімок: build/h5_reference.png (фікстура, той самий кадр)");
+    println!("shot: build/h5_reference.png (the fixture, the same framing)");
 
     Ok(())
 }
