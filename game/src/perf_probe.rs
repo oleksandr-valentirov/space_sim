@@ -104,12 +104,22 @@ pub enum Overlay {
 /// from `palette` (U7c): a panel with egui's default spacing would be a
 /// different size, i.e. the frame measured would not be the game's.
 ///
-/// There are eight arguments, and collecting them into a struct is pointless:
-/// each is an independent axis of the measurement, and an eight-field struct
+/// There are nine arguments, and collecting them into a struct is pointless:
+/// each is an independent axis of the measurement, and a nine-field struct
 /// filled at the call site is the same list, only longer.
+///
+/// ⚠ The `Frame` comes from **outside**, and that is the whole of step 0. It
+/// used to be built here, once per call, which meant no caller could ever load
+/// a surface into it -- so every number this probe has ever printed was taken
+/// on `TileSet::Smooth`, with the bindless array unbound, while debt D19
+/// charges 1.86-2.04 ms for binding it. The two were never addable, and the
+/// frame-quality plan rests on their sum. Passing the frame in also makes the
+/// probe honest in a second way: the real game reuses one frame across
+/// thousands of draws, warm caches and all.
 #[allow(clippy::too_many_arguments)]
 pub fn measure(
     gpu: &Gpu,
+    frame: &mut engine::frame::Frame,
     width: u32,
     height: u32,
     frames: u32,
@@ -118,7 +128,6 @@ pub fn measure(
     overlay: Overlay,
     earth_radius_m: f64,
 ) -> Result<(Stats, Stats), String> {
-    let mut frame = engine::frame::Frame::new(gpu, shot::FORMAT);
     let mut interface = Ui::new(gpu, shot::FORMAT);
     palette::apply(interface.context());
 
@@ -352,6 +361,21 @@ pub fn run(options: &app::Options, days: f64, frames: u32) -> Result<(), String>
     // `game/tests/scene.rs`).
     let camera = || engine::orbit::Orbit::at_altitude(crate::mission::CAMERA_ALTITUDE_M).camera();
 
+    // One frame for the whole probe (step 0). Surfaces are loaded into it once,
+    // here, because loading is what a `Frame` cannot be asked to do twice: each
+    // `load_surface` uploads a whole pyramid and appends another handle.
+    let mut frame_gpu = engine::frame::Frame::new(&gpu, shot::FORMAT);
+    let surfaces = match (
+        app::load_earth_terrain(&gpu, &mut frame_gpu),
+        app::load_moon_terrain(&gpu, &mut frame_gpu),
+    ) {
+        (Some(earth), Some(moon)) => Some((earth, moon)),
+        // Either asset missing costs the whole axis rather than half of it: a
+        // row with Earth bound and the Moon smooth answers no question anyone
+        // asked, and would sit in the table looking like it did.
+        _ => None,
+    };
+
     for frame in [ViewFrame::Inertial, ViewFrame::Rotating] {
         let scene = view::build_in(&snapshot, camera(), frame);
         let size = SceneSize::of(&scene, &snapshot);
@@ -418,6 +442,7 @@ pub fn run(options: &app::Options, days: f64, frames: u32) -> Result<(), String>
                 ] {
                     let (stats, upload) = measure(
                         &gpu,
+                        &mut frame_gpu,
                         width,
                         height,
                         frames,
@@ -441,6 +466,90 @@ pub fn run(options: &app::Options, days: f64, frames: u32) -> Result<(), String>
                     );
                 }
             }
+        }
+    }
+
+    // ---- Step 0: the baseline fixture ----
+    //
+    // Everything above measures the trail and the panels, and measures them on
+    // a smooth planet. This measures the frame the game actually draws.
+    //
+    // Two axes, and no more on purpose. `surfaces` isolates D19 exactly: the
+    // only difference between a pair of rows is whether the bodies point at a
+    // loaded pyramid, so the gap between them **is** the price of binding it,
+    // measured rather than carried over from the engine's probe on another
+    // scene. The camera separates the map view (1e9 m, the altitude the rows
+    // above use, so they stay comparable) from low orbit, where LOD, the air
+    // and the terrain all do work at once.
+    //
+    // Panels on and the trail thinned in every row, because that is the game's
+    // frame and not a reduction of it. One thing is still missing from
+    // "everything at once", and it is missing upstream: the game's scene has
+    // never carried a ship -- `view::build` pushes bodies and polylines and
+    // never touches `scene.ships` -- so there is nothing here to switch on.
+    println!();
+    println!("=== baseline: the frame the game draws, 1920x1080, panels on, trail thinned");
+    if surfaces.is_none() {
+        println!("  WARNING: a surface asset is missing -- the `loaded` rows are absent,");
+        println!("  and with them the only measurement of D19 on a real game frame.");
+    }
+
+    for altitude in [crate::mission::CAMERA_ALTITUDE_M, 400.0e3] {
+        let camera = || engine::orbit::Orbit::at_altitude(altitude).camera();
+        let mut cache = crate::trail::Cache::new();
+        let mut thinning = view::Thinning {
+            cache: &mut cache,
+            height_px: 1080,
+        };
+        // Twice, as above: the first pass fills the cache, the second is what
+        // the game pays.
+        let _ = view::build_thinned(&snapshot, camera(), &[], ViewFrame::Inertial, &mut thinning);
+        let mut scene =
+            view::build_thinned(&snapshot, camera(), &[], ViewFrame::Inertial, &mut thinning);
+
+        let row = |what: &str, stats: &Stats| {
+            println!(
+                "  camera {:>7.0} km, surfaces {what:<6}: mean {:.3} ms, p95 {:.3} ms, \
+                 margin to 60 Hz {:+.2} ms",
+                altitude / 1000.0,
+                stats.mean_ms,
+                stats.p95_ms,
+                stats.headroom_ms(1000.0 / 60.0)
+            );
+        };
+
+        let (smooth, _) = measure(
+            &gpu,
+            &mut frame_gpu,
+            1920,
+            1080,
+            frames,
+            &scene,
+            &snapshot,
+            Overlay::Panels,
+            earth_radius_m,
+        )?;
+        row("none", &smooth);
+
+        if let Some((earth, moon)) = surfaces {
+            crate::view::attach_terrain(&mut scene, &snapshot, EARTH, earth);
+            crate::view::attach_terrain(&mut scene, &snapshot, crate::world::MOON, moon);
+            let (loaded, _) = measure(
+                &gpu,
+                &mut frame_gpu,
+                1920,
+                1080,
+                frames,
+                &scene,
+                &snapshot,
+                Overlay::Panels,
+                earth_radius_m,
+            )?;
+            row("loaded", &loaded);
+            println!(
+                "    the two pyramids cost {:+.3} ms of this frame",
+                loaded.mean_ms - smooth.mean_ms
+            );
         }
     }
 
