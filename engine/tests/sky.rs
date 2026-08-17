@@ -1,29 +1,32 @@
-//! Небо в кадрі (ROADMAP-ATMOSPHERE.md, S4b).
+//! The sky in the frame (ROADMAP-ATMOSPHERE.md, S4b).
 //!
-//! ## Чому тут числа, а не знімки
+//! ## Why numbers here, not screenshots
 //!
-//! Знімки теж пишуться — у `build/`, і подивитися на них варто, — але вирішує
-//! не око. Правило 2 етапу S вимагає числа, і числа тут беруться з тієї
-//! фізики, яку небо й має показувати:
+//! Screenshots are written too -- into `build/`, and they are worth looking at
+//! -- but the eye does not decide. Rule 2 of stage S demands numbers, and the
+//! numbers here are taken from the very physics the sky is supposed to show:
 //!
-//! - **біля горизонту небо яскравіше й біліше, ніж у зеніті.** Промінь, що йде
-//!   полого, проходить утричі більше повітря; синє в ньому встигає розсіятись
-//!   і назад, і вбік, а червоне доходить — звідси і яскравість, і білизна;
-//! - **захід червоніший за полудень.** Те саме, доведене до кінця: коли Сонце
-//!   на горизонті, його світло йде крізь усю товщу, і синього в ньому не
-//!   лишається зовсім;
-//! - **з орбіти повітря — тонка світна дуга**, а не півнеба, і вона **додає**
-//!   світло, а не заміщає фон.
+//! - **near the horizon the sky is brighter and whiter than at the zenith.** A
+//!   ray going shallowly passes through three times more air; the blue in it has
+//!   time to scatter both back and sideways while the red gets through -- hence
+//!   both the brightness and the whiteness;
+//! - **a sunset is redder than noon.** The same thing carried to its end: when
+//!   the Sun is on the horizon its light goes through the whole thickness, and
+//!   no blue is left in it at all;
+//! - **from orbit the air is a thin glowing arc**, not half the sky, and it
+//!   **adds** light rather than replacing the background.
 //!
-//! Кожне з цих тверджень ловить свою помилку. Перше — переплутані осі таблиці
-//! неба. Друге — загублене пропускання (без нього захід лишився б білим).
-//! Третє — заміщення замість додавання, тобто чорну дугу на нічному краї.
+//! Each of these statements catches its own bug. The first, swapped axes of the
+//! sky table. The second, lost transmittance (without it a sunset would stay
+//! white). The third, replacement instead of addition, i.e. a black arc on the
+//! night edge.
 //!
-//! ## І одне твердження про те, чого немає
+//! ## And one statement about what is not there
 //!
-//! Тіло без повітря дає той самий кадр, що до етапу S (правило 4). Найдешевша
-//! сторожа проти «пройшло крізь усе», і перевіряється вона прямо: поза диском
-//! планети кожен піксель мусить дорівнювати кольору очищення **точно**.
+//! A body without air gives the same frame as before stage S (rule 4). The
+//! cheapest guard against "it ran through everything", and it is checked
+//! directly: outside the planet's disc every pixel must equal the clear colour
+//! **exactly**.
 
 use engine::camera::Camera;
 use engine::frame::{CLEAR_BYTES, LIGHT_DIR};
@@ -52,7 +55,7 @@ fn sun_direction() -> [f64; 3] {
     unit(LIGHT_DIR.map(f64::from))
 }
 
-/// Земля з повітрям або без нього.
+/// Earth with air or without it.
 fn earth(air: bool) -> Body {
     Body {
         centre: [0.0, 0.0, 0.0],
@@ -64,20 +67,21 @@ fn earth(air: bool) -> Body {
     }
 }
 
-/// Спостерігач на висоті `altitude` над точкою `up_dir`, погляд під кутом
-/// `elevation` градусів над горизонтом **у бік Сонця**.
+/// An observer at altitude `altitude` above the point `up_dir`, looking
+/// `elevation` degrees above the horizon **towards the Sun**.
 ///
-/// Азимут на Сонце, а не довільний: уся різниця між полуднем і заходом живе
-/// саме в ньому, і камера, повернута кудись убік, показала б однакове небо в
-/// обох випадках.
+/// The azimuth is towards the Sun, not arbitrary: the whole difference between
+/// noon and sunset lives in it, and a camera turned off to the side would show
+/// the same sky in both cases.
 fn observer(up_dir: [f64; 3], altitude: f64, elevation: f64, air: bool) -> Scene {
     let up = unit(up_dir);
     let eye = up.map(|v| v * (EARTH + altitude));
     let sun = sun_direction();
     let mu_s = sun[0] * up[0] + sun[1] * up[1] + sun[2] * up[2];
 
-    // Горизонтальна складова напрямку на Сонце. У підсонячній точці вона
-    // вироджується — тоді азимут не має значення, бо Сонце в зеніті.
+    // The horizontal component of the direction to the Sun. At the subsolar
+    // point it degenerates -- and then the azimuth does not matter, because the
+    // Sun is at the zenith.
     let mut horizontal = [
         sun[0] - mu_s * up[0],
         sun[1] - mu_s * up[1],
@@ -105,14 +109,14 @@ fn observer(up_dir: [f64; 3], altitude: f64, elevation: f64, air: bool) -> Scene
     scene
 }
 
-/// Спостерігач на висоті `altitude`, погляд під `depression` градусів **нижче**
-/// горизонталі: поверхня тягнеться від кількох кілометрів під ногами до
-/// горизонту, тобто той самий ґрунт видно на всіх відстанях одразу.
+/// An observer at altitude `altitude` looking `depression` degrees **below** the
+/// horizontal: the surface stretches from a few kilometres underfoot to the
+/// horizon, i.e. the same ground is seen at every distance at once.
 fn looking_down(altitude: f64, depression: f64, air: bool) -> Scene {
     let sun = sun_direction();
     let side = unit(cross(sun, [0.0, 0.0, 1.0]));
-    // Не в підсонячній точці й не на термінаторі: поверхня яскраво освітлена,
-    // але Сонце не за спиною.
+    // Neither at the subsolar point nor at the terminator: the surface is
+    // brightly lit, but the Sun is not behind our back.
     let up = unit([sun[0] + side[0], sun[1] + side[1], sun[2] + side[2]]);
     let eye = up.map(|v| v * (EARTH + altitude));
     let forward = unit(cross(up, side));
@@ -132,19 +136,21 @@ fn looking_down(altitude: f64, depression: f64, air: bool) -> Scene {
     scene
 }
 
-/// Погляд на лімб: камера на висоті `altitude` над термінатором, дивиться
-/// точно на горизонт — у бік Сонця (`towards_sun`) або від нього.
+/// A view of the limb: the camera at altitude `altitude` above the terminator,
+/// looking exactly at the horizon -- towards the Sun (`towards_sun`) or away
+/// from it.
 ///
-/// Над **термінатором**, бо там Сонце горизонтальне: той самий погляд уперед
-/// дає освітлений лімб, той самий назад — нічний. Дві сцени з одного числа.
+/// Above the **terminator**, because there the Sun is horizontal: the same view
+/// forward gives a lit limb, the same one backwards a night one. Two scenes from
+/// one number.
 fn limb(altitude: f64, towards_sun: bool) -> Scene {
     let sun = sun_direction();
     let up = unit(cross(sun, [0.0, 0.0, 1.0]));
     let distance = EARTH + altitude;
     let eye = up.map(|v| v * distance);
 
-    // Кут западання горизонту з цієї висоти — точно, а не приблизно: саме він
-    // ставить лімб у центр кадру, а не десь.
+    // The horizon dip angle from this altitude -- exactly, not approximately: it
+    // is what puts the limb in the centre of the frame rather than somewhere.
     let (sin, cos) = (EARTH / distance).acos().sin_cos();
     let sign = if towards_sun { 1.0 } else { -1.0 };
     let direction = [
@@ -163,22 +169,24 @@ fn limb(altitude: f64, towards_sun: bool) -> Scene {
     scene
 }
 
-/// Висота, на якій промінь пікселя проходить найближче до центра тіла.
+/// The altitude at which a pixel's ray passes closest to the body's centre.
 ///
-/// Це і є та висота, якій належить світло лімба: промінь дотичний, тож увесь
-/// його шлях проходить біля неї. Рахується точно — `√(|eye|² − (eye·w)²)`, —
-/// а не через кути в кадрі: другий спосіб мав би власну похибку, і вона
-/// увійшла б у виміряну висоту шкали.
+/// That is the altitude the limb's light belongs to: the ray is tangent, so its
+/// whole path runs near it. Computed exactly -- `sqrt(|eye|^2 - dot(eye, w)^2)`
+/// -- rather than through angles in the frame: the second way would have an
+/// error of its own, and it would enter the measured scale height.
 fn tangent_altitude(scene: &Scene, size: u32, column: u32, row: u32) -> f64 {
     let eye = scene.camera.position();
     let (right, up, forward) = scene.camera.axes();
-    // Кадр квадратний, тож тангенс півкута однаковий по обох осях.
+    // The frame is square, so the tangent of the half-angle is the same on both
+    // axes.
     let t = (engine::frame::FOV_Y / 2.0).tan();
     let ndc_x = 2.0 * (f64::from(column) + 0.5) / f64::from(size) - 1.0;
     let ndc_y = 1.0 - 2.0 * (f64::from(row) + 0.5) / f64::from(size);
-    // Стовпець входить нарівні з рядком, і це не педантизм: лімб у кадрі
-    // вигнутий, тож на краю кадру той самий рядок дотикається шару значно
-    // нижче. Формула лише по рядку давала б висоту, якої в тому пікселі немає.
+    // The column enters on equal terms with the row, and that is not pedantry:
+    // the limb in the frame is curved, so at the frame's edge the same row is
+    // tangent to the layer considerably lower. A formula using the row alone
+    // would give an altitude that pixel does not have.
     let w = unit([
         forward[0] + right[0] * ndc_x * t + up[0] * ndc_y * t,
         forward[1] + right[1] * ndc_x * t + up[1] * ndc_y * t,
@@ -189,7 +197,8 @@ fn tangent_altitude(scene: &Scene, size: u32, column: u32, row: u32) -> f64 {
     (radius - along * along).max(0.0).sqrt() - EARTH
 }
 
-/// Планета цілком у кадрі, з висоти 10⁷ м — та сама геометрія, що в `--shot`.
+/// The planet wholly in frame, from an altitude of 1e7 m -- the same geometry as
+/// in `--shot`.
 fn from_orbit(air: bool) -> Scene {
     let eye = [EARTH + 1.0e7, 0.0, 0.0];
     let mut scene = Scene::new(Camera::look_at(eye, [0.0; 3], [0.0, 0.0, 1.0]));
@@ -198,18 +207,19 @@ fn from_orbit(air: bool) -> Scene {
 }
 
 fn render(gpu: &Gpu, scene: &Scene, name: &str) -> Shot {
-    let shot = shot::take_scene(gpu, WIDTH, HEIGHT, scene).expect("кадр мав намалюватися");
+    let shot = shot::take_scene(gpu, WIDTH, HEIGHT, scene).expect("the frame should have drawn");
     shot.write_png(std::path::Path::new(&format!("build/s4_{name}.png")))
-        .expect("знімок мав записатися");
+        .expect("the screenshot should have been written");
     shot
 }
 
-/// Відношення червоного до синього — те, чим міряється «червоніше».
+/// The ratio of red to blue -- what "redder" is measured by.
 ///
-/// ⚠ Байти декодуються (T5a). Ціль знімка кодує гамму, тож відношення байтів
-/// стискає справжнє відношення яскравостей у корінь степеня 2.4: десятикратна
-/// різниця виглядає як двох-з-половиною-кратна. Пороги нижче виміряні в
-/// **лінійному** світлі, і саме там вони означають фізику розсіяння.
+/// WARNING: the bytes are decoded (T5a). The screenshot target encodes gamma, so
+/// a ratio of bytes compresses the true ratio of luminances by a root of power
+/// 2.4: a tenfold difference looks two-and-a-half-fold. The thresholds below are
+/// measured in **linear** light, and that is where they mean the physics of
+/// scattering.
 fn redness(pixel: [u8; 4]) -> f64 {
     let red = engine::srgb::byte_to_linear(pixel[0]);
     let blue = engine::srgb::byte_to_linear(pixel[2]);
@@ -220,16 +230,18 @@ fn centre(shot: &Shot) -> [u8; 4] {
     shot.pixel(WIDTH / 2, HEIGHT / 2)
 }
 
-/// Небо з поверхні: біля горизонту яскравіше й біліше, ніж у зеніті.
+/// The sky from the surface: brighter and whiter near the horizon than at the
+/// zenith.
 ///
-/// Обидва знімки з однієї точки, різниця лише в куті погляду — тобто ловиться
-/// саме довжина шляху крізь повітря, а не щось у камері.
+/// Both screenshots are from one point, the only difference being the view angle
+/// -- so what is caught is the path length through the air rather than something
+/// in the camera.
 #[test]
 fn the_sky_is_brighter_and_whiter_towards_the_horizon() {
     let Some(gpu) = Gpu::for_tests() else { return };
 
-    // Не точно в підсонячній точці: там азимут на Сонце вироджений, і помилка
-    // в ньому не проявилася б узагалі.
+    // Not exactly at the subsolar point: there the azimuth to the Sun is
+    // degenerate, and an error in it would not show up at all.
     let sun = sun_direction();
     let side = unit(cross(sun, [0.0, 0.0, 1.0]));
     let noon = unit([
@@ -249,37 +261,39 @@ fn the_sky_is_brighter_and_whiter_towards_the_horizon() {
         "noon_horizon",
     ));
 
-    // Небо взагалі є: колір очищення — [5, 8, 20], і зеніт мусить бути помітно
-    // світлішим за нього, інакше прохід не намалював нічого.
+    // There is a sky at all: the clear colour is [5, 8, 20], and the zenith must
+    // be noticeably lighter than it, otherwise the pass drew nothing.
     assert!(
         zenith[2] > u32::from(CLEAR_BYTES[2]) as u8 * 2,
-        "зеніт {zenith:?} не світліший за фон {CLEAR_BYTES:?}"
+        "the zenith {zenith:?} is no lighter than the background {CLEAR_BYTES:?}"
     );
 
-    // Виміряно: синій 89 у зеніті проти 166 біля горизонту, тобто в 1.86 раза.
-    // Поріг 1.3 лишає запас під зміну експозиції й кроку марша.
+    // Measured: blue 89 at the zenith against 166 near the horizon, i.e. 1.86
+    // times. The threshold of 1.3 leaves margin for a change of exposure or of
+    // the march step.
     let brighter = f64::from(horizon[2]) / f64::from(zenith[2]);
     assert!(
         brighter > 1.3,
-        "біля горизонту небо не яскравіше: {horizon:?} проти {zenith:?}"
+        "the sky near the horizon is not brighter: {horizon:?} against {zenith:?}"
     );
 
-    // Виміряно: червоне/синє 0.28 у зеніті проти 0.42 біля горизонту. Синє
-    // розсіюється по дорозі, червоне доходить — звідси й білизна горизонту.
+    // Measured: red/blue 0.28 at the zenith against 0.42 near the horizon. The
+    // blue scatters away along the road while the red gets through -- hence the
+    // whiteness of the horizon.
     assert!(
         redness(horizon) > redness(zenith) * 1.2,
-        "горизонт не біліший: {} проти {}",
+        "the horizon is not whiter: {} against {}",
         redness(horizon),
         redness(zenith)
     );
 }
 
-/// Захід червоніший за полудень, і це не «трохи».
+/// A sunset is redder than noon, and not "a little".
 ///
-/// Обидві камери на поверхні й дивляться під тим самим малим кутом у бік
-/// Сонця; різниця лише в тому, де Сонце. Без пропускання вздовж променя до
-/// Сонця захід лишився б таким самим білим, як полудень, — саме цю помилку
-/// тест і ловить.
+/// Both cameras are on the surface and look at the same small angle towards the
+/// Sun; the only difference is where the Sun is. Without transmittance along the
+/// ray to the Sun a sunset would stay as white as noon -- that is exactly the bug
+/// this test catches.
 #[test]
 fn a_sunset_is_redder_than_noon() {
     let Some(gpu) = Gpu::for_tests() else { return };
@@ -293,29 +307,30 @@ fn a_sunset_is_redder_than_noon() {
     ]);
 
     let at_noon = centre(&render(&gpu, &observer(noon, 2.0, 3.0, true), "noon_low"));
-    // Спостерігач на термінаторі: Сонце рівно на його горизонті.
+    // An observer on the terminator: the Sun is exactly on their horizon.
     let at_sunset = centre(&render(&gpu, &observer(side, 2.0, 3.0, true), "sunset"));
 
-    // Виміряно: 0.42 опівдні проти 4.45 на заході, тобто в десять разів. Поріг
-    // 5 — половина від виміряного.
+    // Measured: 0.42 at noon against 4.45 at sunset, i.e. tenfold. The threshold
+    // of 5 is half the measured value.
     assert!(
         redness(at_sunset) > redness(at_noon) * 5.0,
-        "захід {at_sunset:?} (r/b {}) не червоніший за полудень {at_noon:?} (r/b {})",
+        "the sunset {at_sunset:?} (r/b {}) is no redder than noon {at_noon:?} (r/b {})",
         redness(at_sunset),
         redness(at_noon)
     );
-    // І він таки видимий, а не просто червонуватий нуль.
+    // And it really is visible, not just a reddish zero.
     assert!(
         at_sunset[0] > 40,
-        "захід надто темний, щоб про нього говорити: {at_sunset:?}"
+        "the sunset is too dark to speak of: {at_sunset:?}"
     );
 }
 
-/// З орбіти повітря — тонка світна дуга, і воно **додає** світло.
+/// From orbit the air is a thin glowing arc, and it **adds** light.
 ///
-/// Три числа замість ока: дуга є, вона тонка, і жоден піксель від неї не
-/// потемнів. Останнє й ловить заміщення замість додавання — саме воно
-/// вигризало з фону чорну дугу на нічному краї, де розсіювати нема чого.
+/// Three numbers instead of the eye: the arc is there, it is thin, and not a
+/// single pixel got darker from it. The last one catches replacement instead of
+/// addition -- that is what gnawed a black arc out of the background on the night
+/// edge, where there is nothing to scatter.
 #[test]
 fn from_orbit_the_air_is_a_thin_arc_that_only_adds_light() {
     let Some(gpu) = Gpu::for_tests() else { return };
@@ -329,79 +344,80 @@ fn from_orbit_the_air_is_a_thin_arc_that_only_adds_light() {
     for k in 0..total {
         let a = &with_air.pixels[k * 4..k * 4 + 3];
         let b = &bare.pixels[k * 4..k * 4 + 3];
-        // Рахується **порожній простір**, а не весь кадр: диск планети змінює
-        // ще й аеральна перспектива (S5), і вона накриває його цілком — то
-        // інше твердження й інший тест.
+        // What is counted is **empty space**, not the whole frame: the planet's
+        // disc is also changed by aerial perspective (S5), and that covers it
+        // entirely -- a different statement and a different test.
         if b == CLEAR_BYTES && a != b {
             changed += 1;
         }
-        // **Тільки порожній простір.** Там, де щось намальовано, повітря має
-        // повне право затемнити: аеральна перспектива (S5) множить кадр на
-        // пропускання, і диск планети крізь сто кілометрів повітря справді
-        // тьмяніший. А от порожнє небо повітря лише підсвічує — там воно
-        // нічого не заступає, і піксель, що потемнів, означав би заміщення
-        // замість додавання.
+        // **Empty space only.** Where something is drawn, the air has every
+        // right to darken it: aerial perspective (S5) multiplies the frame by
+        // transmittance, and the planet's disc through a hundred kilometres of
+        // air really is dimmer. Empty sky, though, the air only lights up -- there
+        // it occludes nothing, and a pixel that got darker would mean replacement
+        // instead of addition.
         if b == CLEAR_BYTES && a.iter().zip(b).any(|(x, y)| x < y) {
             darker += 1;
         }
     }
 
-    assert_eq!(darker, 0, "{darker} пікселів порожнього неба потемніли");
-    // Виміряно: 852 пікселі з 230 400, тобто 0.37% кадру. Шар у 100 км на
-    // радіусі 6371 км з десяти мегаметрів — це смуга завширшки два-три пікселі
-    // вздовж диска, і саме такий порядок тут і має бути.
+    assert_eq!(darker, 0, "{darker} pixels of empty sky got darker");
+    // Measured: 852 pixels out of 230 400, i.e. 0.37% of the frame. A 100 km
+    // layer on a radius of 6371 km from ten megametres is a band two or three
+    // pixels wide along the disc, and that is exactly the order to expect.
     let share = changed as f64 / total as f64;
     assert!(
         (0.0005..0.05).contains(&share),
-        "повітря змінило {share} кадру — це вже не тонка дуга"
+        "the air changed {share} of the frame -- that is no longer a thin arc"
     );
 }
 
-/// Тіло без повітря дає той самий кадр, що до етапу S.
+/// A body without air gives the same frame as before stage S.
 ///
-/// Перевіряється прямо: поза диском планети кожен піксель дорівнює кольору
-/// очищення **точно**. Прохід неба, який пробіг би зайвий раз, лишив би там
-/// хоч одиницю — додавання нуля не буває безкоштовним лише на папері.
+/// Checked directly: outside the planet's disc every pixel equals the clear
+/// colour **exactly**. A sky pass that ran one time too many would leave at
+/// least a unit there -- adding zero comes for free only on paper.
 #[test]
 fn a_body_without_air_leaves_the_frame_exactly_as_it_was() {
     let Some(gpu) = Gpu::for_tests() else { return };
 
     let bare = render(&gpu, &from_orbit(false), "orbit_bare");
-    // Диск займає ±132 пікселі від центра (asin(R/(R+10⁷)) = 22.9°), тож
-    // лівий край кадру — точно порожній простір.
+    // The disc takes +-132 pixels from the centre (asin(R/(R+1e7)) = 22.9 deg),
+    // so the left edge of the frame is definitely empty space.
     for y in (0..HEIGHT).step_by(17) {
         for x in (0..80).step_by(7) {
             let pixel = bare.pixel(x, y);
             assert_eq!(
                 &pixel[..3],
                 &CLEAR_BYTES,
-                "піксель ({x}, {y}) поза диском — {pixel:?}, а мав бути кольором очищення"
+                "pixel ({x}, {y}) outside the disc is {pixel:?}, but should have been the clear colour"
             );
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// S5 — аеральна перспектива
+// S5 -- aerial perspective
 // ---------------------------------------------------------------------------
 
-/// Той самий ґрунт на різній відстані: контраст падає, серпанок росте.
+/// The same ground at different distances: contrast falls, haze grows.
 ///
-/// Обидва числа з одного знімка, і це важливо — камера, освітлення й поверхня
-/// в ньому однакові скрізь, різна лише **відстань**: унизу кадру ґрунт за
-/// вісім кілометрів, під горизонтом — за сімдесят.
+/// Both numbers come from one screenshot, and that matters -- the camera, the
+/// lighting and the surface in it are the same everywhere, only the **distance**
+/// differs: at the bottom of the frame the ground is eight kilometres away,
+/// under the horizon seventy.
 ///
-/// ## Чому контраст міряється в червоному
+/// ## Why contrast is measured in red
 ///
-/// Бо поверхня в рушії поки що синя (`frame::COLOUR`), тобто майже того самого
-/// відтінку, що й серпанок. У синьому ослаблення й підсвітка майже
-/// компенсують одне одного, і різниця там не про повітря, а про збіг двох
-/// плейсхолдерів. У червоному вони розходяться найсильніше — там і видно те,
-/// що аеральна перспектива робить.
+/// Because the surface in the engine is still blue (`frame::COLOUR`), i.e.
+/// almost the same hue as the haze. In blue the extinction and the in-scattering
+/// nearly cancel each other, and the difference there is not about the air but
+/// about a coincidence of two placeholders. In red they diverge the most -- that
+/// is where what aerial perspective does becomes visible.
 ///
-/// Це не підганяння: другий тест того самого знімка — **серпанок**, тобто
-/// повна різниця з кадром без повітря по всіх трьох каналах. Він росте
-/// монотонно, і в ньому синій бере участь нарівні.
+/// This is not fitting: the second test of the same screenshot is the **haze**,
+/// i.e. the full difference from the air-free frame across all three channels.
+/// It grows monotonically, and blue takes part in it on equal terms.
 #[test]
 fn the_same_ground_loses_contrast_and_gains_haze_with_distance() {
     let Some(gpu) = Gpu::for_tests() else { return };
@@ -409,28 +425,26 @@ fn the_same_ground_loses_contrast_and_gains_haze_with_distance() {
     let with_air = render(&gpu, &looking_down(5_000.0, 12.0, true), "ground_haze");
     let bare = render(&gpu, &looking_down(5_000.0, 12.0, false), "ground_bare");
 
-    // Горизонт — перший зверху рядок, у якому з'явилася поверхня. Шукається,
-    // а не рахується: він залежить і від висоти, і від кута погляду, і
-    // порахований другий раз розійшовся б із першим.
+    // The horizon is the first row from the top in which the surface appeared.
+    // It is searched for rather than computed: it depends both on the altitude
+    // and on the view angle, and computed a second time it would diverge from the
+    // first.
     let column = WIDTH / 2;
     let horizon = (0..HEIGHT)
         .find(|&y| bare.pixel(column, y)[1] > 50)
-        .expect("поверхня має бути в кадрі");
+        .expect("the surface should be in the frame");
     assert!(
         horizon > 20 && horizon < HEIGHT - 40,
-        "горизонт у рядку {horizon}"
+        "the horizon is in row {horizon}"
     );
-    // Небо трохи вище горизонту — те, у що поверхня перетворюється з відстанню.
+    // The sky slightly above the horizon -- what the surface turns into with
+    // distance.
     let sky = with_air.pixel(column, horizon - 3);
 
-    // Знизу вгору, тобто від близького до далекого.
+    // Bottom-up, i.e. from near to far.
     let mut rows: Vec<u32> = (horizon + 4..HEIGHT - 4).step_by(12).collect();
     rows.reverse();
-    assert!(
-        rows.len() >= 6,
-        "замало рядків для порівняння: {}",
-        rows.len()
-    );
+    assert!(rows.len() >= 6, "too few rows to compare: {}", rows.len());
 
     let mut previous_contrast = 1000;
     let mut previous_haze = -1000;
@@ -445,16 +459,16 @@ fn the_same_ground_loses_contrast_and_gains_haze_with_distance() {
             .map(|c| (i32::from(pixel[c]) - i32::from(plain[c])).abs())
             .sum();
 
-        // Допуск в одиницю — це один крок восьмибітного кольору, тобто
-        // найдрібніше, що взагалі можна записати в кадр. Без нього тест ловив
-        // би не фізику, а округлення.
+        // A tolerance of one unit is a single step of eight-bit colour, i.e. the
+        // finest thing that can be written into a frame at all. Without it the
+        // test would be catching rounding rather than physics.
         assert!(
             contrast <= previous_contrast + 1,
-            "рядок {y}: контраст {contrast} проти {previous_contrast} ближче — з відстанню він мав би падати"
+            "row {y}: contrast {contrast} against {previous_contrast} nearer -- with distance it should fall"
         );
         assert!(
             haze >= previous_haze - 2,
-            "рядок {y}: серпанок {haze} проти {previous_haze} ближче — з відстанню він мав би рости"
+            "row {y}: haze {haze} against {previous_haze} nearer -- with distance it should grow"
         );
         previous_contrast = contrast;
         previous_haze = haze;
@@ -466,51 +480,52 @@ fn the_same_ground_loses_contrast_and_gains_haze_with_distance() {
         last_haze = haze;
     }
 
-    // І це не «майже не змінилося». Виміряно: контраст 63 → 44, серпанок
-    // 6 → 41 між вісьмома кілометрами й сімдесятьма.
+    // And this is not "barely changed". Measured: contrast 63 -> 44, haze 6 -> 41
+    // between eight kilometres and seventy.
     assert!(
         last_contrast * 4 < first_contrast * 3,
-        "контраст упав лише з {first_contrast} до {last_contrast}"
+        "the contrast fell only from {first_contrast} to {last_contrast}"
     );
     assert!(
         last_haze > first_haze * 3,
-        "серпанок виріс лише з {first_haze} до {last_haze}"
+        "the haze grew only from {first_haze} to {last_haze}"
     );
 }
 
 // ---------------------------------------------------------------------------
-// S6 — лімб і тінь планети
+// S6 -- the limb and the planet's shadow
 // ---------------------------------------------------------------------------
 
-/// Світна смуга на краю диска спадає з висотою шкали Релея.
+/// The glowing band at the edge of the disc falls off with the Rayleigh scale
+/// height.
 ///
-/// Це і є оракул кроку, названий у ROADMAP-ATMOSPHERE.md: **товщина смуги
-/// проти висоти шкали**, а не «схоже на фото з орбіти». Промінь, дотичний до
-/// шару на висоті `h`, проходить майже весь шлях біля цієї висоти, тож у
-/// прозорій частині атмосфери його яскравість пропорційна густині, тобто
-/// `exp(−h/H)`. Отже e-складання смуги мусить дорівнювати `H` — 8 км, і жодне
-/// інше число сюди не підходить.
+/// That is the step's oracle as named in ROADMAP-ATMOSPHERE.md: **the thickness
+/// of the band against the scale height**, not "looks like a photo from orbit".
+/// A ray tangent to the layer at altitude `h` runs almost its whole path near
+/// that altitude, so in the transparent part of the atmosphere its brightness is
+/// proportional to the density, i.e. `exp(-h/H)`. Hence the band's e-folding must
+/// equal `H` -- 8 km, and no other number fits here.
 ///
-/// Міряється у **прозорій** частині, від 35 до 55 км. Нижче смуга насичена:
-/// дотичний промінь на десяти кілометрах має оптичну товщу в одиниці, і там
-/// яскравість уже не пропорційна густині. Виміряно: у прозорій частині
-/// e-складання 8.1 км, біля поверхні — 12.5 км, і друге число — це насичення,
-/// а не інша фізика.
+/// It is measured in the **transparent** part, from 35 to 55 km. Lower down the
+/// band is saturated: a tangent ray at ten kilometres has an optical depth of
+/// order unity, and there brightness is no longer proportional to density.
+/// Measured: in the transparent part the e-folding is 8.1 km, near the surface
+/// 12.5 km, and the second number is saturation rather than different physics.
 #[test]
 fn the_limb_glow_falls_off_with_the_scale_height() {
     let Some(gpu) = Gpu::for_tests() else { return };
 
-    // 1600 пікселів заради роздільності: стокілометровий шар на лімбі з 500 км
-    // займає 2.2°, тобто при 60° поля огляду близько 54 рядків. Вісім
-    // кілометрів висоти шкали — чотири рядки з них.
+    // 1600 pixels for the sake of resolution: a hundred-kilometre layer on the
+    // limb from 500 km subtends 2.2 deg, i.e. about 54 rows at a 60 deg field of
+    // view. Eight kilometres of scale height are four of those rows.
     const SIZE: u32 = 1600;
     let scene = limb(500_000.0, true);
-    let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene).expect("кадр мав намалюватися");
+    let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene).expect("the frame should have drawn");
     shot.write_png(std::path::Path::new("build/s6_limb_day.png"))
-        .expect("знімок мав записатися");
+        .expect("the screenshot should have been written");
 
-    // Профіль: висота дотику проти яскравості понад фоном. Тільки над
-    // поверхнею — нижче лімба вже поверхня, а не повітря.
+    // The profile: tangent altitude against brightness above the background. Only
+    // above the surface -- below the limb it is already the surface, not air.
     let mut profile: Vec<(f64, f64)> = Vec::new();
     for row in 0..SIZE {
         let altitude = tangent_altitude(&scene, SIZE, SIZE / 2, row);
@@ -520,50 +535,58 @@ fn the_limb_glow_falls_off_with_the_scale_height() {
         let blue = f64::from(shot.pixel(SIZE / 2, row)[2]) - f64::from(CLEAR_BYTES[2]);
         profile.push((altitude, blue.max(0.0)));
     }
-    assert!(profile.len() > 30, "профіль замалий: {}", profile.len());
-    // Знизу вгору.
+    assert!(
+        profile.len() > 30,
+        "the profile is too small: {}",
+        profile.len()
+    );
+    // Bottom-up.
     profile.sort_by(|a, b| a.0.total_cmp(&b.0));
 
-    // Висоти, на яких яскравість перетинає два рівні, що відрізняються рівно
-    // вдесятеро. Десять разів — це `ln 10 = 2.303` e-складань, тобто відстань
-    // між ними ділиться на це число й дає висоту шкали.
+    // The altitudes at which the brightness crosses two levels differing by
+    // exactly tenfold. Ten times is `ln 10 = 2.303` e-foldings, so the distance
+    // between them divided by that number gives the scale height.
     let crossing = |level: f64| -> Option<f64> {
         profile.windows(2).find_map(|pair| {
             let ((h0, v0), (h1, v1)) = (pair[0], pair[1]);
             (v0 >= level && v1 < level).then(|| h0 + (h1 - h0) * (v0 - level) / (v0 - v1))
         })
     };
-    let high = crossing(50.0).expect("смуга ніде не яскравіша за 50");
-    let low = crossing(5.0).expect("смуга ніде не тьмяніша за 5");
-    assert!(low > high, "яскравість не спадає з висотою: {high} → {low}");
+    let high = crossing(50.0).expect("the band is nowhere brighter than 50");
+    let low = crossing(5.0).expect("the band is nowhere dimmer than 5");
+    assert!(
+        low > high,
+        "the brightness does not fall with altitude: {high} -> {low}"
+    );
 
     let scale_height = (low - high) / 10.0f64.ln();
     let expected = f64::from(Atmosphere::EARTH.rayleigh_height_m);
-    // Виміряно 8.1 км проти 8.0 в параметрах повітря. Допуск у півтора раза —
-    // не через невпевненість у фізиці, а тому, що рівні 50 і 5 не строго в
-    // прозорій частині: нижній край тягне насичення вгору.
+    // Measured 8.1 km against 8.0 in the air's parameters. The tolerance of one
+    // and a half times is not from uncertainty about the physics but because the
+    // levels 50 and 5 are not strictly in the transparent part: the lower edge
+    // pulls saturation upwards.
     assert!(
         scale_height > expected / 1.5 && scale_height < expected * 1.5,
-        "e-складання смуги {scale_height} м проти висоти шкали {expected} м \
-         (перетини на {high} і {low} м)"
+        "the band's e-folding is {scale_height} m against a scale height of \
+         {expected} m (crossings at {high} and {low} m)"
     );
 }
 
-/// Нічний бік лімба темний: над поверхнею не світиться нічого.
+/// The night side of the limb is dark: nothing glows above the surface.
 ///
-/// Тінь планети тут ніхто не малює окремо — вона виходить сама з того, що
-/// промінь до Сонця з кожної точки повітря перевіряється на зустріч із
-/// поверхнею (S3). Тест ловить рівно ту помилку, яка зробила б цю перевірку
-/// зайвою: повітря, освітлене крізь планету.
+/// Nobody draws the planet's shadow separately here -- it comes out by itself
+/// from the ray to the Sun being tested for meeting the surface at every point
+/// of air (S3). The test catches exactly the bug that would make that test
+/// pointless: air lit through the planet.
 #[test]
 fn the_night_side_of_the_limb_does_not_glow() {
     let Some(gpu) = Gpu::for_tests() else { return };
 
     const SIZE: u32 = 800;
     let scene = limb(500_000.0, false);
-    let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene).expect("кадр мав намалюватися");
+    let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene).expect("the frame should have drawn");
     shot.write_png(std::path::Path::new("build/s6_limb_night.png"))
-        .expect("знімок мав записатися");
+        .expect("the screenshot should have been written");
 
     let mut checked = 0;
     for row in 0..SIZE {
@@ -576,62 +599,71 @@ fn the_night_side_of_the_limb_does_not_glow() {
         assert_eq!(
             &pixel[..3],
             &CLEAR_BYTES,
-            "рядок {row} (висота {altitude:.0} м): {pixel:?} — нічне повітря світиться"
+            "row {row} (altitude {altitude:.0} m): {pixel:?} -- the night air glows"
         );
     }
-    assert!(checked > 10, "перевірено лише {checked} рядків шару");
+    assert!(
+        checked > 10,
+        "only {checked} rows of the layer were checked"
+    );
 
-    // І для контрасту — той самий лімб із того ж боку, але з Сонцем: там
-    // світиться. Без цього тест вище пройшов би й на кадрі, де немає нічого.
-    let day =
-        shot::take_scene(&gpu, SIZE, SIZE, &limb(500_000.0, true)).expect("кадр мав намалюватися");
+    // And for contrast, the same limb from the same side but with the Sun: there
+    // it does glow. Without this the test above would pass on a frame with
+    // nothing in it.
+    let day = shot::take_scene(&gpu, SIZE, SIZE, &limb(500_000.0, true))
+        .expect("the frame should have drawn");
     let brightest = (0..SIZE)
         .filter(|&row| {
             (1_000.0..100_000.0).contains(&tangent_altitude(&scene, SIZE, SIZE / 2, row))
         })
         .map(|row| day.pixel(SIZE / 2, row)[2])
         .max()
-        .expect("рядки є");
+        .expect("there are rows");
     assert!(
         brightest > CLEAR_BYTES[2] * 4,
-        "денний лімб теж не світиться: {brightest}"
+        "the daytime limb does not glow either: {brightest}"
     );
 }
 
-/// Один шейдер з поверхні й з орбіти: на межі повітря обидва шляхи сходяться.
+/// One shader from the surface and from orbit: at the top of the air both paths
+/// meet.
 ///
-/// Правило 3 етапу S — «один шейдер з поверхні й з орбіти», — і це його
-/// найгостріша перевірка. Камера всередині повітря читає таблицю неба, камера
-/// поза ним марширує промінь; це два різні пайплайни, і межа між ними — рівно
-/// верхня межа атмосфери. Кілометр по обидва боки від неї мусить дати той
-/// самий кадр, інакше в грі на цій висоті блимне шов.
+/// Rule 3 of stage S -- "one shader from the surface and from orbit" -- and this
+/// is its sharpest check. A camera inside the air reads the sky table, a camera
+/// outside it marches a ray; those are two different pipelines, and the boundary
+/// between them is exactly the top of the atmosphere. A kilometre on either side
+/// of it must give the same frame, otherwise a seam will flicker in the game at
+/// that altitude.
 ///
-/// Виміряно: **8 одиниць з 255**, тобто 3%, і причина в них названа. Це не
-/// крок марша — піднімати його з 16 до 48 не міняє нічого взагалі; це кутова
-/// роздільність таблиці неба, у якої біля горизонту один тексель накриває
-/// помітну дугу. Тобто шов не зникне від точнішого інтегрування, і зменшити
-/// його можна лише більшою таблицею — а це вже питання ціни, не правильності.
+/// Measured: **8 units out of 255**, i.e. 3%, and the reason for them is named.
+/// It is not the march step -- raising it from 16 to 48 changes nothing at all;
+/// it is the angular resolution of the sky table, in which near the horizon one
+/// texel covers a noticeable arc. So the seam will not disappear from more
+/// accurate integration, and it can only be reduced by a larger table -- which is
+/// a question of cost, not of correctness.
 #[test]
 fn the_two_paths_meet_at_the_top_of_the_air() {
     let Some(gpu) = Gpu::for_tests() else { return };
 
-    // Десять метрів по обидва боки, а не кілометр, і це не перестраховка.
-    // Камери на різній висоті бачать лімб трохи по-різному — кут западання
-    // горизонту та масштаб висот у кадрі залежать від неї, — і на кілометрі ця
-    // геометрія дає більше, ніж могла б дати різниця шляхів. На десяти метрах
-    // вона зникає: горизонт зсувається на чотири тисячні пікселя.
+    // Ten metres on either side, not a kilometre, and that is not
+    // over-caution. Cameras at different altitudes see the limb slightly
+    // differently -- the horizon dip angle and the scale of altitudes in the
+    // frame depend on it -- and at a kilometre that geometry contributes more
+    // than the difference of paths ever could. At ten metres it vanishes: the
+    // horizon shifts by four thousandths of a pixel.
     const SIZE: u32 = 320;
     let thickness = Atmosphere::EARTH_THICKNESS_M;
     let inside = shot::take_scene(&gpu, SIZE, SIZE, &limb(thickness - 10.0, true))
-        .expect("кадр мав намалюватися");
+        .expect("the frame should have drawn");
     let outside = shot::take_scene(&gpu, SIZE, SIZE, &limb(thickness + 10.0, true))
-        .expect("кадр мав намалюватися");
+        .expect("the frame should have drawn");
 
-    // Порівнюється **небо**, а не весь кадр: рядки, у яких промінь проходить
-    // повітрям над поверхнею. Нижче лімба видно ґрунт, і там обидві камери
-    // малюють його тим самим шляхом (аеральна перспектива, S5) — різниця в
-    // кілька одиниць є, але вона про те, що камери таки на різній висоті, а не
-    // про шов між шляхами. Тут перевіряється шов.
+    // What is compared is the **sky**, not the whole frame: the rows in which the
+    // ray passes through air above the surface. Below the limb the ground is
+    // visible, and there both cameras draw it by the same path (aerial
+    // perspective, S5) -- there is a difference of a few units, but it is about
+    // the cameras really being at different altitudes rather than about the seam
+    // between the paths. Here the seam is what is checked.
     let scene = limb(thickness, true);
     let mut worst = 0i32;
     let mut worst_at = (0u32, 0u32);
@@ -642,8 +674,9 @@ fn the_two_paths_meet_at_the_top_of_the_air() {
         }
         rows += 1;
         for column in 0..SIZE {
-            // Висота — за самим пікселем, а не за рядком: на краю кадру лімб
-            // вигнутий, і той самий рядок там уже в поверхні.
+            // The altitude comes from the pixel itself, not from the row: at the
+            // frame's edge the limb is curved, and the same row there is already
+            // in the surface.
             if !(5_000.0..90_000.0).contains(&tangent_altitude(&scene, SIZE, column, row)) {
                 continue;
             }
@@ -658,9 +691,9 @@ fn the_two_paths_meet_at_the_top_of_the_air() {
             }
         }
     }
-    assert!(rows > 5, "перевірено лише {rows} рядків неба");
+    assert!(rows > 5, "only {rows} rows of sky were checked");
     assert!(
         worst <= 12,
-        "шов на межі повітря: {worst} одиниць у пікселі {worst_at:?}"
+        "a seam at the top of the air: {worst} units in pixel {worst_at:?}"
     );
 }
