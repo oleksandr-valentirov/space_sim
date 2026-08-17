@@ -289,6 +289,11 @@ fn shoot_moon(
         Some(id) => game::view::attach_terrain(&mut scene, snapshot, MOON, id),
         None => println!("the capture will have a smooth Moon"),
     }
+    app::load_stars(
+        gpu,
+        &mut frame,
+        std::path::Path::new(app::STAR_CATALOGUE_ASSET),
+    );
 
     let (width, height) = (options.width, options.height);
     let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {

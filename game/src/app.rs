@@ -192,6 +192,51 @@ pub const MOON_COLOUR_ASSET: &str = "assets/moon.col";
 pub const EARTH_TERRAIN_ASSET: &str = "assets/earth.dem";
 pub const EARTH_COLOUR_ASSET: &str = "assets/earth.col";
 
+/// The cooked star catalogue (stage Z, Z2). `make cook-stars` makes it, and it
+/// is not in git either.
+pub const STAR_CATALOGUE_ASSET: &str = "assets/stars.cat";
+
+/// Loads the star catalogue into the frame (stage Z).
+///
+/// **Takes the path rather than reading the constant**, unlike the terrain
+/// loaders above, and the reason is the oracle: the cooked catalogue is not in
+/// git, so a test that could only read `assets/stars.cat` would pass by
+/// skipping on every machine that has not cooked one -- which includes CI.
+/// With the path as an argument the game's own loading path is checked against
+/// a catalogue the test writes itself.
+///
+/// **Says loudly when it did not work, and carries on**, for the same reason
+/// as the terrain: a sky without stars is the state the game was in until this
+/// step, and it is a working state. A *silent* one would be what debt D12 was
+/// -- an asset that supposedly exists while the screen shows nothing.
+pub fn load_stars(gpu: &Gpu, frame: &mut Frame, path: &std::path::Path) {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!(
+                "no star catalogue ({}: {e}) -- the sky stays black.",
+                path.display()
+            );
+            eprintln!("to fix: cargo run -p star-cook");
+            return;
+        }
+    };
+
+    match engine::stars::Catalogue::from_bytes(&bytes) {
+        Ok(catalogue) => {
+            let count = catalogue.stars.len();
+            frame.load_stars(gpu, &catalogue);
+            println!("stars: {}, {count} of them", path.display());
+        }
+        Err(e) => {
+            eprintln!(
+                "the star catalogue {} does not read ({e}) -- the sky stays black.",
+                path.display()
+            );
+        }
+    }
+}
+
 /// Loads the Moon's terrain into the frame (D12).
 ///
 /// **Says loudly when it did not work, and carries on.** Three reasons for
@@ -523,6 +568,7 @@ impl State {
         let mut frame = Frame::new(&gpu, target.format());
         let moon_terrain = load_moon_terrain(&gpu, &mut frame);
         let earth_terrain = load_earth_terrain(&gpu, &mut frame);
+        load_stars(&gpu, &mut frame, std::path::Path::new(STAR_CATALOGUE_ASSET));
         let ui = Ui::new(&gpu, target.format());
         // The instrument palette (U7c) once at startup rather than every
         // frame: the `Style` inside the context lives on by itself, and
