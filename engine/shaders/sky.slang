@@ -173,7 +173,7 @@ WTexture2D<float4> skyview_out;
 // finely the volume follows the picture, the depth axis how finely it follows
 // the ray. A single number cannot be moved without moving both.
 static const uint AERIAL_XY = 32u;
-static const uint AERIAL_Z = 32u;
+static const uint AERIAL_Z = 64u;
 // How many march steps fall on one slice of the volume.
 static const uint AERIAL_SLICE_STEPS = 4u;
 

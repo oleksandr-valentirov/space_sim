@@ -756,7 +756,7 @@ pub fn skyview_coords(bottom: f64, r: f64, mu_v: f64, cos_azimuth: f64) -> (f64,
 /// moving both. Duplicated in `shaders/sky.slang`, like every other table size
 /// here.
 pub const AERIAL_XY: u32 = 32;
-pub const AERIAL_Z: u32 = 32;
+pub const AERIAL_Z: u32 = 64;
 /// How many march steps fall on one slice of the volume.
 pub const AERIAL_SLICE_STEPS: u32 = 4;
 

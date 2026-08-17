@@ -630,7 +630,7 @@ fn fragment_sky_outside( _S47 : pixelInput_1, @builtin(position) position_2 : ve
 
 fn aerial_distance_0( slice_0 : f32) -> f32
 {
-    var w_2 : f32 = slice_0 / 31.0f;
+    var w_2 : f32 = slice_0 / 63.0f;
     var near_0 : f32 = frame_0.eye_0.w;
     return near_0 + (frame_0.view_0.w - near_0) * w_2 * w_2;
 }
@@ -685,7 +685,7 @@ fn aerial_main(@builtin(global_invocation_id) id_4 : vec3<u32>)
     var light_2 : vec3<f32> = _S59;
     for(;;)
     {
-        if(slice_1 < u32(32))
+        if(slice_1 < u32(64))
         {
         }
         else
@@ -753,7 +753,7 @@ fn geometry_distance_0( pixel_0 : vec2<i32>,  dir_4 : vec3<f32>) -> f32
 fn aerial_coord_0( ndc_5 : vec2<f32>,  distance_0 : f32) -> vec3<f32>
 {
     var near_1 : f32 = frame_0.eye_0.w;
-    return vec3<f32>(ndc_5.x * 0.5f + 0.5f, ndc_5.y * 0.5f + 0.5f, unit_to_texture_0(sqrt(clamp((distance_0 - near_1) / max(frame_0.view_0.w - near_1, 1.0f), 0.0f, 1.0f)), u32(32)));
+    return vec3<f32>(ndc_5.x * 0.5f + 0.5f, ndc_5.y * 0.5f + 0.5f, unit_to_texture_0(sqrt(clamp((distance_0 - near_1) / max(frame_0.view_0.w - near_1, 1.0f), 0.0f, 1.0f)), u32(64)));
 }
 
 struct pixelOutput_2
