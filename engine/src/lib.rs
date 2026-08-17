@@ -1,34 +1,37 @@
-//! Рушій: рендер, вікно, знімки (ROADMAP, етап F).
+//! The engine: rendering, window, screenshots (ROADMAP, stage F).
 //!
-//! Порядок кроків тут навмисно дрібний — F1 вікно й очищення, F2 трикутник,
-//! далі reversed-Z, camera-relative, масштаб. Кожен крок або працює, або
-//! локалізує проблему; зібрати все одразу означає шукати причину в усьому.
+//! The steps here are deliberately small -- F1 window and clear, F2 triangle,
+//! then reversed-Z, camera-relative, scale. Each step either works or
+//! localises the problem; assembling everything at once means looking for the
+//! cause everywhere.
 //!
-//! ## Два шляхи до одного кадру
+//! ## Two paths to one frame
 //!
-//! Те, що малюється, живе в [`frame`] і **нічого не знає про вікно**. Далі
-//! той самий кадр іде двома шляхами:
+//! What is drawn lives in [`frame`] and **knows nothing about the window**.
+//! The same frame then takes two paths:
 //!
-//!   [`app`]  у вікно, через surface — те, що бачить користувач;
-//!   [`shot`] у текстуру й PNG — те, що можна подивитися очима без вікна,
-//!            прогнати на CI і покласти поруч у комміт.
+//!   [`app`]  to a window through a surface -- what the user sees;
+//!   [`shot`] to a texture and a PNG -- what can be looked at without a
+//!            window, run in CI and committed beside the code.
 //!
-//! Це не подвійна робота, а єдина причина, з якої рендер узагалі можна
-//! перевірити. «Вікно відкрилось і не впало» — не перевірка: чорний кадр
-//! виглядає так само.
+//! This is not duplicated work but the only reason rendering can be checked
+//! at all. "The window opened and did not crash" is no check: a black frame
+//! looks the same.
 //!
-//! ## Рушій не знає про гру
+//! ## The engine knows nothing about the game
 //!
-//! З J1 те саме рішення діє на рівень вище: [`frame`] малює [`scene::Scene`]
-//! — камеру й геометрію, — і не знає ні про апарати, ні про плани, ні про
-//! час. Гра перекладає свій снапшот у сцену сама (PROJECT.md §6). Тому
-//! `engine` ніколи не залежить від `game`, а [`app`] лишається циклом подій
-//! для зондів рушія, тоді як гра має власний і володіє світом.
+//! Since J1 the same decision applies a level up: [`frame`] draws a
+//! [`scene::Scene`] -- a camera and geometry -- and knows nothing of vessels,
+//! plans or time. The game translates its own snapshot into a scene
+//! (PROJECT.md §6). So `engine` never depends on `game`, and [`app`] remains
+//! an event loop for the engine's probes, while the game has its own and owns
+//! the world.
 
-// Інтерфейс приходить із рушія, а не з власної залежності гри (ROADMAP-UI.md,
-// U1b). Реекспорт — це не зручність: двох версій egui в збірці не може
-// виникнути **за побудовою**, а не за домовленістю, і саме тому `game` не
-// має праваписати `egui` у свій Cargo.toml.
+// The interface comes from the engine rather than from a dependency of the
+// game's own (ROADMAP-UI.md, U1b). The re-export is not a convenience: two
+// versions of egui in one build cannot arise **by construction** rather than
+// by agreement, which is why `game` has no business writing `egui` into its
+// Cargo.toml.
 pub use egui;
 pub use egui_wgpu;
 

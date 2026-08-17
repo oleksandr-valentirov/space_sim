@@ -1,10 +1,12 @@
-//! Пайплайн траєкторії: лінія, перетворення фрейму на GPU (ROADMAP F6).
+//! The trajectory pipeline: a line, with the frame transform on the GPU
+//! (ROADMAP F6).
 //!
-//! Вершинні дані геоцентричні (`vessel − earth`, `moon − earth`, обидва в
-//! момент t цього семпла) — не camera-relative в звичному сенсі, бо тут
-//! немає камери: є лише апарат і система Земля-Місяць, а Земля сама
-//! пролітає мільярди метрів геліоцентрично за 233 дні місії. Той самий
-//! принцип, що в `camera.rs`, прив'язаний до іншої точки відліку.
+//! The vertex data is geocentric (`vessel - earth`, `moon - earth`, both at
+//! that sample's time t) -- not camera-relative in the usual sense, because
+//! there is no camera here: only the vessel and the Earth-Moon system, while
+//! Earth itself travels billions of metres heliocentrically over the 233-day
+//! mission. The same principle as in `camera.rs`, tied to a different
+//! origin.
 
 use crate::depth;
 use crate::gpu::Gpu;
@@ -48,9 +50,9 @@ impl Uniforms {
     }
 }
 
-/// Той самий кут огляду, що вершинний шейдер: проєкція на (x, y, z) базис
-/// семпла, потім swizzle (x, z, −y) — камера вздовж «y», де в орбіти
-/// найменший розкид.
+/// The same viewing angle as the vertex shader: projection onto the sample's
+/// (x, y, z) basis, then a swizzle (x, z, -y) -- the camera along "y", where
+/// the orbit's spread is smallest.
 fn view_axes(vessel: [f64; 3], moon: [f64; 3], z_axis: [f64; 3]) -> [f64; 3] {
     let d = moon;
     let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
@@ -69,8 +71,8 @@ fn view_axes(vessel: [f64; 3], moon: [f64; 3], z_axis: [f64; 3]) -> [f64; 3] {
     [chosen[0], chosen[2], -chosen[1]]
 }
 
-/// Центр і радіус обмежувальної сфери для кадрування камери — той самий
-/// вигляд, що видасть шейдер, порахований у Rust, а не вгаданий.
+/// The centre and radius of the bounding sphere for framing the camera -- the
+/// same view the shader will produce, computed in Rust rather than guessed.
 #[derive(Clone, Copy)]
 pub struct Framing {
     pub centre: [f64; 3],
@@ -96,7 +98,7 @@ fn frame(points: impl Iterator<Item = [f64; 3]>) -> Framing {
     Framing { centre, radius }
 }
 
-/// Кадрування для геоцентричного (rotating = 0) вигляду.
+/// Framing for the geocentric (rotating = 0) view.
 pub fn geocentric_framing(samples: &[Sample]) -> Framing {
     frame(samples.iter().map(|s| {
         let vessel = [
@@ -113,12 +115,13 @@ pub fn geocentric_framing(samples: &[Sample]) -> Framing {
     }))
 }
 
-/// Кадрування для обертового (rotating = 1) вигляду — той самий swizzle,
-/// але на `rotating_position` замість сирого геоцентричного вектора.
+/// Framing for the rotating (rotating = 1) view -- the same swizzle, but on
+/// `rotating_position` instead of the raw geocentric vector.
 pub fn rotating_framing(samples: &[Sample]) -> Framing {
     frame(samples.iter().map(|s| {
         let r = trajectory::rotating_position(s.vessel, s.earth, s.moon, s.z_axis);
-        // rotating_position уже в (x,y,z)-базисі — swizzle без повторної проєкції.
+        // rotating_position is already in the (x,y,z) basis -- swizzle with no
+        // second projection.
         [r[0], r[2], -r[1]]
     }))
 }
@@ -129,7 +132,7 @@ pub struct Params {
     pub colour: [f32; 4],
 }
 
-/// Малює `samples` як лінію (`LineStrip`) і читає кадр назад.
+/// Draws `samples` as a `LineStrip` and reads the frame back.
 pub fn render(
     gpu: &Gpu,
     width: u32,
@@ -139,9 +142,9 @@ pub fn render(
 ) -> Result<Shot, String> {
     let aspect = f64::from(width) / f64::from(height);
 
-    // Задня межа — 2.5 радіуса від центру, щоб форма влізла з запасом; near
-    // — сота частка того самого радіуса, набагато менша за найближчий
-    // проліт лінії до камери.
+    // The far edge is 2.5 radii from the centre, so the shape fits with room
+    // to spare; `near` is a hundredth of the same radius, far smaller than the
+    // line's closest approach to the camera.
     let backoff = params.framing.radius * 2.5;
     let near = (params.framing.radius * 0.01).max(1e-6);
     let projection = depth::reversed_infinite(FOV_Y, aspect, near);
@@ -294,9 +297,9 @@ pub fn render(
     let mut moon_bytes = Vec::with_capacity(samples.len() * 12);
     let mut z_bytes = Vec::with_capacity(samples.len() * 12);
     for s in samples {
-        // Геоцентрично: Земля цього семпла віднімається тут, а не в шейдері
-        // — той самий принцип, що camera-relative (F4, F5), прив'язаний до
-        // Землі-в-момент-t.
+        // Geocentric: this sample's Earth is subtracted here rather than in
+        // the shader -- the same principle as camera-relative (F4, F5), tied to
+        // Earth-at-time-t.
         push(
             &mut vessel_bytes,
             [

@@ -1,16 +1,16 @@
-//! Проліт від поверхні до орбіти без стрибків (ROADMAP F5).
+//! A flight from the surface to orbit with no jumps (ROADMAP F5).
 //!
-//! Камера дивиться на центр сфери вздовж фіксованого радіального напрямку,
-//! з відстані `R + висота`. Сфера опукла, тож кут, під яким видно її край
-//! з зовнішньої точки, має точну формулу без наближень:
+//! The camera looks at the centre of the sphere along a fixed radial
+//! direction, from a distance of `R + altitude`. The sphere is convex, so the
+//! angle its edge subtends from an outside point has an exact formula:
 //!
 //! ```text
-//! half_angle = asin(R / (R + висота))
+//! half_angle = asin(R / (R + altitude))
 //! ```
 //!
-//! Порівняння виміряного з розрахованим — той самий інструмент, що в
-//! `depth_probe` (F3, `resolvable_gap`) і `camera_probe` (F4): не «здається,
-//! нормально», а число проти числа.
+//! Comparing the measured against the computed is the same instrument as in
+//! `depth_probe` (F3, `resolvable_gap`) and `camera_probe` (F4): not "looks
+//! about right" but a number against a number.
 
 use crate::camera::Camera;
 use crate::gpu::Gpu;
@@ -20,8 +20,8 @@ use crate::sphere_render::{self, Params};
 
 const FOV_Y: f64 = std::f64::consts::PI / 3.0;
 
-/// Набагато менша за найближчий проліт (10 м): камера не має впертися в
-/// near ще до того, як досягне поверхні.
+/// Far smaller than the closest pass (10 m): the camera must not run into
+/// `near` before it reaches the surface.
 const NEAR: f64 = 1.0;
 
 const LIGHT_DIR: [f32; 3] = [0.4, 0.4, 0.82];
@@ -30,12 +30,12 @@ const COLOUR: [f32; 4] = [0.2, 0.6, 0.9, 1.0];
 pub struct Sample {
     pub altitude: f64,
     pub expected_half_angle: f64,
-    /// Частка пікселів кадру, яку займає сфера.
+    /// The fraction of the frame's pixels the sphere occupies.
     pub coverage: f64,
     pub shot: Shot,
 }
 
-/// Малює сферу з висоти `altitude` над поверхнею, камера дивиться на центр.
+/// Draws the sphere from `altitude` above the surface, camera on the centre.
 pub fn measure(
     gpu: &Gpu,
     width: u32,
@@ -85,12 +85,13 @@ fn coverage_fraction(shot: &Shot) -> f64 {
     lit as f64 / total as f64
 }
 
-/// Аналітична частка кадру для диска силуету радіусом `half_angle`.
+/// The analytic frame fraction for a silhouette disc of radius `half_angle`.
 ///
-/// Визначена лише у двох однозначних випадках: диск цілком у кадрі, або
-/// кадр цілком у диску (сфера заповнює все, аж за кутами). Проміжок, де
-/// диск обрізаний краєм кадру, але не покриває кутів, — не має простої
-/// формули без інтеграла кругового сегмента, і тут навмисно не рахується.
+/// Defined only in the two unambiguous cases: the disc entirely inside the
+/// frame, or the frame entirely inside the disc (the sphere fills everything,
+/// corners included). The range in between, where the disc is clipped by the
+/// frame edge but does not cover the corners, has no simple formula without a
+/// circular-segment integral and is deliberately not computed here.
 pub fn expected_coverage(half_angle: f64, aspect: f64) -> Option<f64> {
     let radius_fraction = half_angle.tan() / (FOV_Y / 2.0).tan();
     let min_extent = aspect.min(1.0);
@@ -105,8 +106,8 @@ pub fn expected_coverage(half_angle: f64, aspect: f64) -> Option<f64> {
     }
 }
 
-/// Висоти від 10 м до 10⁷ м, `steps` точок, рівномірно за логарифмом —
-/// саме той діапазон, що в критерії F5.
+/// Altitudes from 10 m to 1e7 m, `steps` points, uniform in the logarithm --
+/// exactly the range of the F5 criterion.
 pub fn altitudes(steps: u32) -> Vec<f64> {
     let lo = 10f64.log10();
     let hi = 7.0;
@@ -118,8 +119,8 @@ pub fn altitudes(steps: u32) -> Vec<f64> {
         .collect()
 }
 
-/// Проганяє `altitudes(steps)` і повертає виміряні зразки — використовується
-/// і для друку таблиці, і для тесту неперервності.
+/// Runs `altitudes(steps)` and returns the measured samples -- used both for
+/// printing the table and for the continuity test.
 pub fn sweep(gpu: &Gpu, size: u32, mesh: &Mesh, steps: u32) -> Result<Vec<Sample>, String> {
     altitudes(steps)
         .into_iter()

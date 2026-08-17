@@ -1,17 +1,18 @@
-//! Сфера в реальному масштабі: меш і радіус Землі (ROADMAP F5).
+//! A sphere at real scale: the mesh and Earth's radius (ROADMAP F5).
 //!
-//! Кубосфера й реальний DEM — M4 (PROJECT.md §7). Тут потрібна лише
-//! коректна форма й правильний масштаб, щоб перевірити те, заради чого
-//! крок існує: чи тримає рушій проліт від поверхні до орбіти без розривів.
+//! The cubesphere and a real DEM are M4 (PROJECT.md §7). All that is needed
+//! here is a correct shape at the right scale, to check what the step exists
+//! for: whether the engine holds a flight from the surface to orbit without
+//! breaks.
 
-/// Середній радіус Землі (IAU 2015), метри.
+/// Earth's mean radius (IAU 2015), metres.
 pub const EARTH_RADIUS_M: f64 = 6_371_000.0;
 
-/// Меш сфери. Позиції — світові координати в `double`, сфера в центрі
-/// координат: камера віднімається з них на CPU щокадру ([`crate::camera`],
-/// ROADMAP F4), тож тут їх зберігають нескороченими. Нормалі — це напрямки,
-/// а не позиції, для них double не потрібен: катастрофічного скорочення при
-/// відніманні великих чисел тут просто нема чого ловити.
+/// A sphere mesh. Positions are world coordinates in `double` with the sphere
+/// at the origin: the camera is subtracted from them on the CPU every frame
+/// ([`crate::camera`], ROADMAP F4), so they are stored unreduced here.
+/// Normals are directions rather than positions and need no double: there is
+/// no catastrophic cancellation of large numbers to catch.
 #[derive(Clone, Debug)]
 pub struct Mesh {
     pub positions: Vec<[f64; 3]>,
@@ -19,10 +20,11 @@ pub struct Mesh {
     pub indices: Vec<u32>,
 }
 
-/// UV-сфера: `lat_segments` паралелей, `lon_segments` меридіанів.
+/// A UV sphere: `lat_segments` parallels, `lon_segments` meridians.
 ///
-/// Не ікосфера — простіша побудова, а рівномірність сітки для F5 не
-/// критична: крок перевіряє масштаб і глибину, не якість тесселяції.
+/// Not an icosphere -- a simpler construction, and grid uniformity is not
+/// critical for F5: the step checks scale and depth, not tessellation
+/// quality.
 pub fn generate(radius: f64, lat_segments: u32, lon_segments: u32) -> Mesh {
     let mut positions = Vec::new();
     let mut normals = Vec::new();
@@ -51,8 +53,9 @@ pub fn generate(radius: f64, lat_segments: u32, lon_segments: u32) -> Mesh {
         }
     }
 
-    // +1, бо на кожній паралелі остання вершина (j == lon_segments)
-    // дублює першу — шов замикається повторенням, не індексом-обгорткою.
+    // +1, because on every parallel the last vertex (j == lon_segments)
+    // duplicates the first -- the seam closes by repetition rather than by a
+    // wrapping index.
     let stride = lon_segments + 1;
     let mut indices = Vec::new();
     for i in 0..lat_segments {
@@ -88,7 +91,7 @@ mod tests {
             let r = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
             assert!(
                 (r - EARTH_RADIUS_M).abs() < 1e-6,
-                "вершина на відстані {r}, а не {EARTH_RADIUS_M}"
+                "a vertex at distance {r} rather than {EARTH_RADIUS_M}"
             );
         }
     }
@@ -98,7 +101,7 @@ mod tests {
         let mesh = generate(EARTH_RADIUS_M, 8, 16);
         let count = mesh.positions.len() as u32;
         for &i in &mesh.indices {
-            assert!(i < count, "індекс {i} поза межами {count} вершин");
+            assert!(i < count, "index {i} is outside the {count} vertices");
         }
     }
 }

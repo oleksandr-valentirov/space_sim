@@ -1,28 +1,33 @@
-//! Передавальна функція sRGB (ROADMAP, T5a).
+//! The sRGB transfer function (ROADMAP, T5a).
 //!
-//! ## Навіщо модуль, якщо перетворення робить залізо
+//! ## Why a module at all, if the hardware does the conversion
 //!
-//! Ціль кадру — `Rgba8UnormSrgb`, тобто кодування робить апаратура при записі,
-//! і в шейдері його немає ніде. Але дві речі лишаються на нас:
+//! The frame target is `Rgba8UnormSrgb`, i.e. the hardware encodes on write
+//! and there is no encoding anywhere in the shader. But two things remain
+//! ours:
 //!
-//! 1. **Кольори, підібрані оком, живуть у sRGB, а кадр — у лінійному світлі.**
-//!    Байт 200 у палітрі й число 200/255 у сцені — це різні кольори, щойно
-//!    ціль почала кодувати. Отже той, хто вносить у сцену колір з палітри,
-//!    мусить його декодувати — рівно один раз, на вході.
-//! 2. **Перевірки читають байти знімка.** Відношення двох байтів більше не є
-//!    відношенням двох яскравостей, і оракул, який ділить байти, міряє гамму.
-//!    Тому [`to_linear`] потрібен тестам не менше, ніж коду.
+//! 1. **Colours picked by eye live in sRGB, while the frame is in linear
+//!    light.** Byte 200 in the palette and the number 200/255 in the scene are
+//!    different colours the moment the target starts encoding. So whoever puts
+//!    a palette colour into the scene must decode it -- exactly once, on the
+//!    way in.
+//! 2. **Checks read the bytes of a screenshot.** The ratio of two bytes is no
+//!    longer the ratio of two luminances, and an oracle that divides bytes
+//!    measures gamma. So [`to_linear`] is needed by the tests as much as by
+//!    the code.
 //!
-//! ## Числа — зі стандарту, не наближення
+//! ## The numbers come from the standard, not an approximation
 //!
-//! `2.2` тут немає навмисно: sRGB — це не степенева функція, а степенева з
-//! лінійним відрізком біля нуля, і саме на темних значеннях (де живе Місяць)
-//! різниця найбільша. Поріг 0.0031308 / 0.04045, показник 2.4, множник 1.055.
+//! There is deliberately no `2.2` here: sRGB is not a power function but a
+//! power function with a linear segment near zero, and it is exactly at dark
+//! values (where the Moon lives) that the difference is largest. Threshold
+//! 0.0031308 / 0.04045, exponent 2.4, factor 1.055.
 
-/// Одне значення каналу з sRGB у лінійне світло.
+/// One channel value from sRGB into linear light.
 ///
-/// Вхід і вихід — `0…1`, не байти: у палітри байти, а в шейдера й `wgpu::Color`
-/// числа, і перетворювати між ними двічі означало б двічі округлювати.
+/// Input and output are `0..1` rather than bytes: the palette has bytes while
+/// the shader and `wgpu::Color` have numbers, and converting between them
+/// twice would round twice.
 pub fn to_linear(value: f64) -> f64 {
     if value <= 0.04045 {
         value / 12.92
@@ -31,7 +36,7 @@ pub fn to_linear(value: f64) -> f64 {
     }
 }
 
-/// Назад: лінійне світло в sRGB.
+/// The other way: linear light into sRGB.
 pub fn from_linear(value: f64) -> f64 {
     if value <= 0.003_130_8 {
         value * 12.92
@@ -40,15 +45,16 @@ pub fn from_linear(value: f64) -> f64 {
     }
 }
 
-/// Байт sRGB у лінійне світло.
+/// An sRGB byte into linear light.
 pub fn byte_to_linear(byte: u8) -> f64 {
     to_linear(f64::from(byte) / 255.0)
 }
 
-/// Лінійне світло в байт sRGB — те саме, що робить апаратура при записі.
+/// Linear light into an sRGB byte -- the same thing the hardware does on
+/// write.
 ///
-/// Округлення до найближчого, як у `Rgba8UnormSrgb`; існує заради перевірок,
-/// які мусять сказати, який байт вийде, **не малюючи кадру**.
+/// Round to nearest, as in `Rgba8UnormSrgb`; it exists for checks that must
+/// say which byte will come out **without drawing a frame**.
 pub fn linear_to_byte(value: f64) -> u8 {
     (from_linear(value.clamp(0.0, 1.0)) * 255.0).round() as u8
 }
@@ -57,25 +63,26 @@ pub fn linear_to_byte(value: f64) -> u8 {
 mod tests {
     use super::*;
 
-    /// Кінці й злам — три точки, у яких стандарт можна звірити напам'ять.
+    /// The ends and the knee -- three points where the standard can be checked
+    /// from memory.
     #[test]
     fn the_curve_hits_the_points_the_standard_names() {
         assert_eq!(to_linear(0.0), 0.0);
         assert!((to_linear(1.0) - 1.0).abs() < 1e-12);
-        // На зламі обидві гілки мусять давати те саме — інакше в кривій
-        // сходинка, і вона припадає рівно на темні тони.
+        // At the knee both branches must give the same -- otherwise there is a
+        // step in the curve, and it falls exactly on the dark tones.
         let low = 0.04045 / 12.92;
         let high = ((0.04045 + 0.055) / 1.055f64).powf(2.4);
         assert!(
             (low - high).abs() < 1e-6,
-            "злам розійшовся: {low:.9} проти {high:.9}"
+            "the knee diverged: {low:.9} against {high:.9}"
         );
-        // Середина шкали: 0.5 у sRGB — це приблизно 0.214 лінійних, число,
-        // яке варто впізнавати з вигляду.
+        // The middle of the scale: 0.5 in sRGB is about 0.214 linear, a number
+        // worth recognising on sight.
         assert!((to_linear(0.5) - 0.2140).abs() < 1e-3, "{}", to_linear(0.5));
     }
 
-    /// Пряме й зворотне перетворення повертають те саме.
+    /// The forward and inverse transforms undo each other.
     #[test]
     fn the_two_directions_undo_each_other() {
         let mut worst: f64 = 0.0;
@@ -84,36 +91,37 @@ mod tests {
             worst = worst.max((from_linear(to_linear(v)) - v).abs());
             worst = worst.max((to_linear(from_linear(v)) - v).abs());
         }
-        println!("  найгірша похибка кола {worst:.3e}");
-        assert!(worst < 1e-12, "коло не замикається: {worst:.3e}");
+        println!("  worst round-trip error {worst:.3e}");
+        assert!(worst < 1e-12, "the round trip does not close: {worst:.3e}");
     }
 
-    /// Кожен байт переживає коло без зсуву.
+    /// Every byte survives the round trip unshifted.
     ///
-    /// Це і є твердження, на яке спирається `frame::CLEAR`: колір, заданий
-    /// байтами й декодований у лінійне світло, апаратура запише тими самими
-    /// байтами. Якби округлення десь губило одиницю, небо кадру поїхало б.
+    /// This is the claim `frame::CLEAR` rests on: a colour given in bytes and
+    /// decoded into linear light will be written back by the hardware as the
+    /// same bytes. If rounding lost a unit somewhere, the frame's sky would
+    /// drift.
     #[test]
     fn every_byte_survives_the_round_trip() {
         for byte in 0..=255u8 {
             let back = linear_to_byte(byte_to_linear(byte));
-            assert_eq!(back, byte, "байт {byte} повернувся як {back}");
+            assert_eq!(back, byte, "byte {byte} came back as {back}");
         }
     }
 
-    /// Темні тони — саме там, де степенева апроксимація 2.2 бреше найбільше.
+    /// Dark tones are exactly where the 2.2 power approximation lies most.
     ///
-    /// Перевірка існує як сторож проти «спрощення»: `powf(2.2)` виглядає
-    /// нешкідливо й дає на байті 20 помилку в чверть значення.
+    /// The check exists as a guard against "simplification": `powf(2.2)` looks
+    /// harmless and is a quarter of the value off at byte 20.
     #[test]
     fn the_linear_toe_is_not_a_power_of_2_2() {
         let byte = 20u8;
         let exact = byte_to_linear(byte);
         let crude = (f64::from(byte) / 255.0).powf(2.2);
-        println!("  байт {byte}: точно {exact:.6}, через 2.2 {crude:.6}");
+        println!("  byte {byte}: exactly {exact:.6}, through 2.2 {crude:.6}");
         assert!(
             (exact - crude).abs() / exact > 0.1,
-            "різниця замала, щоб перевірка щось стерегла"
+            "the difference is too small for the check to guard anything"
         );
     }
 }

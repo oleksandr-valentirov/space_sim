@@ -1,11 +1,11 @@
-//! Пайплайн сфери: справжні вершинний та індексний буфери, reversed-Z
+//! The sphere pipeline: real vertex and index buffers, reversed-Z
 //! (ROADMAP F5).
 //!
-//! На відміну від `depth_probe` (геометрія рахується в шейдері з
-//! `SV_VertexID`), тут вершини — це `engine::sphere::Mesh`. Позиції
-//! перераховуються в `f32` camera-relative щокадру ([`crate::camera`]) і
-//! йдуть в окремий буфер від нормалей: нормалі від камери не залежать,
-//! перезавантажувати їх щоразу нема сенсу.
+//! Unlike `depth_probe` (where the geometry is computed in the shader from
+//! `SV_VertexID`), the vertices here are an `engine::sphere::Mesh`. Positions
+//! are recomputed into camera-relative `f32` every frame ([`crate::camera`])
+//! and go into a buffer separate from the normals: normals do not depend on
+//! the camera, so there is no point re-uploading them.
 
 use crate::camera::Camera;
 use crate::depth;
@@ -25,9 +25,9 @@ struct Uniforms {
 }
 
 impl Uniforms {
-    /// Розкладка вручну — та сама причина, що в `depth_probe::Params`
-    /// (CLAUDE.md, інваріант 1: наш `unsafe` живе лише в `core-rs`, тут
-    /// його й не треба).
+    /// The layout is written by hand for the same reason as in
+    /// `depth_probe::Params` (CLAUDE.md, invariant 1: our `unsafe` lives only
+    /// in `core-rs`, and none is needed here).
     fn to_bytes(self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(96);
         for column in self.projection {
@@ -48,11 +48,11 @@ pub struct Params {
     pub colour: [f32; 4],
 }
 
-/// Малює `mesh` з погляду `camera` й читає кадр назад.
+/// Draws `mesh` from `camera`'s viewpoint and reads the frame back.
 ///
-/// Пайплайн і буфери створюються заново щовиклику — той самий вибір, що в
-/// `depth_probe::render_quads`: цей шлях перевіряє коректність, не частоту
-/// кадрів (перевимір продуктивності — окремий крок після F5).
+/// The pipeline and buffers are recreated on every call -- the same choice as
+/// in `depth_probe::render_quads`: this path checks correctness, not frame
+/// rate (performance measurement is a separate step after F5).
 pub fn render(
     gpu: &Gpu,
     width: u32,
@@ -136,11 +136,10 @@ pub fn render(
                 })],
             }),
             primitive: wgpu::PrimitiveState {
-                // Без відсікання граней: коректність тримається на тесті
-                // глибини (сфера опукла, найближча поверхня завжди виграє),
-                // а не на порядку обходу вершин. Той самий вибір, що в
-                // depth_quad — і та сама причина: одна менш переконлива
-                // умова.
+                // No face culling: correctness rests on the depth test (the
+                // sphere is convex, so the nearest surface always wins) rather
+                // than on winding order. The same choice as in depth_quad, and
+                // for the same reason: one fewer condition to be convinced of.
                 cull_mode: None,
                 ..Default::default()
             },
@@ -188,8 +187,8 @@ pub fn render(
     });
     let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-    // Camera-relative щокадру: віднімання й поворот у double, звуження —
-    // останній крок (ROADMAP F4, `camera::Camera::relative`).
+    // Camera-relative every frame: subtraction and rotation in double,
+    // narrowing last (ROADMAP F4, `camera::Camera::relative`).
     let mut position_bytes = Vec::with_capacity(mesh.positions.len() * 12);
     for &p in &mesh.positions {
         let rel = camera.relative(p);
