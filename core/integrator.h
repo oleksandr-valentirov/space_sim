@@ -84,8 +84,9 @@ CoreResult dop853_integrate(AccelFunc f, void *ctx, const State *in,
  * alternative - integrating in short legs that land on chosen times - is not
  * neutral, and the ephemeris cooker measured how badly: forced landings on fit
  * nodes drove the step sequence instead of the tolerance, and the tolerance
- * stopped binding at all (ROADMAP, "Допуск оновлено: 1 м -> 1e-6 м"). An
- * observer sees the steps the controller picked and changes none of them.
+ * stopped binding at all (ROADMAP, "Ефемерида й ассет" - "Допуск кукера —
+ * 1e-6 м, не 1 м"). An observer sees the steps the controller picked and
+ * changes none of them.
  *
  * A callback inside C, and it stays inside C. Nothing of the kind crosses the
  * FFI boundary (CLAUDE.md invariant 7): there, Rust hands over a buffer and

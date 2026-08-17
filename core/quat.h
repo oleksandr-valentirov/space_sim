@@ -1,15 +1,15 @@
 /* Unit quaternions for body orientation (ROADMAP K3).
  *
  * Exists so a body's rotation can be fit to Chebyshev coefficients the same
- * way its position already is (PROJECT.md section 4: "матриці обертання тіл
- * ... теж чебишевськими поліномами"), and so applying that rotation at
- * runtime never needs trigonometry - vector rotation by a quaternion is
- * pure + - * /, and even the renormalisation a fitted-then-evaluated
- * quaternion needs (the fit is only approximately unit length between
- * nodes) is +, -, *, / and sqrt. Building the quaternion from IAU pole and
- * prime-meridian angles is a different problem with a different answer:
- * that needs sin/cos, so it lives in core/offline/body_rotation.c, on the
- * libm side of the boundary, and hands this module only the result.
+ * way its position already is (PROJECT.md section 4: "У той самий ассет
+ * кладемо обертання тіл ... теж чебишевськими поліномами"), and so applying
+ * that rotation at runtime never needs trigonometry - vector rotation by a
+ * quaternion is pure + - * /, and even the renormalisation a
+ * fitted-then-evaluated quaternion needs (the fit is only approximately unit
+ * length between nodes) is +, -, *, / and sqrt. Building the quaternion from
+ * IAU pole and prime-meridian angles is a different problem with a different
+ * answer: that needs sin/cos, so it lives in core/offline/body_rotation.c, on
+ * the libm side of the boundary, and hands this module only the result.
  *
  * Convention: q rotates a vector's components from the body-fixed frame to
  * the inertial frame the ephemeris uses - "where does this body-fixed

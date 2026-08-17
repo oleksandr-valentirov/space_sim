@@ -66,7 +66,7 @@ const PASS_STRIDE: u64 = 256;
 /// **A constant rather than auto-exposure**, and that is a decision of the
 /// stage: auto-exposure concerns the whole scene, not the air, and without a
 /// ship in the frame there is nothing to measure it on (ROADMAP-ATMOSPHERE.md,
-/// "чого етап S свідомо не робить").
+/// "Що M5 винен" - "Чого етап свідомо не робив").
 ///
 /// The number is measured rather than eyeballed: the zenith radiance at noon
 /// comes out at 0.048 per unit of solar illuminance, and a factor of 8 puts it

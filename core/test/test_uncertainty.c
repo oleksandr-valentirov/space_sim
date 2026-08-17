@@ -1,4 +1,4 @@
-/* Covariance propagation (ROADMAP, "Відкрите питання" after C6).
+/* Covariance propagation (ROADMAP, "M6 — механіка невизначеності").
  *
  * Four checks, each catching a different mistake:
  *

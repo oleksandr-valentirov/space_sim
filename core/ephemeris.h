@@ -52,7 +52,7 @@
  *
  * Version 2 added the harmonic block (ROADMAP K4b). It is what makes a body's
  * shape a property of the asset rather than of whoever propagates through it,
- * which PROJECT.md section 4 asks for directly ("ступінь розкладу — параметр
+ * which PROJECT.md section 4 asks for directly ("Ступінь розкладу — параметр
  * ассета тіла"), and it has a consequence worth stating: the coefficients
  * written here are the ones the cooker itself integrated the bodies under, so
  * a vessel and the bodies cannot disagree about the shape of the Earth. A

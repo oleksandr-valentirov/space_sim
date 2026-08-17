@@ -10,7 +10,7 @@
 //! ## What here is someone else's and what is ours
 //!
 //! The `jpeg-decoder` crate parses the JPEG -- we do not write image decoders
-//! (CLAUDE.md, "what we do NOT write"). Ours is what the decoder does not
+//! (CLAUDE.md, "Чого НЕ робимо"). Ours is what the decoder does not
 //! know: how these bytes are tied to the globe and which space they are in.
 //!
 //! ## Space: sRGB in the file, linear in memory

@@ -3,7 +3,8 @@
  *   ephspan.csv   divergence from JPL Horizons, measured through the asset,
  *                 for a doubling sequence of asset spans
  *
- * ROADMAP's first fork - "ефемерида не тримає точності на 200 років" - was
+ * ROADMAP's first fork ("Дві розвилки, що змінюють план цілком" - "Ефемерида
+ * не тримає точності на 200 років") was
  * measured out to 200 years on a two-body round trip and deliberately left
  * open, with one concrete objection recorded against deciding it: the shipped
  * fixture spans 120 days, so nothing in the repository ever exercised a long

@@ -44,7 +44,7 @@ double cr3bp_potential(Vec3d r, double mu);
 double cr3bp_jacobi(Vec3d r, Vec3d v, double mu);
 
 /* Zero-velocity curve: the boundary of the region a Jacobi constant c makes
- * unreachable (PROJECT.md section 7, "Карта - це наша графіка"; ROADMAP.md
+ * unreachable (PROJECT.md section 7, "Карта — це і є наша графіка"; ROADMAP.md
  * G4). v^2 = 2*Omega - c, so v^2 < 0 - impossible - exactly where
  * 2*Omega(r) < c: that inequality, not any curve-tracing, is the whole
  * physics here. This function finds where it turns into an equality along

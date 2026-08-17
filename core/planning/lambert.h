@@ -2,7 +2,7 @@
  * time dt (PROJECT.md section 5, sketch under "Планування").
  *
  * This lives outside the determinism boundary (PROJECT.md section 4,
- * ROADMAP.md "Далі - грубо", M3): a maneuver the player commits to is a
+ * ROADMAP.md "Планування й імпульс"): a maneuver the player commits to is a
  * state - (time, delta-v) - to hand to the propagator, not a trajectory that
  * has to reproduce bit-for-bit across platforms. That is what lets this file
  * sit under core/planning and call libm freely, unlike everything directly

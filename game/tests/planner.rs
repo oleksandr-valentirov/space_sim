@@ -4,7 +4,7 @@
 //! own throwaway world. The promise is not "similar" but **bitwise the same**
 //! as what `Sim` will compute later. Without it the manoeuvre planner is
 //! pointless: the player would choose by one curve and fly another
-//! (PROJECT.md §8, "флайт-планер").
+//! (PROJECT.md §8, "Flight planner").
 //!
 //! The easiest way to break the promise is to start the run in the wrong
 //! place: not at a leg boundary, or with "pick the step yourself". H1

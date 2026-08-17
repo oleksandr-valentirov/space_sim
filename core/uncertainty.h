@@ -1,5 +1,5 @@
 /* Linear covariance propagation for the uncertainty mechanic (PROJECT.md
- * section 8, ROADMAP "Відкрите питання" after C6).
+ * section 8, ROADMAP "M6 — механіка невизначеності").
  *
  * The design bet PROJECT.md section 8 makes is that the vessel's state is an
  * ESTIMATE, not a fact - a probability cloud that grows between tracking
@@ -23,7 +23,8 @@
  * A "tracking pass" is `uncertainty_scale` with a factor below one - a
  * single knob standing in for "some measurement happened and improved our
  * knowledge by roughly this much". That is deliberately out of scope here;
- * see ROADMAP.md for the reasoning and core/export/ex_uncertainty.c for how
+ * see ROADMAP.md, "M6 — механіка невизначеності", for the reasoning, and
+ * core/export/ex_uncertainty.c for how
  * it is used to answer PROJECT.md's example question ("burn now, or wait
  * for one more pass"). */
 

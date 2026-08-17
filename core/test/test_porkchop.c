@@ -1,4 +1,4 @@
-/* Porkchop-plot grid (ROADMAP.md, M3, "Планування"). */
+/* Porkchop-plot grid (ROADMAP.md, "Планування й імпульс"; M3). */
 
 #include "ephemeris.h"
 #include "lambert.h"

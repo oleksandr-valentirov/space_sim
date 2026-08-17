@@ -1,4 +1,4 @@
-/* Lambert's problem (ROADMAP.md, M3, "Планування"). */
+/* Lambert's problem (ROADMAP.md, "Планування й імпульс"; M3). */
 
 #include "accel.h"
 #include "integrator.h"

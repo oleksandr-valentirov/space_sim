@@ -1,5 +1,5 @@
 /* Export: the uncertainty mechanic, run against a real halo mission
- * (ROADMAP, "Відкрите питання" after C6; PROJECT.md section 8).
+ * (ROADMAP, "M6 — механіка невизначеності"; PROJECT.md section 8).
  *
  * PROJECT.md section 8 bets the game's main novelty on this: the vessel's
  * state is an ESTIMATE, not a fact. An injection error or a lapse in

@@ -25,7 +25,8 @@
  *    error controller. The ephemeris cooker measured how far that goes - with
  *    forced landings on fit nodes, changing the tolerance by two orders of
  *    magnitude changed nothing at all, because the nodes, not the tolerance,
- *    were setting the step (ROADMAP, "Допуск оновлено: 1 м -> 1e-6 м").
+ *    were setting the step (ROADMAP, "Ефемерида й ассет" - "Допуск кукера —
+ *    1e-6 м, не 1 м").
  *
  *    The adaptive step is also the better sampling for the thing these points
  *    are for. It shortens where the trajectory curves and stretches where it
