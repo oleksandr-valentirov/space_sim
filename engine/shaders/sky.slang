@@ -997,6 +997,41 @@ float3 aerial_coord(float2 ndc, float distance)
                   unit_to_texture(w, AERIAL_Z));
 }
 
+// The star background dimmed by the air (Z4).
+//
+// A fullscreen multiply, run **between** the stars and the sky and nowhere
+// else. At that moment the target holds the stars and the clear colour and
+// nothing more -- no geometry has been drawn in this range yet -- so this
+// attenuates exactly what it should, and by the whole path out of the
+// atmosphere, because a star is at infinity.
+//
+// It reads the transmittance table and NOT the aerial perspective volume,
+// which is the point of putting it here rather than folding it into the
+// composition below. The volume carries debt D17 and a decision still open on
+// it; the table carries neither, and a star does not need distance-resolved
+// scattering -- it needs the total along one ray.
+[shader("fragment")]
+float4 fragment_star_extinction(SkyVertex input) : SV_Target
+{
+    float3 dir = pixel_ray(input.ndc);
+    float3 pos = frame.eye.xyz;
+    float r = length(pos);
+    float mu = dot(pos, dir) / max(r, 1.0);
+
+    // Looking down into the ground: the sky pass draws the surface over this
+    // anyway, but the table is not parameterised for a ray that ends on the
+    // planet, and reading it there would give a number with no meaning. Black
+    // is the honest answer -- there is no star through the Earth.
+    float bottom = air.shape.z;
+    float rho2 = max(0.0, r * r - bottom * bottom);
+    if (distance_to_ground(r, mu, rho2) >= 0.0)
+    {
+        return float4(0.0, 0.0, 0.0, 1.0);
+    }
+
+    return float4(sample_transmittance(r, mu), 1.0);
+}
+
 // The first of the two composition calls: multiply the frame by the
 // transmittance.
 //

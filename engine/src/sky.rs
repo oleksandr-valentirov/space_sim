@@ -143,6 +143,10 @@ pub struct Sky {
     /// frame parameters, all visible to the fragment stage.
     read_draw: wgpu::BindGroup,
 
+    /// Dims the star background by the air (Z4). Reads the transmittance
+    /// table, so it uses `read_draw` like the sky itself.
+    star_extinction: wgpu::RenderPipeline,
+
     /// Group 0 without the transmittance table itself -- for the pass that
     /// writes it.
     read_min: wgpu::BindGroup,
@@ -605,6 +609,60 @@ impl Sky {
                     cache: None,
                 })
         };
+        // The star background dimmed by the air (Z4).
+        //
+        // Its own pipeline rather than one of the two helpers, because it
+        // needs one thing from each: the multiply blend of a composition pass,
+        // and the depth state of a drawing one. It runs **inside** the frame's
+        // own pass, between the stars and the sky, and a pipeline with no
+        // depth state cannot be used in a pass that has a depth attachment.
+        let star_extinction_pipeline =
+            gpu.device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("star extinction"),
+                    layout: Some(&draw_layout),
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("vertex_sky"),
+                        compilation_options: Default::default(),
+                        buffers: &[],
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some("fragment_star_extinction"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            // `dst * T`: the source is multiplied by zero, the
+                            // target by the source. The same blend the aerial
+                            // multiply uses, for the same reason.
+                            blend: Some(wgpu::BlendState {
+                                color: wgpu::BlendComponent {
+                                    src_factor: wgpu::BlendFactor::Zero,
+                                    dst_factor: wgpu::BlendFactor::Src,
+                                    operation: wgpu::BlendOperation::Add,
+                                },
+                                alpha: wgpu::BlendComponent::REPLACE,
+                            }),
+                            write_mask: wgpu::ColorWrites::COLOR,
+                        })],
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        cull_mode: None,
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: crate::depth::FORMAT,
+                        depth_write_enabled: Some(false),
+                        depth_compare: Some(wgpu::CompareFunction::Always),
+                        stencil: wgpu::StencilState::default(),
+                        bias: wgpu::DepthBiasState::default(),
+                    }),
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+
         // `dst * T`: the source is multiplied by zero, the target by the
         // source.
         let multiply_pipeline = composite_draw(
@@ -837,6 +895,7 @@ impl Sky {
             composite_layout,
             pass_buffer,
             read_draw,
+            star_extinction: star_extinction_pipeline,
             read_min,
             read_full,
             read_frame,
@@ -960,6 +1019,19 @@ impl Sky {
         } else {
             &self.outside_pipeline
         });
+        pass.set_bind_group(0, &self.read_draw, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
+    /// Dim the star background by the air (Z4), into someone else's pass.
+    ///
+    /// Called **between** the stars and the sky, and only there. At that
+    /// moment the target holds the stars and the clear colour and nothing
+    /// else, so a fullscreen multiply attenuates exactly them. Called later it
+    /// would dim the planet twice -- the composition already does that -- and
+    /// called earlier it would dim nothing.
+    pub fn dim_stars(&self, pass: &mut wgpu::RenderPass<'_>) {
+        pass.set_pipeline(&self.star_extinction);
         pass.set_bind_group(0, &self.read_draw, &[]);
         pass.draw(0..3, 0..1);
     }

@@ -19,6 +19,11 @@
 //!    discard, so it pushes such a star off screen by hand; if that arithmetic
 //!    is wrong the star reappears mirrored in front, which is the sort of
 //!    thing nobody notices until a constellation is doubled.
+//! 4. **The air puts the stars out (Z4).** The same star, from the same place,
+//!    with and without an atmosphere between it and the camera. Through a
+//!    daytime sky its contribution has to fall below one step of the scale --
+//!    not merely dim, gone, because a star that survives daylight at byte 1 is
+//!    still a star in the wrong place.
 
 use engine::camera::Camera;
 use engine::frame::Frame;
@@ -83,8 +88,13 @@ fn shoot(gpu: &Gpu, stars: Vec<Star>) -> Shot {
 /// absolute peak of an empty sky is not zero, and a faint star measured
 /// absolutely comes out twice as bright as it is. Blending is additive, so
 /// subtracting the clear colour is exact rather than approximate.
+fn background(channel: usize) -> f64 {
+    let clear = engine::frame::CLEAR;
+    [clear.r, clear.g, clear.b][channel]
+}
+
 fn brightest(shot: &Shot) -> ((u32, u32), f64) {
-    let background = engine::frame::CLEAR.r;
+    let background = background(0);
     let mut best = ((0, 0), f64::NEG_INFINITY);
     for y in 0..shot.height {
         for x in 0..shot.width {
@@ -188,5 +198,129 @@ fn a_star_behind_the_camera_is_not_drawn() {
     assert!(
         value < 1.0e-4,
         "something was drawn for a star behind the camera: peak {value}"
+    );
+}
+
+/// The air dims a star seen through it, and reddens what it dims (Z4).
+///
+/// **Not the test the plan asked for, and the difference is a finding.** Z4
+/// was written as "the same star by day and by night: by day its contribution
+/// falls below one step of the scale". It does not, and no bug is responsible:
+/// zenith transmittance from the ground is 0.94 in red (`--example
+/// star_scale`), so the air removes six per cent of a star and could never
+/// hide one. What hides stars in daylight is the sky outshining them, and on
+/// our scale it does not -- a magnitude-2 star is 0.079 against a daytime
+/// zenith sky of 0.019 to 0.044. That is a question about the star scale, not
+/// about this pass.
+///
+/// So this checks what the pass genuinely does, where it genuinely does it: a
+/// star seen through the limb from orbit. At `mu = -0.320` from 400 km the ray
+/// grazes the air without reaching the ground, and transmittance is 0.51 in
+/// red against 0.16 in blue.
+///
+/// The colour half of the claim is the stronger one. Dimming depends on how
+/// many pixels the star covers and where its quad lands; the **ratio between
+/// its channels** does not, so a reddened star is evidence no amount of
+/// geometry can fake.
+#[test]
+fn the_air_dims_a_star_through_the_limb_and_reddens_it() {
+    let Some(gpu) = gpu() else {
+        eprintln!("SKIPPED: no adapter");
+        return;
+    };
+
+    let radius = engine::sphere::EARTH_RADIUS_M;
+    let altitude = 400.0e3;
+    // The cosine between the local vertical and the ray. Between the tangent
+    // to the air (-0.294) and the tangent to the ground (-0.339): the ray goes
+    // through the whole atmosphere and comes out the other side.
+    let mu = -0.320_f64;
+    let dir = [mu, (1.0 - mu * mu).sqrt(), 0.0];
+
+    let mut frame = Frame::new(&gpu, shot::FORMAT);
+    frame.load_stars(
+        &gpu,
+        &Catalogue {
+            stars: vec![star([dir[0] as f32, dir[1] as f32, dir[2] as f32], 1.0)],
+        },
+    );
+
+    let shoot_with = |frame: &mut Frame, air: Option<engine::scene::Atmosphere>| {
+        let eye = [radius + altitude, 0.0, 0.0];
+        // Looking straight at the star, so it lands in the middle of the frame
+        // and the planet's limb sits below it.
+        let target = [eye[0] + dir[0], eye[1] + dir[1], eye[2] + dir[2]];
+        let mut scene = Scene::new(Camera::look_at(eye, target, [1.0, 0.0, 0.0]));
+        // The Sun on the far side, so the sky here is night and adds almost
+        // nothing of its own to the pixel being measured.
+        scene.sun = [-1.0, 0.0, 0.0];
+        scene.bodies.push(engine::scene::Body {
+            centre: [0.0, 0.0, 0.0],
+            radius_m: radius,
+            orientation: [1.0, 0.0, 0.0, 0.0],
+            tiles: engine::scene::TileSet::Smooth,
+            colour: engine::frame::COLOUR,
+            air,
+        });
+
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("star through the limb"),
+            size: wgpu::Extent3d {
+                width: WIDTH,
+                height: HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: shot::FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("star through the limb"),
+            });
+        frame.draw(&gpu, &mut encoder, &view, WIDTH, HEIGHT, &scene);
+        shot::read_back(&gpu, encoder, &texture, WIDTH, HEIGHT).expect("the shot should read back")
+    };
+
+    let vacuum = shoot_with(&mut frame, None);
+    let through_air = shoot_with(
+        &mut frame,
+        Some(engine::scene::Atmosphere::EARTH.with_surface(radius)),
+    );
+
+    // Where the star landed, found rather than assumed -- and if the planet
+    // covered it, this fails first and says so.
+    let ((x, y), bare_red) = brightest(&vacuum);
+    assert!(
+        bare_red > 0.01,
+        "no star in vacuum at ({x}, {y}) -- the fixture is wrong before the claim is: {bare_red}"
+    );
+
+    let linear = |shot: &Shot, channel: usize| {
+        srgb::to_linear(f64::from(shot.pixel(x, y)[channel]) / 255.0) - background(channel)
+    };
+    let (vac_r, vac_b) = (linear(&vacuum, 0), linear(&vacuum, 2));
+    let (air_r, air_b) = (linear(&through_air, 0), linear(&through_air, 2));
+
+    // Dimmed: measured transmittance in red is 0.51, so anything above 0.75 of
+    // the vacuum value means the pass did not run.
+    assert!(
+        air_r < vac_r * 0.75,
+        "the limb did not dim the star: {air_r:.5} against {vac_r:.5} in vacuum"
+    );
+
+    // And reddened. The star is drawn white, so in vacuum its channels are
+    // equal; through the air blue must lose far more than red.
+    let vac_ratio = vac_b / vac_r.max(1.0e-9);
+    let air_ratio = air_b / air_r.max(1.0e-9);
+    assert!(
+        air_ratio < vac_ratio * 0.6,
+        "the air dimmed the star without reddening it: blue/red {air_ratio:.3} through \
+         the air against {vac_ratio:.3} in vacuum"
     );
 }

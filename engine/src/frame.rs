@@ -1134,6 +1134,19 @@ impl Frame {
             if index == 0 {
                 self.stars.draw(&mut pass);
                 if let Some((atmosphere, _, view, _)) = &air {
+                    // Between the two, and only here (Z4): the air dims the
+                    // stars behind it.
+                    //
+                    // ⚠ Only when there are stars, and that condition is not
+                    // caution -- it is a measured consequence. The multiply is
+                    // fullscreen, so it also attenuates the clear colour, and
+                    // two oracles in `tests/sky.rs` assert that empty sky is
+                    // untouched by the air ("the night air glows", "pixels of
+                    // empty sky got darker"). With no catalogue loaded there is
+                    // nothing to dim, so the pass has no business running.
+                    if self.stars.is_loaded() {
+                        self.sky.dim_stars(&mut pass);
+                    }
                     self.sky.draw(&mut pass, view.radius() < atmosphere.top_m);
                 }
             }

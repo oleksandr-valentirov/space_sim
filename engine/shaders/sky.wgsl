@@ -739,23 +739,6 @@ fn aerial_main(@builtin(global_invocation_id) id_4 : vec3<u32>)
     return;
 }
 
-fn geometry_distance_0( pixel_0 : vec2<i32>,  dir_4 : vec3<f32>) -> f32
-{
-    var _S63 : vec3<i32> = vec3<i32>(pixel_0, i32(0));
-    var _S64 : f32 = (textureLoad((depth_texture_0), ((_S63)).xy, ((_S63)).z).x);
-    if(_S64 <= 0.0f)
-    {
-        return -1.0f;
-    }
-    return range_0.depth_0.y / (_S64 + range_0.depth_0.x) / max(dot(dir_4, frame_0.forward_0.xyz), 0.00100000004749745f);
-}
-
-fn aerial_coord_0( ndc_5 : vec2<f32>,  distance_0 : f32) -> vec3<f32>
-{
-    var near_1 : f32 = frame_0.eye_0.w;
-    return vec3<f32>(ndc_5.x * 0.5f + 0.5f, ndc_5.y * 0.5f + 0.5f, unit_to_texture_0(sqrt(clamp((distance_0 - near_1) / max(frame_0.view_0.w - near_1, 1.0f), 0.0f, 1.0f)), u32(64)));
-}
-
 struct pixelOutput_2
 {
     @location(0) output_3 : vec4<f32>,
@@ -763,19 +746,40 @@ struct pixelOutput_2
 
 struct pixelInput_2
 {
-    @location(0) ndc_6 : vec2<f32>,
+    @location(0) ndc_5 : vec2<f32>,
 };
 
 @fragment
-fn fragment_aerial_multiply( _S65 : pixelInput_2, @builtin(position) position_3 : vec4<f32>) -> pixelOutput_2
+fn fragment_star_extinction( _S63 : pixelInput_2, @builtin(position) position_3 : vec4<f32>) -> pixelOutput_2
 {
-    var distance_1 : f32 = geometry_distance_0(vec2<i32>(position_3.xy), pixel_ray_0(_S65.ndc_6));
-    if(distance_1 < 0.0f)
+    var pos_3 : vec3<f32> = frame_0.eye_0.xyz;
+    var r_16 : f32 = length(pos_3);
+    var mu_10 : f32 = dot(pos_3, pixel_ray_0(_S63.ndc_5)) / max(r_16, 1.0f);
+    var bottom_10 : f32 = air_0.shape_0.z;
+    if((distance_to_ground_0(r_16, mu_10, max(0.0f, r_16 * r_16 - bottom_10 * bottom_10))) >= 0.0f)
     {
-        discard;
+        var _S64 : pixelOutput_2 = pixelOutput_2( vec4<f32>(0.0f, 0.0f, 0.0f, 1.0f) );
+        return _S64;
     }
-    var _S66 : pixelOutput_2 = pixelOutput_2( vec4<f32>((textureSampleLevel((aerial_transmittance_lut_0), (lut_sampler_0), (aerial_coord_0(_S65.ndc_6, distance_1)), (0.0f))).xyz, 1.0f) );
-    return _S66;
+    var _S65 : pixelOutput_2 = pixelOutput_2( vec4<f32>(sample_transmittance_0(r_16, mu_10), 1.0f) );
+    return _S65;
+}
+
+fn geometry_distance_0( pixel_0 : vec2<i32>,  dir_4 : vec3<f32>) -> f32
+{
+    var _S66 : vec3<i32> = vec3<i32>(pixel_0, i32(0));
+    var _S67 : f32 = (textureLoad((depth_texture_0), ((_S66)).xy, ((_S66)).z).x);
+    if(_S67 <= 0.0f)
+    {
+        return -1.0f;
+    }
+    return range_0.depth_0.y / (_S67 + range_0.depth_0.x) / max(dot(dir_4, frame_0.forward_0.xyz), 0.00100000004749745f);
+}
+
+fn aerial_coord_0( ndc_6 : vec2<f32>,  distance_0 : f32) -> vec3<f32>
+{
+    var near_1 : f32 = frame_0.eye_0.w;
+    return vec3<f32>(ndc_6.x * 0.5f + 0.5f, ndc_6.y * 0.5f + 0.5f, unit_to_texture_0(sqrt(clamp((distance_0 - near_1) / max(frame_0.view_0.w - near_1, 1.0f), 0.0f, 1.0f)), u32(64)));
 }
 
 struct pixelOutput_3
@@ -789,14 +793,36 @@ struct pixelInput_3
 };
 
 @fragment
-fn fragment_aerial_add( _S67 : pixelInput_3, @builtin(position) position_4 : vec4<f32>) -> pixelOutput_3
+fn fragment_aerial_multiply( _S68 : pixelInput_3, @builtin(position) position_4 : vec4<f32>) -> pixelOutput_3
 {
-    var distance_2 : f32 = geometry_distance_0(vec2<i32>(position_4.xy), pixel_ray_0(_S67.ndc_7));
+    var distance_1 : f32 = geometry_distance_0(vec2<i32>(position_4.xy), pixel_ray_0(_S68.ndc_7));
+    if(distance_1 < 0.0f)
+    {
+        discard;
+    }
+    var _S69 : pixelOutput_3 = pixelOutput_3( vec4<f32>((textureSampleLevel((aerial_transmittance_lut_0), (lut_sampler_0), (aerial_coord_0(_S68.ndc_7, distance_1)), (0.0f))).xyz, 1.0f) );
+    return _S69;
+}
+
+struct pixelOutput_4
+{
+    @location(0) output_5 : vec4<f32>,
+};
+
+struct pixelInput_4
+{
+    @location(0) ndc_8 : vec2<f32>,
+};
+
+@fragment
+fn fragment_aerial_add( _S70 : pixelInput_4, @builtin(position) position_5 : vec4<f32>) -> pixelOutput_4
+{
+    var distance_2 : f32 = geometry_distance_0(vec2<i32>(position_5.xy), pixel_ray_0(_S70.ndc_8));
     if(distance_2 < 0.0f)
     {
         discard;
     }
-    var _S68 : pixelOutput_3 = pixelOutput_3( vec4<f32>((textureSampleLevel((aerial_inscatter_lut_0), (lut_sampler_0), (aerial_coord_0(_S67.ndc_7, distance_2)), (0.0f))).xyz, 1.0f) );
-    return _S68;
+    var _S71 : pixelOutput_4 = pixelOutput_4( vec4<f32>((textureSampleLevel((aerial_inscatter_lut_0), (lut_sampler_0), (aerial_coord_0(_S70.ndc_8, distance_2)), (0.0f))).xyz, 1.0f) );
+    return _S71;
 }
 
