@@ -463,6 +463,12 @@ impl ApplicationHandler for App {
                     // here rather than deferring to the frame: the choice is
                     // over the bodies that exist, and the snapshot is where
                     // they are said to exist.
+                    //
+                    // This arm was unreachable until X1: egui reports Tab as
+                    // consumed whether or not it wants the keyboard, so
+                    // `consumed` above was always true for it. The exception
+                    // lives in `engine::ui::tab_is_the_games`, with the rest of
+                    // the ownership rule, and not here.
                     Key::Named(NamedKey::Tab) => {
                         let snapshot = state.sim.snapshot();
                         state.cycle_camera_target(&snapshot);

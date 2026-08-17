@@ -239,11 +239,26 @@ impl WindowInput {
     ///
     /// `true` means "the game does not see this event". It must be asked
     /// **before** the event goes on, and in exactly one place -- rule 4.
+    ///
+    /// The one exception is Tab, and it is not a preference: see
+    /// [`tab_is_the_games`]. The event is withheld from egui entirely in that
+    /// case rather than merely reported as unconsumed, because egui's use for
+    /// it is to move focus -- and a focused widget would then want the
+    /// keyboard, so the *next* Tab would be eaten for a reason that only the
+    /// first one created.
     pub fn on_window_event(
         &mut self,
         window: &winit::window::Window,
         event: &winit::event::WindowEvent,
     ) -> bool {
+        if let winit::event::WindowEvent::KeyboardInput { event: key, .. } = event {
+            if tab_is_the_games(
+                &key.logical_key,
+                self.state.egui_ctx().egui_wants_keyboard_input(),
+            ) {
+                return false;
+            }
+        }
         self.state.on_window_event(window, event).consumed
     }
 
@@ -255,5 +270,59 @@ impl WindowInput {
     /// What egui asks the platform to do: cursor, clipboard.
     pub fn apply(&mut self, window: &winit::window::Window, output: egui::PlatformOutput) {
         self.state.handle_platform_output(window, output);
+    }
+}
+
+/// Whether a Tab belongs to the game rather than to egui (stage X, X1).
+///
+/// **egui reports Tab as consumed unconditionally** -- not because it wants the
+/// keyboard, but because Tab moves its focus to the first focusable widget
+/// (`egui-winit 0.36.1`, `lib.rs:416`). Taking that at face value cost the game
+/// its camera switch entirely: the `Tab` arm added for debt D12 could never
+/// run, in any window, from the day it was written.
+///
+/// It is a free function, and separately testable, because that is the only way
+/// it can be tested at all: `WindowInput` needs a real window, and a
+/// `winit::event::KeyEvent` cannot be built outside winit -- its
+/// `platform_specific` field is not public. So the policy gets the oracle and
+/// the plumbing stays one line. A test through a synthetic `WindowEvent` would
+/// be the better oracle and is not available.
+pub fn tab_is_the_games(key: &winit::keyboard::Key, wants_keyboard: bool) -> bool {
+    // Once something in the interface is genuinely typing, Tab is its own again
+    // -- there is no text field in the HUD today, so this branch is unreachable
+    // for now, and it stays because the first one to appear must not have to
+    // rediscover this.
+    !wants_keyboard && *key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tab_is_the_games;
+    use winit::keyboard::{Key, NamedKey};
+
+    /// The defect X1 fixed: a Tab with nobody typing is the game's.
+    #[test]
+    fn a_tab_reaches_the_game_when_nothing_is_typing() {
+        assert!(tab_is_the_games(&Key::Named(NamedKey::Tab), false));
+    }
+
+    /// And it is not, the moment the interface is actually reading keys.
+    #[test]
+    fn a_tab_stays_with_the_interface_while_it_types() {
+        assert!(!tab_is_the_games(&Key::Named(NamedKey::Tab), true));
+    }
+
+    /// Every other key keeps going through egui's own answer -- the exception
+    /// is Tab alone, not "keys the game likes".
+    #[test]
+    fn no_other_key_takes_the_exception() {
+        for key in [
+            Key::Named(NamedKey::Space),
+            Key::Named(NamedKey::Enter),
+            Key::Named(NamedKey::Escape),
+            Key::Character("p".into()),
+        ] {
+            assert!(!tab_is_the_games(&key, false), "{key:?} took the exception");
+        }
     }
 }
