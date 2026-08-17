@@ -1,20 +1,20 @@
-//! Інтерфейс у кадрі: розвідка U1a і провід U1b.
+//! The interface in the frame: U1a's reconnaissance and U1b's wiring.
 //!
-//! Питання, на якому стоїть уся перевірка етапу U (ROADMAP-UI.md, правило 3):
-//! чи малює `egui-wgpu` у звичайну текстуру без вікна. Якщо ні — жодна панель
-//! ніколи не потрапить у знімок, і «UI перевіряється без вікна» довелося б
-//! викреслити разом із половиною оракулів етапу.
+//! The question the whole verification of stage U stands on (ROADMAP-UI.md,
+//! rule 3): does `egui-wgpu` draw into an ordinary texture without a window. If
+//! not, no panel will ever reach a screenshot, and "the UI is checked without a
+//! window" would have to be struck out along with half the stage's oracles.
 //!
-//! Тверджень тут два, і **обидва обов'язкові**:
+//! There are two statements here, and **both are mandatory**:
 //!
-//! 1. порожній `egui::Context` не міняє кадру **жодним бітом** — нічого не
-//!    намальовано, отже нічого й не змінилось;
-//! 2. непорожній міняє, і саме там, де намальовано.
+//! 1. an empty `egui::Context` does not change the frame by **a single bit** --
+//!    nothing was drawn, so nothing changed either;
+//! 2. a non-empty one does change it, and exactly where it drew.
 //!
-//! Перше без другого пройшло б і на цілком зламаному `egui-wgpu`, який не
-//! малює нічого ніколи. Це та сама пара «обидва боки», якою міряються події
-//! в `/core`, і причина її та сама: перевірка, що не вміє провалитися,
-//! зелена не тому, що код працює.
+//! The first without the second would pass on a completely broken `egui-wgpu`
+//! that never draws anything at all. This is the same "both sides" pair events
+//! in `/core` are measured with, and the reason is the same: a check that
+//! cannot fail is green for reasons other than the code working.
 
 use engine::egui;
 use engine::frame::{self, Frame};
@@ -24,13 +24,13 @@ use engine::ui::{Ui, Viewport};
 
 const SIZE: u32 = 256;
 
-/// Розмір із перевірки U1b — той, у якому міряється й час кадру.
+/// The size from U1b's check -- the one the frame time is measured at too.
 const WIDE: u32 = 1280;
 const TALL: u32 = 720;
 
 fn gpu() -> Option<Gpu> {
-    // Спільний помічник рушія: він же вирішує, чи пропуск дозволений
-    // (`SPACE_SIM_REQUIRE_GPU`, U6c), і друкує назву адаптера в лог.
+    // The engine's shared helper: it also decides whether skipping is allowed
+    // (`SPACE_SIM_REQUIRE_GPU`, U6c) and prints the adapter name into the log.
     Gpu::for_tests()
 }
 
@@ -53,9 +53,10 @@ fn target(gpu: &Gpu, width: u32, height: u32) -> (wgpu::Texture, wgpu::TextureVi
     (texture, view)
 }
 
-/// Кадр сцени, а поверх нього — те, що намалює `build`.
+/// A frame of the scene, and on top of it whatever `build` draws.
 ///
-/// Порядок саме той, який задає U1b: сцена, потім інтерфейс, в одну текстуру.
+/// The order is exactly the one U1b sets: scene, then interface, into one
+/// texture.
 fn draw_with_ui(gpu: &Gpu, width: u32, height: u32, build: impl FnMut(&mut egui::Ui)) -> Shot {
     let (texture, view) = target(gpu, width, height);
     let mut encoder = gpu
@@ -79,32 +80,34 @@ fn draw_with_ui(gpu: &Gpu, width: u32, height: u32, build: impl FnMut(&mut egui:
         build,
     );
 
-    shot::read_back(gpu, encoder, &texture, width, height).expect("кадр мав прочитатися назад")
+    shot::read_back(gpu, encoder, &texture, width, height)
+        .expect("the frame should have been read back")
 }
 
-/// Той самий кадр без жодного проходу egui — те, що малює рушій сьогодні.
+/// The same frame without any egui pass -- what the engine draws today.
 fn draw_plain(gpu: &Gpu, width: u32, height: u32) -> Shot {
     let (texture, view) = target(gpu, width, height);
     let mut encoder = gpu
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("ui probe: без egui"),
+            label: Some("ui probe: no egui"),
         });
 
     let mut scene_frame = Frame::new(gpu, shot::FORMAT);
     let scene = frame::default_scene(frame::default_camera());
     scene_frame.draw(gpu, &mut encoder, &view, width, height, &scene);
 
-    shot::read_back(gpu, encoder, &texture, width, height).expect("кадр мав прочитатися назад")
+    shot::read_back(gpu, encoder, &texture, width, height)
+        .expect("the frame should have been read back")
 }
 
-/// Прямокутник у лівому верхньому куті, у пікселях цілі.
+/// A rectangle in the top-left corner, in pixels of the target.
 fn panel(ui: &mut egui::Ui, width: f32, height: f32, colour: egui::Color32) {
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
     ui.painter().rect_filled(rect, 0.0, colour);
 }
 
-/// Порожній інтерфейс не міняє кадру жодним бітом.
+/// An empty interface does not change the frame by a single bit.
 #[test]
 fn an_empty_context_changes_nothing() {
     let Some(gpu) = gpu() else { return };
@@ -114,16 +117,18 @@ fn an_empty_context_changes_nothing() {
 
     assert_eq!(
         plain.pixels, with_ui.pixels,
-        "прохід egui без жодного віджета зрушив пікселі — тобто він щось \
-         малює сам, і всі майбутні порівняння знімків міряли б це"
+        "an egui pass with no widget at all moved pixels -- meaning it draws \
+         something of its own, and every future screenshot comparison would be \
+         measuring that"
     );
 }
 
-/// А непорожній — міняє, і саме там, де намальовано.
+/// And a non-empty one does change it, exactly where it drew.
 ///
-/// Панель прибита до лівого верхнього кута фіксованим розміром, тож перевірка
-/// знає, який піксель зобов'язаний змінитися й який зобов'язаний лишитися.
-/// Без другої половини це був би тест «щось десь стало іншим».
+/// The panel is nailed to the top-left corner at a fixed size, so the check
+/// knows which pixel is obliged to change and which is obliged to stay. Without
+/// the second half this would be a test of "something somewhere became
+/// different".
 #[test]
 fn a_panel_lands_where_it_was_put() {
     let Some(gpu) = gpu() else { return };
@@ -143,34 +148,35 @@ fn a_panel_lands_where_it_was_put() {
     assert_ne!(
         [inside[0], inside[1], inside[2]],
         [was[0], was[1], was[2]],
-        "піксель усередині панелі не змінився — egui-wgpu не намалював нічого"
+        "the pixel inside the panel did not change -- egui-wgpu drew nothing"
     );
-    // Звіряється переважання каналу, а не точний колір: ціль знімка лінійна,
-    // поверхня вікна sRGB, і той самий колір дає в них різні байти (ROADMAP
-    // «Рендер»).
+    // What is compared is which channel dominates, not the exact colour: the
+    // screenshot target is linear, the window surface sRGB, and the same colour
+    // gives different bytes in them (ROADMAP, "Рендер").
     assert!(
         inside[0] > inside[1] && inside[2] > inside[1],
-        "усередині панелі мали переважати червоний і синій, а вийшло {inside:?}"
+        "red and blue should have dominated inside the panel, but it came out {inside:?}"
     );
 
-    // Поза панеллю кадр лишився тим самим — прохід egui не зачепив нічого,
-    // крім своїх ножиць.
+    // Outside the panel the frame stayed the same -- the egui pass touched
+    // nothing beyond its own scissor.
     for (x, y) in [(SIZE - 2, SIZE - 2), (SIZE - 2, 1), (1, SIZE - 2)] {
         assert_eq!(
             plain.pixel(x, y),
             with_ui.pixel(x, y),
-            "піксель ({x}, {y}) поза панеллю змінився"
+            "pixel ({x}, {y}) outside the panel changed"
         );
     }
 }
 
-/// Перевірка U1b дослівно: 1280×720, одна панель, піксель усередині — її,
-/// піксель поза нею — небо.
+/// U1b's check verbatim: 1280x720, one panel, a pixel inside it is the panel's,
+/// a pixel outside it is sky.
 ///
-/// «Небо» тут не будь-що інше, а саме [`frame::CLEAR_BYTES`]: кут кадру з
-/// висоти за замовчуванням лежить поза диском планети (це вже виміряно в
-/// `shot.rs`), тож у ньому має бути колір очищення й нічого більше. Панель
-/// зелена — канал, якого немає ні у фону, ні в планети.
+/// "Sky" here is not just anything else but exactly [`frame::CLEAR_BYTES`]: the
+/// corner of the frame at the default altitude lies outside the planet's disc
+/// (already measured in `shot.rs`), so it must hold the clear colour and
+/// nothing more. The panel is green -- a channel neither the background nor the
+/// planet has.
 #[test]
 fn a_panel_covers_the_sky_and_only_it() {
     let Some(gpu) = gpu() else { return };
@@ -182,22 +188,22 @@ fn a_panel_covers_the_sky_and_only_it() {
     let inside = with_ui.pixel(150, 100);
     assert!(
         inside[1] > inside[0] && inside[1] > inside[2],
-        "усередині панелі мав переважати зелений, а вийшло {inside:?}"
+        "green should have dominated inside the panel, but it came out {inside:?}"
     );
 
     let outside = with_ui.pixel(WIDE - 2, 2);
     assert_eq!(
         [outside[0], outside[1], outside[2]],
         frame::CLEAR_BYTES,
-        "піксель поза панеллю мав лишитися небом"
+        "the pixel outside the panel should have stayed sky"
     );
 }
 
-/// Масштаб — це масштаб, а не зміна розміру цілі.
+/// Scale is scale, not a change of the target's size.
 ///
-/// Та сама панель у точках при `scale = 2.0` займає вдвічі більше пікселів.
-/// Перевірка дешева, а ловить помилку, яка інакше знаходиться очима на
-/// екрані з високим DPI — і лише в того, у кого такий екран є.
+/// The same panel in points at `scale = 2.0` takes twice as many pixels. The
+/// check is cheap, and it catches a bug that is otherwise found by eye on a
+/// high-DPI screen -- and only by someone who has one.
 #[test]
 fn the_scale_factor_scales() {
     let Some(gpu) = gpu() else { return };
@@ -224,14 +230,15 @@ fn the_scale_factor_scales() {
         |ui| panel(ui, 32.0, 32.0, egui::Color32::from_rgb(0, 255, 0)),
     );
 
-    let doubled = shot::read_back(&gpu, encoder, &texture, SIZE, SIZE).expect("кадр мав читатися");
+    let doubled =
+        shot::read_back(&gpu, encoder, &texture, SIZE, SIZE).expect("the frame should have read");
 
-    // 32 точки при масштабі 2 — це 64 пікселі. Дивимось у піксель 40: він
-    // усередині подвоєної панелі й поза одинарною.
+    // 32 points at scale 2 make 64 pixels. We look at pixel 40: it is inside the
+    // doubled panel and outside the single one.
     let inside = doubled.pixel(40, 40);
     assert!(
         inside[1] > inside[0] && inside[1] > inside[2],
-        "піксель (40, 40) мав бути всередині подвоєної панелі, а вийшло {inside:?}"
+        "pixel (40, 40) should have been inside the doubled panel, but it came out {inside:?}"
     );
 
     let single = draw_with_ui(&gpu, SIZE, SIZE, |ui| {
@@ -241,6 +248,6 @@ fn the_scale_factor_scales() {
     assert_ne!(
         [inside[0], inside[1], inside[2]],
         [same_pixel[0], same_pixel[1], same_pixel[2]],
-        "масштаб нічого не змінив — 32 точки лишились 32 пікселями"
+        "the scale changed nothing -- 32 points stayed 32 pixels"
     );
 }

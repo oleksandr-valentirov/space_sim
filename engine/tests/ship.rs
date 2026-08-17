@@ -1,10 +1,11 @@
-//! Корабель у кадрі: він там є, він потрібного розміру й він повертається
-//! (етап V, крок V2).
+//! The ship in the frame: it is there, it is the right size and it turns
+//! (stage V, step V2).
 //!
-//! Оракул — не «щось намальовано», а **число проти числа**, як у F5: у
-//! проєкції висота предмета в пікселях виражається точно, без наближень.
-//! Ніс і хвіст лежать на однаковій відстані від камери за побудовою сцени,
-//! тож `y_view / (−z_view)` для них — це рівно `±(h/2)/d`.
+//! The oracle is not "something got drawn" but **a number against a number**,
+//! as in F5: in the projection the height of an object in pixels is expressed
+//! exactly, without approximation. The nose and the tail lie at equal distance
+//! from the camera by construction of the scene, so `y_view / (-z_view)` for
+//! them is exactly `+-(h/2)/d`.
 
 use engine::camera::Camera;
 use engine::gpu::Gpu;
@@ -20,14 +21,15 @@ fn gpu() -> Option<Gpu> {
     Gpu::for_tests()
 }
 
-/// Сцена: порожнє небо й один корабель за [`DISTANCE`] метрів перед камерою.
+/// The scene: an empty sky and one ship [`DISTANCE`] metres in front of the
+/// camera.
 ///
-/// Порожнє навмисно — жодного тіла, жодної ламаної. Те, що видно в кадрі,
-/// може бути тільки кораблем, і жоден інший малювальник не може випадково
-/// дати ті самі пікселі.
+/// Empty deliberately -- no body, no polyline. What is visible in the frame can
+/// only be the ship, and no other drawer can accidentally give the same
+/// pixels.
 fn scene_with(orientation: [f64; 4]) -> Scene {
     let eye = [DISTANCE, 0.0, 0.0];
-    // Вгору — світовий `+Z`, тобто вісь корабля лягає вертикально в кадрі.
+    // Up is world `+Z`, i.e. the ship's axis lies vertically in the frame.
     let camera = Camera::look_at(eye, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
 
     let mut scene = Scene::new(camera);
@@ -43,7 +45,7 @@ fn scene_with(orientation: [f64; 4]) -> Scene {
     scene
 }
 
-/// Прямокутник, у який вписані всі непорожні пікселі: `(x0, y0, x1, y1)`.
+/// The rectangle all non-empty pixels are inscribed in: `(x0, y0, x1, y1)`.
 fn lit_bounds(shot: &Shot) -> Option<(u32, u32, u32, u32)> {
     let mut bounds: Option<(u32, u32, u32, u32)> = None;
     for y in 0..shot.height {
@@ -61,24 +63,25 @@ fn lit_bounds(shot: &Shot) -> Option<(u32, u32, u32, u32)> {
     bounds
 }
 
-/// Той самий силует, порахований на CPU: кожна вершина меша йде через
-/// [`Camera::to_screen`] — ту саму функцію, якою піккінг ловить вузли
-/// маневрів (U4b).
+/// The same silhouette computed on the CPU: every vertex of the mesh goes
+/// through [`Camera::to_screen`] -- the same function picking uses to catch
+/// manoeuvre nodes (U4b).
 ///
-/// Це не «оцінка кутом». Кутова оцінка тут була б **неправильною**, і це
-/// вимір, а не теорія: стабілізатор, повернутий до камери, виступає на
-/// 2.28 м уперед, тобто проєктується більшим за ніс, який стоїть далі. Ніс
-/// дає 88.7 пікселя, а кадр — 96, і зайві сім із половиною саме звідти.
+/// This is not "an estimate by angle". An angular estimate here would be
+/// **wrong**, and that is a measurement, not a theory: a fin turned towards the
+/// camera sticks out 2.28 m forward, i.e. projects larger than the nose, which
+/// stands further away. The nose gives 88.7 pixels while the frame gives 96,
+/// and the extra seven and a half come from exactly there.
 ///
-/// Тобто оракул тут той самий, що в `cull` проти `cull.slang`: дві незалежні
-/// реалізації одного перетворення мусять дати одне число.
+/// So the oracle here is the same as in `cull` against `cull.slang`: two
+/// independent implementations of one transform must give one number.
 fn projected_bounds(camera: &Camera, height_m: f64) -> (f64, f64, f64, f64) {
     let mesh = ship::generate(height_m);
     let mut bounds = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
     for p in &mesh.positions {
         let screen = camera
             .to_screen(FOV_Y, SIZE, SIZE, *p)
-            .expect("вершина позаду камери — сцена не та");
+            .expect("a vertex behind the camera -- wrong scene");
         bounds.0 = bounds.0.min(f64::from(screen[0]));
         bounds.1 = bounds.1.min(f64::from(screen[1]));
         bounds.2 = bounds.2.max(f64::from(screen[0]));
@@ -94,34 +97,34 @@ fn the_ship_fills_exactly_the_pixels_the_projection_says() {
     };
 
     let scene = scene_with([1.0, 0.0, 0.0, 0.0]);
-    let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene).expect("кадр з кораблем");
-    let (x0, y0, x1, y1) = lit_bounds(&shot).expect("у кадрі порожньо — корабля немає");
+    let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene).expect("a frame with a ship");
+    let (x0, y0, x1, y1) = lit_bounds(&shot).expect("the frame is empty -- there is no ship");
     let expected = projected_bounds(&scene.camera, ship::DEFAULT_HEIGHT_M);
 
-    // Допуск асиметричний, і це не поблажка, а те, що растеризатор справді
-    // робить. Піксель фарбується, коли накрито його **центр**, тож біля
-    // вістря — носового конуса й кінчика стабілізатора — останній піксель або
-    // два не набираються. Назовні ж за крайню вершину силует вийти не може
-    // взагалі: там немає геометрії.
+    // The tolerance is asymmetric, and that is not an indulgence but what the
+    // rasteriser actually does. A pixel is painted when its **centre** is
+    // covered, so near a point -- the nose cone and the tip of a fin -- the last
+    // pixel or two do not get filled. Outwards, past the outermost vertex, the
+    // silhouette cannot go at all: there is no geometry there.
     //
-    // Тобто твердження сильніше за «приблизно збігається»: не більше за
-    // проєкцію ніде, і не менше ніж на два з половиною пікселя.
+    // So the statement is stronger than "roughly agrees": nowhere larger than
+    // the projection, and nowhere smaller by more than two and a half pixels.
     let inside = |what: &str, drawn: f64, want: f64, sign: f64| {
         let over = sign * (drawn - want);
         assert!(
             over <= 1.0,
-            "{what}: кадр вийшов за проєкцію на {over} px ({drawn} проти {want})"
+            "{what}: the frame overshot the projection by {over} px ({drawn} against {want})"
         );
         assert!(
             over >= -2.5,
-            "{what}: кадр не дотягнув до проєкції {} px ({drawn} проти {want})",
+            "{what}: the frame fell short of the projection by {} px ({drawn} against {want})",
             -over
         );
     };
-    inside("ліворуч", f64::from(x0), expected.0, -1.0);
-    inside("вгорі", f64::from(y0), expected.1, -1.0);
-    inside("праворуч", f64::from(x1), expected.2, 1.0);
-    inside("внизу", f64::from(y1), expected.3, 1.0);
+    inside("left", f64::from(x0), expected.0, -1.0);
+    inside("top", f64::from(y0), expected.1, -1.0);
+    inside("right", f64::from(x1), expected.2, 1.0);
+    inside("bottom", f64::from(y1), expected.3, 1.0);
 }
 
 #[test]
@@ -131,32 +134,33 @@ fn turning_the_ship_turns_it_in_the_frame() {
     };
 
     let upright = scene_with([1.0, 0.0, 0.0, 0.0]);
-    // Чверть оберту навколо світового `+X`, тобто навколо осі погляду: вісь
-    // корабля лягає горизонтально.
+    // A quarter turn about world `+X`, i.e. about the view axis: the ship's
+    // axis lies horizontally.
     let half = std::f64::consts::FRAC_PI_4;
     let sideways = scene_with([half.cos(), half.sin(), 0.0, 0.0]);
 
-    let a = shot::take_scene(&gpu, SIZE, SIZE, &upright).expect("кадр");
-    let b = shot::take_scene(&gpu, SIZE, SIZE, &sideways).expect("кадр");
+    let a = shot::take_scene(&gpu, SIZE, SIZE, &upright).expect("a frame");
+    let b = shot::take_scene(&gpu, SIZE, SIZE, &sideways).expect("a frame");
 
-    let (ax0, ay0, ax1, ay1) = lit_bounds(&a).expect("корабля немає");
-    let (bx0, by0, bx1, by1) = lit_bounds(&b).expect("корабля немає");
+    let (ax0, ay0, ax1, ay1) = lit_bounds(&a).expect("there is no ship");
+    let (bx0, by0, bx1, by1) = lit_bounds(&b).expect("there is no ship");
 
     let tall = f64::from(ay1 - ay0 + 1) / f64::from(ax1 - ax0 + 1);
     let wide = f64::from(by1 - by0 + 1) / f64::from(bx1 - bx0 + 1);
 
-    // Стоячий корабель вищий, ніж ширший; покладений — навпаки. Одного
-    // порівняння з одиницею мало: оракул мусить упасти й тоді, коли поворот
-    // не доїхав до GPU взагалі, тобто коли обидва числа однакові.
-    assert!(tall > 1.2, "стоячий корабель має бути високим: {tall}");
-    assert!(wide < 0.8, "покладений корабель має бути широким: {wide}");
+    // An upright ship is taller than it is wide; a laid-down one the other way
+    // round. One comparison against unity would be too little: the oracle must
+    // also fail when the rotation did not reach the GPU at all, i.e. when both
+    // numbers are the same.
+    assert!(tall > 1.2, "an upright ship should be tall: {tall}");
+    assert!(wide < 0.8, "a laid-down ship should be wide: {wide}");
 }
 
-/// Сцена без кораблів — це кадр до кроку V2, і не «майже».
+/// A scene without ships is the frame from before step V2, and not "almost".
 ///
-/// Найдешевший сторож проти того, що новий пайплайн щось малює завжди:
-/// порожній список кораблів не має давати жодного пікселя, а `--shot` зондів
-/// рушія — лишатись `30812bf2…`.
+/// The cheapest guard against the new pipeline always drawing something: an
+/// empty ship list must give not a single pixel, and `--shot` of the engine's
+/// probes must stay `30812bf2...`.
 #[test]
 fn a_scene_without_ships_draws_nothing_new() {
     let Some(gpu) = gpu() else {
@@ -167,9 +171,9 @@ fn a_scene_without_ships_draws_nothing_new() {
     let camera = Camera::look_at(eye, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
     let scene = Scene::new(camera);
 
-    let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene).expect("кадр");
+    let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene).expect("a frame");
     assert!(
         lit_bounds(&shot).is_none(),
-        "порожня сцена намалювала щось, чого в ній немає"
+        "an empty scene drew something that is not in it"
     );
 }
