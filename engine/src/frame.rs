@@ -2540,10 +2540,9 @@ impl Planet {
                     let colours = resident_views(&t.colours, &colour_ids);
                     gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("resident tiles"),
-                        layout: self
-                            .tile_layout
-                            .as_ref()
-                            .expect("макет масиву є рівно тоді, коли є пайплайн рельєфу"),
+                        layout: self.tile_layout.as_ref().expect(
+                            "the array layout exists exactly when the terrain pipeline does",
+                        ),
                         entries: &[
                             wgpu::BindGroupEntry {
                                 binding: 0,
@@ -2577,41 +2576,44 @@ impl Planet {
                     model,
                     light_dir: sun,
                     colour: body.colour,
-                    // `y` — множник «одиниця зберігання кольору → відбивна
-                    // здатність», тобто рівно `Colour::scale`; нуль означає
-                    // «кольору немає», і тоді фрагмент лишається на
+                    // `y` is the multiplier "colour storage unit -> reflectance",
+                    // i.e. exactly `Colour::scale`; zero means "there is no
+                    // colour", and then the fragment falls back on
                     // `Body::colour`.
                     //
-                    // До T5b тут стояла одиниця — заглушка, що розтягувала
-                    // 0.02…0.18 Місяця в 0.08…0.72, бо на лінійній цілі
-                    // справжнє альбедо давало майже чорний диск. Після T5a
-                    // ціль кодує гамму, і причини для заглушки не лишилось:
-                    // 0.044 (медіана мозаїки) — це байт 59, а не 11.
-                    // `z` — скільки каналів у колірному тайлі: один означає
-                    // яскравість (Місяць), чотири — колір (Земля, T7g).
-                    // Шейдер не може спитати про це саму текстуру: у
-                    // bindless-масиві лежать тайли одного тіла, але тип
-                    // ресурсу в WGSL однаковий для обох форматів.
+                    // Before T5b a one stood here -- a stub that stretched the
+                    // Moon's 0.02...0.18 into 0.08...0.72, because on a linear
+                    // target the true albedo gave an almost black disc. Since T5a
+                    // the target encodes gamma, and no reason for the stub is
+                    // left: 0.044 (the mosaic's median) is byte 59, not 11.
+                    //
+                    // `z` is how many channels are in a colour tile: one means
+                    // luminance (the Moon), four means colour (Earth, T7g). The
+                    // shader cannot ask the texture itself about this: a bindless
+                    // array holds the tiles of one body, but the resource type in
+                    // WGSL is the same for both formats.
                     terrain: [
                         height_scale,
                         colour.map_or(0.0, |c| c.scale),
                         colour.map_or(0.0, |c| c.channels as f32),
-                        // Рівень моря їде в тих самих одиницях, у яких шейдер
-                        // читає висоту, тобто без жодного перерахунку: сухе
-                        // тіло несе `NO_SEA`, і порівняння там не справджується
-                        // ніколи. Гладке тіло теж — у нього висоти немає.
+                        // Sea level travels in the same units the shader reads
+                        // height in, i.e. with no conversion at all: a dry body
+                        // carries `NO_SEA`, and the comparison there never holds.
+                        // A smooth body likewise -- it has no height.
                         terrain.map_or(tiles::NO_SEA, |t| t.data.sea_units),
                     ],
-                    // Процедурний детайл (R7c). Гладке тіло дістає нулі: без
-                    // тайлів нахилу нема звідки взяти, а деталь без нахилу —
-                    // це рівний килим, тобто рівно те, чого крок не робить.
+                    // Procedural detail (R7c). A smooth body gets zeros: without
+                    // tiles there is nowhere to take the slope from, and detail
+                    // without slope is an even carpet -- exactly what the step does
+                    // not do.
                     detail: match terrain {
                         Some(_) => [
                             body.radius_m as f32,
-                            // Одиниця зберігання нахилу — стала, не властивість
-                            // тіла: нахил безрозмірний (етап W). Тут вона рівно
-                            // тому, що шейдер має перевести прочитаний `i16` у
-                            // метри на метр, а іншої константи в нього немає.
+                            // The slope's storage unit is a constant, not a
+                            // property of the body: slope is dimensionless (stage
+                            // W). It is here for exactly one reason -- the shader
+                            // has to turn the `i16` it read into metres per metre,
+                            // and it has no other constant for that.
                             tiles::SLOPE_UNIT as f32,
                             detail::base_m(body.radius_m) as f32,
                             focal as f32,
@@ -2628,7 +2630,7 @@ impl Planet {
         }
     }
 
-    /// Відбір у compute: по групі на 64 кандидати, на тіло.
+    /// Culling in compute: one group per 64 candidates, per body.
     fn cull(&self, encoder: &mut wgpu::CommandEncoder) {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("cull"),
@@ -2647,9 +2649,10 @@ impl Planet {
     fn draw(&self, pass: &mut wgpu::RenderPass<'_>, index: usize) {
         let offset = (index as u64 * PASS_STRIDE) as u32;
 
-        // Виклик на **тіло**, а не на патч (R6a). Вершинних буферів немає
-        // взагалі: геометрія, початки й список того, що малюється, приходять
-        // storage-буферами, а номер вершини й номер інстансу дає конвеєр.
+        // One call per **body**, not per patch (R6a). There are no vertex
+        // buffers at all: the geometry, the origins and the list of what is drawn
+        // arrive in storage buffers, and the vertex index and instance index are
+        // given by the pipeline.
         for body in &self.bodies {
             if body.candidates == 0 {
                 continue;
@@ -2667,28 +2670,30 @@ impl Planet {
                     }
                 }
             }
-            // Скільки інстансів — знає лише GPU: лічильник наростив compute.
+            // How many instances there are is known only to the GPU: compute
+            // incremented the counter.
             pass.draw_indirect(&body.indirect_buffer, 0);
         }
     }
 }
 
-/// Сяйво найближчої планети на точку — з тим самим альбедо, яким кадр малює
-/// поверхню під нею (T6c).
+/// The nearest planet's shine on a point -- with the same albedo the frame paints
+/// the surface beneath it with (T6c).
 ///
-/// Живе тут, а не в `engine::planetshine`, з однієї причини: альбедо тіла з
-/// тайлсетом лежить **у кадрі**, а не в сцені. `TileSet::Loaded` — це хендл,
-/// і рушій свідомо не дає грі знати, що за ним (R5c); отже поєднати «яке
-/// тіло найближче» з «який у нього асет» може лише той, хто тримає слоти.
+/// It lives here rather than in `engine::planetshine` for one reason: the albedo
+/// of a body with a tileset lies **in the frame**, not in the scene.
+/// `TileSet::Loaded` is a handle, and the engine deliberately does not let the
+/// game know what is behind it (R5c); so combining "which body is nearest" with
+/// "what asset it has" can only be done by whoever holds the slots.
 fn shine_of(scene: &Scene, surfaces: &[TerrainSlot], point: [f64; 3]) -> planetshine::Shine {
     let Some(k) = planetshine::nearest_body(scene, point) else {
         return planetshine::Shine::none();
     };
     let body = &scene.bodies[k];
 
-    // Тайлсет прибитий до поверхні, тож напрямок треба перевести в систему
-    // тіла — тобто повернути **назад**. Транспонована матриця повороту й є
-    // оберненою: вона ортогональна.
+    // The tileset is nailed to the surface, so the direction has to be taken into
+    // the body's frame -- i.e. rotated **back**. The transposed rotation matrix is
+    // the inverse: it is orthogonal.
     let colour = match body.tiles {
         TileSet::Loaded(id) => surfaces.get(id.0).and_then(|slot| slot.colour.as_ref()),
         TileSet::Smooth => None,
@@ -2708,8 +2713,9 @@ fn shine_of(scene: &Scene, surfaces: &[TerrainSlot], point: [f64; 3]) -> planets
         r[0][1] * out[0] + r[1][1] * out[1] + r[2][1] * out[2],
         r[0][2] * out[0] + r[1][2] * out[1] + r[2][2] * out[2],
     ];
-    // Один канал — сірий, як і сама поверхня в кадрі: `surface_albedo`
-    // повертає `float3(unit · scale)`, а не колір тіла (T3b).
+    // One channel means grey, like the surface itself in the frame:
+    // `surface_albedo` returns `float3(unit * scale)`, not the body's colour
+    // (T3b).
     let unit = colour.under(local, 0);
     planetshine::from_body_albedo(body, point, scene.sun, [unit; 3])
 }
@@ -2732,7 +2738,7 @@ impl Ships {
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
-                        // Зсув на прохід, як у ламаних і патчів.
+                        // An offset per pass, as with polylines and patches.
                         has_dynamic_offset: true,
                         min_binding_size: std::num::NonZeroU64::new(SHIP_UNIFORM_BYTES),
                     },
@@ -2763,16 +2769,16 @@ impl Ships {
             offset: 0,
             shader_location: 2,
         }];
-        // Матеріал — атрибут вершини з тієї самої причини, що й колір: усі
-        // записи в чергу відбуваються ДО проходу, тож з uniform виграв би
-        // останній корабель (J1).
+        // The material is a vertex attribute for the same reason as the colour:
+        // all queue writes happen BEFORE the pass, so from a uniform the last ship
+        // would win (J1).
         let material_attrs = [wgpu::VertexAttribute {
             format: wgpu::VertexFormat::Float32x2,
             offset: 0,
             shader_location: 3,
         }];
-        // Сяйво планети (T6) — теж на вершину, і з тієї ж причини: два
-        // кораблі можуть висіти над різними місцями.
+        // The planet's shine (T6) is per vertex too, and for the same reason: two
+        // ships can hang above different places.
         let shine_attrs = [
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x3,
@@ -2833,11 +2839,11 @@ impl Ships {
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                 }),
-                // Без відсікання граней, з тієї самої причини, що у сфери:
-                // корпус замкнений, і найближчу поверхню вибирає тест
-                // глибини. Оболонки корабля до того ж перетинаються
-                // (стабілізатор входить у корпус), тож правильного «зовні»
-                // для спільного об'єму не існує взагалі.
+                // No face culling, for the same reason as the sphere: the hull is
+                // closed, and the nearest surface is picked by the depth test. The
+                // ship's shells intersect each other besides
+                // (a fin enters the hull), so a correct "outside" for the shared
+                // volume does not exist at all.
                 primitive: wgpu::PrimitiveState {
                     cull_mode: None,
                     ..Default::default()
@@ -2874,7 +2880,7 @@ impl Ships {
             }],
         });
 
-        // Одинична висота: масштаб прикладає CPU разом із поворотом.
+        // Unit height: the CPU applies the scale together with the rotation.
         let mesh = crate::ship::generate(1.0);
         let index_bytes: Vec<u8> = mesh.indices.iter().flat_map(|i| i.to_le_bytes()).collect();
         let index_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -2897,8 +2903,9 @@ impl Ships {
             index_buffer,
             index_count,
             vertices_per_ship,
-            // Заглушка V1 фарби не має: її колір — це `Ship::colour`, і саме
-            // тому кадр без ассета лишається бітово тим, чим був до T9b.
+            // V1's stub has no paint: its colour is `Ship::colour`, and that is
+            // exactly why a frame without the asset stays bitwise what it was
+            // before T9b.
             paint: Vec::new(),
             mesh,
             position_buffer,
@@ -2915,13 +2922,13 @@ impl Ships {
         }
     }
 
-    /// Замінити геометрію корабля на іншу (етап T, крок T5d3).
+    /// Replace the ship's geometry with another (stage T, step T5d3).
     ///
-    /// Меш у кадрі **один на всі кораблі**, і це не спрощення заради коду:
-    /// у гри сьогодні один тип апарата, а структура, у якої немає другого
-    /// викликача, гірша за свою відсутність (CLAUDE.md). Другий тип корпусу
-    /// приведе за собою і хендл у `Scene::Ship`, як `TileSet::Loaded` — але
-    /// разом із собою, а не наперед.
+    /// The frame has **one mesh for all ships**, and that is not a simplification
+    /// for the code's sake: the game has one type of craft today, and a struct
+    /// with no second caller is worse than its absence (CLAUDE.md). A second hull
+    /// type will bring a handle in `Scene::Ship` along with it, like
+    /// `TileSet::Loaded` -- but along with itself, not in advance.
     fn load(&mut self, gpu: &Gpu, mesh: &crate::sphere::Mesh, paint: &[[f32; 3]]) {
         let index_bytes: Vec<u8> = mesh.indices.iter().flat_map(|i| i.to_le_bytes()).collect();
         self.index_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -2936,9 +2943,10 @@ impl Ships {
         self.mesh = mesh.clone();
         self.paint = paint.to_vec();
 
-        // Вершинні буфери перевиділяються тут, а не при першому `upload`:
-        // їхній розмір рахується з `vertices_per_ship`, і лишити старий
-        // означало б писати новий меш у буфер під старий.
+        // The vertex buffers are reallocated here rather than on the first
+        // `upload`: their size is computed from `vertices_per_ship`, and keeping
+        // the old one would mean writing a new mesh into a buffer sized for the
+        // old.
         self.capacity = self.vertices_per_ship;
         let (position, normal, colour, material, shine) = Ships::buffers(gpu, self.capacity);
         self.position_buffer = position;
@@ -2975,23 +2983,26 @@ impl Ships {
         )
     }
 
-    /// Позиції — camera-relative у `f64`, нормалі — повернуті в світ.
+    /// Positions are camera-relative in `f64`, normals are rotated into world
+    /// space.
     ///
-    /// Світова позиція вершини будується як `центр + R·(h·s)`, тобто в тому
-    /// самому порядку, що початок патча (R1d): множення на висоту йде **до**
-    /// віднімання камери, і жодне мале число не додається до великого двічі.
+    /// A vertex's world position is built as `centre + R*(h*s)`, i.e. in the same
+    /// order as a patch's origin (R1d): multiplication by the height comes
+    /// **before** subtracting the camera, and no small number is added to a large
+    /// one twice.
     fn upload(&mut self, gpu: &Gpu, scene: &Scene, passes: &[Pass], surfaces: &[TerrainSlot]) {
         if scene.ships.is_empty() {
             return;
         }
-        // ⚠ **Світило й нормалі повертаються в КАМЕРНІ осі, і це не смак.**
-        // Позиції вершин корабля вже камерні (`Camera::relative` повертає, а
-        // не лише віднімає), а з T5c шейдер бере з них напрямок на око:
-        // `view = −position`. Отже нормаль і світило, лишені у світових осях,
-        // порівнювалися б з вектором іншого простору — `n·l` тоді просто
-        // неправильний, і жоден тест про «яскравість більша за нуль» цього не
-        // побачив би. До T5c шейдер ока не мав узагалі, тож світові осі там
-        // були самоузгоджені.
+        // WARNING: **the light and the normals are rotated into CAMERA axes, and
+        // that is not taste.** The ship's vertex positions are already
+        // camera-space (`Camera::relative` rotates, not merely subtracts), and
+        // since T5c the shader takes the direction to the eye from them:
+        // `view = -position`. So a normal and a light left in world axes would be
+        // compared against a vector from another space -- `dot(n, l)` is then
+        // simply wrong, and no test about "brightness above zero" would see it.
+        // Before T5c the shader had no eye at all, so world axes were
+        // self-consistent there.
         let sun = {
             let d = scene.camera.rotate(scene.sun);
             [d[0], d[1], d[2], 0.0]
@@ -3015,9 +3026,9 @@ impl Ships {
         self.shine_bytes.clear();
 
         for ship in &scene.ships {
-            // Сяйво планети рахується **раз на корабель** (T6): воно залежить
-            // від того, де корабель висить, а не від того, де його вершина.
-            // Напрямок — у камерні осі, як усе інше в цьому пайплайні.
+            // The planet's shine is computed **once per ship** (T6): it depends
+            // on where the ship hangs, not on where its vertex is. The direction
+            // goes into camera axes, like everything else in this pipeline.
             let shine = shine_of(scene, surfaces, ship.centre);
             let shine_dir = scene.camera.rotate(shine.direction);
             let shine_rgb = shine.irradiance.map(|v| v as f32);
@@ -3052,8 +3063,8 @@ impl Ships {
                     self.position_bytes.extend_from_slice(&value.to_le_bytes());
                 }
 
-                // Поворот корабля, а потім у камерні осі — той самий простір,
-                // у якому лежать позиції й світило.
+                // The ship's rotation, then into camera axes -- the same space the
+                // positions and the light lie in.
                 let n = scene.camera.rotate(turn([
                     f64::from(normal[0]),
                     f64::from(normal[1]),
@@ -3063,10 +3074,11 @@ impl Ships {
                     self.normal_bytes.extend_from_slice(&value.to_le_bytes());
                 }
 
-                // Фарба моделі **множиться** на колір зі сцени, а не заміняє
-                // його: так `Ship::colour` лишається тим, чим був, — тоном на
-                // корабель, — і гра може підфарбувати борт, не переписуючи
-                // ассет. Білий тон (одиниця) віддає фарбу як є.
+                // The model's paint is **multiplied** by the colour from the
+                // scene rather than replacing it: that way `Ship::colour` stays
+                // what it was -- a tint per ship -- and the game can tint a hull
+                // without rewriting the asset. A white tint (one) hands the paint
+                // back as it is.
                 let paint = self.paint.get(index).copied().unwrap_or([1.0; 3]);
                 let base = [
                     ship.colour[0] * paint[0],
@@ -3127,7 +3139,7 @@ impl Ships {
         pass.set_vertex_buffer(4, self.shine_buffer.slice(..));
         pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
-        // Виклик на корабель: індекси спільні, зсуває їх `base_vertex`.
+        // One call per ship: the indices are shared, `base_vertex` shifts them.
         for k in 0..scene.ships.len() {
             let base = (k * self.vertices_per_ship) as i32;
             pass.draw_indexed(0..self.index_count, base, 0..1);
@@ -3153,7 +3165,8 @@ impl Lines {
                     visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
-                        // Як і в патчів: зсув на прохід, а не буфер на прохід.
+                        // As with the patches: an offset per pass, not a buffer
+                        // per pass.
                         has_dynamic_offset: true,
                         min_binding_size: std::num::NonZeroU64::new(LINE_UNIFORM_BYTES),
                     },
@@ -3208,11 +3221,12 @@ impl Lines {
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
-                        // Змішування ввімкнене саме тут і саме для ламаних:
-                        // PROJECT.md §7 вимагає крив нульової швидкості
-                        // «напівпрозорим шаром», а це і є ламані з альфою
-                        // менше одиниці (U6b3). Решта ламаних мають альфу 1.0
-                        // і від цього не змінюються — перевірено знімком.
+                        // Blending is enabled right here and specifically for the
+                        // polylines: PROJECT.md section 7 requires zero-velocity
+                        // curves as a "translucent layer", and that is exactly
+                        // polylines with alpha below one (U6b3). The rest of the
+                        // polylines have alpha 1.0 and are unchanged by it --
+                        // checked by screenshot.
                         blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -3221,9 +3235,10 @@ impl Lines {
                     topology: wgpu::PrimitiveTopology::LineStrip,
                     ..Default::default()
                 },
-                // Глибина спільна зі сферою, і запис теж увімкнений: ділянка
-                // траєкторії за планетою мусить зникати за лімбом. Це не
-                // косметика — саме по ній видно, з якого боку апарат.
+                // The depth buffer is shared with the sphere, and writing is on
+                // too: the stretch of trajectory behind the planet must disappear
+                // past the limb. That is not cosmetic -- it is what shows which
+                // side the craft is on.
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: depth::FORMAT,
                     depth_write_enabled: Some(true),
@@ -3256,8 +3271,8 @@ impl Lines {
             }],
         });
 
-        // Порожні буфери робити не можна (валідація), тож одна вершина —
-        // місткість, з якої починаємо. Вона одразу ж і виросте.
+        // Empty buffers cannot be created (validation), so one vertex is the
+        // capacity we start from. It will grow immediately.
         let (position_buffer, colour_buffer) = Lines::buffers(gpu, 1);
 
         Lines {
@@ -3291,9 +3306,9 @@ impl Lines {
         }
 
         if vertices > self.capacity {
-            // Подвоєння, а не «рівно скільки треба»: прогноз росте ланка за
-            // ланкою, і буфер під точний розмір перевиділявся б на кожному
-            // тіку симуляції.
+            // Doubling rather than "exactly as much as needed": the prediction
+            // grows leg by leg, and a buffer sized exactly would be reallocated on
+            // every tick of the simulation.
             self.capacity = vertices.next_power_of_two();
             let (position_buffer, colour_buffer) = Lines::buffers(gpu, self.capacity);
             self.position_buffer = position_buffer;
@@ -3340,9 +3355,9 @@ impl Lines {
         pass.set_vertex_buffer(0, self.position_buffer.slice(..));
         pass.set_vertex_buffer(1, self.colour_buffer.slice(..));
 
-        // Один виклик на ламану: `LineStrip` з'єднав би останню вершину однієї
-        // з першою наступної, і кадр отримав би відрізок, якого ніхто не
-        // рахував.
+        // One call per polyline: `LineStrip` would join the last vertex of one to
+        // the first of the next, and the frame would get a segment nobody
+        // computed.
         let mut first = 0u32;
         for line in &scene.polylines {
             let count = line.points.len() as u32;
@@ -3358,12 +3373,13 @@ impl Lines {
 mod tests {
     use super::*;
 
-    /// Колір очищення справді пишеться тими байтами, які обіцяє.
+    /// The clear colour really does write the bytes it promises.
     ///
-    /// Пара `CLEAR` / [`CLEAR_BYTES`] тримає весь набір перевірок «це небо чи
-    /// щось намальоване» — і в рушії, і в грі, і в палітрі інтерфейсу. Доки
-    /// ціль була лінійною, збіг був тотожністю; з T5a між ними стоїть
-    /// передавальна функція, тобто місце, де вони можуть розійтися мовчки.
+    /// The `CLEAR` / [`CLEAR_BYTES`] pair holds up the whole set of "is this sky
+    /// or something drawn" checks -- in the engine, in the game and in the
+    /// interface's palette. While the target was linear the agreement was an
+    /// identity; since T5a a transfer function stands between them, i.e. a place
+    /// where they can diverge silently.
     #[test]
     fn the_clear_colour_still_writes_the_bytes_it_promises() {
         let got = [
@@ -3371,15 +3387,15 @@ mod tests {
             crate::srgb::linear_to_byte(CLEAR.g),
             crate::srgb::linear_to_byte(CLEAR.b),
         ];
-        assert_eq!(got, CLEAR_BYTES, "небо кадру поїхало");
+        assert_eq!(got, CLEAR_BYTES, "the frame's sky has drifted");
     }
 
-    /// Кватерніон із `[w, x, y, z]` повертає так, як обіцяє його `w`.
+    /// A quaternion from `[w, x, y, z]` rotates the way its `w` promises.
     ///
-    /// Оракул — не «матриця схожа на матрицю», а образ осей при повороті на
-    /// 90° навколо z: `x → y`, `y → −x`, `z → z`. Саме це ловить переставлений
-    /// `w` (R1c: спряжений кватерніон лишається одиничним і обертає так само
-    /// добре, просто в інший бік).
+    /// The oracle is not "the matrix looks like a matrix" but the image of the
+    /// axes under a 90 deg rotation about z: `x -> y`, `y -> -x`, `z -> z`. That
+    /// is what catches a misplaced `w` (R1c: a conjugate quaternion is still a
+    /// unit one and rotates just as well, only the other way).
     #[test]
     fn a_quarter_turn_about_z_takes_x_to_y() {
         let half = std::f64::consts::FRAC_PI_4;
@@ -3396,7 +3412,7 @@ mod tests {
 
         let close = |a: [f64; 3], b: [f64; 3]| {
             for k in 0..3 {
-                assert!((a[k] - b[k]).abs() < 1e-12, "{a:?} проти {b:?}");
+                assert!((a[k] - b[k]).abs() < 1e-12, "{a:?} against {b:?}");
             }
         };
 
@@ -3405,12 +3421,13 @@ mod tests {
         close(apply([0.0, 0.0, 1.0]), [0.0, 0.0, 1.0]);
     }
 
-    /// Матриця моделі робить із зсуву те саме, що поворот із радіусом.
+    /// The model matrix does to an offset what the rotation does with the radius.
     ///
-    /// Дві реалізації того самого перетворення тут навмисно поруч — як
-    /// `Camera::rotate` і `Camera::view_rotation` (R1d): CPU рахує нею початки
-    /// патчів, GPU — зсуви вершин, і розбіжність між ними дала б планету,
-    /// зшиту з двох різних планет.
+    /// Two implementations of the same transform stand side by side here
+    /// deliberately -- like `Camera::rotate` and `Camera::view_rotation` (R1d):
+    /// the CPU computes patch origins with one, the GPU vertex offsets with the
+    /// other, and a divergence between them would give a planet stitched from two
+    /// different planets.
     #[test]
     fn the_model_matrix_scales_and_turns_the_same_way_the_origins_do() {
         let q = [0.923_880, 0.220_942, 0.220_942, 0.220_942];
@@ -3418,31 +3435,34 @@ mod tests {
         let m = rotation(q);
         let model = model_matrix(m, radius);
 
-        // Зсув на одиничній сфері — того ж порядку, що справжні зсуви патча.
+        // An offset on the unit sphere -- of the same order as a patch's real
+        // offsets.
         let offset = [0.31, -0.42, 0.17];
 
         for row in 0..3 {
             let by_cpu =
                 radius * (m[row][0] * offset[0] + m[row][1] * offset[1] + m[row][2] * offset[2]);
-            // Так само, як шейдер: стовпці матриці на компоненти вектора.
+            // Just like the shader: the matrix's columns against the vector's
+            // components.
             let by_matrix = model[0][row] as f64 * offset[0]
                 + model[1][row] as f64 * offset[1]
                 + model[2][row] as f64 * offset[2];
 
-            // Півметра на 6.4·10⁶ м — це `f32` матриці, і нічого понад те.
+            // Half a metre at 6.4e6 m is the matrix's `f32`, and nothing beyond
+            // that.
             assert!(
                 (by_cpu - by_matrix).abs() < 0.5,
-                "рядок {row}: {by_cpu} проти {by_matrix}"
+                "row {row}: {by_cpu} against {by_matrix}"
             );
         }
     }
 
-    /// Ближня площина міряється від найближчого тіла, а не від початку
-    /// координат (R1e).
+    /// The near plane is measured from the nearest body, not from the origin
+    /// (R1e).
     ///
-    /// Оракул — Місяць: камера за 100 км над ним, а Земля за 4·10⁸ м. Висота
-    /// над Землею дала б near у мільйони метрів, тобто кадр, у якому Місяця
-    /// просто немає.
+    /// The oracle is the Moon: the camera is 100 km above it while Earth is 4e8 m
+    /// away. An altitude above Earth would give a near of millions of metres,
+    /// i.e. a frame with no Moon in it at all.
     #[test]
     fn the_near_plane_follows_the_nearest_body() {
         let moon_centre = [4.0e8, 0.0, 0.0];
@@ -3473,27 +3493,16 @@ mod tests {
         let near = Frame::near_for(&scene);
         assert!(
             (near - altitude / 10.0).abs() < 1.0,
-            "near {near} м — це не десята частина висоти над Місяцем"
+            "near {near} m is not a tenth of the altitude above the Moon"
         );
     }
 
-    /// Умова аеральної перспективи — товщина шару в пікселях (S5).
+    /// The near plane backs off from the ship, not from the body beneath it.
     ///
-    /// Три точки, і кожна називає свій випадок. Зблизька число велике й об'єм
-    /// потрібен; на 10⁹ м воно менше за соту пікселя, тобто об'єм 32×32×32
-    /// рахувався б заради нічого. Між ними є висота, на якій воно рівно
-    /// одиниця, і вона виводиться з формули: `товщина · фокус`, тобто
-    /// 6.24·10⁷ м для стокілометрового шару в кадрі 1280×720.
-    ///
-    /// Виміряно, скільки це коштує: 0.49 мс проти 0.23 мс на 6·10⁷ і 6.5·10⁷ м
-    /// відповідно, тобто об'єм подвоює кадр там, де він ще потрібен, і не
-    /// коштує нічого там, де вже ні.
-    /// Ближня площина відходить від корабля, а не від тіла під ним.
-    ///
-    /// Це і є весь крок V2 одним числом. До нього `near` виводилася з висоти
-    /// над найближчим тілом: на орбіті 400 км вона ставала 40 км, тобто все,
-    /// що ближче за сорок кілометрів, зникало з кадру — а корабель стоїть за
-    /// п'ятнадцять метрів.
+    /// This is the whole of step V2 in one number. Before it `near` was derived
+    /// from the altitude above the nearest body: in a 400 km orbit that became
+    /// 40 km, i.e. everything closer than forty kilometres disappeared from the
+    /// frame -- and the ship stands fifteen metres away.
     #[test]
     fn the_near_plane_lets_the_ship_in() {
         let altitude = 400_000.0;
@@ -3514,10 +3523,10 @@ mod tests {
         let without = Frame::near_for(&scene);
         assert!(
             without > 1000.0,
-            "без корабля near мала лишитись величиною висоти: {without}"
+            "without a ship, near should have stayed the size of the altitude: {without}"
         );
 
-        // Корабель за п'ятнадцять метрів перед камерою, тобто трохи нижче.
+        // A ship fifteen metres in front of the camera, i.e. slightly lower.
         let distance = 15.0;
         scene.ships.push(scene::Ship {
             centre: [eye[0] - distance, 0.0, 0.0],
@@ -3533,10 +3542,23 @@ mod tests {
         let hull = distance - 0.5 * crate::ship::DEFAULT_HEIGHT_M;
         assert!(
             with < hull,
-            "near {with} не пропускає корпус, найближча точка якого за {hull} м"
+            "near {with} does not let in the hull, whose nearest point is {hull} m away"
         );
     }
 
+    /// The condition for aerial perspective is the shell's thickness in pixels
+    /// (S5).
+    ///
+    /// Three points, and each names its own case. Up close the number is large
+    /// and the volume is needed; at 1e9 m it is below a hundredth of a pixel, i.e.
+    /// a 32x32x32 volume would be computed for nothing. Between them is an
+    /// altitude at which it is exactly one, and that follows from the formula:
+    /// `thickness * focal`, i.e. 6.24e7 m for a hundred-kilometre shell in a
+    /// 1280x720 frame.
+    ///
+    /// What it costs is measured: 0.49 ms against 0.23 ms at 6e7 and 6.5e7 m
+    /// respectively -- that is, the volume doubles the frame where it is still
+    /// needed and costs nothing where it no longer is.
     #[test]
     fn the_aerial_volume_is_skipped_when_the_air_is_thinner_than_a_pixel() {
         let air = scene::Atmosphere::EARTH.with_surface(sphere::EARTH_RADIUS_M);
@@ -3555,35 +3577,39 @@ mod tests {
             Frame::shell_px(&air, bottom, &view, focal)
         };
 
-        // Всередині повітря — на порядки більше за піксель.
+        // Inside the air -- orders of magnitude more than a pixel.
         assert!(at(1.0e4) > 1000.0, "{}", at(1.0e4));
-        // З 10⁹ м — соті пікселя: шейдити крізь повітря нема чого.
+        // From 1e9 m -- hundredths of a pixel: there is nothing to shade through
+        // the air.
         assert!(at(1.0e9) < 0.1, "{}", at(1.0e9));
-        // Межа рівно там, де каже формула.
+        // The threshold is exactly where the formula says.
         let threshold = air.thickness_m(bottom) * focal;
         assert!((at(threshold) - 1.0).abs() < 1.0e-9, "{}", at(threshold));
         assert!(at(threshold * 1.01) < 1.0 && at(threshold * 0.99) > 1.0);
     }
 
-    /// Корабель за метри й планета за мільйони метрів в одному кадрі — це
-    /// **два** діапазони глибини, і це перша сцена, у якій їх більше одного
-    /// (V3).
+    /// A ship metres away and a planet millions of metres away in one frame make
+    /// **two** depth ranges, and this is the first scene with more than one (V3).
     ///
-    /// Число, з якого воно виходить, виміряно на F3: один буфер тримає сім
-    /// порядків. Тут розмах `far/near` = 1.15·10⁷, тобто 7.06 порядка — на
-    /// шість сотих більше за той, що вміщається в один прохід. Тому сцена
-    /// зондів рушія (розмах 22.7) лишається однопрохідною, а ця — ні.
+    /// The number it follows from was measured in F3: one buffer holds seven
+    /// decades. Here the span `far/near` is 1.15e7, i.e. 7.06 decades -- six
+    /// hundredths more than fits into a single pass. That is why the engine's
+    /// probe scene (span 22.7) stays single-pass and this one does not.
     ///
-    /// Межа перевіряється не «приблизно там»: вона мусить лягти в порожнечу
-    /// **між** корпусом і поверхнею, і обидва краї названі числами сцени, а не
-    /// константами тесту.
+    /// The boundary is not checked as "roughly there": it must land in the void
+    /// **between** the hull and the surface, and both edges are named by the
+    /// scene's numbers rather than by the test's constants.
     #[test]
     fn a_ship_over_a_planet_needs_two_depth_ranges() {
         let scene =
             crate::ship_demo::scene_at(0, crate::ship_demo::FRAMES, crate::ship_demo::STUB_EXTENT);
         let ranges = Frame::depth_ranges(&scene, 16.0 / 9.0);
 
-        assert_eq!(ranges.len(), 2, "діапазонів мало б бути два: {ranges:?}");
+        assert_eq!(
+            ranges.len(),
+            2,
+            "there should have been two ranges: {ranges:?}"
+        );
 
         let eye = scene.camera.position();
         let range = |p: [f64; 3]| {
@@ -3595,53 +3621,55 @@ mod tests {
         let body = &scene.bodies[0];
         let surface = range(body.centre) - body.radius_m;
 
-        // Ближня площина — те саме число, що дає `near_for`; межа — наступна.
+        // The near plane is the same number `near_for` gives; the boundary is the
+        // next one.
         assert!(
             (ranges[0] - Frame::near_for(&scene)).abs() < 1.0e-9,
-            "ближня площина плану розійшлася з near_for: {ranges:?}"
+            "the plan's near plane has diverged from near_for: {ranges:?}"
         );
         let boundary = ranges[1];
         assert!(
             boundary > hull_far,
-            "межа {boundary} м ріже корпус, який тягнеться до {hull_far} м"
+            "the boundary at {boundary} m cuts the hull, which reaches to {hull_far} m"
         );
         assert!(
             boundary < surface,
-            "межа {boundary} м лежить під поверхнею, до якої {surface} м"
+            "the boundary at {boundary} m lies below the surface, which is {surface} m away"
         );
     }
 
-    /// Розвилка кроку V3, закрита арифметикою, а не одним кадром: **межа
-    /// діапазонів не потрапляє в корпус ніколи**.
+    /// Step V3's fork, closed by arithmetic rather than by a single frame: **the
+    /// range boundary never falls inside the hull**.
     ///
-    /// Доведення коротке, і саме тому воно варте тесту, а не коментаря. Другий
-    /// діапазон з'являється лише при розмаху понад 10⁷, тож найменше можливе
-    /// відношення сусідніх меж — `√10⁷ ≈ 3162` (три й чотири діапазони роблять
-    /// його ще більшим). Межа стоїть на `near·3162`, а `near` — це десята
-    /// частина відстані до найближчої точки корпусу. Тобто межа не ближча за
-    /// 316 висот, а корпус тягнеться щонайбільше на два своїх габарити.
-    /// Зійтися вони могли б хіба тоді, коли камера впритул до корпусу — а там
-    /// `near` впирається в поріг 0.1 м і межа все одно лишається за сотні
-    /// метрів.
+    /// The proof is short, and that is exactly why it is worth a test rather than
+    /// a comment. A second range appears only at a span above 1e7, so the smallest
+    /// possible ratio of neighbouring boundaries is `sqrt(1e7) ~= 3162` (three and
+    /// four ranges make it larger still). The boundary stands at `near*3162`, and
+    /// `near` is a tenth of the distance to the hull's nearest point. So the
+    /// boundary is no closer than 316 of those distances, while the hull reaches
+    /// at most two of its own extents. They could meet only with the camera right
+    /// against the hull -- and there `near` runs into the 0.1 m floor and the
+    /// boundary still stays hundreds of metres away.
     ///
-    /// Перевірка — свіп, а не одна точка, і напрямок на камеру навмисно
-    /// несиметричний: фікстура, що стоїть рівно над центром грані куба, вже
-    /// ховала дві помилки поспіль (D13, D14).
+    /// The check is a sweep rather than one point, and the direction to the camera
+    /// is deliberately asymmetric: a fixture standing exactly above the centre of
+    /// a cube face has already hidden two bugs in a row (D13, D14).
     #[test]
     fn the_range_boundary_never_falls_inside_the_hull() {
         let radius = sphere::EARTH_RADIUS_M;
         let height = crate::ship::DEFAULT_HEIGHT_M;
         let extent = 0.5 * height;
 
-        // Косий напрямок: жодна вісь не збігається з віссю світу.
+        // An oblique direction: no axis coincides with a world axis.
         let dir = {
             let v: [f64; 3] = [0.37, -0.51, 0.77];
             let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
             [v[0] / n, v[1] / n, v[2] / n]
         };
 
-        // Від «камера торкається корпусу» до «корабель — крапка в кадрі», і
-        // висоти орбіти теж різні: від дотику до поверхні до геостаціонарної.
+        // From "the camera touches the hull" to "the ship is a dot in the frame",
+        // and the orbital altitudes differ too: from grazing the surface to
+        // geostationary.
         for altitude in [1.0e3, 4.0e5, 3.6e7] {
             let centre = [
                 dir[0] * (radius + altitude),
@@ -3678,13 +3706,13 @@ mod tests {
 
                 let ranges = Frame::depth_ranges(&scene, 16.0 / 9.0);
 
-                // Ближня площина пропускає корпус — те саме твердження, що
-                // в V2, але тепер на всьому свіпі, а не в одній точці.
+                // The near plane lets the hull in -- the same statement as in V2,
+                // but now over the whole sweep rather than at one point.
                 let near = Frame::near_for(&scene);
                 let hull_near = (distance - extent).max(0.0);
                 assert!(
                     near <= hull_near.max(0.1),
-                    "висота {altitude}, відстань {distance}: near {near} ріже корпус з {hull_near}"
+                    "altitude {altitude}, distance {distance}: near {near} cuts the hull at {hull_near}"
                 );
 
                 let Some(&boundary) = ranges.get(1) else {
@@ -3693,8 +3721,8 @@ mod tests {
                 let hull_far = distance + extent;
                 assert!(
                     boundary > hull_far,
-                    "висота {altitude}, відстань {distance}: межа {boundary} впала в корпус,
-                     який тягнеться до {hull_far} м"
+                    "altitude {altitude}, distance {distance}: the boundary {boundary} fell inside the hull,
+                     which reaches to {hull_far} m"
                 );
             }
         }
