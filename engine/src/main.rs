@@ -559,9 +559,11 @@ fn run_perf_probe() -> Result<(), String> {
         }
     }
 
-    // Debt D19 on its own threshold: two tiled bodies in one frame (T7h). The
-    // debt's question is literal -- a texture array pays for its size rather
-    // than for what is drawn -- so it is the sum that is checked.
+    // Two tiled bodies in one frame (T7h) -- the row that took debt D19 over
+    // its threshold. The debt's question was literal: a texture array paid for
+    // its length rather than for what was drawn, so it is the sum that is
+    // checked. Y1 closed it, and the row now guards the closure: the ns/texture
+    // column should read far below the 61-78 it once did.
     match (
         surface_assets("assets/moon.dem", "assets/moon.col"),
         surface_assets("assets/earth.dem", "assets/earth.col"),
@@ -573,7 +575,7 @@ fn run_perf_probe() -> Result<(), String> {
             let moon_textures = textures(&moon_dem, &moon_col);
             let earth_textures = textures(&earth_dem, &earth_col);
             println!(
-                "\nTwo tiled bodies (debt D19): the camera at 1e9 m, both bodies a\n\
+                "\nTwo tiled bodies (once debt D19): the camera at 1e9 m, both bodies a\n\
                  few pixels across -- the difference is array binding, not drawing.\n\n\
                  Moon {moon_textures} textures, Earth {earth_textures}, {} together.\n",
                 moon_textures + earth_textures
@@ -611,7 +613,7 @@ fn run_perf_probe() -> Result<(), String> {
             }
         }
         _ => println!(
-            "\nTwo tiled bodies (D19): both assets are missing from disk -- row skipped.\n\
+            "\nTwo tiled bodies: both assets are missing from disk -- row skipped.\n\
              \x20              to fix: make cook-dem && make cook-colour, then\n\
              \x20              cargo run -p dem-cook -- --body earth [--colour]"
         ),

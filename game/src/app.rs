@@ -117,8 +117,8 @@ struct State {
     /// absent (`make cook-dem` makes it, and it is not in git). A game with a
     /// smooth Moon is a working state, not an error.
     moon_terrain: Option<engine::scene::TerrainId>,
-    /// The same for Earth (T7g). The second body with tiles, and the D19
-    /// threshold.
+    /// The same for Earth (T7g). The second body with tiles, and the one that
+    /// took debt D19 over its own threshold.
     earth_terrain: Option<engine::scene::TerrainId>,
 
     /// The world lives in its own thread; here there is only a handle to it
@@ -185,8 +185,10 @@ pub const MOON_COLOUR_ASSET: &str = "assets/moon.col";
 
 /// Earth's cooked terrain and colour (stage T, T7d and T7e).
 ///
-/// The second body with tiles, and the first on which the cost of bindless
-/// arrays is paid by their size rather than by what is drawn (debt D19).
+/// The second body with tiles, and the one that made the cost of bindless
+/// arrays worth paying down: binding was charged by the array's length rather
+/// than by what was drawn, which is what debt D19 was. Closed by Y1 -- the
+/// frame now binds the tiles it reads.
 pub const EARTH_TERRAIN_ASSET: &str = "assets/earth.dem";
 pub const EARTH_COLOUR_ASSET: &str = "assets/earth.col";
 

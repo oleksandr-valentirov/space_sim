@@ -87,9 +87,10 @@
 //! answer to Q3, named before the format changed.
 //!
 //! WARNING: **Array binding time does not depend on the format at all** --
-//! 1.0-1.1 ms for 8190 textures across all seven rows. This is exactly what
-//! debt D19 says: the driver pays for the **number** of textures, not for
-//! their size, so a baked slope does not make D19 worse by a microsecond.
+//! 1.0-1.1 ms for 8190 textures across all seven rows. That was the mechanism
+//! behind debt D19: the driver paid for the **number** of textures and not for
+//! their size, so a baked slope did not make it worse by a microsecond -- and
+//! so the cure had to be binding fewer of them, which is what Y1 did.
 
 use std::time::Instant;
 

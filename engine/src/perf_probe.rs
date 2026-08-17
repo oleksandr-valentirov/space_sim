@@ -364,12 +364,17 @@ pub fn tile_cost(
 }
 
 /// What a frame costs with **two** bodies that have tiles of their own (T7h,
-/// debt D19).
+/// once debt D19).
 ///
-/// The debt's question is literal: a texture array pays every frame for its
-/// size rather than for what is drawn, so two bodies with pyramids pay twice.
-/// T8 measured this on one body and predicted the sum; here the sum is
-/// checked.
+/// The debt's question was literal: a texture array paid every frame for its
+/// length rather than for what was drawn, so two bodies with pyramids paid
+/// twice. T8 measured that on one body and predicted the sum; this row checked
+/// the sum, and it came to 1.85-2.07 ms.
+///
+/// Y1 closed the debt, so the row now measures the opposite claim: the frame
+/// binds what it reads, and two pyramids should cost a fraction of what they
+/// did. It is kept for exactly that -- the cheapest place a regression would
+/// show up.
 ///
 /// Both bodies in frame are small -- the camera stands so that each takes a
 /// few pixels. That is deliberate: otherwise the work of the second set of

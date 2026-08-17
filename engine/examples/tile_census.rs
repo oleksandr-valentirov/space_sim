@@ -1,14 +1,17 @@
 //! Y1a: how many tiles does a frame actually read? (ROADMAP.md, stage Y)
 //!
-//! The go/no-go for the whole of Y1. Debt D19 charges 1.86-2.04 ms per frame
-//! for the **length** of the bindless array -- 26,616 textures across two
-//! bodies -- regardless of what is drawn. A resident set replaces that with
-//! the cost of what the frame actually reads, so the saving is worth exactly
-//! the ratio between the two numbers, and only one of them is known.
+//! The go/no-go for the whole of Y1, and it said go. Debt D19 charged the
+//! frame for the **length** of the bindless array -- 26,616 textures across
+//! two bodies -- regardless of what was drawn. A resident set replaces that
+//! with the cost of what the frame actually reads, so the saving was worth
+//! exactly the ratio between the two numbers, and only one of them was known.
 //!
-//! If the set is not two or three orders below 26,616, Y1 does not pay for
-//! itself and an hour here is a cheap way to learn that. Hence a census
-//! before the work, not a measurement after it.
+//! If the set had not been two or three orders below 26,616, Y1 would not have
+//! paid for itself, and an hour here was a cheap way to learn that. Hence a
+//! census before the work, not a measurement after it.
+//!
+//! It still runs, and it is still the number to look at when a new pyramid is
+//! added (Y2-Y4): what the resident set costs is what the frame reads.
 //!
 //! ## Why this counts `lod::select` rather than the compute cull
 //!
@@ -101,9 +104,9 @@ fn main() -> Result<(), String> {
             &std::fs::read(colour_path).map_err(|e| format!("{colour_path}: {e}"))?,
         )?;
 
-        // What the bindless array declares today: the whole pyramid, both
-        // channels, bound whole every frame. This is the number D19 charges
-        // for.
+        // The whole pyramid, both channels. Until Y1b this was also what got
+        // bound every frame, and so exactly what D19 charged for; now it is
+        // the denominator -- what the resident set is being compared against.
         let declared = tiles::count(terrain.levels) + tiles::count(colour.levels);
         total_declared += declared;
 
