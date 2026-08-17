@@ -1,28 +1,31 @@
-//! Траєкторія, порахована зараз, а не прочитана з CSV (ROADMAP H5).
+//! A trajectory computed now, not read from a CSV (ROADMAP H5).
 //!
-//! Це перше місце, де фізика й рендер бачать одне одного. До нього рушій
-//! малював фікстури: `data/fixture/halo_inertial.csv` — готовий експорт
-//! `core/export/ex_trajectory`, а `engine` навіть не лінкував `core-rs`.
-//! Тепер лінкує, і лінія в кадрі — вихід `prop_run`, а не колонка тексту.
+//! This is the first place where physics and the renderer see each other.
+//! Before it the engine drew fixtures: `data/fixture/halo_inertial.csv`, a
+//! ready export of `core/export/ex_trajectory`, and `engine` did not even link
+//! `core-rs`. Now it does, and the line in the frame is the output of
+//! `prop_run` rather than a column of text.
 //!
-//! Що саме тут відбувається, у трьох рядках:
+//! What happens here, in three lines:
 //!
-//!   1. стан апарата з першого семпла фікстури — саме заради нього в експорт
-//!      повернули `vx,vy,vz`: пропагатору потрібен стан, а не позиція;
-//!   2. `core_rs::Propagator` веде його крізь поле десяти тіл ассета,
-//!      ланками по буферу — тобто рівно так, як це робитиме гра;
-//!   3. на кожен семпл питаємо в ефемериди, де тоді були Земля й Місяць, —
-//!      бо саме це малює `trajectory_render`, і саме на цьому стоїть
-//!      перетворення фрейму (PROJECT.md §7).
+//!   1. the vessel state from the fixture's first sample -- `vx,vy,vz` were
+//!      brought back into the export exactly for this: the propagator needs a
+//!      state, not a position;
+//!   2. `core_rs::Propagator` carries it through the field of the asset's ten
+//!      bodies, leg by leg over the buffer -- exactly as the game will;
+//!   3. for every sample we ask the ephemeris where Earth and the Moon were
+//!      then -- because that is what `trajectory_render` draws, and the frame
+//!      transform stands on it (PROJECT.md section 7).
 //!
-//! ## Чому це не просто «те саме, тільки повільніше»
+//! ## Why this is not just "the same, only slower"
 //!
-//! Фікстура — не одна траєкторія. Це розв'язок multiple shooting: сім ланок,
-//! кожна проінтегрована зі свого вузла, з розривами 2.3·10⁻² м на швах
-//! (ROADMAP C4). Живий прогноз розривів не має за побудовою, і на нестійкій
-//! halo-орбіті (594× за оберт) це не дрібниця — саме тому те, як довго дві
-//! криві тримаються разом, є вимірюваним твердженням, а не тавтологією.
-//! Міряє його `engine/tests/live.rs`.
+//! The fixture is not one trajectory. It is a multiple-shooting solution:
+//! seven legs, each integrated from its own node, with 2.3e-2 m discontinuities
+//! at the seams (ROADMAP C4). A live prediction has no discontinuities by
+//! construction, and on an unstable halo orbit (594x per revolution) that is
+//! not a detail -- which is why how long the two curves stay together is a
+//! measurable statement rather than a tautology. `engine/tests/live.rs`
+//! measures it.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -31,52 +34,54 @@ use core_rs::{CoreError, Ephemeris, PropConfig, Propagator, State};
 
 use crate::trajectory::{self, Sample};
 
-/// Ассет ефемериди, від кореня репозиторію.
+/// The ephemeris asset, relative to the repository root.
 pub const ASSET: &str = "data/fixture/earth_moon.eph";
 
-/// Той самий ассет абсолютним шляхом, зібраним з `CARGO_MANIFEST_DIR`.
+/// The same asset as an absolute path, built from `CARGO_MANIFEST_DIR`.
 ///
-/// Це шлях **для зондів і тестів**, а не для гри: `cargo test` запускає
-/// бінарник з каталогу крейта, `cargo run` — з того, звідки покликали, і
-/// відносний шлях означав би різне в цих двох випадках. Грі шлях до ассетів
-/// дасть застосунок, коли він з'явиться; вигадувати для цього шар
-/// конфігурації зараз — робота без критерію.
+/// This is the path **for probes and tests**, not for the game: `cargo test`
+/// runs the binary from the crate directory, `cargo run` from wherever it was
+/// called, and a relative path would mean different things in those two cases.
+/// The game will get its asset path from the application when there is one;
+/// inventing a configuration layer for that now is work without a criterion.
 pub fn repo_asset() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .expect("engine має лежати в репозиторії")
+        .expect("engine must live inside the repository")
         .join(ASSET)
 }
 
-/// Індекси тіл у порядку кукера (`core/cook/cook_fixture.c`).
+/// Body indices in the cooker's order (`core/cook/cook_fixture.c`).
 const EARTH: i32 = 3;
 const MOON: i32 = 4;
 
-/// Допуск — той самий сантиметр, з яким `ex_trajectory` рахував фікстуру.
-/// Один допуск на прогноз і на фізику (CLAUDE.md, інваріант 5); тут він ще й
-/// той самий, що в еталона, інакше порівняння двох кривих міряло б різницю
-/// налаштувань замість різниці траєкторій.
+/// The tolerance -- the same centimetre `ex_trajectory` computed the fixture
+/// with. One tolerance for prediction and for physics (CLAUDE.md, invariant 5);
+/// here it also matches the reference, otherwise comparing two curves would
+/// measure a difference of settings instead of a difference of trajectories.
 const TOL_M: f64 = 1e-2;
 
-/// Стеля кроку. Задана явно, бо з нулем її обирає інтегратор за довжиною
-/// ланки — і тоді зшитий прогін лишає по собі інший крок, ніж безперервний
-/// (`core/prop.h`, виміряно).
+/// Step ceiling. Given explicitly, because with zero the integrator picks it
+/// from the leg length -- and then a stitched run leaves behind a different
+/// step than a continuous one (`core/prop.h`, measured).
 const H_MAX_S: f64 = 3600.0;
 
-/// Скільки семплів забирає один виклик `run`. Навмисно мало: не оптимізація,
-/// а те, як це працюватиме в грі — прогноз рахується шматками, між якими
-/// можна віддати керування, і шлях зі зшиванням має бути тим, яким ходять
-/// щодня, а не рідкісною гілкою, що вперше спрацює під навантаженням.
+/// How many samples one `run` call takes. Deliberately few: not an
+/// optimisation but how this will work in the game -- the prediction is
+/// computed in chunks between which control can be given back, and the
+/// stitching path must be the everyday one rather than a rare branch that
+/// fires for the first time under load.
 const LEG: usize = 64;
 
 pub struct Live {
     pub samples: Vec<Sample>,
-    /// Скільки викликів `run` знадобилося. Цікаве не саме число, а те, що
-    /// воно більше за одиницю: зшивання ланок — не гіпотетичний шлях.
+    /// How many `run` calls were needed. What is interesting is not the
+    /// number but that it is greater than one: stitching legs is not a
+    /// hypothetical path.
     pub legs: usize,
 }
 
-/// Прогноз від стану `start` на `days` діб уперед.
+/// A prediction from state `start`, `days` days forward.
 pub fn propagate(start: &State, days: f64, asset: &Path) -> Result<Live, CoreError> {
     let eph = Arc::new(Ephemeris::load(asset)?);
 
@@ -107,8 +112,9 @@ pub fn propagate(start: &State, days: f64, asset: &Path) -> Result<Live, CoreErr
                 earth: position(&eph, EARTH, s.t)?,
                 moon: position(&eph, MOON, s.t)?,
                 z_axis: [0.0, 0.0, 0.0],
-                // Оракула немає й бути не може: цю траєкторію ніхто не
-                // рахував заздалегідь. Синодичні координати рахує сам рендер.
+                // There is no oracle and cannot be one: nobody computed this
+                // trajectory in advance. The renderer computes the synodic
+                // coordinates itself.
                 synodic_reference: [0.0, 0.0, 0.0],
             });
         }
@@ -130,9 +136,9 @@ fn position(eph: &Ephemeris, body: i32, t: f64) -> Result<[f64; 3], CoreError> {
     Ok([s.r.x, s.r.y, s.r.z])
 }
 
-/// Стан, з якого починається фікстура F6, — і єдине, що з неї береться.
+/// The state the F6 fixture starts from -- and the only thing taken from it.
 ///
-/// Це той самий момент і той самий апарат, тож дві криві можна класти поруч.
+/// Same instant, same vessel, so the two curves can be laid side by side.
 pub fn fixture_start() -> State {
     let samples = trajectory::load();
     let first = &samples[0];

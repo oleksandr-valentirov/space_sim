@@ -1,59 +1,60 @@
-//! Орбітальна камера: чим гравець рухає погляд (ROADMAP I2).
+//! The orbit camera: what the player moves the view with (ROADMAP I2).
 //!
-//! Стан — три числа в `double`: два кути й висота над поверхнею. Позиція
-//! камери з них **виводиться**, а не накопичується, і це головне рішення
-//! модуля. Камера, яка інтегрує зсуви у власну позицію, з часом сповзає з
-//! сфери, і жодного моменту, коли це стало помітно, не існує.
+//! The state is three `double`s: two angles and an altitude above the surface.
+//! The camera position is **derived** from them rather than accumulated, and
+//! that is the module's main decision. A camera that integrates offsets into
+//! its own position drifts off the sphere over time, and there is no single
+//! moment where that becomes noticeable.
 //!
-//! Тут немає ні GPU, ні вікна, ні `winit`: на вході числа, на виході
-//! [`Camera`]. Тому все, що модуль обіцяє, перевіряється без адаптера —
-//! а події вікна лишаються тонким шаром у `app`, який лише перекладає їх
-//! у ці виклики.
+//! There is no GPU, no window and no `winit` here: numbers in, a [`Camera`]
+//! out. So everything the module promises is checked without an adapter -- and
+//! window events stay a thin layer in `app` that only translates them into
+//! these calls.
 
 use crate::camera::Camera;
 use crate::sphere;
 
-/// Найнижча висота, метри. Стільки ж, скільки найближча точка прольоту F5:
-/// нижче меш 64×128 — це вже не сфера, а окрема грань під носом камери, і
-/// міряти на ній нічого.
+/// Lowest altitude, metres. The same as the closest point of the F5 flyby:
+/// below that a 64x128 mesh is no longer a sphere but a single facet under the
+/// camera's nose, and there is nothing to measure on it.
 pub const MIN_ALTITUDE_M: f64 = 10.0;
 
-/// Найвища. 10¹¹ м ≈ 0.7 а.о. — на цій відстані F4 виміряв, що
-/// camera-relative тримається до останньої цифри; далі вже нічого не
-/// перевірено, тож туди камеру не пускаємо.
+/// Highest. 1e11 m is about 0.7 AU -- at that distance F4 measured that
+/// camera-relative holds to the last digit; beyond it nothing is checked, so
+/// the camera does not go there.
 pub const MAX_ALTITUDE_M: f64 = 1.0e11;
 
-/// Скільки радіан на піксель тягне миша. Півекрана (≈600 px) на пів оберту —
-/// звичний для орбітальних камер темп.
+/// Radians per pixel of mouse drag. Half a screen (~600 px) per half turn --
+/// the pace orbit cameras usually have.
 const RADIANS_PER_PIXEL: f64 = std::f64::consts::PI / 600.0;
 
-/// У скільки разів один «клац» колеса міняє висоту.
+/// The factor by which one wheel notch changes the altitude.
 ///
-/// Геометрично, не додаванням: від 10 м до 10¹¹ м десять порядків, і будь-який
-/// сталий крок у метрах або нерухомий на одному кінці, або непридатний на
-/// іншому.
+/// Geometric, not additive: from 10 m to 1e11 m is ten orders of magnitude,
+/// and any constant step in metres is either motionless at one end or useless
+/// at the other.
 const ZOOM_PER_NOTCH: f64 = 1.25;
 
-/// Куди не можна доводити нахил.
+/// Where the pitch must not reach.
 ///
-/// Рівно на полюсі напрямок погляду збігається з орієнтиром «вгору», їхній
-/// векторний добуток — нуль, і базис камери перетворюється на NaN. Це не
-/// теоретичний ризик: користувач доводить камеру до полюса за секунду.
+/// Exactly at the pole the view direction coincides with the "up" reference,
+/// their cross product is zero, and the camera basis turns into NaN. Not a
+/// theoretical risk: a user drags the camera to the pole within a second.
 const PITCH_LIMIT: f64 = std::f64::consts::FRAC_PI_2 - 1.0e-3;
 
 pub struct Orbit {
-    /// Азимут навколо осі z.
+    /// Azimuth about the z axis.
     yaw: f64,
-    /// Підйом над площиною xy, обмежений [`PITCH_LIMIT`].
+    /// Elevation above the xy plane, bounded by [`PITCH_LIMIT`].
     pitch: f64,
-    /// Висота над поверхнею, метри.
+    /// Altitude above the surface, metres.
     altitude: f64,
 }
 
 impl Default for Orbit {
-    /// Той самий погляд, що [`crate::frame::default_camera`] — тобто той, у
-    /// якому виміряне покриття кадру звіряється з аналітичною формулою.
-    /// Інтерактивний кадр починається рівно там, де його перевіряють.
+    /// The same view as [`crate::frame::default_camera`] -- the one where the
+    /// measured frame coverage is compared against the analytic formula. The
+    /// interactive frame starts exactly where it is checked.
     fn default() -> Self {
         Orbit {
             yaw: 0.0,
@@ -64,12 +65,13 @@ impl Default for Orbit {
 }
 
 impl Orbit {
-    /// Той самий погляд, але з іншої висоти.
+    /// The same view, but from a different altitude.
     ///
-    /// Потрібно тому, хто малює не саму планету: halo-орбіта біля L2 лежить за
-    /// 4.5·10⁸ м від Землі, і з висоти за замовчуванням (10⁷ м) її в кадрі
-    /// немає взагалі. Висота затискається тими самими межами, що й колесо —
-    /// інакше це був би обхідний шлях повз них, а не конструктор.
+    /// Needed by whoever draws something other than the planet: a halo orbit
+    /// near L2 lies 4.5e8 m from Earth, and at the default altitude (1e7 m) it
+    /// is not in the frame at all. The altitude is clamped by the same bounds
+    /// as the wheel -- otherwise this would be a way around them rather than a
+    /// constructor.
     pub fn at_altitude(altitude: f64) -> Orbit {
         Orbit {
             altitude: altitude.clamp(MIN_ALTITUDE_M, MAX_ALTITUDE_M),
@@ -81,18 +83,18 @@ impl Orbit {
         self.altitude
     }
 
-    /// Відстань від центра планети.
+    /// Distance from the planet's centre.
     pub fn distance(&self) -> f64 {
         sphere::EARTH_RADIUS_M + self.altitude
     }
 
-    /// Тягнення миші на `dx`, `dy` пікселів.
+    /// A mouse drag of `dx`, `dy` pixels.
     pub fn drag(&mut self, dx: f64, dy: f64) {
         self.yaw += dx * RADIANS_PER_PIXEL;
         self.pitch = (self.pitch + dy * RADIANS_PER_PIXEL).clamp(-PITCH_LIMIT, PITCH_LIMIT);
     }
 
-    /// `notches` клацань колеса: додатні наближають.
+    /// `notches` wheel clicks: positive zooms in.
     pub fn zoom(&mut self, notches: f64) {
         let factor = ZOOM_PER_NOTCH.powf(-notches);
         self.altitude = (self.altitude * factor).clamp(MIN_ALTITUDE_M, MAX_ALTITUDE_M);
@@ -117,12 +119,12 @@ impl Orbit {
 mod tests {
     use super::*;
 
-    /// Планета лишається точно попереду, під якими завгодно кутами.
+    /// The planet stays dead ahead at any angles.
     ///
-    /// Це перевірка всього ланцюжка кути → позиція → базис камери за один
-    /// раз: центр світу мусить лягти на вісь погляду, а його відстань —
-    /// збігтися з `distance()`. Помилка в знаку, порядку множників чи
-    /// переплутані sin/cos зсунули б центр убік.
+    /// This checks the whole chain angles -> position -> camera basis at once:
+    /// the world centre must land on the view axis and its distance must match
+    /// `distance()`. A sign error, a wrong multiplication order or swapped
+    /// sin/cos would push the centre aside.
     #[test]
     fn the_planet_stays_dead_ahead() {
         for yaw_steps in 0..8 {
@@ -135,21 +137,22 @@ mod tests {
 
                 assert!(
                     centre[0].abs() < 1.0 && centre[1].abs() < 1.0,
-                    "центр планети зсунувся вбік: {centre:?}"
+                    "the planet centre drifted aside: {centre:?}"
                 );
                 assert!(
                     ((-f64::from(centre[2])) - distance).abs() / distance < 1e-6,
-                    "відстань до центра {} проти очікуваної {distance}",
+                    "distance to the centre {} against the expected {distance}",
                     -f64::from(centre[2])
                 );
             }
         }
     }
 
-    /// Через полюс камера не перекидається й не стає NaN.
+    /// Past the pole the camera neither flips over nor turns into NaN.
     ///
-    /// Найдешевший спосіб отримати NaN у рушії — довести погляд рівно вздовж
-    /// орієнтира «вгору». Користувач робить це за секунду тягнення.
+    /// The cheapest way to get a NaN in the engine is to bring the view
+    /// exactly along the "up" reference. A user does that in a second of
+    /// dragging.
     #[test]
     fn dragging_past_the_pole_stays_finite() {
         let mut orbit = Orbit::default();
@@ -158,18 +161,24 @@ mod tests {
         }
 
         let p = orbit.camera().relative([0.0, 0.0, 0.0]);
-        assert!(p.iter().all(|v| v.is_finite()), "камера дала NaN: {p:?}");
+        assert!(
+            p.iter().all(|v| v.is_finite()),
+            "the camera produced NaN: {p:?}"
+        );
         assert!(orbit.pitch < std::f64::consts::FRAC_PI_2);
 
         for _ in 0..200 {
             orbit.drag(0.0, -1000.0);
         }
         let p = orbit.camera().relative([0.0, 0.0, 0.0]);
-        assert!(p.iter().all(|v| v.is_finite()), "камера дала NaN: {p:?}");
+        assert!(
+            p.iter().all(|v| v.is_finite()),
+            "the camera produced NaN: {p:?}"
+        );
         assert!(orbit.pitch > -std::f64::consts::FRAC_PI_2);
     }
 
-    /// Наблизитися до планети ближче за поверхню не можна.
+    /// The camera cannot come closer to the planet than the surface.
     #[test]
     fn zooming_in_forever_stops_at_the_surface() {
         let mut orbit = Orbit::default();
@@ -184,12 +193,11 @@ mod tests {
         assert_eq!(orbit.altitude(), MAX_ALTITUDE_M);
     }
 
-    /// Наближення й віддалення на ту саму кількість клацань повертають туди,
-    /// звідки почали.
+    /// Zooming in and out by the same number of notches returns to the start.
     ///
-    /// Це і є твердження «масштаб геометричний»: у додаванні метрів воно було
-    /// б так само правдивим, але висота 10 м після кроку в 10⁶ м стала б
-    /// від'ємною ще на першому клацанні.
+    /// This is the statement "the scale is geometric": with added metres it
+    /// would be just as true, but an altitude of 10 m would go negative on the
+    /// very first notch of a 1e6 m step.
     #[test]
     fn zoom_is_geometric_and_reversible() {
         let mut orbit = Orbit::default();
@@ -199,19 +207,22 @@ mod tests {
             orbit.zoom(1.0);
         }
         let closer = orbit.altitude();
-        assert!(closer < start / 10.0, "двадцять клацань мали наблизити");
+        assert!(
+            closer < start / 10.0,
+            "twenty notches should have zoomed in"
+        );
 
         for _ in 0..20 {
             orbit.zoom(-1.0);
         }
         assert!(
             (orbit.altitude() - start).abs() / start < 1e-9,
-            "повернулися на {} замість {start}",
+            "came back to {} instead of {start}",
             orbit.altitude()
         );
     }
 
-    /// Камера за замовчуванням — та сама, на якій міряють кадр.
+    /// The default camera is the one the frame is measured with.
     #[test]
     fn the_default_view_is_the_one_the_shot_test_measures() {
         let from_orbit = Orbit::default().camera();

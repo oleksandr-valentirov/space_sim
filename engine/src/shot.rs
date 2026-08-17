@@ -1,9 +1,9 @@
-//! Кадр у PNG, без вікна.
+//! A frame into a PNG, with no window.
 //!
-//! Існує не заради зручності. «Вікно відкрилось і не впало» — не перевірка
-//! рендера: чорний кадр виглядає точно так само, як правильний. Знімок можна
-//! подивитися очима, звірити по пікселях і прогнати на CI, де вікна немає
-//! взагалі.
+//! Not a convenience. "The window opened and did not crash" is not a check of
+//! the renderer: a black frame looks exactly like a correct one. A shot can be
+//! looked at, compared pixel by pixel, and run in CI, where there is no window
+//! at all.
 
 use std::path::Path;
 
@@ -11,17 +11,18 @@ use crate::frame::{self, Frame};
 use crate::gpu::Gpu;
 use crate::scene::Scene;
 
-/// Формат цілі — **той самий, що вибирає вікно** (T5a).
+/// The target format is **the one the window picks** (T5a).
 ///
-/// ⚠ До T5a тут стояв `Rgba8Unorm` з поясненням «щоб у знімку були ті самі
-/// байти, які поклали». Пояснення було послідовним і хибним: `window.rs`
-/// вибирає поверхню фільтром `is_srgb()`, тобто вікно кодує гамму апаратно
-/// **від F1**. Отже два шляхи до одного кадру показували різні картинки, і
-/// рушій увесь цей час стверджував протилежне.
+/// WARNING: before T5a this was `Rgba8Unorm`, explained as "so the shot holds
+/// exactly the bytes that were written". The explanation was consistent and
+/// wrong: `window.rs` picks a surface by the `is_srgb()` filter, so the window
+/// has been encoding gamma in hardware **since F1**. Two paths to one frame
+/// showed different pictures, and the engine claimed the opposite all along.
 ///
-/// Тепер кодує й знімок, тим самим апаратним механізмом. Наслідок, про який
-/// мусить знати кожен новий оракул: **відношення двох байтів більше не є
-/// відношенням двох яскравостей**. Перед діленням — [`crate::srgb::to_linear`].
+/// Now the shot encodes too, through the same hardware mechanism. The
+/// consequence every new oracle must know: **the ratio of two bytes is no
+/// longer the ratio of two luminances**. Before dividing --
+/// [`crate::srgb::to_linear`].
 pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 pub struct Shot {
@@ -59,10 +60,10 @@ impl Shot {
     }
 }
 
-/// Малює один кадр у текстуру й читає його назад.
+/// Draws one frame into a texture and reads it back.
 ///
-/// Камера — [`frame::default_camera`]: той самий погляд, що й у вікні при
-/// старті, тож знімок показує саме те, що показало б вікно.
+/// The camera is [`frame::default_camera`]: the same view the window starts
+/// with, so the shot shows exactly what the window would.
 pub fn take(gpu: &Gpu, width: u32, height: u32) -> Result<Shot, String> {
     take_scene(
         gpu,
@@ -72,12 +73,12 @@ pub fn take(gpu: &Gpu, width: u32, height: u32) -> Result<Shot, String> {
     )
 }
 
-/// Те саме, але для сцени, яку зібрав хтось інший.
+/// The same, but for a scene assembled by someone else.
 ///
-/// Це шлях гри до PNG (ROADMAP J1), і він існує з тієї самої причини, що й
-/// сам знімок: «вікно відкрилось» не є перевіркою того, що гра щось
-/// намалювала. Кадр той самий, [`Frame`] той самий; різниця лише в тому, хто
-/// склав сцену.
+/// This is the game's path to a PNG (ROADMAP J1), and it exists for the same
+/// reason the shot itself does: "the window opened" is not a check that the
+/// game drew anything. Same frame, same [`Frame`]; the only difference is who
+/// built the scene.
 pub fn take_scene(gpu: &Gpu, width: u32, height: u32, scene: &Scene) -> Result<Shot, String> {
     let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("shot"),
@@ -101,22 +102,24 @@ pub fn take_scene(gpu: &Gpu, width: u32, height: u32, scene: &Scene) -> Result<S
             label: Some("shot"),
         });
 
-    // ⚠ Кадр живе **до кінця функції**, а не до кінця виразу. З T5c3 у нього
-    // з'явилася власна проміжна текстура, і тимчасовий `Frame::new(…).draw(…)`
-    // віддавав її разом із собою ще до того, як команди подано на пристрій.
-    // Виглядало це не як помилка, а як «тонмапер не працює»: кадр малювався
-    // правильно, тільки прохід стиснення читав уже не ту текстуру.
+    // WARNING: the frame lives **to the end of the function**, not to the end
+    // of the expression. Since T5c3 it owns an intermediate texture, and a
+    // temporary `Frame::new(...).draw(...)` released it along with itself
+    // before the commands were submitted to the device. This looked not like a
+    // bug but like "the tonemapper does not work": the frame was drawn
+    // correctly, only the compression pass read a texture that was gone.
     let mut frame = Frame::new(gpu, FORMAT);
     frame.draw(gpu, &mut encoder, &view, width, height, scene);
 
     read_back(gpu, encoder, &texture, width, height)
 }
 
-/// Дописує до `encoder` копіювання текстури в буфер, віддає команди й читає
-/// результат.
+/// Appends a texture-to-buffer copy to `encoder`, submits and reads the
+/// result.
 ///
-/// Окремо від [`take`], бо кадр буває намальований деінде — наприклад у
-/// [`crate::depth_probe`], де до кольору додається ще й буфер глибини.
+/// Separate from [`take`], because the frame is sometimes drawn elsewhere --
+/// for instance in [`crate::depth_probe`], where a depth buffer joins the
+/// colour.
 pub fn read_back(
     gpu: &Gpu,
     mut encoder: wgpu::CommandEncoder,
@@ -124,9 +127,9 @@ pub fn read_back(
     width: u32,
     height: u32,
 ) -> Result<Shot, String> {
-    // Рядок у буфері має бути кратним 256 байтам. Замість вимагати «зручний»
-    // розмір кадру, дописуємо доповнення й зрізаємо його при читанні:
-    // інакше знімок 1920×1080 просто не зробити.
+    // A buffer row must be a multiple of 256 bytes. Rather than demand a
+    // "convenient" frame size, we pad and strip the padding while reading:
+    // otherwise a 1920x1080 shot is simply impossible.
     let unpadded = width * 4;
     let padded = unpadded.div_ceil(256) * 256;
 
@@ -168,11 +171,11 @@ pub fn read_back(
             submission_index: None,
             timeout: None,
         })
-        .map_err(|e| format!("не дочекалися GPU: {e}"))?;
+        .map_err(|e| format!("waiting for the GPU failed: {e}"))?;
 
     let data = slice
         .get_mapped_range()
-        .map_err(|e| format!("буфер не відобразився: {e}"))?;
+        .map_err(|e| format!("the buffer did not map: {e}"))?;
 
     let mut pixels = Vec::with_capacity((unpadded * height) as usize);
     for row in 0..height {

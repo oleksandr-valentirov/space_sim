@@ -1,25 +1,27 @@
-//! Анімація підльоту до Місяця (етап T, після T3c).
+//! An animated approach to the Moon (stage T, after T3c).
 //!
-//! Зонд, а не частина гри — той самий жанр, що [`crate::ship_demo`], і з тієї
-//! самої причини: він показує те, що щойно стало можливим, і показує це
-//! **тим самим** [`Frame`], який іде у вікно. Іншого шляху рендера тут немає.
+//! A probe, not part of the game -- the same genre as [`crate::ship_demo`] and
+//! for the same reason: it shows what has just become possible, and shows it
+//! through the **same** [`Frame`] that goes into the window. There is no other
+//! render path here.
 //!
 //! cargo run --release -p engine -- --moon-demo build/moon.apng
 //!
-//! ## Що саме показано
+//! ## What is shown
 //!
-//! Камера обходить Місяць по дузі й водночас знижується з 1.5·10⁶ до 1.2·10⁵
-//! метрів. Два рухи разом показують три речі, кожну з яких додав етап T:
-//! колір поверхні з мозаїки LROC WAC, його узгодження з рельєфом LOLA, і те,
-//! що на підльоті **не з'являється шва** — ні між тайлами, ні між рівнями
-//! піраміди, які LOD міняє дорогою вниз.
+//! The camera goes around the Moon along an arc while descending from 1.5e6 to
+//! 1.2e5 metres. The two motions together show three things, each added by
+//! stage T: surface colour from the LROC WAC mosaic, its agreement with the
+//! LOLA terrain, and that **no seam appears** on approach -- neither between
+//! tiles nor between pyramid levels, which LOD switches on the way down.
 //!
-//! Світило нерухоме, а камера рухається — тож термінатор проходить по кадру
-//! сам собою, і саме на ньому видно, що колір і тіні лежать на одній поверхні.
+//! The light is fixed while the camera moves -- so the terminator crosses the
+//! frame by itself, and it is exactly there that colour and shadow are seen to
+//! lie on one surface.
 //!
-//! Формат — APNG, з тієї ж причини, що в `ship_demo`: `png` у залежностях уже
-//! є й уміє анімований PNG, тобто 60 кадрів на секунду виражаються точно й без
-//! жодної нової залежності.
+//! The format is APNG, for the same reason as in `ship_demo`: `png` is already
+//! a dependency and can do animated PNG, so 60 frames per second are expressed
+//! exactly and without a single new dependency.
 
 use std::path::Path;
 
@@ -28,56 +30,60 @@ use crate::gpu::Gpu;
 use crate::scene::{Body, Scene, TerrainId, TileSet};
 use crate::{demo, shot, tiles};
 
-/// Радіус Місяця, метри — той самий, що в решті зондів.
+/// The Moon's radius, metres -- the same as in the other probes.
 const RADIUS_M: f64 = 1_737_400.0;
 
-/// Висота на початку й у кінці прольоту, метри.
+/// Altitude at the start and at the end of the flyby, metres.
 ///
-/// Обидві межі виміряні, а не підібрані на око.
+/// Both bounds are measured rather than eyeballed.
 ///
-/// Нижня — з геометрії кадру: диск заповнює кадр цілком, щойно відстань падає
-/// нижче `R/sin(30°) = 2R`, тобто на висоті 1.7·10⁶ м. Зупинка трохи вище
-/// лишає в кадрі **весь силует**, а з ним і термінатор, на якому й видно, що
-/// колір і тіні лежать на одній поверхні.
+/// The lower one comes from frame geometry: the disc fills the frame entirely
+/// as soon as the distance drops below `R/sin(30 deg) = 2R`, that is at an
+/// altitude of 1.7e6 m. Stopping a little higher keeps the **whole silhouette**
+/// in the frame, and with it the terminator, where colour and shadow are seen
+/// to lie on one surface.
 ///
-/// ⚠ Нижче спускатися нема сенсу не через кадр, а через **дані**: на 120 км у
-/// кадрі стають видимі грані трикутників. Нормаль рельєфу геометрична (R5c),
-/// клітинка DEM — 5.3 км, отже кожна фасетка накриває десятки пікселів і
-/// світиться рівно. Це межа джерела `ldem_4`, а не шейдера.
+/// WARNING: descending lower makes no sense because of the **data**, not the
+/// frame: at 120 km triangle facets become visible. The terrain normal is
+/// geometric (R5c), a DEM cell is 5.3 km, so each facet covers tens of pixels
+/// and shades flat. That is the limit of the `ldem_4` source, not of the
+/// shader.
 const FROM_M: f64 = 6.0e6;
 const TO_M: f64 = 1.9e6;
 
-/// Звідки й куди повзе довгота підкамерної точки, радіани.
+/// Where the sub-camera longitude creeps from and to, radians.
 ///
-/// Числа не з голови: світило рушія стоїть у напрямку `LIGHT_DIR`, тобто на
-/// 56° пн. і 45° сх., і дуга обрана так, щоб камера йшла **навколо нього** на
-/// відстані близько 40°. Тоді диск здебільшого освітлений, а термінатор
-/// проходить по краю — саме там видно, що колір і тіні лежать на одній
-/// поверхні. Дуга, взята навмання, дала майже чорну кулю: підкамерна точка
-/// стояла до світила боком.
+/// The numbers are not arbitrary: the engine's light stands along `LIGHT_DIR`,
+/// that is at 56 deg N and 45 deg E, and the arc is chosen so the camera goes
+/// **around it** at a distance of about 40 deg. Then the disc is mostly lit and
+/// the terminator runs along the edge -- exactly where colour and shadow are
+/// seen to lie on one surface. An arc taken at random gave an almost black
+/// ball: the sub-camera point stood sideways to the light.
 const LON_FROM: f64 = 0.35;
 const LON_TO: f64 = 1.31;
 
-/// Широта підкамерної точки, радіани.
+/// Latitude of the sub-camera point, radians.
 const LAT: f64 = 0.30;
 
 pub const FRAMES: u32 = 240;
 pub const FPS: u16 = 60;
 
-/// Сцена на кадр номер `k` з `frames`.
+/// The scene for frame number `k` of `frames`.
 ///
-/// Будується з нуля щокадру навмисно: сцена — це дані, і зонд, який тримав би
-/// її між кадрами, перевіряв би свій кеш, а не кадр.
+/// Built from scratch every frame on purpose: a scene is data, and a probe that
+/// held it between frames would be checking its own cache rather than the
+/// frame.
 pub fn scene_at(k: u32, frames: u32, tiles: TileSet) -> Scene {
     let t = f64::from(k) / f64::from(frames.max(2) - 1);
 
-    // Висота падає **геометрично**, а не лінійно: очима відстань до поверхні
-    // сприймається логарифмічно, і лінійне зниження виглядало б як зупинка
-    // вгорі й ривок унизу.
+    // The altitude falls **geometrically**, not linearly: the eye perceives
+    // distance to a surface logarithmically, and a linear descent would look
+    // like a stall up top and a lurch at the bottom.
     let altitude = FROM_M * (TO_M / FROM_M).powf(t);
     let distance = RADIUS_M + altitude;
 
-    // Широта фіксована, довгота повзе — камера обходить світило по дузі.
+    // Latitude fixed, longitude creeping -- the camera arcs around the
+    // light.
     let lon = LON_FROM + t * (LON_TO - LON_FROM);
     let lat = LAT;
     let eye = [
@@ -93,18 +99,19 @@ pub fn scene_at(k: u32, frames: u32, tiles: TileSet) -> Scene {
         radius_m: RADIUS_M,
         orientation: [1.0, 0.0, 0.0, 0.0],
         tiles,
-        // Сірий, а не синій колір фікстур: якщо колірного асета не буде,
-        // Місяць має лишитись Місяцем, а не блакитною кулею.
+        // Grey rather than the fixtures' blue: if there is no colour asset,
+        // the Moon must stay the Moon rather than a blue ball.
         colour: [0.55, 0.55, 0.56, 1.0],
         air: None,
     });
     scene
 }
 
-/// Малює `frames` кадрів і складає їх в анімований PNG.
+/// Draws `frames` frames and assembles them into an animated PNG.
 ///
-/// Без асетів поверхні зонд не має чого показувати, і мовчати про це не можна:
-/// гладка сіра куля виглядає як «нічого не зламалось».
+/// Without surface assets the probe has nothing to show, and staying silent
+/// about that is not an option: a smooth grey ball looks like "nothing
+/// broke".
 pub fn render(gpu: &Gpu, width: u32, height: u32, frames: u32, path: &Path) -> Result<(), String> {
     let mut frame = Frame::new(gpu, shot::FORMAT);
     let surface = load_surface(gpu, &mut frame)?;
@@ -158,18 +165,18 @@ pub fn render(gpu: &Gpu, width: u32, height: u32, frames: u32, path: &Path) -> R
     Ok(())
 }
 
-/// Рельєф і колір Місяця з готових асетів.
+/// The Moon's terrain and colour from cooked assets.
 fn load_surface(gpu: &Gpu, frame: &mut Frame) -> Result<TerrainId, String> {
     let bytes = std::fs::read(demo::TERRAIN_ASSET)
-        .map_err(|e| format!("{}: {e}\nполікувати: make cook-dem", demo::TERRAIN_ASSET))?;
+        .map_err(|e| format!("{}: {e}\nto fix: make cook-dem", demo::TERRAIN_ASSET))?;
     let terrain = tiles::Terrain::from_bytes(&bytes)?;
 
     let bytes = std::fs::read(demo::COLOUR_ASSET)
-        .map_err(|e| format!("{}: {e}\nполікувати: make cook-colour", demo::COLOUR_ASSET))?;
+        .map_err(|e| format!("{}: {e}\nto fix: make cook-colour", demo::COLOUR_ASSET))?;
     let colour = tiles::Colour::from_bytes(&bytes)?;
 
     println!(
-        "рельєф: {} рівнів; колір: {} рівнів",
+        "terrain: {} levels; colour: {} levels",
         terrain.levels, colour.levels
     );
     frame.load_surface(gpu, &terrain, Some(&colour))

@@ -1,44 +1,48 @@
-//! Halo-траєкторія з етапу C, для перевірки перетворення фрейму (ROADMAP F6).
+//! The halo trajectory from stage C, for checking the frame transform
+//! (ROADMAP F6).
 //!
-//! Дані — фікстура `data/fixture/halo_inertial.csv`, вивантажена
-//! `core/export/ex_trajectory` (ROADMAP C6): та сама орбіта каталогу 1151,
-//! перенесена в реальну ефемериду й зшита multiple shooting (C4). Комітиться
-//! так само, як `data/fixture/earth_moon.eph`, — рушій не лінкує `core-rs`
-//! (це окреме, більше рішення, не для кроку про рендер), тож дані приходять
-//! готовим ассетом, а не через FFI.
+//! The data is the fixture `data/fixture/halo_inertial.csv`, exported by
+//! `core/export/ex_trajectory` (ROADMAP C6): the same catalogue-1151 orbit,
+//! carried into a real ephemeris and stitched by multiple shooting (C4). It is
+//! committed like `data/fixture/earth_moon.eph` -- the engine does not link
+//! `core-rs` (a separate, larger decision, not for a step about rendering), so
+//! the data arrives as a ready asset rather than through FFI.
 //!
-//! Стовпці `vx,vy,vz` — швидкість апарата. Вона не потрібна для лінії й тому
-//! спершу не експортувалася; тепер потрібна, бо з неї починається живий
-//! прогноз (`engine::live`, ROADMAP H5): пропагатору треба стан, а не позиція.
+//! The `vx,vy,vz` columns are the vessel velocity. The line does not need it
+//! and so it was not exported at first; now it is needed, because the live
+//! prediction starts from it (`engine::live`, ROADMAP H5): the propagator
+//! needs a state, not a position.
 //!
-//! Стовпці `sx,sy,sz` — синодичні координати з `frame_from_inertial` (C,
-//! `core/frame.h`), безрозмірні одиниці CR3BP. Це оракул, не вхід рендера:
-//! PROJECT.md §7 вимагає рахувати те саме перетворення у вертексному
-//! шейдері з позицій Землі й Місяця, а не довіряти готовому числу з CSV.
-//! `engine/tests/trajectory.rs` звіряє [`rotating_position`] з цим оракулом.
+//! The `sx,sy,sz` columns are synodic coordinates from `frame_from_inertial`
+//! (C, `core/frame.h`), in dimensionless CR3BP units. That is an oracle, not
+//! renderer input: PROJECT.md section 7 requires computing the same transform
+//! in the vertex shader from the positions of Earth and the Moon rather than
+//! trusting a ready number from a CSV. `engine/tests/trajectory.rs` compares
+//! [`rotating_position`] against this oracle.
 
 const CSV: &str = include_str!("../../data/fixture/halo_inertial.csv");
 
-/// mu_Місяць / (mu_Земля + mu_Місяць). Надрукований `make csv`
-/// (`ex_cr3bp: ... mu = 0.012150585609624041`) — константа маси системи, не
-/// перерахунок фізики, тож жорстко прописана тут точно так само, як
-/// [`crate::sphere::EARTH_RADIUS_M`].
+/// mu_Moon / (mu_Earth + mu_Moon). Printed by `make csv`
+/// (`ex_cr3bp: ... mu = 0.012150585609624041`) -- a mass constant of the
+/// system, not a recomputation of physics, so it is hard-coded here exactly
+/// like [`crate::sphere::EARTH_RADIUS_M`].
 pub const MU: f64 = 0.012_150_585_609_624_04;
 
 pub struct Sample {
     pub t: f64,
     pub vessel: [f64; 3],
-    /// Швидкість апарата. Лінії вона не потрібна — потрібна тому, хто цю
-    /// траєкторію продовжить (`engine::live`).
+    /// The vessel velocity. The line does not need it -- whoever continues
+    /// this trajectory does (`engine::live`).
     pub velocity: [f64; 3],
     pub earth: [f64; 3],
     pub moon: [f64; 3],
-    /// Нормаль миттєвої орбітальної площини Земля-Місяць, `d × ḋ`
-    /// (`core/frame.h`, `z = h/|h|`), центральною різницею по сусідніх
-    /// семплах. Не залежить від камери й від вершини корабля, тож рахується
-    /// один раз при завантаженні, а не в шейдері.
+    /// Normal of the instantaneous Earth-Moon orbital plane, `d x d_dot`
+    /// (`core/frame.h`, `z = h/|h|`), by a central difference over neighbouring
+    /// samples. It depends neither on the camera nor on the ship vertex, so it
+    /// is computed once at load rather than in the shader.
     pub z_axis: [f64; 3],
-    /// `sx,sy,sz` з фікстури — оракул для тесту, рушій це не використовує.
+    /// `sx,sy,sz` from the fixture -- an oracle for the test; the engine does
+    /// not use it.
     pub synodic_reference: [f64; 3],
 }
 
@@ -63,10 +67,10 @@ fn normalize(v: [f64; 3]) -> [f64; 3] {
     [v[0] / len, v[1] / len, v[2] / len]
 }
 
-/// Той самий розрахунок, що вертексний шейдер (`trajectory.slang`) робить
-/// на GPU щокадру: `origin`, ортонормований базис із `d = moon − earth`,
-/// проєкція корабля на нього, у безрозмірних одиницях CR3BP (масштаб `L`,
-/// як у `core/frame.h`).
+/// The same computation the vertex shader (`trajectory.slang`) does on the GPU
+/// every frame: `origin`, an orthonormal basis from `d = moon - earth`, the
+/// projection of the ship onto it, in dimensionless CR3BP units (the scale `L`,
+/// as in `core/frame.h`).
 pub fn rotating_position(
     vessel: [f64; 3],
     earth: [f64; 3],
@@ -92,22 +96,21 @@ pub fn rotating_position(
     ]
 }
 
-/// Читає фікстуру й довиводить `z_axis` центральною різницею.
+/// Reads the fixture and derives `z_axis` by a central difference.
 ///
-/// Крайні семпли беруть різницю в один бік — половина крадеться, а не
-/// зникає: перший і останній семпл усе одно потребують нормалі, а
-/// однобічна різниця на щільній сітці (~2.7 год між семплами проти
-/// 27-денного місячного місяця) вносить похибку, надто малу, щоб її
-/// побачити на цьому масштабі.
+/// The end samples take a one-sided difference -- half is borrowed, not lost:
+/// the first and last sample still need a normal, and a one-sided difference on
+/// a dense grid (~2.7 h between samples against a 27-day lunar month) brings an
+/// error far too small to see at this scale.
 pub fn load() -> Vec<Sample> {
     let mut lines = CSV.lines();
-    lines.next(); // заголовок
+    lines.next(); // header
 
     let rows: Vec<[f64; 16]> = lines
         .map(|line| {
             let mut values = [0.0; 16];
             for (slot, field) in values.iter_mut().zip(line.split(',')) {
-                *slot = field.parse().expect("фікстура — валідні числа");
+                *slot = field.parse().expect("the fixture holds valid numbers");
             }
             values
         })
@@ -130,11 +133,11 @@ pub fn load() -> Vec<Sample> {
     samples
 }
 
-/// Довиводить `z_axis` центральною різницею по сусідніх семплах.
+/// Derives `z_axis` by a central difference over neighbouring samples.
 ///
-/// Окремо від [`load`], бо цього ж потребує живий прогноз (`engine::live`):
-/// нормаль площини — властивість ряду семплів, а не того, звідки вони
-/// приїхали.
+/// Separate from [`load`], because the live prediction needs the same
+/// (`engine::live`): the plane normal is a property of a series of samples, not
+/// of where they came from.
 pub fn fill_axes(samples: &mut [Sample]) {
     let d_of = |s: &Sample| -> [f64; 3] { sub(s.moon, s.earth) };
 
@@ -155,13 +158,14 @@ mod tests {
     #[test]
     fn the_fixture_is_not_empty() {
         let samples = load();
-        assert!(samples.len() > 1000, "лишилось {} семплів", samples.len());
+        assert!(samples.len() > 1000, "{} samples left", samples.len());
     }
 
-    /// Головна перевірка алгоритму, окремо від GPU: чи відтворює
-    /// [`rotating_position`] той самий синодичний фрейм, що `core/frame.h`
-    /// поклав у фікстуру. Тут допуск і легко звузити, якщо колись
-    /// знадобиться точніша нормаль, ніж центральна різниця.
+    /// The main check of the algorithm, apart from the GPU: does
+    /// [`rotating_position`] reproduce the same synodic frame that
+    /// `core/frame.h` put into the fixture. The tolerance here is easy to
+    /// tighten if a normal more precise than a central difference is ever
+    /// needed.
     #[test]
     fn rotating_position_matches_the_c_oracle() {
         let samples = load();
@@ -174,13 +178,13 @@ mod tests {
             }
         }
 
-        // Виміряно: 3.48e-7, на семплі 0 — де центральна різниця вироджена
-        // в однобічну (крайня точка ряду). Запас удвічі, не на порядок:
-        // тісний допуск ловить регресію в самому алгоритмі, а не лише
-        // «щось зовсім зламалось».
+        // Measured: 3.48e-7, at sample 0 -- where the central difference
+        // degenerates into a one-sided one (an end point of the series). Twice
+        // the margin, not an order: a tight tolerance catches a regression in
+        // the algorithm itself, not only "something broke completely".
         assert!(
             max_error < 7e-7,
-            "найгірша розбіжність із оракулом: {max_error:e}"
+            "worst divergence from the oracle: {max_error:e}"
         );
     }
 }

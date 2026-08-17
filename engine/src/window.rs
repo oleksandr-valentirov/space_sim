@@ -1,21 +1,22 @@
-//! Вікно й поверхня: усе, чого знімок не має (ROADMAP J1).
+//! Window and surface: everything a shot does not have (ROADMAP J1).
 //!
-//! Виділено з `app` тому, що з J1 циклів подій стало два — зонди рушія
-//! лишаються в [`crate::app`], а гра має свій, бо володіє світом і часом
-//! (PROJECT.md §6). Дублювати сюди-туди вміст `App` не страшно: це
-//! перекладач подій `winit` у виклики, і в кожного з двох він свій.
+//! Split out of `app` because since J1 there are two event loops -- the engine
+//! probes stay in [`crate::app`], and the game has its own, because it owns the
+//! world and time (PROJECT.md section 6). Duplicating the body of `App` back
+//! and forth is harmless: it is a translator of `winit` events into calls, and
+//! each of the two has its own.
 //!
-//! А от **поверхню дублювати не можна**, і це не смак. Тут живуть три
-//! випадки, кожен з яких уже одного разу зависав намертво й жодного разу не
-//! падав з помилкою:
+//! But **the surface must not be duplicated**, and that is not taste. Three
+//! cases live here, each of which has hung dead once and has never once failed
+//! with an error:
 //!
-//!   1. переконфігурація не тим розміром ([`Target::resync`]);
-//!   2. `Outdated` / `Lost` як звичайні стани, а не помилки ([`Target::acquire`]);
-//!   3. `request_inner_size`, що змінює розмір ЗРАЗУ й не шле `Resized`
+//!   1. reconfiguring with the wrong size ([`Target::resync`]);
+//!   2. `Outdated` / `Lost` as ordinary states, not errors ([`Target::acquire`]);
+//!   3. `request_inner_size`, which resizes IMMEDIATELY and sends no `Resized`
 //!      ([`Target::request_size`]).
 //!
-//! Два місця з такою логікою розходяться, і розходження виглядає як «в одному
-//! режимі чомусь не малює».
+//! Two places with this logic drift apart, and the drift looks like "in one
+//! mode it somehow does not draw".
 
 use std::sync::Arc;
 
@@ -29,13 +30,13 @@ pub struct Options {
     pub width: u32,
     pub height: u32,
 
-    /// Чекати на вертикальну синхронізацію.
+    /// Wait for vertical sync.
     ///
-    /// Для гри — так, звісно. Для обмеженого прогону — ні, і це виміряно, а
-    /// не вгадано: під X11 вікно процесу, який не має фокуса, може взагалі не
-    /// показуватися, і тоді черга Fifo ніколи не звільняє кадр —
-    /// `get_current_texture` блокується назавжди. Прогін зупинявся рівно на
-    /// двадцятому кадрі й висів без жодної помилки.
+    /// For the game -- yes, of course. For a bounded run -- no, and that is
+    /// measured rather than guessed: under X11 the window of an unfocused
+    /// process may not be shown at all, and then the Fifo queue never releases
+    /// a frame -- `get_current_texture` blocks forever. The run stopped at
+    /// exactly frame twenty and hung without a single error.
     pub vsync: bool,
 }
 
@@ -50,7 +51,7 @@ impl Default for Options {
     }
 }
 
-/// Вікно, поверхня й конфігурація, яку та поверхня зараз має.
+/// The window, the surface, and the configuration that surface currently has.
 pub struct Target {
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
@@ -58,11 +59,12 @@ pub struct Target {
 }
 
 impl Target {
-    /// Відкриває вікно й створює під нього пристрій.
+    /// Opens a window and creates a device for it.
     ///
-    /// Пристрій повертається поруч, а не приймається аргументом: адаптер має
-    /// вміти малювати саме в цю поверхню (`Gpu::new(.., Some(&surface))`), а
-    /// поверхня буває лише після вікна. Порядок тут не наш, а wgpu.
+    /// The device is returned alongside rather than taken as an argument: the
+    /// adapter must be able to draw into this very surface
+    /// (`Gpu::new(.., Some(&surface))`), and a surface exists only after a
+    /// window. The order here is wgpu's, not ours.
     pub fn open(event_loop: &ActiveEventLoop, options: &Options) -> Result<(Target, Gpu), String> {
         let attributes = Window::default_attributes()
             .with_title(options.title.clone())
@@ -71,13 +73,13 @@ impl Target {
         let window = Arc::new(
             event_loop
                 .create_window(attributes)
-                .map_err(|e| format!("вікно не створюється: {e}"))?,
+                .map_err(|e| format!("the window will not be created: {e}"))?,
         );
 
         let instance = wgpu::Instance::default();
         let surface = instance
             .create_surface(window.clone())
-            .map_err(|e| format!("поверхня не створюється: {e}"))?;
+            .map_err(|e| format!("the surface will not be created: {e}"))?;
 
         let gpu = Gpu::new(instance, Some(&surface))?;
 
@@ -95,9 +97,8 @@ impl Target {
             format,
             width: size.width.max(1),
             height: size.height.max(1),
-            // Простір кольору вибирає бекенд: нам байдуже, а прив'язатися до
-            // конкретного означало б відсікти поверхні, які його не
-            // підтримують.
+            // The backend picks the colour space: we do not care, and pinning
+            // a specific one would cut off surfaces that do not support it.
             color_space: wgpu::SurfaceColorSpace::default(),
             present_mode: if options.vsync {
                 wgpu::PresentMode::AutoVsync
@@ -132,8 +133,8 @@ impl Target {
         self.config.height
     }
 
-    /// Формат поверхні. Пайплайн прив'язаний до нього, тож `Frame` будується
-    /// після того, як формат обрано, і переживає зміни розміру.
+    /// The surface format. The pipeline is tied to it, so `Frame` is built
+    /// after the format is chosen and survives resizes.
     pub fn format(&self) -> wgpu::TextureFormat {
         self.config.format
     }
@@ -146,9 +147,9 @@ impl Target {
     }
 
     pub fn resize(&mut self, gpu: &Gpu, width: u32, height: u32) {
-        // Згорнуте вікно дає нуль, а поверхня нульового розміру — помилка
-        // валідації. Пропускаємо, а не затискаємо в одиницю: кадру все одно
-        // нікуди йти.
+        // A minimised window gives zero, and a zero-sized surface is a
+        // validation error. Skip rather than clamp to one: the frame has
+        // nowhere to go anyway.
         if width == 0 || height == 0 {
             return;
         }
@@ -158,24 +159,24 @@ impl Target {
         self.surface.configure(&gpu.device, &self.config);
     }
 
-    /// Переконфігурувати під **фактичний** розмір вікна.
+    /// Reconfigure to the **actual** window size.
     ///
-    /// Саме фактичний, а не збережений. Перша версія переконфігуровувала
-    /// поверхню тим самим `config`, і це зависало намертво: якщо вікно вже
-    /// іншого розміру, поверхня лишається `Outdated`, кадр не малюється,
-    /// лічильник не росте — і так вічно. Помилки при цьому немає жодної,
-    /// програма просто перестає малювати.
+    /// Actual, not stored. The first version reconfigured the surface with the
+    /// same `config`, and that hung dead: if the window is already a different
+    /// size, the surface stays `Outdated`, no frame is drawn, the counter does
+    /// not grow -- forever. There is no error at all; the program simply stops
+    /// drawing.
     pub fn resync(&mut self, gpu: &Gpu) {
         let size = self.window.inner_size();
         self.resize(gpu, size.width, size.height);
     }
 
-    /// Попросити інший розмір вікна.
+    /// Ask for a different window size.
     ///
-    /// `request_inner_size` може змінити розмір ЗРАЗУ й повернути новий —
-    /// тоді події `Resized` не буде взагалі. Пропустити цей випадок означає
-    /// лишити поверхню старого розміру, а далі все зависає (див.
-    /// [`Target::resync`]).
+    /// `request_inner_size` may resize IMMEDIATELY and return the new size --
+    /// and then there is no `Resized` event at all. Missing that case means
+    /// leaving the surface at the old size, and everything hangs after that
+    /// (see [`Target::resync`]).
     pub fn request_size(&mut self, gpu: &Gpu, width: u32, height: u32) {
         let asked = winit::dpi::PhysicalSize::new(width, height);
         if let Some(now) = self.window.request_inner_size(asked) {
@@ -183,12 +184,13 @@ impl Target {
         }
     }
 
-    /// Наступна текстура поверхні, або `None`, якщо цього кадру не буде.
+    /// The next surface texture, or `None` if there will be no frame this
+    /// time.
     ///
-    /// wgpu 30 віддає не `Result`, а перелік станів, і більшість із них — не
-    /// помилки, а звичайні події: зміна розміру, перекритий монітор,
-    /// втрачена поверхня. Малювати в них нікуди, але й падати нема через що —
-    /// переконфігуруємо й чекаємо наступного кадру.
+    /// wgpu 30 returns an enum of states rather than a `Result`, and most of
+    /// them are not errors but ordinary events: a resize, an occluded monitor,
+    /// a lost surface. There is nowhere to draw in them, but nothing to fail
+    /// over either -- reconfigure and wait for the next frame.
     pub fn acquire(&mut self, gpu: &Gpu) -> Result<Option<wgpu::SurfaceTexture>, String> {
         match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(target) => Ok(Some(target)),
@@ -201,7 +203,7 @@ impl Target {
                 Ok(None)
             }
             wgpu::CurrentSurfaceTexture::Validation => {
-                Err("поверхня відхилена валідацією".to_string())
+                Err("the surface was rejected by validation".to_string())
             }
         }
     }

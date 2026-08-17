@@ -1,14 +1,14 @@
-//! Замір роздільності буфера глибини (ROADMAP F3).
+//! Measuring depth-buffer resolution (ROADMAP F3).
 //!
-//! Малює два чотирикутники на майже однаковій відстані й рахує, яку частку
-//! кадру виграв ближчий. Це і є прямий тест замість «здається, нормально»:
+//! Draws two quads at almost the same distance and counts what share of the
+//! frame the nearer one won. This is the direct test, instead of "looks fine":
 //!
-//!   1.0 — глибина роздільна, ближчий скрізь попереду;
-//!   0.0 — не роздільна взагалі, виграв той, кого намалювали першим;
-//!   між — z-fighting, тобто саме мерехтіння, за яке крок і відповідає.
+//!   1.0 -- depth resolves, the nearer one is in front everywhere;
+//!   0.0 -- no resolution at all, draw order decided;
+//!   between -- z-fighting, exactly the flicker this step is about.
 //!
-//! Проміжне значення тут — не «частково працює». Це найгірший випадок:
-//! у русі такий кадр блимає.
+//! A middle value here is not "partly works". It is the worst case: in motion
+//! such a frame blinks.
 
 use crate::depth;
 use crate::gpu::Gpu;
@@ -16,26 +16,26 @@ use crate::shot::Shot;
 
 const QUAD_WGSL: &str = include_str!("../shaders/depth_quad.wgsl");
 
-/// Поле зору по вертикалі, радіани. 60°, як у типової гри.
+/// Vertical field of view, radians. 60 degrees, as in a typical game.
 const FOV_Y: f64 = std::f64::consts::PI / 3.0;
 
 pub struct Setup {
     pub reversed: bool,
     pub near: f64,
-    /// Відстань до дальнього з двох чотирикутників, метри.
+    /// Distance to the farther of the two quads, metres.
     pub distance: f64,
-    /// Наскільки ближчий ближче, метри.
+    /// How much closer the nearer one is, metres.
     pub gap: f64,
 }
 
 pub struct Measured {
-    /// Частка пікселів, де попереду опинився ближчий.
+    /// Share of pixels where the nearer one ended up in front.
     pub near_wins: f64,
     pub shot: Shot,
 }
 
-/// Кольори двох поверхонь. Далекий червоний, ближчий зелений — щоб на
-/// знімку було видно оком, що саме перемогло.
+/// Colours of the two surfaces. Far red, near green -- so the shot shows by
+/// eye which one won.
 const FAR_COLOUR: [f32; 4] = [0.9, 0.1, 0.1, 1.0];
 const NEAR_COLOUR: [f32; 4] = [0.1, 0.9, 0.1, 1.0];
 
@@ -47,11 +47,11 @@ pub struct Params {
 }
 
 impl Params {
-    /// Розкладка вручну, без `bytemuck` і без `unsafe`.
+    /// Layout by hand, without `bytemuck` and without `unsafe`.
     ///
-    /// Інваріант 1 з CLAUDE.md: наш `unsafe` живе лише в `core-rs`. Тут
-    /// це не жертва — двадцять чотири числа підряд, і порядок видно оком,
-    /// а не виводиться з `#[repr(C)]` і вирівнювання.
+    /// Invariant 1 of CLAUDE.md: our `unsafe` lives only in `core-rs`. No
+    /// sacrifice here -- twenty-four numbers in a row, and the order is visible
+    /// to the eye rather than derived from `#[repr(C)]` and alignment.
     fn to_bytes(self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(96);
         for column in self.projection {
@@ -72,8 +72,8 @@ pub fn measure(gpu: &Gpu, width: u32, height: u32, setup: &Setup) -> Result<Meas
     let projection = if setup.reversed {
         depth::reversed_infinite(FOV_Y, aspect, setup.near)
     } else {
-        // Далека площина навмисно щедра: якщо звичайна проєкція програє
-        // навіть так, справа не в тому, що її погано налаштували.
+        // The far plane is deliberately generous: if the conventional
+        // projection loses even so, it was not badly configured.
         depth::conventional(FOV_Y, aspect, setup.near, setup.distance * 10.0)
     };
 
@@ -84,8 +84,8 @@ pub fn measure(gpu: &Gpu, width: u32, height: u32, setup: &Setup) -> Result<Meas
             0.0,
             0.0,
             -distance as f32,
-            // Удвічі більше за півекран на цій відстані: перекриття має
-            // накривати кадр цілком, інакше мерехтіння на краю не видно.
+            // Twice the half screen at this distance: the overlap must cover
+            // the whole frame, or flicker at an edge stays invisible.
             (2.0 * distance * (FOV_Y / 2.0).tan() * aspect.max(1.0)) as f32,
         ],
     };
@@ -96,11 +96,11 @@ pub fn measure(gpu: &Gpu, width: u32, height: u32, setup: &Setup) -> Result<Meas
     render_quads(gpu, width, height, setup.reversed, &[far, near])
 }
 
-/// Малює задані чотирикутники й читає кадр назад.
+/// Draws the given quads and reads the frame back.
 ///
-/// Публічна, бо тим самим користується [`crate::camera_probe`]: там інше
-/// питання, але та сама сцена — один шейдер, один пайплайн, різниця лише в
-/// тому, які числа доїхали.
+/// Public because [`crate::camera_probe`] uses the same thing: a different
+/// question, but the same scene -- one shader, one pipeline, the only
+/// difference being which numbers arrived.
 pub fn render_quads(
     gpu: &Gpu,
     width: u32,
@@ -111,13 +111,13 @@ pub fn render_quads(
     render_ranges(gpu, width, height, reversed, &[quads])
 }
 
-/// Те саме, але **проходами**: глибина очищається між ними, колір — ні
+/// The same, but **in passes**: depth is cleared between them, colour is not
 /// (ROADMAP-PLANETS.md, R4b).
 ///
-/// Один прохід — це рівно те, що робив [`render_quads`], тож зонд F3 нічого
-/// не втратив. Кілька проходів дають те, заради чого існують діапазони:
-/// поверхні в різних проходах не змагаються за біти глибини взагалі, і
-/// порядок між ними вирішує порядок проходів.
+/// One pass is exactly what [`render_quads`] did, so the F3 probe lost
+/// nothing. Several passes give what depth ranges exist for: surfaces in
+/// different passes do not compete for depth bits at all, and the order
+/// between them is decided by the order of the passes.
 pub fn render_ranges(
     gpu: &Gpu,
     width: u32,
@@ -180,8 +180,8 @@ pub fn render_ranges(
                 })],
             }),
             primitive: wgpu::PrimitiveState {
-                // Без відсікання граней: чотирикутник має бути видимий, як
-                // його не поверни. Порядок вершин тут не несе інформації.
+                // No face culling: the quad must be visible however it is
+                // turned. Vertex order carries no information here.
                 cull_mode: None,
                 ..Default::default()
             },
@@ -300,9 +300,9 @@ pub fn render_ranges(
 
         pass.set_pipeline(&pipeline);
 
-        // Дальній малюється ПЕРШИМ. Тоді «нуль зелених» означає рівно одне:
-        // глибина не розрізнила поверхонь і виграв порядок малювання, а не
-        // геометрія.
+        // The far one is drawn FIRST. Then "zero green" means exactly one
+        // thing: depth did not tell the surfaces apart and draw order won,
+        // not geometry.
         for (_, group) in &groups[first_quad..first_quad + group_quads.len()] {
             pass.set_bind_group(0, group, &[]);
             pass.draw(0..6, 0..1);

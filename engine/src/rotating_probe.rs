@@ -1,46 +1,49 @@
-//! Де рахувати перетворення обертового фрейму — на GPU у `f32` чи на CPU у
-//! `f64` (ROADMAP-UI.md, U6a1).
+//! Where to compute the rotating-frame transform -- on the GPU in `f32` or on
+//! the CPU in `f64` (ROADMAP-UI.md, U6a1).
 //!
-//! PROJECT.md §7 називає перетворення у вертексному шейдері «ключовим трюком»:
-//! траєкторія лежить в інерціальних координатах, перемикання фрейму — вибір
-//! пайплайна, без перерахунку. F6 так і зробив і виміряв, що формула на GPU
-//! збігається з C-оракулом.
+//! PROJECT.md section 7 calls the transform in the vertex shader "the key
+//! trick": the trajectory lives in inertial coordinates, switching frames is a
+//! choice of pipeline, with no recomputation. F6 did exactly that and measured
+//! that the GPU formula matches the C oracle.
 //!
-//! Але той самий §7 має рішення 1: **світові координати ніколи не в `float`**.
-//! А перетворення на GPU вимагає саме їх — у F6 вершина несе геоцентричні
-//! `vessel − earth` і `moon − earth`, до 4·10⁸ м, у `f32`. У F6 це не боліло,
-//! бо камера там нерухома й далека; інтерактивна камера наближається до
-//! апарата, і питання стає кількісним.
+//! But the same section 7 has decision 1: **world coordinates never in a
+//! `float`**. And the transform on the GPU demands exactly them -- in F6 a
+//! vertex carries geocentric `vessel - earth` and `moon - earth`, up to 4e8 m,
+//! in `f32`. In F6 that did not hurt, because the camera there is fixed and
+//! distant; an interactive camera approaches the vessel, and the question
+//! becomes quantitative.
 //!
-//! Тому тут два числа, а не думка:
+//! Hence two numbers here rather than an opinion:
 //!
-//! 1. **Скільки метрів коштує `f32`-шлях.** Та сама формула проганяється
-//!    двічі — у `f64` з точних чисел і у `f32` з округлених, як її побачив би
-//!    шейдер, — і різниця переводиться в метри й у пікселі при кількох
-//!    ширинах вигляду.
-//! 2. **Скільки коштує `f64`-шлях на CPU.** Прохід camera-relative по тих
-//!    самих точках уже є в кадрі щокадру (`frame::Lines::upload`); питання
-//!    лише в тому, скільки додає до нього перетворення фрейму. Два числа з
-//!    одного прогону, як завжди: одне без другого нічого не означає.
+//! 1. **How many metres the `f32` path costs.** The same formula is run twice
+//!    -- in `f64` from exact numbers and in `f32` from rounded ones, as the
+//!    shader would see them -- and the difference is converted to metres and to
+//!    pixels at several view widths.
+//! 2. **How much the `f64` path costs on the CPU.** A camera-relative pass over
+//!    the same points already happens every frame (`frame::Lines::upload`); the
+//!    only question is how much the frame transform adds to it. Two numbers
+//!    from one run, as always: either without the other means nothing.
 
 use std::time::Instant;
 
 use crate::camera::Camera;
 use crate::trajectory::{self, Sample, MU};
 
-/// Ширини вигляду, для яких помилка переводиться в пікселі.
+/// View widths for which the error is converted to pixels.
 ///
-/// 10 км — апарат зблизька, 10⁶ км — уся система Земля-Місяць у кадрі. Між
-/// ними той масштаб, на якому дивляться на орбіту біля Місяця.
+/// 10 km is the vessel up close, 1e6 km is the whole Earth-Moon system in the
+/// frame. Between them is the scale at which a lunar orbit is looked at.
 const VIEW_WIDTHS_M: [f64; 4] = [1.0e4, 1.0e5, 1.0e6, 1.0e9];
 
-/// Скільки пікселів завширшки кадр, у якому міряються пікселі помилки.
+/// Frame width in pixels, in which the error pixels are measured.
 const WIDTH_PX: f64 = 1280.0;
 
-/// Синодична позиція у `f64` — те саме, що [`trajectory::rotating_position`],
-/// але з явними аргументами, щоб поруч стояла `f32`-копія.
+/// The synodic position in `f64` -- the same as
+/// [`trajectory::rotating_position`], but with explicit arguments so that an
+/// `f32` copy can stand next to it.
 fn rotating_f64(vessel: [f64; 3], moon: [f64; 3], z_axis: [f64; 3]) -> [f64; 3] {
-    // Геоцентрично: Земля вже віднята з обох (як у вершинних даних F6).
+    // Geocentric: Earth is already subtracted from both (as in F6 vertex
+    // data).
     let d = moon;
     let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
     let x = [d[0] / length, d[1] / length, d[2] / length];
@@ -63,11 +66,12 @@ fn rotating_f64(vessel: [f64; 3], moon: [f64; 3], z_axis: [f64; 3]) -> [f64; 3] 
     ]
 }
 
-/// Та сама формула так, як її бачить вершинний шейдер: входи округлені до
-/// `f32`, уся арифметика у `f32`.
+/// The same formula as the vertex shader sees it: inputs rounded to `f32`, all
+/// arithmetic in `f32`.
 ///
-/// Це не «модель шейдера», а буквально він: `trajectory.slang` рахує
-/// `synodic_basis` і проєкцію в тих самих операціях і в тому ж порядку.
+/// Not a "model of the shader" but literally it: `trajectory.slang` computes
+/// `synodic_basis` and the projection in the same operations and the same
+/// order.
 fn rotating_f32(vessel: [f64; 3], moon: [f64; 3], z_axis: [f64; 3]) -> [f64; 3] {
     let narrow = |v: [f64; 3]| [v[0] as f32, v[1] as f32, v[2] as f32];
     let (vessel, d, z_axis) = (narrow(vessel), narrow(moon), narrow(z_axis));
@@ -95,18 +99,20 @@ fn rotating_f32(vessel: [f64; 3], moon: [f64; 3], z_axis: [f64; 3]) -> [f64; 3] 
 }
 
 pub struct Precision {
-    /// Найгірша розбіжність між двома шляхами, метри.
+    /// Worst divergence between the two paths, metres.
     pub worst_m: f64,
-    /// На якому семплі вона трапилась і як далеко там був апарат від Землі.
+    /// Which sample it happened at, and how far the vessel was from Earth
+    /// there.
     pub worst_sample: usize,
     pub worst_geocentric_m: f64,
-    /// Середня розбіжність, метри — щоб було видно, що найгірше не викид.
+    /// Mean divergence, metres -- so it is visible that the worst is not an
+    /// outlier.
     pub mean_m: f64,
-    /// Масштаб `L` на найгіршому семплі, метри: у ньому синодичні одиниці.
+    /// The scale `L` at the worst sample, metres: synodic units are in it.
     pub length_m: f64,
 }
 
-/// Скільки метрів коштує `f32`-шлях на всій фікстурній орбіті.
+/// How many metres the `f32` path costs over the whole fixture orbit.
 pub fn precision(samples: &[Sample]) -> Precision {
     let mut worst_m = 0.0;
     let mut worst_sample = 0;
@@ -123,8 +129,8 @@ pub fn precision(samples: &[Sample]) -> Precision {
         let exact = rotating_f64(vessel, moon, s.z_axis);
         let narrow = rotating_f32(vessel, moon, s.z_axis);
 
-        // Синодичні одиниці безрозмірні — у метри їх переводить той самий
-        // масштаб L, яким їх поділили.
+        // Synodic units are dimensionless -- the same scale L they were
+        // divided by converts them back to metres.
         let error_m = length
             * ((exact[0] - narrow[0]).powi(2)
                 + (exact[1] - narrow[1]).powi(2)
@@ -150,30 +156,30 @@ pub fn precision(samples: &[Sample]) -> Precision {
     }
 }
 
-/// Скільки пікселів становить `error_m` у кадрі завширшки `view_m`.
+/// How many pixels `error_m` amounts to in a frame `view_m` wide.
 pub fn error_px(error_m: f64, view_m: f64) -> f64 {
     error_m / view_m * WIDTH_PX
 }
 
 pub struct Cost {
     pub points: usize,
-    /// Прохід, який кадр робить уже сьогодні: camera-relative у `f64`.
+    /// The pass the frame already does today: camera-relative in `f64`.
     pub camera_ns: f64,
-    /// Він же плюс перетворення фрейму — те, чого крок вимагає від CPU.
+    /// The same plus the frame transform -- what this step asks of the CPU.
     pub camera_and_frame_ns: f64,
 }
 
 impl Cost {
-    /// На скільки відсотків дорожчає прохід.
+    /// By what percentage the pass gets more expensive.
     pub fn overhead(&self) -> f64 {
         (self.camera_and_frame_ns - self.camera_ns) / self.camera_ns * 100.0
     }
 }
 
-/// Ціна обох проходів по одних і тих самих точках, наносекунди на точку.
+/// The cost of both passes over the same points, nanoseconds per point.
 ///
-/// Міряються **разом і в одному прогоні**: різниця між прогонами на одній
-/// машині більша за те, що коштує перетворення.
+/// Measured **together and in one run**: the difference between runs on one
+/// machine is larger than what the transform costs.
 pub fn cost(samples: &[Sample], passes: u32) -> Cost {
     let camera = Camera::look_at([4.0e8, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
 
@@ -232,25 +238,25 @@ pub fn cost(samples: &[Sample], passes: u32) -> Cost {
     }
 }
 
-/// Обидва числа з одного прогону — те, що друкує `--rotating-probe`.
+/// Both numbers from one run -- what `--rotating-probe` prints.
 pub fn report() {
     let samples = trajectory::load();
 
     let p = precision(&samples);
     println!(
-        "Точність. Та сама формула у f64 і у f32 (як її бачить вершинний шейдер),\n\
-         {} семплів halo-орбіти з фікстури.\n",
+        "Precision. The same formula in f64 and in f32 (as the vertex shader\n\
+         sees it), {} halo-orbit samples from the fixture.\n",
         samples.len()
     );
     println!(
-        "  найгірша розбіжність: {:.2} м (семпл {}, апарат за {:.3e} м від Землі, L = {:.3e} м)",
+        "  worst divergence: {:.2} m (sample {}, vessel {:.3e} m from Earth, L = {:.3e} m)",
         p.worst_m, p.worst_sample, p.worst_geocentric_m, p.length_m
     );
-    println!("  середня розбіжність:  {:.2} м\n", p.mean_m);
+    println!("  mean divergence:  {:.2} m\n", p.mean_m);
 
     println!(
         "  {:>14} {:>12} {:>12}",
-        "ширина кадру", "м на піксель", "помилка, px"
+        "frame width", "m per pixel", "error, px"
     );
     for view in VIEW_WIDTHS_M {
         println!(
@@ -263,12 +269,12 @@ pub fn report() {
 
     let c = cost(&samples, 200);
     println!(
-        "\nЦіна на CPU, {} точок, наносекунди на точку (обидва числа — один прогін):\n",
+        "\nCPU cost, {} points, nanoseconds per point (both numbers, one run):\n",
         c.points
     );
-    println!("  camera-relative, як зараз:        {:.2} нс", c.camera_ns);
+    println!("  camera-relative, as today:        {:.2} ns", c.camera_ns);
     println!(
-        "  плюс перетворення фрейму:         {:.2} нс  ({:+.0}%)",
+        "  plus the frame transform:         {:.2} ns  ({:+.0}%)",
         c.camera_and_frame_ns,
         c.overhead()
     );

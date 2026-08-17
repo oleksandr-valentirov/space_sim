@@ -1,53 +1,53 @@
-//! Camera-relative проти наївного шляху (ROADMAP F4).
+//! Camera-relative against the naive path (ROADMAP F4).
 //!
-//! PROJECT.md §7, рішення 1: світові координати НІКОЛИ не потрапляють у
-//! `float`. Трансформації рахуються в `double` на CPU відносно камери, у
-//! шейдер їде вже `float` у камерному просторі.
+//! PROJECT.md section 7, decision 1: world coordinates NEVER reach a `float`.
+//! Transforms are computed in `double` on the CPU relative to the camera, and
+//! what goes to the shader is already `float` in camera space.
 //!
-//! Цей модуль міряє, що саме це дає. Обидва шляхи закінчуються однаково —
-//! чотирикутник у камерному просторі, той самий шейдер, той самий пайплайн.
-//! Різниця тільки в арифметиці на CPU:
+//! This module measures what that buys. Both paths end the same way -- a quad
+//! in camera space, the same shader, the same pipeline. The difference is only
+//! in the CPU arithmetic:
 //!
-//!   camera-relative   `(світ_об'єкта − світ_камери) as f32`
-//!   наївний           `світ_об'єкта as f32 − світ_камери as f32`
+//!   camera-relative   `(object_world - camera_world) as f32`
+//!   naive             `object_world as f32 - camera_world as f32`
 //!
-//! Другий губить усе на відніманні близьких великих чисел. На 1 а.о.
-//! (1.496·10¹¹ м) ULP у `f32` — приблизно **16 км**, тож обидві координати
-//! спершу лягають на 16-кілометрову ґратку, а вже потім віднімаються.
-//! Об'єкт за десять метрів від камери опиняється або точно на ній, або за
-//! кілометри.
+//! The second loses everything subtracting close large numbers. At 1 AU
+//! (1.496e11 m) one ULP in `f32` is about **16 km**, so both coordinates first
+//! land on a 16-kilometre lattice and only then get subtracted. An object ten
+//! metres from the camera ends up either exactly on it or kilometres away.
 //!
-//! Міряється зсув центру ваги об'єкта в пікселях між кадрами, поки камера
-//! рухається міліметровими кроками. Правильний шлях дає плавний субпіксельний
-//! рух; наївний — нерухомість, а тоді стрибок, тобто саме тремтіння.
+//! What is measured is the shift of the object's centroid in pixels between
+//! frames while the camera moves in millimetre steps. The correct path gives
+//! smooth subpixel motion; the naive one gives stillness and then a jump --
+//! exactly the jitter.
 
 use crate::depth;
 use crate::depth_probe::{render_quads, Params};
 use crate::gpu::Gpu;
 
-/// Відстань від світового початку — та сама, що в критерії F4.
+/// Distance from the world origin -- the same as in the F4 criterion.
 pub const ASTRONOMICAL_UNIT: f64 = 1.495_978_707e11;
 
-/// Скільки метрів між камерою й об'єктом. Десять метрів — масштаб локальної
-/// сцени корабля з PROJECT.md §7.
+/// Metres between the camera and the object. Ten metres is the scale of the
+/// ship's local scene from PROJECT.md section 7.
 const RANGE: f64 = 10.0;
 
-/// Півширина об'єкта. Метр на десяти метрах — помітна, але не на весь екран,
-/// інакше центр ваги нічого не показував би.
+/// Half width of the object. A metre at ten metres is noticeable but not
+/// screen-filling, otherwise the centroid would show nothing.
 const HALF_SIZE: f64 = 1.0;
 
 const FOV_Y: f64 = std::f64::consts::PI / 3.0;
 const NEAR: f64 = 0.1;
 
 pub struct Step {
-    /// Зсув центру ваги проти попереднього кадру, пікселі.
+    /// Centroid shift against the previous frame, pixels.
     pub shift: f64,
-    /// Скільки пікселів зайняв об'єкт. Нуль означає, що його не видно.
+    /// How many pixels the object took. Zero means it is not visible.
     pub visible: u64,
 }
 
-/// Проганяє камеру `steps` кроками по `step_m` метрів і повертає, як рухався
-/// об'єкт у кадрі.
+/// Runs the camera through `steps` steps of `step_m` metres and returns how
+/// the object moved in the frame.
 pub fn sweep(
     gpu: &Gpu,
     size: u32,
@@ -58,12 +58,12 @@ pub fn sweep(
     sweep_at(gpu, size, relative, steps, step_m, ASTRONOMICAL_UNIT)
 }
 
-/// Те саме, але з довільною відстанню до світового початку.
+/// The same, but with an arbitrary distance to the world origin.
 ///
-/// Існує, бо на 1 а.о. наївний шлях не тремтить, а **зникає**: ULP у 16 км
-/// проти сцени в десять метрів не лишає від неї нічого. Тремтіння видно там,
-/// де ULP порівнянний із розміром об'єкта, і знайти цю відстань — окреме
-/// питання, на яке відповідає розгортка.
+/// Exists because at 1 AU the naive path does not jitter, it **vanishes**: a
+/// 16-kilometre ULP against a ten-metre scene leaves nothing of it. Jitter is
+/// visible where the ULP is comparable to the size of the object, and finding
+/// that distance is a separate question the sweep answers.
 pub fn sweep_at(
     gpu: &Gpu,
     size: u32,
@@ -74,8 +74,8 @@ pub fn sweep_at(
 ) -> Result<Vec<Step>, String> {
     let projection = depth::reversed_infinite(FOV_Y, 1.0, NEAR);
 
-    // Обидва — далеко від початку координат. Саме це й ламає наївний шлях:
-    // не велика відстань між ними, а велика відстань до нуля.
+    // Both are far from the origin. That is what breaks the naive path: not
+    // a large distance between them, but a large distance to zero.
     let object_world = [origin_distance, 0.0, 0.0];
 
     let mut out = Vec::new();
@@ -89,16 +89,16 @@ pub fn sweep_at(
         ];
 
         let view = if relative {
-            // Віднімання у double, і аж потім звуження. Різниця мала, тож у
-            // f32 вона представлена з повною точністю.
+            // Subtract in double, narrow only afterwards. The difference is
+            // small, so f32 represents it exactly.
             [
                 (object_world[0] - camera_world[0]) as f32,
                 (object_world[1] - camera_world[1]) as f32,
                 (object_world[2] - camera_world[2]) as f32,
             ]
         } else {
-            // Звуження, і аж потім віднімання. Обидва доданки лягають на
-            // ґратку з кроком ~16 км, і те, що лишається, — шум цієї ґратки.
+            // Narrow first, subtract afterwards. Both terms land on a lattice
+            // of ~16 km, and what remains is the noise of that lattice.
             [
                 object_world[0] as f32 - camera_world[0] as f32,
                 object_world[1] as f32 - camera_world[1] as f32,
@@ -106,8 +106,8 @@ pub fn sweep_at(
             ]
         };
 
-        // Камера дивиться вздовж -z, а різниця вище лежить уздовж +x.
-        // Перекладаємо: віддалення від камери стає -z.
+        // The camera looks along -z, while the difference above lies along
+        // +x. Translate: distance from the camera becomes -z.
         let centre = [view[1], view[2], -view[0].abs()];
 
         let params = Params {
@@ -149,7 +149,7 @@ fn visible_pixels(shot: &crate::shot::Shot) -> u64 {
     count
 }
 
-/// Центр ваги видимих пікселів. `None`, якщо об'єкта в кадрі немає.
+/// Centroid of the visible pixels. `None` if the object is not in the frame.
 fn centroid(shot: &crate::shot::Shot) -> Option<(f64, f64)> {
     let mut sum_x = 0.0;
     let mut sum_y = 0.0;
