@@ -1,151 +1,160 @@
-//! Скільки тайлів витримує bindless-масив, і що вони коштують (етап T, T2).
+//! How many tiles a bindless array holds, and what they cost (stage T, T2).
 //!
-//! Крок T2 має назвати рівень колірної піраміди **числом**, і три числа для
-//! цього названі наперед: тайлів `6·(4⁰+…+4^(L−1))`, байтів на тайл, і
-//! скільки текстур витримує масив. Перші два — арифметика; третє — властивість
-//! пристрою, і саме його припустити не можна.
+//! Step T2 has to name the level of the colour pyramid with a **number**, and
+//! three numbers are named up front for that: `6*(4^0 + ... + 4^(L-1))` tiles,
+//! bytes per tile, and how many textures the array holds. The first two are
+//! arithmetic; the third is a property of the device, and it is the one that
+//! must not be assumed.
 //!
 //! cargo run --release -p engine -- --tile-probe
 //!
-//! ## Чому заявленого ліміту недостатньо
+//! ## Why the declared limit is not enough
 //!
-//! `max_binding_array_elements_per_shader_stage` виміряний `gpu-probe` на цій
-//! машині — **1 048 576** (NVIDIA), **8 388 606** (RADV), **1 000 000**
-//! (llvmpipe). Найменше з трьох — на **тридцять разів** більше за найглибшу
-//! піраміду, яку ми взагалі розглядаємо. Якби питання було в ньому, воно було
-//! б закрите ще на етапі E.
+//! `max_binding_array_elements_per_shader_stage` as measured by `gpu-probe` on
+//! this machine is **1 048 576** (NVIDIA), **8 388 606** (RADV), **1 000 000**
+//! (llvmpipe). The smallest of the three is **thirty times** larger than the
+//! deepest pyramid we would ever consider. If the question hinged on it, it
+//! would have been closed back on stage E.
 //!
-//! Упирається воно в інше, і в те, чого адаптер про себе не каже:
+//! What it actually hits is something else, and something the adapter does not
+//! report about itself:
 //!
-//! - **гранулярність алокації.** Тайл — це кілька десятків текселів на бік,
-//!   тобто одиниці кілобайтів. Драйвер роздає пам'ять блоками, і скільки з блока
-//!   пропадає, видно лише з `generate_allocator_report()`: там є і сума
-//!   алокацій, і сума **зарезервованого**. Різниця між ними — це і є ціна
-//!   дрібності, яку не можна порахувати з формату файлу;
-//! - **час.** Тридцять тисяч викликів `create_texture` — це тридцять тисяч
-//!   об'єктів драйвера, і платиться цей час при завантаженні тіла, а не раз
-//!   на життя процесу.
+//! - **allocation granularity.** A tile is a few dozen texels on a side, i.e.
+//!   single-digit kilobytes. The driver hands out memory in blocks, and how
+//!   much of a block goes to waste is visible only from
+//!   `generate_allocator_report()`: it carries both the sum of allocations and
+//!   the sum of what is **reserved**. The difference between them is precisely
+//!   the price of being small, and it cannot be computed from the file format;
+//! - **time.** Thirty thousand `create_texture` calls are thirty thousand
+//!   driver objects, and that time is paid when a body is loaded, not once per
+//!   process lifetime.
 //!
-//! ## Чому зонд робить свій пристрій, і чому на кожному адаптері
+//! ## Why the probe makes its own device, and does so on every adapter
 //!
-//! `Gpu::new` просить рівно `max(default, 4096)` елементів — число, узяте під
-//! 2046 тайлів рельєфу (`gpu.rs`). Зонд, що міряв би межу через нього, міряв
-//! би цю константу, а не пристрій. Тому тут — власний пристрій із лімітом, що
-//! дорівнює адаптерному.
+//! `Gpu::new` asks for exactly `max(default, 4096)` elements -- a number
+//! chosen for 2046 terrain tiles (`gpu.rs`). A probe measuring the limit
+//! through it would be measuring that constant rather than the device. So here
+//! there is a device of its own, with the limit equal to the adapter's.
 //!
-//! Адаптери беруться **всі апаратні**, а не один найшвидший, і саме тому, що
-//! питання про пам'ять: у дискретної карти своя VRAM, у інтегрованої — та
-//! сама системна, з якої вже живе гра. Один рядок з дискретної відповів би на
-//! половину питання. Програмні адаптери пропускаються: у llvmpipe «пам'ять
-//! GPU» — це malloc, тобто число, яке нічого не обмежує.
+//! Adapters are taken **all hardware ones**, not one fastest, and precisely
+//! because the question is about memory: a discrete card has its own VRAM, an
+//! integrated one shares the system memory the game already lives in. A single
+//! row from the discrete card would answer half the question. Software
+//! adapters are skipped: in llvmpipe "GPU memory" is malloc, i.e. a number
+//! that constrains nothing.
 //!
-//! ## Що виміряно (2026-08-16)
+//! ## What was measured (2026-08-16)
 //!
-//! **Тайл коштує ×3.34 від того, що несе, і це число те саме на обох
-//! вендорах, у всіх трьох форматів і на всіх трьох глибинах піраміди.** Не
-//! залежить воно ні від кількості тайлів, ні від того, скільки в тайлі
-//! каналів: 1225 байтів даних у `R8Unorm` перетворюються на 4096 у пам'яті,
-//! 2450 у `R16Sint` — на 8192. Тобто **35×35 — це не «маленька текстура», це
-//! чотирикілобайтова**, і саме ця константа, а не заявлена стеля масиву,
-//! вирішує, скільки рівнів піраміди можна собі дозволити.
+//! **A tile costs x3.34 of what it carries, and that number is the same on
+//! both vendors, in all three formats and at all three pyramid depths.** It
+//! depends neither on the tile count nor on how many channels a tile has: 1225
+//! bytes of data in `R8Unorm` turn into 4096 in memory, 2450 in `R16Sint` into
+//! 8192. That is, **35x35 is not "a small texture", it is a four-kilobyte
+//! one**, and it is that constant, not the declared array ceiling, that
+//! decides how many pyramid levels we can afford.
 //!
-//! Єдина розбіжність між вендорами — `Rgba8Unorm`: NVIDIA бере 12 288 байтів
-//! на тайл, RADV — 16 384. Це ще один доказ, що трибайтовий колір нічого не
-//! економить: те, що в файлі важить 3 байти на вузол, у пам'яті коштує 12–16
-//! кілобайтів на тайл проти 4 в одноканального.
+//! The only divergence between vendors is `Rgba8Unorm`: NVIDIA takes 12 288
+//! bytes per tile, RADV 16 384. That is one more proof that a three-byte
+//! colour saves nothing: what weighs 3 bytes per node in the file costs 12-16
+//! kilobytes per tile in memory, against 4 for a single-channel one.
 //!
-//! Резерв росте сходинками й на дрібних пірамідах дорівнює нулю (нові
-//! текстури влазять у вже взятий блок), а на рівні 7 подвоює рахунок:
-//! 128 МіБ алокацій → **256 МіБ зарезервованих**. Час створення лінійний за
-//! кількістю тайлів: ~11 мс на 2046, ~38 мс на 8190, ~165 мс на 32 766.
+//! The reserve grows in steps and equals zero on small pyramids (new textures
+//! fit into a block already taken), while at level 7 it doubles the bill:
+//! 128 MiB of allocations -> **256 MiB reserved**. Creation time is linear in
+//! the tile count: ~11 ms for 2046, ~38 ms for 8190, ~165 ms for 32 766.
 //!
-//! ## Що виміряно для W1: ціна запеченого нахилу (2026-08-16)
+//! ## What was measured for W1: the price of a baked slope (2026-08-16)
 //!
-//! **Ореол не коштує нічого.** 33×33 і 35×35 дають той самий байт на тайл — у
-//! кожному форматі, на кожній глибині, на обох вендорах. Тобто 12.5%, які
-//! ореол важить у файлі, у пам'яті GPU не існують узагалі: обидві сітки
-//! потрапляють в один блок гранулярності. Викидати ореол з формату можна
-//! заради простоти й диска, але **не заради пам'яті** — там купувати нічого.
+//! **The halo costs nothing.** 33x33 and 35x35 give the same bytes per tile --
+//! in every format, at every depth, on both vendors. So the 12.5% the halo
+//! weighs in the file simply does not exist in GPU memory: both grids land in
+//! one granularity block. Dropping the halo from the format is worth doing for
+//! simplicity and disk, but **not for memory** -- there is nothing to buy
+//! there.
 //!
-//! **Другий канал коштує рівно один крок гранулярності, і вендори різні:**
+//! **The second channel costs exactly one granularity step, and the vendors
+//! differ:**
 //!
-//! | формат | NVIDIA | RADV |
+//! | format | NVIDIA | RADV |
 //! |---|---|---|
-//! | `R16Sint` (висоти до етапу W) | 8192 | 8192 |
-//! | `Rg16Sint` (висоти + нахил) | **12 288** | **16 384** |
+//! | `R16Sint` (heights before stage W) | 8192 | 8192 |
+//! | `Rg16Sint` (heights + slope) | **12 288** | **16 384** |
 //!
-//! Тобто ×1.5 на дискретній карті й ×2 на інтегрованій, і саме інтегрована
-//! платить із тієї ж пам'яті, з якої живе гра. У числах сцени: Місяць
-//! 16 → 24/32 МіБ, Земля 64 → 96/128 МіБ, разом **+40 МіБ (NVIDIA)** і
-//! **+80 МіБ (RADV)**. Це і є ціна відповіді на Q3, названа до того, як
-//! формат змінився.
+//! That is x1.5 on the discrete card and x2 on the integrated one, and it is
+//! the integrated one that pays out of the same memory the game lives in. In
+//! scene numbers: Moon 16 -> 24/32 MiB, Earth 64 -> 96/128 MiB, together
+//! **+40 MiB (NVIDIA)** and **+80 MiB (RADV)**. That is the price of the
+//! answer to Q3, named before the format changed.
 //!
-//! ⚠ **Час прив'язки масиву від формату не залежить взагалі** — 1.0–1.1 мс на
-//! 8190 текстур у всіх сімох рядків. Це саме те, що каже борг D19: платить
-//! драйвер за **кількість** текстур, а не за їхній розмір, тож запечений нахил
-//! D19 не погіршує ні на мікросекунду.
+//! WARNING: **Array binding time does not depend on the format at all** --
+//! 1.0-1.1 ms for 8190 textures across all seven rows. This is exactly what
+//! debt D19 says: the driver pays for the **number** of textures, not for
+//! their size, so a baked slope does not make D19 worse by a microsecond.
 
 use std::time::Instant;
 
 use crate::tiles;
 
-/// Рівні, які має сенс міряти: 5 — рельєф Місяця, 6 — його колір і обидві
-/// піраміди Землі, 7 — кандидат, від якого T2 відмовився.
+/// The levels worth measuring: 5 is the Moon's terrain, 6 its colour and both
+/// of the Earth's pyramids, 7 the candidate T2 turned down.
 const LEVELS: [u32; 3] = [5, 6, 7];
 
-/// Формати й сітки, між якими вибирають T2 і W1.
+/// The formats and grids T2 and W1 choose between.
 ///
-/// `R16Sint` — те, що несли висоти до етапу W, і воно тут заради масштабу
-/// порівняння. `R8Unorm` — один канал: глобальна мозаїка LROC WAC монохромна,
-/// тобто для Місяця це не спрощення, а рівно те, що є в джерелі. `Rgba8Unorm` —
-/// чотири, бо трибайтового формату текстури в wgpu **немає взагалі**: `Rgb8` не
-/// існує ні в WebGPU, ні в Vulkan як формат, який можна семплювати без
-/// розширень. Тобто «35²·3» з роадмапу — це розмір у файлі, а не в пам'яті GPU.
+/// `R16Sint` is what the heights carried before stage W, and it is here for
+/// the sake of a scale to compare against. `R8Unorm` is one channel: the
+/// global LROC WAC mosaic is monochrome, so for the Moon this is not a
+/// simplification but exactly what the source holds. `Rgba8Unorm` is four,
+/// because a three-byte texture format **does not exist at all** in wgpu:
+/// `Rgb8` exists neither in WebGPU nor in Vulkan as a format sampleable
+/// without extensions. So the "35^2*3" from the roadmap is a size in the file,
+/// not in GPU memory.
 ///
-/// `Rg16Sint` 33² — те, що несуть висоти **тепер** (етап W): запечений нахил
-/// кладе в той самий тексель другий `i16`. Рядки з ореолом лишились у таблиці
-/// не з ностальгії, а тому що саме вони й дали відповідь W1: сітка тут — вимір
-/// таблиці, а не константа, і без нього «ореол коштує 12.5%» лишалося б
-/// арифметикою над файлом замість виміру над пам'яттю.
+/// `Rg16Sint` 33^2 is what the heights carry **now** (stage W): the baked
+/// slope puts a second `i16` into the same texel. The rows with a halo stayed
+/// in the table not out of nostalgia but because they are what gave the W1
+/// answer: the grid here is a dimension of the table rather than a constant,
+/// and without it "the halo costs 12.5%" would have stayed arithmetic over the
+/// file instead of a measurement over memory.
 const FORMATS: [(&str, wgpu::TextureFormat, usize, usize); 7] = [
     (
-        "R16Sint 35² (висоти до W)",
+        "R16Sint 35^2 (heights before W)",
         wgpu::TextureFormat::R16Sint,
         2,
         tiles::STORED,
     ),
     (
-        "R16Sint 33² (те саме без ореолу)",
+        "R16Sint 33^2 (same, no halo)",
         wgpu::TextureFormat::R16Sint,
         2,
         tiles::NODES,
     ),
     (
-        "Rg16Sint 35² (з нахилом, з ореолом)",
+        "Rg16Sint 35^2 (slope, w/ halo)",
         wgpu::TextureFormat::Rg16Sint,
         4,
         tiles::STORED,
     ),
     (
-        "Rg16Sint 33² (висоти нині)",
+        "Rg16Sint 33^2 (heights today)",
         wgpu::TextureFormat::Rg16Sint,
         4,
         tiles::NODES,
     ),
     (
-        "R8Unorm 35² (колір Місяця до W)",
+        "R8Unorm 35^2 (Moon colour, old)",
         wgpu::TextureFormat::R8Unorm,
         1,
         tiles::STORED,
     ),
     (
-        "Rgba8Unorm 35² (колір Землі до W)",
+        "Rgba8Unorm 35^2 (Earth col, old)",
         wgpu::TextureFormat::Rgba8Unorm,
         4,
         tiles::STORED,
     ),
     (
-        "Rgba8Unorm 33² (колір Землі нині)",
+        "Rgba8Unorm 33^2 (Earth col, now)",
         wgpu::TextureFormat::Rgba8Unorm,
         4,
         tiles::NODES,
@@ -164,7 +173,7 @@ struct Row {
     failed: Option<String>,
 }
 
-/// Порахувати й надрукувати таблицю по кожному апаратному адаптеру.
+/// Compute and print the table for every hardware adapter.
 pub fn report() -> Result<(), String> {
     let instance = wgpu::Instance::default();
     let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
@@ -176,34 +185,34 @@ pub fn report() -> Result<(), String> {
         }
         match one_adapter(adapter) {
             Ok(()) => measured += 1,
-            Err(e) => println!("{}: пропущено — {e}\n", adapter.get_info().name),
+            Err(e) => println!("{}: skipped -- {e}\n", adapter.get_info().name),
         }
     }
 
     if measured == 0 {
-        return Err("жоден апаратний адаптер не зміряний".to_string());
+        return Err("no hardware adapter was measured".to_string());
     }
     Ok(())
 }
 
-/// Таблиця для одного адаптера.
+/// The table for one adapter.
 fn one_adapter(adapter: &wgpu::Adapter) -> Result<(), String> {
     let info = adapter.get_info();
     let ceiling = adapter.limits().max_binding_array_elements_per_shader_stage;
     println!(
-        "адаптер: {:?} — {} ({:?})",
+        "adapter: {:?} -- {} ({:?})",
         info.backend, info.name, info.device_type
     );
-    println!("заявлена стеля масиву: {ceiling} елементів");
+    println!("declared array ceiling: {ceiling} elements");
     if ceiling == 0 {
-        return Err("адаптер не має масивів прив'язок — міряти нема чого".to_string());
+        return Err("the adapter has no binding arrays -- nothing to measure".to_string());
     }
 
     let wanted = wgpu::Features::TEXTURE_BINDING_ARRAY
         | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
         | wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY;
     if !adapter.features().contains(wanted) {
-        return Err("немає повного набору bindless".to_string());
+        return Err("the full bindless set is missing".to_string());
     }
 
     let mut limits = wgpu::Limits::downlevel_defaults();
@@ -220,7 +229,7 @@ fn one_adapter(adapter: &wgpu::Adapter) -> Result<(), String> {
         trace: wgpu::Trace::Off,
         experimental_features: wgpu::ExperimentalFeatures::disabled(),
     }))
-    .map_err(|e| format!("пристрій не створюється: {e}"))?;
+    .map_err(|e| format!("the device does not come up: {e}"))?;
 
     let mut rows = Vec::new();
     for (name, format, bytes_per_texel, side) in FORMATS {
@@ -243,11 +252,12 @@ fn one_adapter(adapter: &wgpu::Adapter) -> Result<(), String> {
     Ok(())
 }
 
-/// Один рядок таблиці: створити піраміду тайлів, зібрати з них масив, зміряти.
+/// One row of the table: build a pyramid of tiles, assemble an array out of
+/// them, measure.
 ///
-/// Текстури живуть до кінця функції й помирають разом із нею — наступний
-/// рядок мусить починати з чистого аркуша, інакше звіт алокатора показував би
-/// суму всіх попередніх вимірів.
+/// The textures live until the end of the function and die together with it --
+/// the next row has to start from a clean slate, otherwise the allocator
+/// report would show the sum of all the preceding measurements.
 fn measure(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -300,8 +310,8 @@ fn measure(
         views.push(texture.create_view(&wgpu::TextureViewDescriptor::default()));
         textures.push(texture);
     }
-    // Черга віддає вивантаження ліниво, тож без цього час і пам'ять зонда
-    // виявилися б часом і пам'яттю самого запису в чергу.
+    // The queue flushes lazily, so without this the probe's time and memory
+    // would turn out to be the time and memory of the queue write itself.
     queue.submit(std::iter::empty());
     let _ = device.poll(wait());
     let create_ms = start.elapsed().as_secs_f64() * 1e3;
@@ -355,7 +365,7 @@ fn measure(
     }
 }
 
-/// `poll(Wait)` без обмежень — той самий виклик, що в `shot.rs`.
+/// `poll(Wait)` with no limits -- the same call as in `shot.rs`.
 fn wait() -> wgpu::PollType {
     wgpu::PollType::Wait {
         submission_index: None,
@@ -372,20 +382,21 @@ fn sample_type(format: wgpu::TextureFormat) -> wgpu::TextureSampleType {
     }
 }
 
-/// Два числа пам'яті: сума алокацій і сума зарезервованого, байти.
+/// Two memory numbers: the sum of allocations and the sum of what is reserved,
+/// bytes.
 ///
-/// Обидва, і це не надмір — вони відповідають на різні питання, і **перше з
-/// них зонд спершу не рахував і через це побачив нулі**. Резерв росте
-/// **блоками**: доки нові текстури влазять у вже взятий блок, різниця «до» й
-/// «після» дорівнює нулю, і рядок виглядає безкоштовним, хоча пам'ять
-/// витрачена. Сума алокацій такої дірки не має — вона рахує кожну текстуру
-/// окремо, разом із вирівнюванням, тобто саме ту гранулярність, заради якої
-/// зонд і писався.
+/// Both, and that is not redundancy -- they answer different questions, and
+/// **the probe did not count the first one at first and so saw zeroes**. The
+/// reserve grows in **blocks**: as long as new textures fit into a block
+/// already taken, the difference between "before" and "after" is zero, and the
+/// row looks free even though memory was spent. The sum of allocations has no
+/// such hole -- it counts every texture separately, alignment included, i.e.
+/// exactly the granularity the probe was written for.
 ///
-/// Резерв лишається другим стовпцем, бо він каже інше: скільки пристрій
-/// **тримає** під нас, включно з нічим не зайнятими хвостами блоків. Бекенд
-/// без звіту (GL) дає нулі, і в таблиці це видно як нулі, а не як
-/// «нічого не коштує».
+/// The reserve stays as the second column because it says something else: how
+/// much the device **holds** on our behalf, including the unused tails of
+/// blocks. A backend without a report (GL) gives zeroes, and in the table that
+/// shows up as zeroes rather than as "costs nothing".
 fn memory(device: &wgpu::Device) -> (u64, u64) {
     device
         .generate_allocator_report()
@@ -396,7 +407,7 @@ fn memory(device: &wgpu::Device) -> (u64, u64) {
 fn print_table(rows: &[Row]) {
     println!();
     println!(
-        "формат                           рівнів  тайлів   дані, МіБ  алок., МіБ  резерв, МіБ  ств., мс  масив, мс"
+        "format                           levels   tiles   data, MiB  alloc, MiB  reserv, MiB  make, ms  array, ms"
     );
     for row in rows {
         println!(
@@ -410,34 +421,34 @@ fn print_table(rows: &[Row]) {
             row.create_ms,
             row.bind_ms,
             match &row.failed {
-                Some(e) => format!("  ← {e}"),
+                Some(e) => format!("  <- {e}"),
                 None => String::new(),
             }
         );
     }
 }
 
-/// Висновок, а не лише дані — те саме правило, що в `gpu-probe`.
+/// A verdict, not just data -- the same rule as in `gpu-probe`.
 fn print_verdict(rows: &[Row]) {
     println!();
-    println!("Висновок\n");
+    println!("Verdict\n");
 
     for row in rows {
         if row.failed.is_some() {
             println!(
-                "  {} на {} рівнях ({} тайлів) НЕ ВЛІЗ",
+                "  {} at {} levels ({} tiles) DID NOT FIT",
                 row.format, row.levels, row.tiles
             );
         }
     }
 
-    // Накладка гранулярності — головне число зонда: воно каже, скільки пам'яті
-    // з'їдає сама дрібність тайла, і саме воно, а не заявлена стеля, обмежує
-    // глибину піраміди.
+    // The granularity overhead is the probe's headline number: it says how
+    // much memory the smallness of a tile eats by itself, and it is that, not
+    // the declared ceiling, that limits the depth of the pyramid.
     for row in rows {
         if row.data_mib > 0.0 && row.allocated_mib > 0.0 {
             println!(
-                "  {} / {} рівнів: алокація ×{:.2} від даних, {:.0} байт на тайл",
+                "  {} / {} levels: allocation x{:.2} of the data, {:.0} bytes per tile",
                 row.format,
                 row.levels,
                 row.allocated_mib / row.data_mib,
