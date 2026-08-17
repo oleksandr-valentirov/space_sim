@@ -1,107 +1,113 @@
-//! Небо й повітря на GPU: таблиці Hillaire 2020 (ROADMAP-ATMOSPHERE.md).
+//! Sky and air on the GPU: the Hillaire 2020 tables (ROADMAP-ATMOSPHERE.md).
 //!
-//! Тут живуть **таблиці**, а не картинка. Розділення не косметичне: таблиці
-//! різняться тим, як часто їх треба рахувати, і саме це визначає, де вони
-//! стоять у кадрі (правило 5 етапу S):
+//! What lives here are the **tables**, not the picture. The split is not
+//! cosmetic: the tables differ in how often they have to be computed, and that
+//! is what decides where they stand in the frame (rule 5 of stage S):
 //!
-//! | таблиця | від чого залежить | як часто |
+//! | table | depends on | how often |
 //! |---|---|---|
-//! | пропускання | лише параметри повітря | раз на набір параметрів |
-//! | багаторазове розсіювання | лише параметри повітря | раз на набір параметрів |
-//! | небо (sky-view) | позиція камери + напрямок на Сонце | раз на кадр |
-//! | аеральна перспектива | фрустум камери | раз на кадр, і не завжди |
+//! | transmittance | air parameters only | once per parameter set |
+//! | multiple scattering | air parameters only | once per parameter set |
+//! | sky-view | camera position + direction to the Sun | once per frame |
+//! | aerial perspective | the camera frustum | once per frame, and not always |
 //!
-//! Решта рядків з'явиться разом зі своїми кроками; заводити їх наперед
-//! CLAUDE.md прямо забороняє.
+//! The remaining rows will appear together with their steps; CLAUDE.md forbids
+//! introducing them in advance outright.
 //!
-//! ## Дві групи прив'язки: читане й писане
+//! ## Two bind groups: what is read and what is written
 //!
-//! Група 0 — те, що прохід читає, група 1 — те, що він пише. Поділ вимушений:
-//! таблицю пропускання пише один прохід і читають усі наступні, а одна
-//! bind-група, у якій та сама текстура стоїть і на запис, і на читання,
-//! заборонена — wgpu бачить у ній гонку незалежно від того, що робить шейдер.
-//! Тому проходу пропускання дістається **урізаний** макет групи 0, без самої
-//! таблиці, і це не хитрість: від макета вимагається накривати те, що точка
-//! входу читає, а не все, що є в модулі.
+//! Group 0 is what a pass reads, group 1 what it writes. The split is forced:
+//! the transmittance table is written by one pass and read by all the following
+//! ones, and a single bind group holding the same texture both for writing and
+//! for reading is forbidden -- wgpu sees a race in it regardless of what the
+//! shader does. So the transmittance pass gets a **trimmed** layout for group 0,
+//! without the table itself, and that is not a trick: a layout is required to
+//! cover what the entry point reads, not everything the module has.
 //!
-//! ## Чому [`Sky::ensure`] подає роботу сам, а не в чужий encoder
+//! ## Why [`Sky::ensure`] submits work itself rather than into someone's encoder
 //!
-//! Бо це не робота кадру. Таблиця пропускання перераховується тоді, коли
-//! змінилися параметри повітря, тобто практично ніколи; протягнута крізь
-//! encoder кадру, вона виглядала б як щокадрова, і перший, хто прийде її
-//! оптимізувати, витратить день. Таблиці, які **справді** рахуються щокадру,
-//! підуть у кадровий encoder — і різниця між ними стане видима з коду.
+//! Because this is not the frame's work. The transmittance table is recomputed
+//! when the air parameters change, that is practically never; threaded through
+//! the frame's encoder it would look per-frame, and the first person who comes
+//! to optimise it will spend a day. The tables that **really** are computed
+//! every frame go into the frame encoder -- and the difference between them
+//! becomes visible from the code.
 
 use crate::atmosphere;
 use crate::gpu::Gpu;
 use crate::scene::Atmosphere;
 
-/// WGSL, згенерований зі `shaders/sky.slang` (`scripts/build_shaders.sh`).
+/// WGSL generated from `shaders/sky.slang` (`scripts/build_shaders.sh`).
 const SKY_WGSL: &str = include_str!("../shaders/sky.wgsl");
 
-/// Формат таблиць. Half-float: пропускання лежить у `[0, 1]`, і одинадцяти
-/// значущих бітів там вистачає з запасом — виміряно тестом S2, який звіряє
-/// таблицю з оракулом у `f64`.
+/// The table format. Half-float: transmittance lies in `[0, 1]`, and eleven
+/// significant bits are plenty there -- measured by the S2 test, which compares
+/// the table against an `f64` oracle.
 const LUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
-/// Скільки байтів займає `AirParams` у шейдері: чотири `float4`.
+/// How many bytes `AirParams` takes in the shader: four `float4`s.
 const AIR_BYTES: u64 = 80;
 
-/// Скільки байтів займає `ViewParams` у шейдері: шість `float4`.
+/// How many bytes `ViewParams` takes in the shader: six `float4`s.
 const VIEW_BYTES: u64 = 96;
 
-/// Скільки байтів займає `PassParams`: один `float4`.
+/// How many bytes `PassParams` takes: one `float4`.
 const PASS_BYTES: u64 = 16;
 
-/// Крок між `PassParams` сусідніх діапазонів глибини в буфері.
+/// The stride between the `PassParams` of neighbouring depth ranges in the
+/// buffer.
 ///
-/// 256 байтів — вирівнювання динамічного зсуву, якого вимагає wgpu на всіх
-/// трьох цілях. Те саме число й з тієї самої причини, що `frame::PASS_STRIDE`.
+/// 256 bytes is the dynamic-offset alignment wgpu requires on all three
+/// targets. The same number and for the same reason as `frame::PASS_STRIDE`.
 const PASS_STRIDE: u64 = 256;
 
-/// Скільки разів яскравіше стає небо перед записом у кадр.
+/// How many times brighter the sky becomes before being written into the frame.
 ///
-/// **Стала, а не автоекспозиція**, і це рішення етапу: автоекспозиція
-/// стосується всієї сцени, а не повітря, і без корабля в кадрі міряти її нема
-/// на чому (ROADMAP-ATMOSPHERE.md, «чого етап S свідомо не робить»).
+/// **A constant rather than auto-exposure**, and that is a decision of the
+/// stage: auto-exposure concerns the whole scene, not the air, and without a
+/// ship in the frame there is nothing to measure it on (ROADMAP-ATMOSPHERE.md,
+/// "чого етап S свідомо не робить").
 ///
-/// Число виміряне, а не підібране на око: яскравість у зеніті опівдні виходить
-/// 0.048 на одиницю освітленості Сонця, і множник 8 ставить її на 0.38 —
-/// денне небо, яке не впирається в одиницю навіть біля горизонту. Правити його
-/// доведеться тоді ж, коли з'явиться автоекспозиція, і тим самим кроком.
+/// The number is measured rather than eyeballed: the zenith radiance at noon
+/// comes out at 0.048 per unit of solar illuminance, and a factor of 8 puts it
+/// at 0.38 -- a daytime sky that does not hit one even near the horizon. It will
+/// have to be revised when auto-exposure appears, and in that same step.
 pub const EXPOSURE: f32 = 8.0;
 
-/// Розмір групи в `transmittance_main` — те саме, що в `[numthreads(8, 8, 1)]`.
+/// The group size in `transmittance_main` -- the same as in
+/// `[numthreads(8, 8, 1)]`.
 const GROUP: u32 = 8;
 
-/// Де стоїть камера відносно тіла з повітрям — усе, що прохід неба про неї знає.
+/// Where the camera stands relative to the body with air -- everything the sky
+/// pass knows about it.
 ///
-/// Складається на CPU у `f64` і звужується один раз: віднімання центра тіла від
-/// ока — те саме camera-relative, що й скрізь (F4). Осі екрана вже одиничні,
-/// тангенси півкутів огляду приходять поруч, і разом вони дають промінь пікселя
-/// без жодної оберненої матриці.
+/// Assembled on the CPU in `f64` and narrowed once: subtracting the body centre
+/// from the eye is the same camera-relative as everywhere (F4). The screen axes
+/// are already unit vectors, the tangents of the half field of view come
+/// alongside, and together they give a pixel ray without a single inverse
+/// matrix.
 #[derive(Clone, Copy, Debug)]
 pub struct View {
-    /// Камера відносно центра тіла, метри, світові осі.
+    /// The camera relative to the body centre, metres, world axes.
     pub eye: [f64; 3],
-    /// Напрямок ДО Сонця, світові осі, одиничний.
+    /// The direction TO the Sun, world axes, unit length.
     pub sun: [f32; 3],
-    /// Осі екрана у світових координатах.
+    /// The screen axes in world coordinates.
     pub right: [f32; 3],
     pub up: [f32; 3],
     pub forward: [f32; 3],
-    /// Тангенси півкутів огляду: горизонтального й вертикального.
+    /// Tangents of the half field of view: horizontal and vertical.
     pub tan_half: [f32; 2],
 }
 
 impl View {
-    /// Відстань камери від центра тіла.
+    /// The camera's distance from the body centre.
     pub fn radius(&self) -> f64 {
         let e = self.eye;
         (e[0] * e[0] + e[1] * e[1] + e[2] * e[2]).sqrt()
     }
 
-    /// Косинус зенітного кута Сонця в точці камери.
+    /// The cosine of the Sun's zenith angle at the camera.
     pub fn sun_zenith_cos(&self) -> f64 {
         let r = self.radius().max(1.0);
         let e = self.eye;
@@ -116,32 +122,36 @@ pub struct Sky {
     transmittance_pipeline: wgpu::ComputePipeline,
     multiscatter_pipeline: wgpu::ComputePipeline,
     skyview_pipeline: wgpu::ComputePipeline,
-    /// Два пайплайни, а не гілка в шейдері: камера всередині повітря читає
-    /// таблицю, камера поза ним марширує. Вибір робить CPU — те саме рішення,
-    /// що з гладким тілом і тілом з рельєфом (R5c).
+    /// Two pipelines rather than a branch in the shader: a camera inside the
+    /// air reads the table, a camera outside it marches. The CPU makes the
+    /// choice -- the same decision as with a smooth body and a body with terrain
+    /// (R5c).
     inside_pipeline: wgpu::RenderPipeline,
     outside_pipeline: wgpu::RenderPipeline,
-    /// Аеральна перспектива (S5): об'єм у compute, композиція двома викликами.
+    /// Aerial perspective (S5): the volume in compute, composition in two
+    /// draws.
     aerial_pipeline: wgpu::ComputePipeline,
     multiply_pipeline: wgpu::RenderPipeline,
     add_pipeline: wgpu::RenderPipeline,
     write_aerial: wgpu::BindGroup,
-    /// Група композиції. Перестворюється разом із буфером глибини — вона
-    /// тримає посилання на нього.
+    /// The composition group. Recreated together with the depth buffer -- it
+    /// holds a reference to it.
     composite: Option<Composite>,
     composite_layout: wgpu::BindGroupLayout,
     pass_buffer: wgpu::Buffer,
-    /// Група 0 для малювання: обидві сталі таблиці, таблиця неба й параметри
-    /// кадру, і все це видиме фрагментній стадії.
+    /// Group 0 for drawing: both constant tables, the sky-view table and the
+    /// frame parameters, all visible to the fragment stage.
     read_draw: wgpu::BindGroup,
 
-    /// Група 0 без самої таблиці пропускання — для проходу, який її пише.
+    /// Group 0 without the transmittance table itself -- for the pass that
+    /// writes it.
     read_min: wgpu::BindGroup,
-    /// Група 0 з таблицею пропускання — для всіх, хто її читає.
+    /// Group 0 with the transmittance table -- for everyone who reads it.
     read_full: wgpu::BindGroup,
-    /// Група 0 з обома сталими таблицями — для того, хто рахує небо щокадру.
+    /// Group 0 with both constant tables -- for whoever computes the sky every
+    /// frame.
     read_frame: wgpu::BindGroup,
-    /// Група 1 кожного проходу: рівно те, що він пише.
+    /// Group 1 of each pass: exactly what it writes.
     write_transmittance: wgpu::BindGroup,
     write_multiscatter: wgpu::BindGroup,
     write_skyview: wgpu::BindGroup,
@@ -157,28 +167,28 @@ pub struct Sky {
     aerial_inscatter_view: wgpu::TextureView,
     aerial_transmittance_view: wgpu::TextureView,
 
-    /// Параметри, під які таблиці вже пораховані: саме повітря і радіус
-    /// поверхні тіла, якому воно належить.
+    /// The parameters the tables are already computed for: the air itself and
+    /// the surface radius of the body it belongs to.
     ///
-    /// Радіус окремо, бо в [`Atmosphere`] його немає: там лише верхня межа.
-    /// Два тіла з однаковим повітрям і різними радіусами — різні атмосфери, і
-    /// ключ мусить це бачити.
+    /// The radius separately, because [`Atmosphere`] does not have it: only the
+    /// upper bound is there. Two bodies with the same air and different radii
+    /// are different atmospheres, and the key must see that.
     current: Option<(Atmosphere, f64, [u32; 3])>,
 }
 
-/// Група композиції разом із розміром буфера глибини, під який її зроблено.
+/// The composition group together with the depth-buffer size it was made for.
 ///
-/// Окремою структурою, бо вона єдина в [`Sky`] залежить від розміру цілі:
-/// глибина перестворюється при зміні розміру вікна, а bind-група тримає
-/// посилання на неї.
+/// A separate struct because it is the only thing in [`Sky`] that depends on the
+/// target size: depth is recreated when the window resizes, and the bind group
+/// holds a reference to it.
 struct Composite {
     bind_group: wgpu::BindGroup,
     width: u32,
     height: u32,
 }
 
-/// Опис одного запису макета — щоб чотири майже однакові макети не займали
-/// сторінку.
+/// One layout entry -- so that four almost identical layouts do not take up a
+/// page.
 fn storage_2d(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
@@ -192,7 +202,7 @@ fn storage_2d(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-/// Таблиця на читання: `float4`, білінійна фільтрація.
+/// A table for reading: `float4`, bilinear filtering.
 fn sampled_2d_for(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
@@ -210,7 +220,7 @@ fn sampled_2d(binding: u32) -> wgpu::BindGroupLayoutEntry {
     sampled_2d_for(binding, wgpu::ShaderStages::COMPUTE)
 }
 
-/// Об'єм на запис.
+/// A volume for writing.
 fn storage_3d(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
@@ -224,7 +234,7 @@ fn storage_3d(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-/// Об'єм на читання, з тривимірною фільтрацією.
+/// A volume for reading, with three-dimensional filtering.
 fn sampled_3d(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
@@ -238,7 +248,7 @@ fn sampled_3d(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-/// Об'єм аеральної перспективи: 32×32×32.
+/// The aerial-perspective volume: 32x32x32.
 fn aerial_texture(gpu: &Gpu, label: &str) -> wgpu::Texture {
     gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
@@ -256,12 +266,11 @@ fn aerial_texture(gpu: &Gpu, label: &str) -> wgpu::Texture {
     })
 }
 
-/// Текстура таблиці: пишеться compute, читається шейдерами, читається назад
-/// перевіркою.
+/// A table texture: written by compute, read by shaders, read back by a check.
 ///
-/// `COPY_SRC` тут заради оракула, і це не приховується: перевірки етапу S —
-/// звірка таблиці з `engine::atmosphere`, а прочитати її можна лише звідси. Та
-/// сама причина, що в `indirect_buffer` (R6b).
+/// `COPY_SRC` is here for the oracle, and that is not hidden: the stage-S checks
+/// compare the table against `engine::atmosphere`, and it can only be read from
+/// here. The same reason as in `indirect_buffer` (R6b).
 fn lut_texture(gpu: &Gpu, label: &str, width: u32, height: u32) -> wgpu::Texture {
     gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
@@ -353,8 +362,8 @@ impl Sky {
                     label: Some("sky write multiscatter"),
                     entries: &[storage_2d(1)],
                 });
-        // Малювання: та сама група 0, але видима ФРАГМЕНТНІЙ стадії й з
-        // таблицею неба замість слота, у який її пишуть.
+        // Drawing: the same group 0, but visible to the FRAGMENT stage and
+        // with the sky-view table instead of the slot it is written into.
         let fragment = wgpu::ShaderStages::FRAGMENT;
         let read_draw_layout =
             gpu.device
@@ -391,9 +400,10 @@ impl Sky {
                     entries: &[storage_3d(3), storage_3d(4)],
                 });
 
-        // Композиція читає глибину як текстуру, обидва об'єми й параметри
-        // діапазону. Повітря їй не потрібне взагалі: вона нічого не рахує, лише
-        // вибирає з уже порахованого, і макет це показує — `air` тут немає.
+        // Composition reads depth as a texture, both volumes and the range
+        // parameters. It does not need the air at all: it computes nothing and
+        // only picks from what is already computed, and the layout shows that --
+        // there is no `air` here.
         let composite_layout =
             gpu.device
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -413,9 +423,9 @@ impl Sky {
                             binding: 8,
                             visibility: fragment,
                             ty: wgpu::BindingType::Texture {
-                                // Глибина читається `textureLoad`, без
-                                // фільтрації: проміжне значення між двома
-                                // поверхнями не належить жодній.
+                                // Depth is read with `textureLoad`, without
+                                // filtering: a value halfway between two
+                                // surfaces belongs to neither.
                                 sample_type: wgpu::TextureSampleType::Float { filterable: false },
                                 view_dimension: wgpu::TextureViewDimension::D2,
                                 multisampled: false,
@@ -427,8 +437,9 @@ impl Sky {
                             visibility: fragment,
                             ty: wgpu::BindingType::Buffer {
                                 ty: wgpu::BufferBindingType::Uniform,
-                                // Зсув на діапазон глибини, а не буфер на
-                                // діапазон — те саме рішення, що в патчів (R4a).
+                                // An offset per depth range rather than a
+                                // buffer per range -- the same decision as for
+                                // patches (R4a).
                                 has_dynamic_offset: true,
                                 min_binding_size: std::num::NonZeroU64::new(PASS_BYTES),
                             },
@@ -483,9 +494,9 @@ impl Sky {
             "aerial_main",
         );
 
-        // Прохід неба малює повноекранний трикутник без вершинних буферів і без
-        // запису глибини: він іде першим у найдальшому діапазоні, і все, що
-        // після нього, лягає зверху за звичайним тестом глибини.
+        // The sky pass draws a full-screen triangle with no vertex buffers and
+        // no depth writes: it goes first in the farthest range, and everything
+        // after it lands on top by the ordinary depth test.
         let draw_layout = gpu
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -510,17 +521,19 @@ impl Sky {
                         compilation_options: Default::default(),
                         targets: &[Some(wgpu::ColorTargetState {
                             format,
-                            // **Додавання, а не заміщення.** Повітря світиться,
-                            // а не закриває: те, що за ним, лишається видимим.
-                            // Заміщення видно було одразу — нічний край лімба
-                            // з орбіти вигризав із фону чорну дугу, бо там
-                            // розсіювати нема чого, і нуль ставав кольором.
+                            // **Addition, not replacement.** Air glows rather
+                            // than covers: what is behind it stays visible.
+                            // Replacement was visible immediately -- the night
+                            // edge of the limb from orbit bit a black arc out of
+                            // the background, because there is nothing to scatter
+                            // there, and zero became a colour.
                             //
-                            // Повна композиція — `фон·T + L`, тобто фон іще й
-                            // гаситься повітрям. Другий множник з'явиться разом
-                            // з аеральною перспективою (S5), і саме там він
-                            // потрібен: поки за небом немає нічого, крім кольору
-                            // очищення, гасити нема чого.
+                            // The full composition is `background*T + L`, that is
+                            // the background is also attenuated by the air. The
+                            // second factor arrives together with aerial
+                            // perspective (S5), and that is where it is needed:
+                            // while there is nothing behind the sky but the clear
+                            // colour, there is nothing to attenuate.
                             blend: Some(wgpu::BlendState {
                                 color: wgpu::BlendComponent {
                                     src_factor: wgpu::BlendFactor::One,
@@ -551,9 +564,9 @@ impl Sky {
         let inside_pipeline = draw("sky inside", "fragment_sky_inside");
         let outside_pipeline = draw("sky outside", "fragment_sky_outside");
 
-        // Композиція малює в кадр без буфера глибини взагалі: вона читає його
-        // як текстуру, а бути одночасно ціллю й ресурсом та сама текстура не
-        // може.
+        // Composition draws into the frame with no depth buffer at all: it
+        // reads depth as a texture, and one texture cannot be a target and a
+        // resource at the same time.
         let composite_pipeline_layout =
             gpu.device
                 .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -592,7 +605,8 @@ impl Sky {
                     cache: None,
                 })
         };
-        // `dst · T`: джерело множиться на нуль, ціль — на джерело.
+        // `dst * T`: the source is multiplied by zero, the target by the
+        // source.
         let multiply_pipeline = composite_draw(
             "aerial multiply",
             "fragment_aerial_multiply",
@@ -638,9 +652,9 @@ impl Sky {
             mapped_at_creation: false,
         });
 
-        // Затискання по краях, а не повтор: таблиця — це функція, визначена на
-        // відрізку, і за його межами продовжувати її колом означало б читати
-        // зеніт замість горизонту.
+        // Clamp at the edges rather than repeat: a table is a function defined
+        // on an interval, and continuing it cyclically past that interval would
+        // mean reading the zenith instead of the horizon.
         let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("sky luts"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -842,20 +856,22 @@ impl Sky {
         }
     }
 
-    /// Таблиці під це повітря — порахувати, якщо вони ще не під нього.
+    /// The tables for this air -- computed if they are not for it yet.
     ///
-    /// Повертає `true`, якщо рахувати таки довелося. Значення потрібне не
-    /// кадру, а перевірці: «таблиці не перераховуються щокадру» — твердження,
-    /// яке треба вміти перевірити, а не лише написати в коментарі.
+    /// Returns `true` if computing was actually needed. The value is needed not
+    /// by the frame but by a check: "the tables are not recomputed every frame"
+    /// is a claim one must be able to verify rather than merely write in a
+    /// comment.
     ///
-    /// Порядок проходів тут — залежність за даними: розсіювання читає
-    /// пропускання. Бар'єр між ними ставить wgpu сам, за використанням
-    /// ресурсів; окремі проходи потрібні лише тому, що всередині одного
-    /// проходу порядок груп не гарантований.
+    /// The order of passes here is a data dependency: scattering reads
+    /// transmittance. wgpu places the barrier between them itself, from resource
+    /// usage; separate passes are needed only because within one pass the order
+    /// of groups is not guaranteed.
     pub fn ensure(&mut self, gpu: &Gpu, air: &Atmosphere, bottom_m: f64, albedo: [f32; 3]) -> bool {
-        // Альбедо входить у ключ разом із повітрям: воно міняє **таблиці**, а
-        // не кадр, тож перебудова мусить статися рівно тоді, коли воно
-        // змінилось. Порівняння бітове — це вхід, а не результат виміру.
+        // The albedo enters the key together with the air: it changes the
+        // **tables**, not the frame, so a rebuild must happen exactly when it
+        // changes. The comparison is bitwise -- this is an input, not the result
+        // of a measurement.
         let key = (*air, bottom_m, albedo.map(f32::to_bits));
         if self.current == Some(key) {
             return false;
@@ -900,15 +916,18 @@ impl Sky {
         true
     }
 
-    /// Небо під цю камеру — **у чужий encoder**, бо це робота кадру.
+    /// The sky for this camera -- **into someone else's encoder**, because this
+    /// is the frame's work.
     ///
-    /// Різниця з [`Sky::ensure`] тут головна й видима з підпису: сталі таблиці
-    /// подають роботу самі й майже ніколи, а ця йде туди ж, куди й проходи
-    /// кадру, тобто щокадру. Хто прийде оптимізувати, побачить це з коду.
+    /// The difference from [`Sky::ensure`] is the main one and visible from the
+    /// signature: the constant tables submit their own work and almost never,
+    /// while this goes where the frame's passes go, that is every frame. Whoever
+    /// comes to optimise will see it from the code.
     pub fn prepare_view(&self, gpu: &Gpu, encoder: &mut wgpu::CommandEncoder, view: &View) {
-        // Глибину об'єму аеральної перспективи рахуємо тут, а не в кадрі: вона
-        // залежить від повітря, а повітря знає лише `Sky`. Кадру довелося б
-        // тягнути ту саму формулу другим примірником.
+        // The depth of the aerial-perspective volume is computed here rather
+        // than in the frame: it depends on the air, and only `Sky` knows the
+        // air. The frame would have to carry a second copy of the same
+        // formula.
         let span = match self.current {
             Some((air, bottom, _)) => atmosphere::aerial_span(&air, bottom, view.radius()),
             None => (0.0, 1.0),
@@ -930,11 +949,11 @@ impl Sky {
         );
     }
 
-    /// Намалювати небо повноекранним трикутником.
+    /// Draw the sky with a full-screen triangle.
     ///
-    /// `inside` вирішує викликач — він знає, де верхня межа повітря; вибір
-    /// пайплайна на CPU, а не гілка в шейдері, з тієї самої причини, що в
-    /// патчів (R5c).
+    /// The caller decides `inside` -- it knows where the upper boundary of the
+    /// air is; a pipeline choice on the CPU rather than a branch in the shader,
+    /// for the same reason as with patches (R5c).
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, inside: bool) {
         pass.set_pipeline(if inside {
             &self.inside_pipeline
@@ -945,10 +964,12 @@ impl Sky {
         pass.draw(0..3, 0..1);
     }
 
-    /// Об'єм аеральної перспективи під цю камеру — теж у чужий encoder.
+    /// The aerial-perspective volume for this camera -- also into someone
+    /// else's encoder.
     ///
-    /// Кличеться лише тоді, коли повітря в кадрі справді видно: умову рахує
-    /// викликач ([`crate::frame::Frame`]), бо вона про кадр, а не про повітря.
+    /// Called only when the air is genuinely visible in the frame: the caller
+    /// ([`crate::frame::Frame`]) computes the condition, because it is about the
+    /// frame rather than about the air.
     pub fn prepare_aerial(&self, encoder: &mut wgpu::CommandEncoder) {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("aerial"),
@@ -957,17 +978,18 @@ impl Sky {
         pass.set_pipeline(&self.aerial_pipeline);
         pass.set_bind_group(0, &self.read_frame, &[]);
         pass.set_bind_group(1, &self.write_aerial, &[]);
-        // По потоку на промінь, не на тексель: шари одного стовпця лежать на
-        // одному промені й рахуються одним проходом уздовж нього.
+        // One thread per ray, not per texel: the layers of one column lie on
+        // one ray and are computed in a single sweep along it.
         let groups = atmosphere::AERIAL_SIZE.div_ceil(GROUP);
         pass.dispatch_workgroups(groups, groups, 1);
     }
 
-    /// Група композиції під цей буфер глибини — створити, якщо розмір змінився.
+    /// The composition group for this depth buffer -- created if the size
+    /// changed.
     ///
-    /// Окремо від решти груп рівно тому, що вона єдина залежить від розміру
-    /// цілі: глибина перестворюється при зміні вікна, а група тримає посилання
-    /// на неї.
+    /// Apart from the other groups precisely because it is the only one that
+    /// depends on the target size: depth is recreated when the window resizes,
+    /// and the group holds a reference to it.
     pub fn bind_depth(&mut self, gpu: &Gpu, depth: &wgpu::TextureView, width: u32, height: u32) {
         if let Some(composite) = &self.composite {
             if composite.width == width && composite.height == height {
@@ -1015,11 +1037,11 @@ impl Sky {
         });
     }
 
-    /// Записати, як діапазон глибини `index` перетворює `z_ndc` назад у метри.
+    /// Record how depth range `index` turns `z_ndc` back into metres.
     ///
-    /// `a` і `b` — коефіцієнти `z_ndc = −A + B/z`; звідки вони беруться,
-    /// написано в `crate::depth`, а рахує їх кадр: він єдиний знає межі
-    /// діапазонів.
+    /// `a` and `b` are the coefficients of `z_ndc = -A + B/z`; where they come
+    /// from is written in `crate::depth`, and the frame computes them: it alone
+    /// knows the range boundaries.
     pub fn set_range(&self, gpu: &Gpu, index: usize, a: f64, b: f64) {
         let mut bytes = Vec::with_capacity(PASS_BYTES as usize);
         for value in [a as f32, b as f32, 0.0, 0.0] {
@@ -1029,12 +1051,12 @@ impl Sky {
             .write_buffer(&self.pass_buffer, index as u64 * PASS_STRIDE, &bytes);
     }
 
-    /// Композиція: `кадр · T + L` двома викликами.
+    /// Composition: `frame * T + L` in two draws.
     ///
-    /// Двома, а не одним: за один прохід це вимагало б dual-source blending —
-    /// ще однієї фічі пристрою й `@blend_src` у WGSL, якого компілятор Slang не
-    /// друкує. Два повноекранні трикутники коштують менше, ніж залежність від
-    /// того й того.
+    /// Two rather than one: in a single pass this would need dual-source
+    /// blending -- one more device feature and `@blend_src` in WGSL, which the
+    /// Slang compiler does not emit. Two full-screen triangles cost less than a
+    /// dependency on both.
     pub fn composite(&self, pass: &mut wgpu::RenderPass<'_>, index: usize) {
         let Some(composite) = &self.composite else {
             return;
@@ -1048,12 +1070,13 @@ impl Sky {
         pass.draw(0..3, 0..1);
     }
 
-    /// Вигляд таблиці неба — для того, хто малюватиме нею кадр (S4b).
+    /// A view of the sky-view table -- for whoever will draw the frame with it
+    /// (S4b).
     pub fn skyview_view(&self) -> &wgpu::TextureView {
         &self.skyview_view
     }
 
-    /// Таблиця неба назад у пам'ять — оракул S4.
+    /// The sky-view table back into memory -- the S4 oracle.
     pub fn read_skyview(&self, gpu: &Gpu) -> Result<Vec<[f32; 4]>, String> {
         read_lut(
             gpu,
@@ -1063,7 +1086,7 @@ impl Sky {
         )
     }
 
-    /// Таблиця пропускання назад у пам'ять — оракул S2.
+    /// The transmittance table back into memory -- the S2 oracle.
     pub fn read_transmittance(&self, gpu: &Gpu) -> Result<Vec<[f32; 4]>, String> {
         read_lut(
             gpu,
@@ -1073,10 +1096,10 @@ impl Sky {
         )
     }
 
-    /// Таблиця багаторазового розсіювання назад у пам'ять — оракул S3.
+    /// The multiple-scattering table back into memory -- the S3 oracle.
     ///
-    /// RGB — `ψ`, альфа — найбільший канал `f`, тобто те число, від якого
-    /// залежить збіжність ряду.
+    /// RGB is `psi`, alpha is the largest channel of `f`, that is the number the
+    /// convergence of the series depends on.
     pub fn read_multiscatter(&self, gpu: &Gpu) -> Result<Vec<[f32; 4]>, String> {
         read_lut(
             gpu,
@@ -1087,28 +1110,28 @@ impl Sky {
     }
 }
 
-/// Таблиця з GPU назад у пам'ять.
+/// A table from the GPU back into memory.
 ///
-/// Читати це в кадрі не можна: тут `poll(Wait)`, тобто повна зупинка
-/// конвеєра. Існує рівно заради перевірки, як і
+/// This must not be called in a frame: there is a `poll(Wait)` here, that is a
+/// full pipeline stall. It exists purely for checking, like
 /// [`crate::frame::Frame::drawn_patches`].
 ///
-/// Рядок-major, `[r, g, b, a]` на тексель, уже розпакований із half-float.
+/// Row-major, `[r, g, b, a]` per texel, already unpacked from half-float.
 fn read_lut(
     gpu: &Gpu,
     texture: &wgpu::Texture,
     width: u32,
     height: u32,
 ) -> Result<Vec<[f32; 4]>, String> {
-    // Вісім байтів на тексель; і 256, і 32 текселі в рядку дають кратне 256,
-    // тобто вирівнювання `copy_texture_to_buffer` виконується саме собою й
-    // окремого доповнення не треба. Перевіряється, а не мається на увазі:
-    // наступна таблиця може виявитися іншої ширини.
+    // Eight bytes per texel; both 256 and 32 texels per row give a multiple of
+    // 256, so the `copy_texture_to_buffer` alignment holds by itself and no
+    // padding is needed. Asserted rather than assumed: the next table may turn
+    // out to be a different width.
     let bytes_per_row = width * 8;
     assert_eq!(
         bytes_per_row % 256,
         0,
-        "рядок таблиці {width}×{height} не вирівняний на 256 байтів"
+        "a row of the {width}x{height} table is not aligned to 256 bytes"
     );
 
     let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -1148,10 +1171,10 @@ fn read_lut(
             submission_index: None,
             timeout: None,
         })
-        .map_err(|e| format!("не дочекалися GPU: {e}"))?;
+        .map_err(|e| format!("waiting for the GPU failed: {e}"))?;
     let data = slice
         .get_mapped_range()
-        .map_err(|e| format!("буфер не відобразився: {e}"))?;
+        .map_err(|e| format!("the buffer did not map: {e}"))?;
 
     let mut out = Vec::with_capacity((width * height) as usize);
     for texel in data.chunks_exact(8) {
@@ -1166,16 +1189,17 @@ fn read_lut(
     Ok(out)
 }
 
-/// Параметри повітря в розкладці `AirParams` із `sky.slang`.
+/// The air parameters in the `AirParams` layout from `sky.slang`.
 ///
-/// Виписано руками з тієї самої причини, що й `Uniforms::to_bytes` у кадрі:
-/// наш `unsafe` живе лише в `core-rs` (CLAUDE.md, інваріант 1).
+/// Written out by hand for the same reason as `Uniforms::to_bytes` in the frame:
+/// our `unsafe` lives only in `core-rs` (CLAUDE.md, invariant 1).
 ///
-/// **Радіуси звужуються до `f32` тут, і це не те звуження, якого бояться.**
-/// Правило «світові координати ніколи не в float» (F4) стосується позицій, у
-/// яких камера віднімається від великого числа; радіус тіла в неї не входить
-/// — з нього рахують висоту над поверхнею, а `6.371·10⁶` у `f32` має крок
-/// 0.5 м, тобто помилку в шістнадцять мільйонних від висоти шкали.
+/// **The radii are narrowed to `f32` here, and this is not the narrowing people
+/// fear.** The rule "world coordinates never in a float" (F4) concerns positions
+/// where the camera is subtracted from a large number; the body radius is not
+/// one of those -- the altitude above the surface is computed from it, and
+/// `6.371e6` in `f32` has a step of 0.5 m, that is an error of sixteen
+/// millionths of the scale height.
 fn air_bytes(air: &Atmosphere, bottom_m: f64, albedo: [f32; 3]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(AIR_BYTES as usize);
     let mut push = |values: [f32; 4]| {
@@ -1207,12 +1231,12 @@ fn air_bytes(air: &Atmosphere, bottom_m: f64, albedo: [f32; 3]) -> Vec<u8> {
         bottom_m as f32,
         air.top_m as f32,
     ]);
-    // Середнє альбедо поверхні під цим небом (T7h); `w` — запас.
+    // The mean surface albedo under this sky (T7h); `w` is spare.
     push([albedo[0], albedo[1], albedo[2], 0.0]);
     bytes
 }
 
-/// Параметри камери в розкладці `ViewParams` із `sky.slang`.
+/// The camera parameters in the `ViewParams` layout from `sky.slang`.
 fn view_bytes(view: &View, aerial_span: (f64, f64)) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(VIEW_BYTES as usize);
     let mut push = |values: [f32; 4]| {
@@ -1244,20 +1268,21 @@ fn view_bytes(view: &View, aerial_span: (f64, f64)) -> Vec<u8> {
     bytes
 }
 
-/// Half-float у `f32`.
+/// Half-float into `f32`.
 ///
-/// Десять рядків замість залежності: `half` уже є в дереві транзитивно, але
-/// прямою залежністю рушія стала б заради однієї функції, потрібної лише
-/// перевірці. Формат IEEE 754 binary16 описаний повністю — знак, п'ять бітів
-/// порядку зі зсувом 15, десять бітів мантиси.
+/// Ten lines instead of a dependency: `half` is already in the tree
+/// transitively, but it would become a direct dependency of the engine for the
+/// sake of one function needed only by a check. The IEEE 754 binary16 format is
+/// covered in full -- sign, five exponent bits with a bias of 15, ten mantissa
+/// bits.
 fn from_half(bits: u16) -> f32 {
     let exponent = (bits >> 10) & 0x1f;
     let mantissa = bits & 0x3ff;
     let magnitude = match exponent {
-        // Нуль і субнормальні: значення `mantissa · 2⁻²⁴`.
+        // Zero and subnormals: the value is `mantissa * 2^-24`.
         0 => f32::from(mantissa) * (1.0 / 16_777_216.0),
-        // Нескінченність і NaN — у таблиці їх бути не може, але мовчки
-        // перетворити їх на скінченне число означало б сховати помилку.
+        // Infinity and NaN cannot appear in a table, but silently turning them
+        // into a finite number would hide a bug.
         0x1f if mantissa == 0 => f32::INFINITY,
         0x1f => f32::NAN,
         _ => f32::from_bits((u32::from(exponent) + (127 - 15)) << 23 | u32::from(mantissa) << 13),
@@ -1273,7 +1298,7 @@ fn from_half(bits: u16) -> f32 {
 mod tests {
     use super::*;
 
-    /// Розпакування half-float — на числах, які легко перевірити руками.
+    /// Half-float unpacking -- on numbers that are easy to check by hand.
     #[test]
     fn half_floats_unpack_to_the_numbers_they_encode() {
         assert_eq!(from_half(0x0000), 0.0);
@@ -1281,21 +1306,21 @@ mod tests {
         assert_eq!(from_half(0x4000), 2.0);
         assert_eq!(from_half(0xc000), -2.0);
         assert_eq!(from_half(0x3800), 0.5);
-        // Найменше нормальне: 2⁻¹⁴.
+        // The smallest normal: 2^-14.
         assert_eq!(from_half(0x0400), 2.0f32.powi(-14));
-        // Найбільше субнормальне: (1023/1024)·2⁻¹⁴.
+        // The largest subnormal: (1023/1024)*2^-14.
         assert!((from_half(0x03ff) - 1023.0 / 1024.0 * 2.0f32.powi(-14)).abs() < 1.0e-12);
         assert!(from_half(0x7c00).is_infinite());
         assert!(from_half(0x7e00).is_nan());
     }
 
-    /// Розкладка `AirParams` — та сама, що в шейдері: двадцять чисел,
-    /// і кожне на своєму місці.
+    /// The `AirParams` layout -- the same as in the shader: twenty numbers,
+    /// each in its place.
     #[test]
     fn the_air_params_land_where_the_shader_reads_them() {
         let air = Atmosphere::EARTH;
-        // Альбедо навмисно різне по каналах: однакове не відрізнило б
-        // переставлені місцями компоненти.
+        // The albedo differs per channel on purpose: equal values would not
+        // tell swapped components apart.
         let bytes = air_bytes(&air, 6_371_000.0, [0.11, 0.22, 0.33]);
         assert_eq!(bytes.len() as u64, AIR_BYTES);
 
