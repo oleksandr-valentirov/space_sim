@@ -34,6 +34,10 @@ fn normalize(v: [f64; 3]) -> [f64; 3] {
     [v[0] / len, v[1] / len, v[2] / len]
 }
 
+/// `Copy` because it is four vectors and nothing else: the game builds one per
+/// frame and hands it both to the scene and to the node projection, and those
+/// two must be the same camera rather than two cameras that agree.
+#[derive(Clone, Copy)]
 pub struct Camera {
     position: [f64; 3],
     right: [f64; 3],

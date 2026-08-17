@@ -414,6 +414,38 @@ fn current_jacobi(snapshot: &WorldSnapshot) -> Option<f64> {
     snapshot.vessels.first()?.jacobi
 }
 
+/// Where a body stands **in the scene** this frame.
+///
+/// Exists for whoever aims the camera, and it is exported rather than
+/// recomputed there for one reason: the camera's centre and the body's centre
+/// have to be the same point. They pass through Earth's subtraction and,
+/// in the rotating frame, through the synodic basis; a camera doing that
+/// arithmetic for itself would aim a little to the side of the Moon in the
+/// rotating frame and exactly at it in the inertial one, which reads as a
+/// broken frame rather than as a broken camera.
+///
+/// `None` where the body is not in the snapshot, or where Earth is not --
+/// there is no geocentric scene without Earth.
+pub fn body_centre(snapshot: &WorldSnapshot, body: i32, frame: ViewFrame) -> Option<[f64; 3]> {
+    let earth = snapshot.bodies.iter().find(|b| b.body == EARTH)?;
+    let target = snapshot.bodies.iter().find(|b| b.body == body)?;
+
+    let centre = [
+        target.position[0] - earth.position[0],
+        target.position[1] - earth.position[1],
+        target.position[2] - earth.position[2],
+    ];
+
+    let now = match frame {
+        ViewFrame::Inertial => None,
+        ViewFrame::Rotating => synodic_now(snapshot),
+    };
+    Some(match now {
+        Some(s) => s.apply(centre, moon_local(snapshot).unwrap_or([0.0; 3])),
+        None => centre,
+    })
+}
+
 /// The Moon relative to Earth at the snapshot's instant.
 fn moon_local(snapshot: &WorldSnapshot) -> Option<[f64; 3]> {
     let earth = snapshot.bodies.iter().find(|b| b.body == EARTH)?;

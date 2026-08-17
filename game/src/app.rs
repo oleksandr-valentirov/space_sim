@@ -168,6 +168,14 @@ struct State {
     /// and changes no number in the snapshot. Hence it lives here rather than
     /// in `sim`.
     view_frame: ViewFrame,
+
+    /// The body the camera turns around (the second half of D12).
+    ///
+    /// A body id rather than an index into `snapshot.bodies`: the snapshot is
+    /// rebuilt every frame, and an index would silently mean a different body
+    /// the moment the asset's body list changed. View state again -- the world
+    /// does not know where anyone is looking.
+    camera_target: i32,
 }
 
 /// The Moon's cooked terrain, from the repository root.
@@ -398,7 +406,8 @@ impl ApplicationHandler for App {
                 println!("surface: {}", state.target.describe());
                 println!("asset: {}", self.options.asset.display());
                 println!(
-                    "camera: drag with the left button to rotate, wheel for altitude\n\
+                    "camera: drag with the left button to rotate, wheel for altitude,\n\
+                     \x20       Tab moves to the next body\n\
                      time: space pauses, '.' and ',' double warp\n\
                      plan: 'p' shows a braking burn in 5 days, Enter flies it\n\
                      F5 saves, Esc exits"
@@ -449,6 +458,14 @@ impl ApplicationHandler for App {
                     Key::Named(NamedKey::Enter) => state.commit_preview(),
                     Key::Named(NamedKey::F5) => {
                         state.sim.send(Command::Save(save::default_path()));
+                    }
+                    // What the camera turns around (D12). Reads the snapshot
+                    // here rather than deferring to the frame: the choice is
+                    // over the bodies that exist, and the snapshot is where
+                    // they are said to exist.
+                    Key::Named(NamedKey::Tab) => {
+                        let snapshot = state.sim.snapshot();
+                        state.cycle_camera_target(&snapshot);
                     }
                     _ => {}
                 }
@@ -620,7 +637,58 @@ impl State {
             view_frame: ViewFrame::default(),
             grid: None,
             earth_mu,
+            camera_target: EARTH,
         })
+    }
+
+    /// The camera for this frame, turning around whatever is targeted.
+    ///
+    /// Rebuilt per frame rather than cached, because the target moves: the
+    /// Moon covers its own diameter in about an hour of game time, and at warp
+    /// that is a couple of frames. A centre captured once would leave the
+    /// camera aiming at where the Moon used to be.
+    ///
+    /// Falls back to the origin where the target is not in the snapshot. That
+    /// is Earth, i.e. exactly the view the game had before this step -- the
+    /// same leniency as the terrain and the stars, and for the same reason:
+    /// a body missing from the asset must not be a dead window.
+    fn camera(&self, snapshot: &crate::snapshot::WorldSnapshot) -> engine::camera::Camera {
+        let centre =
+            view::body_centre(snapshot, self.camera_target, self.view_frame).unwrap_or([0.0; 3]);
+        self.orbit.camera_about(centre)
+    }
+
+    /// Moves the camera to the next body in the snapshot that can be drawn.
+    ///
+    /// "Can be drawn" is the same test `view` applies -- a positive radius --
+    /// so the cycle cannot stop on something invisible. The order is the
+    /// asset's, which is stable within a run, and that is all the player needs
+    /// from it: a key that always advances and eventually comes back.
+    fn cycle_camera_target(&mut self, snapshot: &crate::snapshot::WorldSnapshot) {
+        let drawable: Vec<_> = snapshot
+            .bodies
+            .iter()
+            .filter(|b| b.radius_m > 0.0)
+            .collect();
+        if drawable.is_empty() {
+            return;
+        }
+
+        let at = drawable
+            .iter()
+            .position(|b| b.body == self.camera_target)
+            .map_or(0, |i| (i + 1) % drawable.len());
+        let chosen = drawable[at];
+
+        self.camera_target = chosen.body;
+        // The altitude is a statement about the body under it, so the wheel
+        // must mean the same thing after the switch as before it.
+        self.orbit.set_reference(chosen.radius_m);
+        println!(
+            "camera target: body {} (radius {:.0} km)",
+            chosen.body,
+            chosen.radius_m / 1000.0
+        );
     }
 
     /// Prints the clock's state from the snapshot -- **for runs without eyes**.
@@ -950,13 +1018,19 @@ impl State {
         // frame with thirty vessels, N2b brought that to 11.8. The frame
         // height is the one currently drawn into, because the criterion is on
         // screen.
+        // One camera for the whole frame: the scene and the node handles must
+        // project through the same one, or a dragged handle would sit beside
+        // the trajectory it belongs to. Taken before `thinning` borrows
+        // `self.trails` -- it reads `self`, and the borrow checker is right
+        // that the two cannot overlap.
+        let camera = self.camera(&snapshot);
         let mut thinning = view::Thinning {
             cache: &mut self.trails,
             height_px: self.target.height(),
         };
         let mut scene = view::build_thinned(
             &snapshot,
-            self.orbit.camera(),
+            camera,
             self.preview.as_ref().map_or(&[], |p| p.legs.as_slice()),
             self.view_frame,
             &mut thinning,
@@ -1074,7 +1148,7 @@ impl State {
         // and must be compared against what the player saw (U4b).
         self.nodes = match snapshot.vessels.first() {
             Some(vessel) => node::nodes_on_screen(
-                &self.orbit.camera(),
+                &camera,
                 engine::frame::FOV_Y,
                 self.target.width(),
                 self.target.height(),
