@@ -68,6 +68,7 @@ pub mod sky;
 pub mod sphere;
 pub mod sphere_render;
 pub mod srgb;
+pub mod star;
 pub mod stars;
 pub mod tile_probe;
 pub mod tiles;

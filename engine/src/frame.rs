@@ -34,6 +34,7 @@ use crate::planetshine;
 use crate::scene::{self, Body, Scene, TileSet};
 use crate::sky::{self, Sky};
 use crate::sphere;
+use crate::star;
 use crate::tiles;
 
 /// The clear colour, **in linear light**. Not black deliberately: a black frame
@@ -545,6 +546,14 @@ pub struct Frame {
     /// buffer and the target with it.
     sky: Sky,
 
+    /// The star background (stage Z, Z3).
+    ///
+    /// Beside the sky rather than inside it, and the split is the same one the
+    /// files make: the two share only the transmittance the stars are dimmed
+    /// by. A frame with no catalogue loaded draws no stars and costs nothing --
+    /// no buffer, no draw call.
+    stars: star::Stars,
+
     /// What the pass over the polylines' vertices cost in the last `draw`, ms.
     ///
     /// It exists for debt D7 and is read by the game's probe
@@ -570,6 +579,7 @@ impl Frame {
             lines: Lines::new(gpu, HDR_FORMAT),
             ships: Ships::new(gpu, HDR_FORMAT),
             sky: Sky::new(gpu, HDR_FORMAT),
+            stars: star::Stars::new(gpu, HDR_FORMAT),
             passes: Vec::with_capacity(MAX_PASSES),
             lines_upload_ms: 0.0,
         }
@@ -579,6 +589,21 @@ impl Frame {
     /// [`Frame::draw`], ms (D7, N1).
     pub fn lines_upload_ms(&self) -> f64 {
         self.lines_upload_ms
+    }
+
+    /// Load the star catalogue (stage Z, Z2/Z3).
+    ///
+    /// Not part of `Scene`, and that is the same decision as the tilesets: a
+    /// scene is what the game says about the world, an asset is what the
+    /// engine holds on the GPU. Calling this twice replaces the sky rather
+    /// than adding to it.
+    pub fn load_stars(&mut self, gpu: &Gpu, catalogue: &crate::stars::Catalogue) {
+        self.stars.load(gpu, catalogue);
+    }
+
+    /// Whether a catalogue is loaded -- for whoever wants to say so out loud.
+    pub fn has_stars(&self) -> bool {
+        self.stars.is_loaded()
     }
 
     /// Load terrain into the frame and get a handle to it (ROADMAP-PLANETS.md,
@@ -1036,6 +1061,26 @@ impl Frame {
             }
         }
 
+        // The camera for the star pass (Z3). Unconditional, unlike the sky's
+        // `View`: that one exists only when a body with air is in frame, while
+        // stars are there whether or not anything else is. The basis is the
+        // camera's own, packed the way `sky` packs it -- the star shader
+        // inverts `pixel_ray`, so the two must agree on the convention.
+        if self.stars.is_loaded() {
+            let (right, up, forward) = scene.camera.axes();
+            let narrow = |v: [f64; 3]| [v[0] as f32, v[1] as f32, v[2] as f32];
+            let t = (FOV_Y / 2.0).tan();
+            self.stars.prepare(
+                gpu,
+                narrow(right),
+                narrow(up),
+                narrow(forward),
+                [(t * aspect) as f32, t as f32],
+                width,
+                height,
+            );
+        }
+
         let depth = self
             .depth
             .as_ref()
@@ -1073,13 +1118,21 @@ impl Frame {
                 occlusion_query_set: None,
             });
 
-            // The sky comes **first in the farthest range**, right after the
-            // colour clear. Geometry then lands on top of it by the ordinary
-            // depth test, and nearer ranges draw over it because they do not
-            // clear colour. The sky pass writes no depth of its own: it is
-            // infinitely far away, and there is nothing to argue with it
-            // about.
+            // The stars and then the sky come **first in the farthest range**,
+            // right after the colour clear. Geometry then lands on top of them
+            // by the ordinary depth test, and nearer ranges draw over them
+            // because they do not clear colour. Neither pass writes depth of
+            // its own: both are infinitely far away, and there is nothing to
+            // argue with them about.
+            //
+            // Stars before the sky, and the order is not cosmetic (Z3). The
+            // sky adds its light to what is already in the target, so a star
+            // drawn first shines *through* the air and is drowned by it in
+            // daylight, which is what happens outside a window. Drawn after,
+            // it would sit on top of the air instead -- a star visible against
+            // a blue sky.
             if index == 0 {
+                self.stars.draw(&mut pass);
                 if let Some((atmosphere, _, view, _)) = &air {
                     self.sky.draw(&mut pass, view.radius() < atmosphere.top_m);
                 }
