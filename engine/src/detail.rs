@@ -1,85 +1,93 @@
-//! Процедурний детайл поверхні (ROADMAP-PLANETS.md, R7c).
+//! Procedural surface detail (ROADMAP-PLANETS.md, R7c).
 //!
-//! Дані скінченні, а поверхня — ні. Піраміда Місяця має п'ять рівнів, тобто
-//! найдрібніший вузол LOLA — **5330 м**; нижче цього DEM не знає нічого, а
-//! камера сідає й на сто метрів. Інтерполяція між вузлами тайла нових висот
-//! не дає — це та сама поверхня дрібнішою сіткою. Заповнити цю порожнечу й
-//! має шум.
+//! The data is finite, the surface is not. The Moon's pyramid has five levels,
+//! that is the finest LOLA node is **5330 m**; below that the DEM knows nothing,
+//! while the camera comes down to a hundred metres. Interpolating between tile
+//! nodes gives no new heights -- it is the same surface on a finer grid. Filling
+//! that void is what noise is for.
 //!
-//! ⚠ **Порожнеча була б непомітна без R7c-правки вибору рівня.** Критерій
-//! питав лише про стрілу прогину сфери, а сфера зблизька пласка: на кілометрі
-//! над Місяцем клітинка сітки виходила 2665 м, тобто 1662 пікселі завширшки.
-//! У таку сітку не влізло б нічого з написаного нижче.
+//! WARNING: **the void would have gone unnoticed without the R7c fix to level
+//! selection.** The criterion asked only about the sphere's sagitta, and a
+//! sphere is flat up close: a kilometre above the Moon a grid cell came out at
+//! 2665 m, that is 1662 pixels wide. Nothing written below would fit in a grid
+//! like that.
 //!
-//! ## Три правила, ухвалені до першого рядка коду
+//! ## Three rules decided before the first line of code
 //!
-//! **1. Шум — функція позиції на тілі. Ніколи не функція кадру, часу чи
-//! стану генератора.** Інакше та сама гора виглядатиме інакше після
-//! завантаження сейву, і це помітять: гра, у якій траєкторія відтворюється
-//! бітово, не має права переграти рельєф.
+//! **1. The noise is a function of position on the body. Never a function of
+//! the frame, of time or of generator state.** Otherwise the same mountain will
+//! look different after loading a save, and that will be noticed: a game whose
+//! trajectory reproduces bitwise has no right to replay its terrain.
 //!
-//! **2. Аргумент — одиничний напрямок вершини, і саме він, а не позиція
-//! відносно патча.** Патч віднімає камеру від свого початку, тож «позиція»
-//! в шейдері в кожного патча своя; напрямок же лежить у буфері геометрії як
-//! нормаль, і на спільному ребрі він **бітово один** — його дає та сама
-//! `Patch::vertex` в `f64`, звужена до `f32` (R2b). Тобто неперервність
-//! деталі на межі патчів не доводиться, а успадковується.
+//! **2. The argument is the vertex's unit direction, and that specifically, not
+//! a position relative to the patch.** A patch subtracts the camera from its own
+//! origin, so "position" in the shader is different for every patch; the
+//! direction, meanwhile, lies in the geometry buffer as the normal, and on a
+//! shared edge it is **bitwise identical** -- given by the same `Patch::vertex`
+//! in `f64`, narrowed to `f32` (R2b). So the continuity of the detail across
+//! patch boundaries is not proved but inherited.
 //!
-//! **3. Затухання октави залежить від позицій вузла й камери — ніколи від
-//! рівня патча.** Сусіди різняться на рівень за побудовою, і критерій, що
-//! дивиться на рівень, дав би на спільному вузлі дві різні висоти. Довжина
-//! хвилі в пікселях — `λ · focal / d` — від рівня не залежить узагалі.
+//! **3. An octave's fade depends on the positions of the node and the camera --
+//! never on the patch level.** Neighbours differ by a level by construction, and
+//! a criterion that looks at the level would give two different heights at a
+//! shared node. The wavelength in pixels -- `lambda * focal / d` -- does not
+//! depend on the level at all.
 //!
-//! ## Амплітуда
+//! ## Amplitude
 //!
-//! `k · нахил · λ`: деталь на кожному масштабі має ту саму крутизну, що й
-//! місцевість під нею. Рівнина лишається рівниною, схил кратера стає
-//! шорстким — і це не смак, а те, що робить деталь **продовженням** DEM, а
-//! не килимом поверх нього. Нахил дає [`crate::tiles::Terrain::slope_at`].
+//! `k * slope * lambda`: the detail at every scale has the same steepness as the
+//! terrain under it. Flat ground stays flat, a crater wall becomes rough -- and
+//! that is not taste but what makes the detail a **continuation** of the DEM
+//! rather than a carpet over it. The slope comes from
+//! [`crate::tiles::Terrain::slope_at`].
 
-/// Скільки октав рахується щонайбільше.
+/// How many octaves are computed at most.
 ///
-/// Шість: від найгрубішої октави (3393 м на Місяці) до 3393/32 ≈ 106 м, а
-/// глибше не пускає сітка — на стелі `lod::MAX_LEVEL` клітинка патча 21 м,
-/// тобто хвиля, коротша за ~42 м, у неї однаково не влізе.
+/// Six: from the coarsest octave (3393 m on the Moon) down to 3393/32 ~ 106 m,
+/// and the grid allows no deeper -- at the `lod::MAX_LEVEL` ceiling a patch cell
+/// is 21 m, so a wave shorter than ~42 m will not fit in it anyway.
 pub const OCTAVES: u32 = 6;
 
-/// На скільки часток радіуса тіла припадає найгрубіша октава.
+/// What fraction of the body's radius the coarsest octave takes.
 ///
-/// **Від глибини піраміди це не залежить, і не має права залежати.** Спокуса
-/// взяти `Terrain::step_m` — найдрібніший вузол даних, «деталь починається
-/// там, де кінчаються дані» — виглядає елегантно й порушує правило 1 етапу:
-/// глибина піраміди це параметр **кукера**, тобто стан генератора. Перекукувати
-/// ассет з іще одним рівнем означало б переграти гори, а гравець побачив би,
-/// що ландшафт, який він знав, став іншим після оновлення гри.
+/// **This does not depend on the pyramid depth, and has no right to.** The
+/// temptation to take `Terrain::step_m` -- the finest data node, "the detail
+/// begins where the data ends" -- looks elegant and breaks rule 1 of the stage:
+/// the pyramid depth is a **cooker** parameter, that is generator state.
+/// Recooking the asset with one more level would replay the mountains, and the
+/// player would see that the landscape they knew became different after a game
+/// update.
 ///
-/// П'ятсот дванадцять дає на Місяці 3393 м — практично той самий масштаб, що
-/// й найдрібніший вузол LOLA (5330 м), тільки виведений з тіла, а не з ассета.
+/// Five hundred and twelve gives 3393 m on the Moon -- practically the same
+/// scale as the finest LOLA node (5330 m), only derived from the body rather
+/// than from the asset.
 pub const BASE_DIVISOR: f64 = 512.0;
 
-/// Довжина хвилі найгрубішої октави для тіла такого радіуса.
+/// The wavelength of the coarsest octave for a body of this radius.
 pub fn base_m(radius_m: f64) -> f64 {
     radius_m / BASE_DIVISOR
 }
 
-/// Крутизна деталі відносно крутизни місцевості.
+/// The detail's steepness relative to the terrain's.
 ///
-/// Півсхилу: деталь помітна, але не перетворює рівнину на скелі. Число
-/// свідомо кругле — це параметр вигляду, а не виміряна величина, і міняти
-/// його можна вільно, доки перевірки етапу лишаються зеленими.
+/// Half the slope: the detail is noticeable but does not turn flat ground into
+/// cliffs. The number is deliberately round -- a look parameter rather than a
+/// measured quantity, and it can be changed freely while the stage's checks stay
+/// green.
 pub const STEEPNESS: f64 = 0.5;
 
-/// Довжина хвилі в пікселях, нижче якої октава вимкнена цілком.
+/// The wavelength in pixels below which an octave is off entirely.
 pub const FADE_LO_PX: f64 = 4.0;
-/// Довжина хвилі в пікселях, вище якої октава працює на повну.
+/// The wavelength in pixels above which an octave works at full strength.
 pub const FADE_HI_PX: f64 = 16.0;
 
-/// Хеш трьох цілих у `[0, 1)`.
+/// A hash of three integers into `[0, 1)`.
 ///
-/// Цілочисловий і детермінований на всіх платформах: множення й зсуви `u32`
-/// однакові скрізь, на відміну від будь-чого з `libm`. Це той самий сорт
-/// рішення, що заборона `libm` у циклі інтегрування, тільки причина інша —
-/// не детермінізм фізики, а те, що дві машини не мають бачити різні гори.
+/// Integer and deterministic on every platform: `u32` multiplications and shifts
+/// are the same everywhere, unlike anything from `libm`. The same kind of
+/// decision as banning `libm` in the integration loop, only for a different
+/// reason -- not the determinism of physics but that two machines must not see
+/// different mountains.
 fn hash(x: i32, y: i32, z: i32) -> f64 {
     let mut h = (x as u32).wrapping_mul(0x9E37_79B1)
         ^ (y as u32).wrapping_mul(0x85EB_CA6B)
@@ -92,16 +100,16 @@ fn hash(x: i32, y: i32, z: i32) -> f64 {
     f64::from(h >> 8) / f64::from(1u32 << 24)
 }
 
-/// Згладжування Ерміта — `3t² − 2t³`, без жодної тригонометрії.
+/// Hermite smoothing -- `3t^2 - 2t^3`, without a single trigonometric call.
 fn smooth(t: f64) -> f64 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// Значеннєвий шум у точці, `[0, 1)`.
+/// Value noise at a point, `[0, 1)`.
 ///
-/// Трилінійна суміш восьми кутів клітинки одиничної сітки. Значеннєвий, а не
-/// градієнтний: він удвічі дешевший, а різниця в характері зникає, щойно
-/// октав більше однієї.
+/// A trilinear blend of the eight corners of a unit grid cell. Value noise
+/// rather than gradient noise: it is twice as cheap, and the difference in
+/// character disappears as soon as there is more than one octave.
 pub fn value_noise(p: [f64; 3]) -> f64 {
     let cell = [p[0].floor(), p[1].floor(), p[2].floor()];
     let t = [
@@ -129,12 +137,12 @@ pub fn value_noise(p: [f64; 3]) -> f64 {
     out
 }
 
-/// Вага октави з довжиною хвилі `wavelength_m` для вузла за `distance_m` від
-/// камери.
+/// The weight of an octave with wavelength `wavelength_m` for a node
+/// `distance_m` from the camera.
 ///
-/// Залежить рівно від трьох чисел, і жодне з них не знає про патч: довжина
-/// хвилі, відстань і фокус. Тому два сусідні патчі різних рівнів дають на
-/// спільному вузлі ту саму вагу.
+/// Depends on exactly three numbers, none of which knows about a patch: the
+/// wavelength, the distance and the focal length. So two neighbouring patches of
+/// different levels give the same weight at a shared node.
 pub fn octave_weight(wavelength_m: f64, distance_m: f64, focal_px: f64) -> f64 {
     let px = wavelength_m / distance_m.max(1.0) * focal_px;
     if px <= FADE_LO_PX {
@@ -146,34 +154,37 @@ pub fn octave_weight(wavelength_m: f64, distance_m: f64, focal_px: f64) -> f64 {
     smooth((px - FADE_LO_PX) / (FADE_HI_PX - FADE_LO_PX))
 }
 
-/// Що деталь дала у вузлі: висота для форми й шорсткість для матеріалу.
+/// What the detail gave at a node: height for the shape and roughness for the
+/// material.
 ///
-/// Два числа з **одного** проходу по октавах, а не два проходи: шум удвічі
-/// дорожчий за все інше в циклі, і рахувати ті самі вісім хешів двічі означало
-/// б платити за колір стільки ж, скільки за рельєф.
+/// Two numbers from **one** pass over the octaves rather than two passes: the
+/// noise is twice as expensive as everything else in the loop, and computing the
+/// same eight hashes twice would mean paying as much for the colour as for the
+/// terrain.
 pub struct Detail {
-    /// Зсув поверхні вздовж нормалі, метри.
+    /// Surface displacement along the normal, metres.
     pub height_m: f64,
-    /// Той самий шум, зважений **порівну по октавах**, без розмірності.
+    /// The same noise, weighted **equally across octaves**, dimensionless.
     ///
-    /// ⚠ Різниця з [`Detail::height_m`] рівно одна, і вона навмисна. Висота
-    /// множить кожну октаву на її довжину хвилі — інакше дрібні брижі були б
-    /// такі ж високі, як гори, і поверхня стала б шумом. Тобто у висоті
-    /// найгрубіша октава важить у 32 рази більше за найдрібнішу, і колір,
-    /// виведений з неї, ніс би пляму завширшки 3.4 км — рівно те, від чого
-    /// крок T4 і мав позбавити.
+    /// WARNING: there is exactly one difference from [`Detail::height_m`], and
+    /// it is deliberate. Height multiplies each octave by its wavelength --
+    /// otherwise small ripples would be as tall as mountains and the surface
+    /// would become noise. So in height the coarsest octave weighs 32 times more
+    /// than the finest, and a colour derived from it would carry a 3.4 km blob
+    /// -- exactly what step T4 was meant to get rid of.
     ///
-    /// Колір висоти не додає, тож ваги за довжиною хвилі йому не треба: усі
-    /// масштаби входять однаково, і найдрібніший теж. Шум, точки вибірки й
-    /// затухання при цьому ті самі — колір лишається виведеним з тієї самої
-    /// форми, лише прочитаної іншою вагою.
+    /// Colour adds no height, so it needs no weighting by wavelength: every
+    /// scale enters equally, the finest included. The noise, the sample points
+    /// and the fade are the same -- the colour stays derived from the same shape,
+    /// only read with a different weight.
     pub roughness: f64,
 }
 
-/// Деталь у вузлі — обидва числа за один прохід.
+/// The detail at a node -- both numbers in one pass.
 ///
-/// `unit` — одиничний напрямок вузла з центра тіла (правило 2 модуля).
-/// `base_m` — довжина хвилі найгрубішої октави, [`base_m`] від радіуса тіла.
+/// `unit` is the node's unit direction from the body centre (rule 2 of the
+/// module). `base_m` is the coarsest octave's wavelength, [`base_m`] of the
+/// body's radius.
 pub fn sample(
     unit: [f64; 3],
     radius_m: f64,
@@ -188,17 +199,19 @@ pub fn sample(
         let wavelength = base_m / f64::from(1u32 << octave);
         let weight = octave_weight(wavelength, distance_m, focal_px);
         if weight <= 0.0 {
-            // Октави далі лише коротші, отже й вони вимкнені.
+            // Later octaves are only shorter, so they are off too.
             break;
         }
-        // Одиниця аргументу шуму — одна довжина хвилі на поверхні тіла.
+        // One unit of the noise argument is one wavelength on the body's
+        // surface.
         let scale = radius_m / wavelength;
         let p = [unit[0] * scale, unit[1] * scale, unit[2] * scale];
-        // Шум у [0,1) → у [−0.5, 0.5): деталь не піднімає поверхню загалом,
-        // а брижить її. Інакше рівень моря їхав би вгору з кожною октавою.
+        // Noise from [0,1) into [-0.5, 0.5): the detail does not raise the
+        // surface overall but ripples it. Otherwise sea level would creep upward
+        // with every octave.
         let signed = value_noise(p) - 0.5;
         height_m += signed * STEEPNESS * slope * wavelength * weight;
-        // ×2, щоб кожна октава давала рівно [−1, 1].
+        // Times 2, so that each octave gives exactly [-1, 1].
         roughness += 2.0 * signed * weight;
     }
     Detail {
@@ -207,7 +220,8 @@ pub fn sample(
     }
 }
 
-/// Висота процедурної деталі у вузлі, метри — [`sample`] без другого числа.
+/// The procedural detail height at a node, metres -- [`sample`] without the
+/// second number.
 pub fn height_m(
     unit: [f64; 3],
     radius_m: f64,
@@ -223,28 +237,37 @@ pub fn height_m(
 mod tests {
     use super::*;
 
-    /// Шум не залежить ні від чого, крім позиції.
+    /// The noise depends on nothing but position.
     ///
-    /// Тавтологія на вигляд, і саме тому перевірка потрібна: правило 1 етапу
-    /// ламається не рішенням, а недоглядом — достатньо, щоб хтось узяв номер
-    /// кадру як зерно. Тут це стає падінням тесту, а не грою, у якій сейв
-    /// відтворює іншу гору.
+    /// A tautology by the look of it, and that is exactly why the check is
+    /// needed: rule 1 of the stage breaks by oversight rather than by decision
+    /// -- it is enough for someone to take the frame number as a seed. Here that
+    /// becomes a failing test rather than a game whose save reproduces a
+    /// different mountain.
     #[test]
     fn the_same_point_always_gives_the_same_height() {
         let unit = [0.267_261_2, 0.534_522_5, 0.801_783_7];
         let first = height_m(unit, 1_737_400.0, 0.05, base_m(1_737_400.0), 2000.0, 623.5);
         for _ in 0..16 {
             let again = height_m(unit, 1_737_400.0, 0.05, base_m(1_737_400.0), 2000.0, 623.5);
-            assert_eq!(first.to_bits(), again.to_bits(), "шум не відтворився");
+            assert_eq!(
+                first.to_bits(),
+                again.to_bits(),
+                "the noise did not reproduce"
+            );
         }
-        assert!(first != 0.0, "на цій відстані деталь мала бути ненульова");
+        assert!(
+            first != 0.0,
+            "at this distance the detail should have been non-zero"
+        );
     }
 
-    /// Шум неперервний: сусідні точки дають сусідні висоти.
+    /// The noise is continuous: neighbouring points give neighbouring heights.
     ///
-    /// Розрив тут означав би тріщину на поверхні, і знайти її потім на
-    /// знімку було б набагато дорожче. Крок береться значно менший за
-    /// найкоротшу хвилю, і приріст висоти мусить бути пропорційний кроку.
+    /// A discontinuity here would mean a crack in the surface, and finding it
+    /// later in a shot would be far more expensive. The step is taken much
+    /// smaller than the shortest wave, and the height increment must be
+    /// proportional to the step.
     #[test]
     fn the_noise_has_no_step_in_it() {
         const RADIUS: f64 = 1_737_400.0;
@@ -258,7 +281,8 @@ mod tests {
             let n = (unit[0] * unit[0] + unit[1] * unit[1] + unit[2] * unit[2]).sqrt();
             let unit = [unit[0] / n, unit[1] / n, unit[2] / n];
 
-            // Зсув на соту частку найкоротшої хвилі вздовж поверхні.
+            // A shift of one hundredth of the shortest wave along the
+            // surface.
             let step = finest / 100.0 / RADIUS;
             let moved = {
                 let v = [unit[0] + step, unit[1], unit[2]];
@@ -271,21 +295,21 @@ mod tests {
             worst = worst.max((here - there).abs());
         }
 
-        // Найкрутіша октава дає нахил `STEEPNESS · slope`, тож на соту частку
-        // хвилі приріст не може перевищити кількох її відсотків.
+        // The steepest octave gives a slope of `STEEPNESS * slope`, so over one
+        // hundredth of a wave the increment cannot exceed a few percent of it.
         let bound = STEEPNESS * 0.05 * finest * 0.1;
-        println!("  найбільший приріст {worst:.4} м при межі {bound:.4} м");
+        println!("  largest increment {worst:.4} m against the bound {bound:.4} m");
         assert!(
             worst < bound,
-            "приріст {worst:.4} м на соту частку хвилі — у шумі сходинка"
+            "an increment of {worst:.4} m over one hundredth of a wave -- there is a step in the noise"
         );
     }
 
-    /// Деталь зникає з відстанню, і зникає **монотонно**.
+    /// The detail fades with distance, and fades **monotonically**.
     ///
-    /// Це половина перевірки, названої в R7 наперед: «при віддаленні деталь
-    /// зникає, а не мерехтить». Мерехтіння — це немонотонність: октава, що
-    /// вмикається назад при дальшій камері, дає саме його.
+    /// This is half of the check named in advance in R7: "on receding, the
+    /// detail fades rather than flickers". Flicker is non-monotonicity: an
+    /// octave that switches back on at a farther camera gives exactly that.
     #[test]
     fn the_detail_fades_out_with_distance() {
         let unit = [0.267_261_2, 0.534_522_5, 0.801_783_7];
@@ -301,18 +325,18 @@ mod tests {
                 .sum();
             assert!(
                 amplitude <= previous + 1e-12,
-                "на {distance:.0} м амплітуда зросла: {amplitude:.3} після {previous:.3}"
+                "at {distance:.0} m the amplitude grew: {amplitude:.3} after {previous:.3}"
             );
             previous = amplitude;
             if amplitude == 0.0 && zero_at.is_none() {
                 zero_at = Some(distance);
             }
         }
-        let zero_at = zero_at.expect("деталь мусить колись зникнути повністю");
-        println!("  деталь зникає повністю на {zero_at:.3e} м");
+        let zero_at = zero_at.expect("the detail must vanish completely at some point");
+        println!("  the detail vanishes completely at {zero_at:.3e} m");
         assert!(
             height_m(unit, 1_737_400.0, 0.05, base_m(1_737_400.0), zero_at, 623.5) == 0.0,
-            "після повного затухання висота мусить бути рівно нуль"
+            "after a full fade the height must be exactly zero"
         );
     }
 }

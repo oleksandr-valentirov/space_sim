@@ -1,103 +1,106 @@
-//! Вибір рівня патча за екранною похибкою (ROADMAP-PLANETS.md, R2a).
+//! Patch level selection by screen-space error (ROADMAP-PLANETS.md, R2a).
 //!
-//! ## Чому не відстань до камери
+//! ## Why not distance to the camera
 //!
-//! Відстань не знає ні про поле зору, ні про роздільність, ні про радіус
-//! тіла: та сама відстань до Землі й до астероїда — це різні кути, а той
-//! самий кут при 1280 і при 3840 пікселях — різна кількість пікселів. Тому
-//! критерій тут — **геометрична похибка патча, спроєктована в екран**, і
-//! відстань входить у неї одним множником, а не заміняє її.
+//! Distance knows nothing about the field of view, the resolution or the body's
+//! radius: the same distance to Earth and to an asteroid are different angles,
+//! and the same angle at 1280 and at 3840 pixels is a different number of
+//! pixels. So the criterion here is the **patch's geometric error projected onto
+//! the screen**, and distance enters it as one factor rather than replacing it.
 //!
-//! ## Що саме міряється як похибка
+//! ## What exactly is measured as the error
 //!
-//! Патч — це сітка пласких чотирикутників, натягнута на сферу. Найбільше
-//! вона відходить від сфери посередині клітинки, і величина цього відходу —
-//! **стріла прогину**: `radius − |середина хорди|` на одиничній сфері.
-//! Тригонометрії тут немає й не треба (`sqrt` вистачає), і це не аскеза —
-//! `cos(θ/2)` довелося б рахувати від кута, якого ми не маємо, замість
-//! середини, яка вже є.
+//! A patch is a grid of flat quads stretched over a sphere. It departs from the
+//! sphere most in the middle of a cell, and the size of that departure is the
+//! **sagitta**: `radius - |midpoint of the chord|` on a unit sphere. There is no
+//! trigonometry here and none is needed (`sqrt` is enough), and that is not
+//! asceticism -- `cos(theta/2)` would have to be computed from an angle we do
+//! not have, instead of from a midpoint we already do.
 //!
-//! **Найгірша клітинка патча — та, що ближча до центральної лінії грані.**
-//! Це властивість проєкції: на грані `+Z` точка `(a, b, 1)` після
-//! нормалізації рухається зі швидкістю `√(b² + 1)/(a² + b² + 1)` по `a`, і
-//! при зростанні `|b|` знаменник росте швидше за чисельник. Тому обхід іде
-//! по вузлу патча, найближчому до центру грані, а не по всіх `SIDE²`
-//! клітинках: 64 обчислення на патч замість 1024, і це та сама відповідь, а
-//! не наближення. Перевіряється прямим перебором у тесті — інакше це було б
-//! міркування, яке ніхто не спростує.
+//! **The worst cell of a patch is the one closer to the face's centre line.**
+//! That is a property of the projection: on face `+Z` the point `(a, b, 1)`
+//! after normalisation moves at a rate of `sqrt(b^2 + 1)/(a^2 + b^2 + 1)` in
+//! `a`, and as `|b|` grows the denominator grows faster than the numerator. So
+//! the walk goes along the patch node nearest the face centre rather than over
+//! all `SIDE^2` cells: 64 computations per patch instead of 1024, and it is the
+//! same answer, not an approximation. Verified by brute force in a test --
+//! otherwise it would be an argument nobody can refute.
 //!
-//! ## Стеля названа числом
+//! ## The ceiling is named by a number
 //!
-//! [`MAX_LEVEL`] існує, бо критерій сам по собі не має дна: камера, що
-//! торкається поверхні, вимагала б нескінченного поділу. Стеля різатиме
-//! якість **мовчки**, тому [`select`] повертає її досягнення окремим полем, а
-//! не ховає у вибраному наборі.
+//! [`MAX_LEVEL`] exists because the criterion has no floor of its own: a camera
+//! touching the surface would demand infinite subdivision. A ceiling cuts
+//! quality **silently**, so [`select`] returns reaching it as a separate field
+//! rather than hiding it in the chosen set.
 
 use crate::camera::Camera;
 use crate::cubesphere::{EdgeMask, Patch, EDGES, FACES, SIDE};
 use crate::tiles::Terrain;
 use std::collections::HashSet;
 
-/// Скільки пікселів геометричної похибки терпимо.
+/// How many pixels of geometric error are tolerated.
 ///
-/// Один піксель, а не «достатньо гладко»: похибка, менша за піксель, не може
-/// зсунути жодного растеризованого фрагмента, тобто це поріг, за яким дрібніші
-/// патчі не змінюють кадру взагалі.
+/// One pixel rather than "smooth enough": an error smaller than a pixel cannot
+/// move a single rasterised fragment, that is the threshold past which finer
+/// patches do not change the frame at all.
 pub const TOLERANCE_PX: f64 = 1.0;
 
-/// Дно поділу. На Землі це клітинка ~79 м і стріла прогину ~1.2·10⁻⁴ м —
-/// нижче за піксель із будь-якої відстані, з якої камеру взагалі пускають.
+/// The floor of subdivision. On Earth that is a cell of ~79 m and a sagitta of
+/// ~1.2e-4 m -- below a pixel from any distance the camera is allowed at all.
 ///
-/// Число тут — не запас на майбутнє: рельєф (R5) прийде тайлами й матиме
-/// власну сітку, тож поділ гладкої сфери глибше не має чого показувати.
+/// The number is not a reserve for the future: terrain (R5) arrives as tiles and
+/// has a grid of its own, so subdividing a smooth sphere deeper has nothing to
+/// show.
 pub const MAX_LEVEL: u32 = 12;
 
-/// Що вибрано цього кадру.
+/// What was selected this frame.
 pub struct Selection {
-    /// Патчі в порядку обходу — від грані 0 і далі, діти за `(i, j)`.
+    /// Patches in traversal order -- from face 0 onwards, children by `(i, j)`.
     ///
-    /// Порядок сталий за побудовою (рекурсія детермінована), і це не
-    /// косметика: набір патчів іде у буфер GPU, а буфер, який щокадру
-    /// переставляє те саме, не порівняти з попереднім кадром.
+    /// The order is fixed by construction (the recursion is deterministic), and
+    /// that is not cosmetic: the patch set goes into a GPU buffer, and a buffer
+    /// that reshuffles the same things every frame cannot be compared with the
+    /// previous frame.
     pub patches: Vec<Patch>,
-    /// Ребра кожного патча, за якими сусід **грубіший** — паралельний масив
-    /// до [`Self::patches`].
+    /// Each patch's edges across which the neighbour is **coarser** -- an array
+    /// parallel to [`Self::patches`].
     ///
-    /// Паралельний, а не поле в `Patch`: патч — це топологія (де він на
-    /// кубосфері), а маска — властивість набору, у якому він опинився. Той
-    /// самий патч у двох наборах має різні маски й лишається тим самим патчем.
+    /// Parallel rather than a field in `Patch`: a patch is topology (where it is
+    /// on the cubesphere), while a mask is a property of the set it ended up in.
+    /// The same patch in two sets has different masks and stays the same
+    /// patch.
     pub masks: Vec<EdgeMask>,
-    /// Скільки патчів уперлося в [`MAX_LEVEL`] замість того, щоб виконати
-    /// критерій.
+    /// How many patches hit [`MAX_LEVEL`] instead of satisfying the criterion.
     ///
-    /// Окремим полем, бо стеля, яка ріже якість тихо, — це та сама помилка,
-    /// що й відсутність стелі: видно її буде на екрані, а шукати причину
-    /// доведеться в коді.
+    /// A field of its own, because a ceiling that cuts quality quietly is the
+    /// same mistake as no ceiling: it will be visible on screen while the cause
+    /// has to be hunted in the code.
     pub clamped: usize,
-    /// Скільки патчів додало вирівнювання рівнів — понад те, що просив
-    /// критерій похибки.
+    /// How many patches level balancing added -- beyond what the error
+    /// criterion asked for.
     ///
-    /// Це ціна правила «сусіди різняться не більш ніж на рівень», і платити
-    /// її наосліп не варто: якщо число колись стане більшим за сам вибір,
-    /// значить критерій розриває сусідів надто різко.
+    /// This is the price of the rule "neighbours differ by no more than one
+    /// level", and it should not be paid blind: if the number ever exceeds the
+    /// selection itself, the criterion is tearing neighbours apart too
+    /// sharply.
     pub balanced: usize,
 }
 
-/// Скільки пікселів на радіан у центрі кадру.
+/// Pixels per radian at the centre of the frame.
 ///
-/// Висота, а не ширина: вертикальне поле зору задає `fov_y`, а горизонтальне
-/// виводиться з нього через співвідношення сторін.
+/// Height rather than width: `fov_y` sets the vertical field of view, and the
+/// horizontal one is derived from it through the aspect ratio.
 pub fn focal_px(fov_y: f64, height_px: f64) -> f64 {
     height_px / 2.0 / (fov_y / 2.0).tan()
 }
 
-/// Геометрична похибка патча в метрах — найбільша стріла прогину його сітки.
+/// A patch's geometric error in metres -- the largest sagitta of its grid.
 ///
-/// Від камери не залежить: це властивість патча й радіуса тіла.
+/// Independent of the camera: a property of the patch and the body's radius.
 pub fn error_m(patch: &Patch, radius: f64) -> f64 {
-    // Вузол патча, найближчий до центральної лінії грані, — там клітинки
-    // найбільші (див. вступ модуля). Вузли грані нумеруються від 0 до `n`,
-    // центр — `n / 2`.
+    // The patch node nearest the face's centre line -- the cells are largest
+    // there (see the module introduction). Face nodes are numbered 0 to `n`, the
+    // centre being `n / 2`.
     let n = Patch::face_nodes(patch.level);
     let centre = n / 2;
     let local = |index: u32| -> usize {
@@ -110,18 +113,18 @@ pub fn error_m(patch: &Patch, radius: f64) -> f64 {
 
     let mut worst: f64 = 0.0;
     for k in 0..SIDE {
-        // Одинична сфера: радіус — множник наприкінці, і тоді ця величина
-        // придатна для будь-якого тіла без другого обходу.
+        // A unit sphere: the radius is a factor at the end, and then this
+        // quantity works for any body without a second walk.
         worst = worst.max(sagitta(patch, k, b_at, k + 1, b_at));
         worst = worst.max(sagitta(patch, a_at, k, a_at, k + 1));
     }
     worst * radius
 }
 
-/// Найдовша клітинка патча в метрах — хорда між сусідніми вузлами.
+/// A patch's longest cell in metres -- the chord between neighbouring nodes.
 ///
-/// Той самий обхід, що в [`error_m`], і з тієї ж причини: найбільші клітинки
-/// лежать біля центральної лінії грані.
+/// The same walk as in [`error_m`] and for the same reason: the largest cells
+/// lie near the face's centre line.
 pub fn cell_m(patch: &Patch, radius: f64) -> f64 {
     let n = Patch::face_nodes(patch.level);
     let centre = n / 2;
@@ -140,7 +143,7 @@ pub fn cell_m(patch: &Patch, radius: f64) -> f64 {
     worst * radius
 }
 
-/// Довжина ребра однієї клітинки на одиничній сфері.
+/// The edge length of one cell on a unit sphere.
 fn chord(patch: &Patch, a0: usize, b0: usize, a1: usize, b1: usize) -> f64 {
     let p = patch.vertex(a0, b0, 1.0);
     let q = patch.vertex(a1, b1, 1.0);
@@ -148,7 +151,7 @@ fn chord(patch: &Patch, a0: usize, b0: usize, a1: usize, b1: usize) -> f64 {
     (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
 }
 
-/// Стріла прогину однієї клітинки на одиничній сфері.
+/// The sagitta of one cell on a unit sphere.
 fn sagitta(patch: &Patch, a0: usize, b0: usize, a1: usize, b1: usize) -> f64 {
     let p = patch.vertex(a0, b0, 1.0);
     let q = patch.vertex(a1, b1, 1.0);
@@ -161,30 +164,34 @@ fn sagitta(patch: &Patch, a0: usize, b0: usize, a1: usize, b1: usize) -> f64 {
     1.0 - length
 }
 
-/// Похибка патча в пікселях для цієї камери.
+/// A patch's error in pixels for this camera.
 ///
-/// ## Відстань міряється до конуса патча, а не до п'яти його вузлів
+/// ## The distance is measured to the patch's cone, not to five of its nodes
 ///
-/// Спокуса взяти мінімум по чотирьох кутах і центру виглядає нешкідливо, поки
-/// камера стоїть **рівно над центром грані**: там центральний вузол і є
-/// найближчою точкою, і відповідь випадково точна. Варто зсунути камеру на
-/// два десятки градусів убік — і найближчий вузол опиняється вчетверо далі за
-/// поверхню під ногами: над Місяцем зі 170 км вибірка казала 758 км, похибка
-/// падала з 1.9 пікселя до 0.43, і грань не ділилася **взагалі** (D13).
-/// Найгірше в цьому те, що всі тести вибору рівня ставили камеру саме над
-/// центром грані, тобто вада була невидима за побудовою фікстури.
+/// The temptation to take the minimum over four corners and the centre looks
+/// harmless while the camera stands **exactly above the face centre**: there the
+/// central node is the nearest point and the answer is accidentally exact. Move
+/// the camera twenty degrees aside and the nearest node ends up four times
+/// farther than the surface underfoot: above the Moon from 170 km the sampling
+/// said 758 km, the error fell from 1.9 pixels to 0.43, and the face was not
+/// subdivided **at all** (D13). The worst part is that every level-selection
+/// test placed the camera exactly above the face centre, so the flaw was
+/// invisible by construction of the fixture.
 ///
-/// Тому відстань береться до **сферичної шапки, у яку патч вписаний** —
-/// [`Patch::cone`], той самий конус, яким `cull::beyond_limb` питає про лімб.
-/// Шапка більша за патч, тож відстань до неї — оцінка знизу, а похибка —
-/// оцінка згори: помилятися вибір рівня може лише в бік зайвого поділу.
+/// So the distance is taken to the **spherical cap the patch is inscribed in**
+/// -- [`Patch::cone`], the same cone `cull::beyond_limb` asks about the limb
+/// with. The cap is larger than the patch, so the distance to it is a lower
+/// estimate and the error an upper one: level selection can only err towards
+/// excess subdivision.
 ///
-/// Два випадки, і другий не оптимізація:
-/// - **око над шапкою** (`cos β ≥ cos α`) — найближча точка просто під ним,
-///   `d − R`. Різниця двох близьких чисел напряму, без теореми косинусів,
-///   яка на висоті 1 м втратила б у скороченні дванадцять значущих цифр;
-/// - **око збоку** — найближча точка на краю шапки, під кутом `β − α`, і
-///   `cos(β − α)` розкладається в ті самі чотири множення, що в лімбі.
+/// Two cases, and the second is not an optimisation:
+/// - **the eye above the cap** (`cos(beta) >= cos(alpha)`) -- the nearest point
+///   is directly beneath it, `d - R`. The difference of two close numbers
+///   directly, without the law of cosines, which at an altitude of 1 m would
+///   lose twelve significant digits to cancellation;
+/// - **the eye to the side** -- the nearest point is on the cap's edge, at angle
+///   `beta - alpha`, and `cos(beta - alpha)` expands into the same four
+///   multiplications as at the limb.
 pub fn error_px(
     patch: &Patch,
     body: &Body,
@@ -197,9 +204,9 @@ pub fn error_px(
     let r = body.radius_m;
 
     let cone = patch.cone();
-    // Камера в самому центрі тіла — випадок, якого гра не допускає, але число
-    // тут мусить бути скінченним: ділення на нуль дало б NaN, а NaN у
-    // порівнянні тихо вибрав би найгрубіший рівень.
+    // The camera at the body's very centre -- a case the game does not allow,
+    // but the number here must be finite: division by zero would give NaN, and a
+    // NaN in a comparison would quietly pick the coarsest level.
     let cos_beta = if d > 0.0 {
         ((cone.axis[0] * e[0] + cone.axis[1] * e[1] + cone.axis[2] * e[2]) / d).clamp(-1.0, 1.0)
     } else {
@@ -214,22 +221,24 @@ pub fn error_px(
         (d * d + r * r - 2.0 * d * r * cos_gap).max(0.0).sqrt()
     };
 
-    // **Дві незалежні похибки, і сфера — лише одна з них** (R7c).
+    // **Two independent errors, and the sphere is only one of them** (R7c).
     //
-    // Стріла прогину каже, наскільки пласка клітинка відходить від **сфери**,
-    // і зблизька вона нікчемна: сфера локально пласка. Виміряно — на кілометрі
-    // над Місяцем критерій зупиняється на клітинці 2665 м, тобто 1662 пікселі
-    // завширшки. У таку сітку не влазить ні процедурна деталь, ні сам DEM,
-    // вузол якого там 5330 м. Тобто критерій, який дивиться лише на сферу,
-    // мовчки забороняє рельєф як такий.
+    // The sagitta says how far a flat cell departs from the **sphere**, and up
+    // close it is negligible: a sphere is locally flat. Measured -- a kilometre
+    // above the Moon the criterion stops at a cell of 2665 m, that is 1662
+    // pixels wide. Neither the procedural detail nor the DEM itself fits in such
+    // a grid, its node there being 5330 m. So a criterion that looks only at the
+    // sphere silently forbids terrain as such.
     //
-    // Друга похибка — **рельєф**: пласка клітинка на схилі з нахилом `s`
-    // відходить від поверхні на величину порядку `s · L`. Вона падає з рівнем
-    // **лінійно**, а стріла прогину — квадратично, тож зблизька вирішує саме
-    // вона, і саме вона доводить поділ до тих рівнів, де деталь видно.
+    // The second error is **terrain**: a flat cell on a slope `s` departs from
+    // the surface by an amount of order `s * L`. It falls with level
+    // **linearly**, while the sagitta falls quadratically, so up close it is the
+    // one that decides, and it is what drives subdivision to the levels where
+    // detail is visible.
     //
-    // Максимум, а не сума: джерела незалежні, більше з двох і задає рівень, а
-    // сума лише подвоїла б відповідь там, де вони збігаються.
+    // The maximum rather than the sum: the sources are independent, the larger
+    // of the two sets the level, and a sum would only double the answer where
+    // they coincide.
     let sphere = error_m(patch, r);
     let relief = if relief_slope > 0.0 {
         relief_slope * cell_m(patch, r)
@@ -239,40 +248,42 @@ pub fn error_px(
     sphere.max(relief) / nearest.max(1.0) * focal_px
 }
 
-/// Тіло, для якого вибирається рівень.
+/// The body a level is selected for.
 ///
-/// Своя структура, а не [`crate::scene::Body`]: вибору рівня не потрібні ні
-/// набір тайлів, ні кватерніон — потрібне те, з чого рахується відстань.
+/// A struct of its own rather than [`crate::scene::Body`]: level selection needs
+/// neither a tile set nor a quaternion -- it needs what the distance is computed
+/// from.
 ///
-/// ## Поворот тут таки є, і колись його тут не було
+/// ## The rotation is here after all, and it was not here once
 ///
-/// Спершу здається, що поворот на вибір рівня не впливає: сфера однакова з
-/// усіх боків, і **якість** набору справді не міняється. Міняється інше —
-/// **який саме патч** отримає який рівень. Патч живе в системі тіла; коли
-/// тіло повернуте, він стоїть у світі не там, де його кладе власна
-/// координата, і дрібна ділянка лишилася б там, куди камера вже не
-/// дивиться. Помітно це стане з рельєфом (R5), а неправильно було завжди.
+/// At first it seems rotation does not affect level selection: a sphere is the
+/// same from every side, and the **quality** of the set really does not change.
+/// Something else changes -- **which patch** gets which level. A patch lives in
+/// body space; when the body is rotated it stands in the world not where its own
+/// coordinate puts it, and a fine region would be left where the camera is no
+/// longer looking. This becomes noticeable with terrain (R5), but it was always
+/// wrong.
 ///
-/// Замість повертати кожну вершину, у систему тіла переводиться **око** —
-/// один раз на тіло замість тисячі разів на патч. Поворот ортогональний, тож
-/// зворотний до нього транспонований.
+/// Instead of rotating every vertex, the **eye** is taken into body space --
+/// once per body instead of a thousand times per patch. The rotation is
+/// orthogonal, so its inverse is its transpose.
 #[derive(Clone, Copy, Debug)]
 pub struct Body {
     pub centre: [f64; 3],
     pub radius_m: f64,
-    /// Поворот із системи тіла в систему світу.
+    /// Rotation from body space into world space.
     pub rotation: [[f64; 3]; 3],
-    /// Глибше за цей рівень вибір не спускається.
+    /// Selection does not descend below this level.
     ///
-    /// Не те саме, що [`MAX_LEVEL`]: та стеля про арифметику критерію, а ця
-    /// — про дані. Тіло з тайлами не має сенсу ділити глибше за піраміду
-    /// тайлів (R5c), і різниця мусить бути видима в типі, а не захована в
-    /// кадрі.
+    /// Not the same as [`MAX_LEVEL`]: that ceiling is about the criterion's
+    /// arithmetic, this one about data. There is no point subdividing a tiled
+    /// body deeper than its tile pyramid (R5c), and the difference must be
+    /// visible in the type rather than hidden in the frame.
     pub max_level: u32,
 }
 
 impl Body {
-    /// Тіло, яке не обертається.
+    /// A body that does not rotate.
     pub fn still(centre: [f64; 3], radius_m: f64) -> Body {
         Body {
             centre,
@@ -282,8 +293,8 @@ impl Body {
         }
     }
 
-    /// Позиція камери в системі тіла: спершу відняти центр, тоді повернути
-    /// назад.
+    /// The camera position in body space: subtract the centre first, then
+    /// rotate back.
     pub fn eye_in_body(&self, eye: [f64; 3]) -> [f64; 3] {
         let d = [
             eye[0] - self.centre[0],
@@ -300,12 +311,13 @@ impl Body {
     }
 }
 
-/// Набір патчів для цієї камери й цього тіла — вибраний, вирівняний, зшитий.
+/// The patch set for this camera and this body -- selected, balanced, stitched.
 ///
-/// Три дії, а не одна, і роздільної точки між ними назовні немає навмисно:
-/// невирівняний набір не годиться ні на що, крім тріщин, а маски без
-/// вирівнювання довелося б рахувати на різницю в два рівні, якої зшивання
-/// не вміє. Хто просить набір — просить набір, що малюється.
+/// Three actions rather than one, and there is deliberately no split point
+/// between them from outside: an unbalanced set is good for nothing but cracks,
+/// and masks without balancing would have to be computed for a two-level
+/// difference, which stitching cannot do. Whoever asks for a set asks for a set
+/// that draws.
 pub fn select(body: &Body, camera: &Camera, focal_px: f64, terrain: Option<&Terrain>) -> Selection {
     let mut out = Selection {
         patches: Vec::new(),
@@ -334,47 +346,51 @@ pub fn select(body: &Body, camera: &Camera, focal_px: f64, terrain: Option<&Terr
     out
 }
 
-/// Довести набір до правила «сусіди різняться не більш ніж на рівень».
+/// Bring the set up to the rule "neighbours differ by no more than one level".
 ///
-/// ## Чому саме один рівень, і чому цього досить
+/// ## Why one level exactly, and why that is enough
 ///
-/// Зшивання (`cubesphere::indices`) вміє викидати кожен другий вузол ребра —
-/// тобто рівно одну різницю рівнів. Різниця у два означала б, що з нашого
-/// ребра треба лишити кожен четвертий вузол, і наборів стало б не
-/// шістнадцять, а незліченно. Тому правило не про красу сітки, а про те,
-/// скільки різних індексних наборів існує наперед.
+/// Stitching (`cubesphere::indices`) can drop every second node of an edge --
+/// that is exactly one level of difference. A difference of two would mean
+/// keeping every fourth node of our edge, and there would be not sixteen index
+/// sets but countless ones. So the rule is not about a pretty mesh but about how
+/// many distinct index sets exist in advance.
 ///
-/// Вирівнювання **тільки подрібнює**: грубіший сусід ділиться, доки різниця
-/// не впаде до одиниці. Огрублювати дрібний бік не можна — критерій похибки
-/// попросив цей рівень, і мовчки віддати його назад означало б збрехати
-/// про якість.
+/// Balancing **only refines**: a coarser neighbour is subdivided until the
+/// difference falls to one. Coarsening the fine side is not allowed -- the error
+/// criterion asked for that level, and quietly giving it back would be lying
+/// about quality.
 fn balance(selection: &mut Selection) {
     let before = selection.patches.len();
     let mut leaves: HashSet<Patch> = selection.patches.iter().copied().collect();
-    // Черга — патчі, чиї сусіди ще не перевірені. Діти щойно поділеного
-    // потрапляють сюди ж: поділ міг зробити їх надто дрібними вже для
-    // СВОЇХ сусідів, і хвиля має право йти далі.
+    // The queue holds patches whose neighbours have not been checked yet. The
+    // children of a just-subdivided patch land here too: the subdivision may
+    // have made them too fine for THEIR own neighbours, and the wave is entitled
+    // to keep going.
     let mut queue: Vec<Patch> = selection.patches.clone();
 
     while let Some(patch) = queue.pop() {
-        // Патч могли поділити, поки він чекав у черзі.
+        // The patch may have been subdivided while it waited in the queue.
         if patch.level < 2 || !leaves.contains(&patch) {
             continue;
         }
         for edge in EDGES {
-            // **Цикл, а не одна перевірка.** Один поділ зменшує різницю на
-            // один рівень, а вона буває й більшою: критерій зі стрілою прогину
-            // міняється плавно, тож різниця в три рівні на сусідніх патчах
-            // просто не траплялась — а з рельєфом (R7c) нахил між сусідами
-            // стрибає, і вона з'явилась першим же кадром. Поділений бік тоді
-            // лишався на два рівні грубішим, `stitching` бачив різницю 2 і
-            // валив `debug_assert`. Діти поділеного стають до черги й самі, але
-            // це їм не допомагає: їхній сусід ДРІБНІШИЙ за них, тобто з їхнього
-            // боку все гаразд, і питати мусить той самий бік, що й почав.
+            // **A loop, not a single check.** One subdivision reduces the
+            // difference by one level, and the difference can be larger: with
+            // the sagitta criterion it changes smoothly, so a three-level
+            // difference on neighbouring patches simply never happened -- while
+            // with terrain (R7c) the slope between neighbours jumps, and it
+            // appeared in the very first frame. The subdivided side then stayed
+            // two levels coarser, `stitching` saw a difference of 2 and tripped
+            // the `debug_assert`. The children of the subdivided patch do queue
+            // themselves, but that does not help them: their neighbour is FINER
+            // than they are, so from their side all is well, and the side that
+            // started must be the one to ask.
             loop {
                 let cell = patch.neighbour(edge).patch;
                 let Some(coarse) = covering(&leaves, cell) else {
-                    // Сусідній бік дрібніший за нас — це його турбота, не наша.
+                    // The other side is finer than us -- its business, not
+                    // ours.
                     break;
                 };
                 if patch.level - coarse.level < 2 {
@@ -389,9 +405,10 @@ fn balance(selection: &mut Selection) {
         }
     }
 
-    // Порядок відновлюється обходом, а не сортуванням: він мусить бути тим
-    // самим, що дає `subdivide`, інакше буфер GPU щокадру переставляє те саме
-    // й перестає бути порівнюваним із попереднім кадром.
+    // The order is restored by traversal rather than by sorting: it must be the
+    // same one `subdivide` produces, otherwise the GPU buffer reshuffles the
+    // same things every frame and stops being comparable with the previous
+    // frame.
     selection.patches.clear();
     for face in 0..FACES {
         collect(
@@ -408,10 +425,11 @@ fn balance(selection: &mut Selection) {
     selection.balanced = selection.patches.len() - before;
 }
 
-/// Лист набору, який накриває цю клітинку: вона сама або хтось із її предків.
+/// The set's leaf covering this cell: the cell itself or one of its ancestors.
 ///
-/// `None` означає, що накривати нема кому — тобто на тому боці набір
-/// **дрібніший** за клітинку, і питати треба з іншого боку.
+/// `None` means there is nothing to cover it -- that is, the set on that side is
+/// **finer** than the cell, and the question must be asked from the other
+/// side.
 fn covering(leaves: &HashSet<Patch>, cell: Patch) -> Option<Patch> {
     let mut cell = cell;
     loop {
@@ -429,14 +447,15 @@ fn collect(patch: Patch, leaves: &HashSet<Patch>, out: &mut Vec<Patch>) {
     }
     assert!(
         patch.level < MAX_LEVEL,
-        "набір не покриває грань: у {patch:?} немає жодного листа"
+        "the set does not cover the face: {patch:?} has no leaf at all"
     );
     for child in patch.children() {
         collect(child, leaves, out);
     }
 }
 
-/// Маска зшивання кожного патча: ребра, за якими сусід грубіший.
+/// Each patch's stitching mask: the edges across which the neighbour is
+/// coarser.
 fn stitching(patches: &[Patch]) -> Vec<EdgeMask> {
     let leaves: HashSet<Patch> = patches.iter().copied().collect();
     patches
@@ -450,7 +469,7 @@ fn stitching(patches: &[Patch]) -> Vec<EdgeMask> {
                         debug_assert_eq!(
                             other.level + 1,
                             patch.level,
-                            "вирівнювання пропустило різницю рівнів"
+                            "balancing missed a level difference"
                         );
                         mask |= edge.bit();
                     }
@@ -469,10 +488,11 @@ fn subdivide(
     terrain: Option<&Terrain>,
     out: &mut Selection,
 ) {
-    // Нахил **місцевий**, а не одне число на тіло: рівнина не має платити
-    // вершинами за те, що десь на тілі є гори. Береться в центрі патча —
-    // одна вибірка на патч, і та сама з обох боків спільного ребра, бо
-    // `slope_at` там бітово однаковий (R7c).
+    // The slope is **local**, not one number per body: flat ground must not pay
+    // vertices for the fact that there are mountains somewhere on the body.
+    // Taken at the patch centre -- one sample per patch, and the same on both
+    // sides of a shared edge, because `slope_at` is bitwise identical there
+    // (R7c).
     let relief_slope = match terrain {
         Some(terrain) => terrain.slope_at(&patch, SIDE / 2, SIDE / 2),
         None => 0.0,
@@ -504,11 +524,12 @@ fn subdivide(
     }
 }
 
-/// Рівень патча, який покриває вузол `(u, v)` грані `face` у вибраному наборі.
+/// The level of the patch covering node `(u, v)` of face `face` in the selected
+/// set.
 ///
-/// Потрібен монотонності: набори при двох положеннях камери складаються з
-/// різних патчів, тож порівнювати їх поштучно нема з чим. Порівнювати можна
-/// **точку поверхні** — який рівень накрив її тут і який там.
+/// Needed for monotonicity: sets at two camera positions consist of different
+/// patches, so there is nothing to compare piece by piece. What can be compared
+/// is a **surface point** -- which level covered it here and which there.
 pub fn level_at(selection: &Selection, face: usize, u: f64, v: f64) -> Option<u32> {
     selection
         .patches
@@ -524,10 +545,10 @@ pub fn level_at(selection: &Selection, face: usize, u: f64, v: f64) -> Option<u3
         .map(|p| p.level)
 }
 
-/// Кількість вершин, яку коштує набір.
+/// The vertex count a set costs.
 ///
-/// Одна цифра, з якою порівнюється все інше: патч — це `(SIDE + 1)²` вершин
-/// незалежно від рівня.
+/// The one figure everything else is compared against: a patch is `(SIDE + 1)^2`
+/// vertices regardless of level.
 pub fn vertex_count(selection: &Selection) -> usize {
     selection.patches.len() * (SIDE + 1) * (SIDE + 1)
 }
@@ -536,10 +557,11 @@ pub fn vertex_count(selection: &Selection) -> usize {
 mod tests {
     use super::*;
 
-    /// Дешевий обхід дає ту саму відповідь, що й повний перебір усіх клітинок.
+    /// The cheap walk gives the same answer as brute force over all cells.
     ///
-    /// Це і є перевірка міркування зі вступу модуля: якби найгірша клітинка
-    /// лежала не на центральній лінії грані, повний перебір знайшов би більше.
+    /// This is the check of the argument in the module introduction: if the
+    /// worst cell did not lie on the face's centre line, brute force would find
+    /// more.
     #[test]
     fn the_cheap_walk_finds_the_worst_cell() {
         for patch in [
@@ -568,11 +590,11 @@ mod tests {
                 j: 15,
             },
         ] {
-            // Обидві межі включно: найгірша клітинка любить лежати на краю
-            // патча, найближчому до центру грані, а `0..SIDE` в обох циклах
-            // саме той край і пропускає. Перша версія цього перебору його
-            // пропускала — і «дешевий обхід знайшов більше за повний
-            // перебір» було тим, що на це вказало.
+            // Both bounds inclusive: the worst cell likes to lie on the patch
+            // edge nearest the face centre, and `0..SIDE` in both loops skips
+            // exactly that edge. The first version of this brute force did skip
+            // it -- and "the cheap walk found more than brute force" was what
+            // pointed at it.
             let mut brute: f64 = 0.0;
             for a in 0..SIDE {
                 for b in 0..=SIDE {
@@ -586,34 +608,38 @@ mod tests {
             }
             let cheap = error_m(&patch, 1.0);
             println!(
-                "  {:?} рівень {}: обхід {:.6e}, перебір {:.6e}",
+                "  {:?} level {}: walk {:.6e}, brute force {:.6e}",
                 patch.face, patch.level, cheap, brute
             );
             assert!(
                 (cheap - brute).abs() <= brute * 1e-12,
-                "обхід дав {cheap:.6e}, повний перебір {brute:.6e}"
+                "the walk gave {cheap:.6e}, brute force {brute:.6e}"
             );
         }
     }
 
-    /// Похибка падає вчетверо на рівень — інакше критерій не мав би сенсу.
+    /// The error falls fourfold per level -- otherwise the criterion would make
+    /// no sense.
     ///
-    /// Стріла прогину пропорційна квадрату кроку, а крок ділиться навпіл, тож
-    /// множник 4 — це не спостереження, а те, що мусить бути. Відхилення
-    /// означало б, що варп зіпсував сітку глибше, ніж думає R1a.
+    /// The sagitta is proportional to the square of the step, and the step
+    /// halves, so a factor of 4 is not an observation but what must be. A
+    /// deviation would mean the warp spoiled the grid more deeply than R1a
+    /// thinks.
     ///
-    /// **Патчі беруться біля центру грані, а не в куті, і це не дрібниця.**
-    /// Кутовий патч на кожному рівні лежить в іншому місці грані (його
-    /// найгірша клітинка сповзає від центру грані до краю), тож множник там
-    /// росте — 4.00, 4.03, 4.11 — і росте законно. Порівнювати треба ту саму
-    /// ділянку поверхні, інакше вимірюється не поділ, а варп.
+    /// **The patches are taken near the face centre rather than at a corner, and
+    /// that is not a detail.** A corner patch lies in a different place on the
+    /// face at every level (its worst cell slides from the face centre towards
+    /// the edge), so the factor there grows -- 4.00, 4.03, 4.11 -- and grows
+    /// legitimately. The same piece of surface must be compared, otherwise what
+    /// is measured is the warp rather than the subdivision.
     #[test]
     fn the_error_falls_fourfold_with_every_level() {
         const RADIUS: f64 = 6_371_000.0;
         let mut previous = None;
         for level in 0..8 {
-            // Патч, чий перший вузол — рівно центр грані: там клітинки
-            // найбільші, і там вони на кожному рівні в тому самому місці.
+            // The patch whose first node is exactly the face centre: the cells
+            // are largest there, and at every level they are in the same
+            // place.
             let index = (1u32 << level) / 2;
             let patch = Patch {
                 face: 0,
@@ -624,13 +650,13 @@ mod tests {
             let e = error_m(&patch, RADIUS);
             if let Some(before) = previous {
                 let factor: f64 = before / e;
-                println!("  рівень {level}: {e:.4} м, множник {factor:.3}");
+                println!("  level {level}: {e:.4} m, factor {factor:.3}");
                 assert!(
                     (3.9..4.1).contains(&factor),
-                    "рівень {level} змінив похибку в {factor:.3} раза"
+                    "level {level} changed the error by a factor of {factor:.3}"
                 );
             } else {
-                println!("  рівень {level}: {e:.4} м");
+                println!("  level {level}: {e:.4} m");
             }
             previous = Some(e);
         }
