@@ -1,69 +1,69 @@
-//! Глибина: reversed-Z з нескінченною далекою площиною (ROADMAP F3).
+//! Depth: reversed-Z with an infinite far plane (ROADMAP F3).
 //!
-//! PROJECT.md §7 вимагає саме її й прямо забороняє логарифмічний depth —
-//! той ламає early-Z і інтерполяцію на великих трикутниках.
+//! PROJECT.md section 7 requires exactly this and forbids logarithmic depth
+//! outright -- that one breaks early-Z and interpolation on large triangles.
 //!
-//! ## Чому reversed-Z, у двох рядках арифметики
+//! ## Why reversed-Z, in two lines of arithmetic
 //!
-//! Звичайна проєкція кладе далеке до `z_ndc = 1`, де float32 має найгіршу
-//! абсолютну роздільність, і додатково розтягує близьке через `1/z`. Дві
-//! біди складаються.
+//! A conventional projection puts the far away at `z_ndc = 1`, where float32 has
+//! the worst absolute resolution, and additionally stretches the near through
+//! `1/z`. Two troubles add up.
 //!
-//! Reversed-Z кладе далеке до нуля: `z_ndc = near / z`. Біля нуля float32
-//! має ULP, пропорційний самому значенню, і `1/z` тепер компенсує розподіл
-//! замість того, щоб його псувати.
+//! Reversed-Z puts the far away at zero: `z_ndc = near / z`. Near zero float32
+//! has an ULP proportional to the value itself, and `1/z` now compensates for
+//! the distribution instead of spoiling it.
 //!
-//! ## Межа, і вона принципова
+//! ## The limit, and it is fundamental
 //!
-//! Роздільний зазор на відстані `z` виходить із `Δz_ndc = near·Δz/z²` і
-//! `ulp(near/z) ≈ (near/z)·2⁻²⁴`:
+//! The resolvable gap at distance `z` follows from `dz_ndc = near*dz/z^2` and
+//! `ulp(near/z) ~ (near/z)*2^-24`:
 //!
 //! ```text
-//!     Δz_min ≈ z · 2⁻²⁴ ≈ z · 6·10⁻⁸
+//!     dz_min ~ z * 2^-24 ~ z * 6e-8
 //! ```
 //!
-//! **`near` скорочується.** Роздільність — стала частка відстані, і ніякою
-//! близькою площиною її не покращити. Це не властивість реалізації, а
-//! властивість float32.
+//! **`near` cancels.** The resolution is a constant fraction of the distance,
+//! and no near plane improves it. That is not a property of the implementation
+//! but a property of float32.
 //!
-//! Звідси прямий наслідок: 1 м на 10⁸ м не роздільний **у принципі** (там
-//! межа ≈ 8 м), а на 10⁷ м — роздільний (≈ 0.8 м). Саме тому PROJECT.md §7
-//! вимагає багатопрохідного рендера по діапазонах: один буфер глибини не
-//! покриє 10¹¹ м, і жодне налаштування цього не змінить.
+//! A direct consequence: 1 m at 1e8 m is not resolvable **in principle** (the
+//! limit there is ~8 m), while at 1e7 m it is (~0.8 m). That is why PROJECT.md
+//! section 7 requires multi-pass rendering by ranges: one depth buffer will not
+//! cover 1e11 m, and no setting changes that.
 //!
-//! Виміряно на GPU в `--depth-probe`, збігається з формулою.
+//! Measured on the GPU in `--depth-probe`, matching the formula.
 
-/// Формат буфера глибини. 32 біти з рухомою комою — саме те, з чим reversed-Z
-/// має сенс: у 24-бітного цілочисельного немає нерівномірного ULP, на якому
-/// весь виграш і тримається.
+/// The depth buffer format. 32-bit floating point -- exactly what makes
+/// reversed-Z meaningful: a 24-bit integer has no non-uniform ULP, and the whole
+/// gain rests on that.
 pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-/// Із чим порівнювати глибину. Reversed-Z: далі — менше, тож проходить більше.
+/// How to compare depth. Reversed-Z: farther is smaller, so greater passes.
 pub const COMPARE: wgpu::CompareFunction = wgpu::CompareFunction::Greater;
 
-/// Чим очищати. Нуль — це «нескінченно далеко».
+/// What to clear with. Zero is "infinitely far".
 pub const CLEAR: f32 = 0.0;
 
-/// Матриця 4×4, стовпцями, як її чекає шейдер.
+/// A 4x4 matrix, column-major, as the shader expects it.
 pub type Matrix = [[f32; 4]; 4];
 
-/// Межа роздільності на відстані `distance`, метри — **оцінка згори**.
+/// The resolution limit at distance `distance`, metres -- an **upper estimate**.
 ///
-/// Береться `f32::EPSILON` (2⁻²³), тобто найгірший ULP у двійковому проміжку.
-/// Фактичний ULP гуляє між 2⁻²⁴ і 2⁻²³ залежно від мантиси, тож справжня межа
-/// буває до 1.4 раза кращою — виміряно: на 10⁷ м оцінка дає 1.19 м, а зазор
-/// 1 м GPU ще розрізняє.
+/// `f32::EPSILON` (2^-23) is used, that is the worst ULP within a binary
+/// interval. The actual ULP wanders between 2^-24 and 2^-23 depending on the
+/// mantissa, so the real limit can be up to 1.4 times better -- measured: at
+/// 1e7 m the estimate gives 1.19 m, while the GPU still resolves a 1 m gap.
 ///
-/// Оцінка згори тут навмисна: краще вважати гіршою, ніж чекати від глибини
-/// того, чого вона не зробить на іншій мантисі.
+/// The upper estimate is deliberate: better to assume the worse than to expect
+/// from depth something it will not do on a different mantissa.
 pub fn resolvable_gap(distance: f64) -> f64 {
     distance * f64::from(f32::EPSILON)
 }
 
-/// Reversed-Z, нескінченна далека площина.
+/// Reversed-Z with an infinite far plane.
 ///
-/// `z_clip = near`, `w_clip = -z_view`, тобто `z_ndc = near / (-z_view)`:
-/// на близькій площині 1, на нескінченності 0.
+/// `z_clip = near`, `w_clip = -z_view`, that is `z_ndc = near / (-z_view)`: 1 at
+/// the near plane, 0 at infinity.
 pub fn reversed_infinite(fov_y: f64, aspect: f64, near: f64) -> Matrix {
     let f = 1.0 / (fov_y / 2.0).tan();
 
@@ -75,30 +75,31 @@ pub fn reversed_infinite(fov_y: f64, aspect: f64, near: f64) -> Matrix {
     ]
 }
 
-/// Reversed-Z зі **скінченною** далекою площиною — один діапазон із чотирьох
+/// Reversed-Z with a **finite** far plane -- one range out of four
 /// (ROADMAP-PLANETS.md, R4b).
 ///
-/// `z_ndc = near·far/((far − near)·z) − near/(far − near)`: на ближній
-/// площині 1, на далекій рівно 0. При `far → ∞` вироджується в
-/// [`reversed_infinite`], і це не збіг — та сама матриця з `A = 0`.
+/// `z_ndc = near*far/((far - near)*z) - near/(far - near)`: 1 at the near plane,
+/// exactly 0 at the far one. As `far -> infinity` it degenerates into
+/// [`reversed_infinite`], and that is no coincidence -- the same matrix with
+/// `A = 0`.
 ///
-/// ## Що це дає, і чого не дає — виміряно
+/// ## What it buys, and what it does not -- measured
 ///
-/// Роздільність усередині діапазону виводиться в замкненій формі:
+/// The resolution inside a range follows in closed form:
 ///
 /// ```text
-///     Δz ≈ z · 2⁻²⁴ · (1 − z/far)
+///     dz ~ z * 2^-24 * (1 - z/far)
 /// ```
 ///
-/// Тобто біля **далекої** площини діапазону роздільність прямує до нуля
-/// (ідеальна), а біля **ближньої** — до `z·2⁻²⁴`, тобто рівно до того, що
-/// дає одна нескінченна проєкція. Наслідок, який варто прочитати повністю:
-/// **поділ на діапазони не покращує найгіршого випадку на заданій
-/// відстані.** Що він дає — інше й теж цінне: два тіла в різних діапазонах
-/// не змагаються за біти глибини **взагалі**, їх упорядковує порядок
-/// проходів. Перевірено обома боками в `tests/depth.rs`.
+/// So near the range's **far** plane the resolution tends to zero (perfect),
+/// while near the **near** one it tends to `z*2^-24`, that is exactly what a
+/// single infinite projection gives. A consequence worth reading in full:
+/// **splitting into ranges does not improve the worst case at a given
+/// distance.** What it does buy is different and also valuable: two bodies in
+/// different ranges do not compete for depth bits **at all**, and the order of
+/// passes orders them. Verified from both sides in `tests/depth.rs`.
 pub fn reversed_finite(fov_y: f64, aspect: f64, near: f64, far: f64) -> Matrix {
-    assert!(far > near, "діапазон {near}..{far} порожній або вивернутий");
+    assert!(far > near, "range {near}..{far} is empty or inverted");
     let f = 1.0 / (fov_y / 2.0).tan();
     let span = far - near;
 
@@ -110,11 +111,11 @@ pub fn reversed_finite(fov_y: f64, aspect: f64, near: f64, far: f64) -> Matrix {
     ]
 }
 
-/// Звичайна проєкція зі скінченною далекою площиною.
+/// A conventional projection with a finite far plane.
 ///
-/// У рушії не використовується. Існує заради F3: без неї «reversed-Z не
-/// мерехтить» — твердження без порівняння, а перевірка, яка ніколи не падала,
-/// нічого не варта.
+/// Not used by the engine. It exists for F3: without it "reversed-Z does not
+/// flicker" is a claim without a comparison, and a check that has never failed
+/// is worth nothing.
 pub fn conventional(fov_y: f64, aspect: f64, near: f64, far: f64) -> Matrix {
     let f = 1.0 / (fov_y / 2.0).tan();
 
@@ -126,30 +127,33 @@ pub fn conventional(fov_y: f64, aspect: f64, near: f64, far: f64) -> Matrix {
     ]
 }
 
-/// Налаштування глибини для звичайної проєкції — дзеркало до констант вище.
+/// Depth settings for the conventional projection -- a mirror of the constants
+/// above.
 pub const CONVENTIONAL_COMPARE: wgpu::CompareFunction = wgpu::CompareFunction::Less;
 pub const CONVENTIONAL_CLEAR: f32 = 1.0;
 
-/// Глибина точки на осі погляду за `distance` метрів — ті самі два кроки, що
-/// й у шейдері (множення на матрицю, перспективний поділ), у строгому f32.
+/// The depth of a point on the view axis at `distance` metres -- the same two
+/// steps as in the shader (matrix multiply, perspective divide), in strict f32.
 ///
-/// **Це навмисно канонічне обчислення, а не модель конкретного растеризатора.**
-/// Rust не зливає множення з додаванням у FMA (CLAUDE.md, інваріант 2), тож
-/// результат однаковий на всіх платформах і дорівнює тому, що написано в
-/// шейдері буквально. Залізо ж, як з'ясувалося, місцями тягне через
-/// інтерполяцію й поділ більше точності, ніж f32: у таблиці F3 звичайна
-/// проєкція виграє кадр на 10⁴ м, хоча в строгому f32 обидві поверхні там
-/// дають той самий біт.
+/// **This is deliberately a canonical computation, not a model of a particular
+/// rasteriser.** Rust does not fuse multiply and add into an FMA (CLAUDE.md,
+/// invariant 2), so the result is the same on every platform and equals what the
+/// shader says literally. The hardware, as it turned out, carries more precision
+/// than f32 through interpolation and division in places: in the F3 table the
+/// conventional projection wins a frame at 1e4 m, although in strict f32 both
+/// surfaces give the same bit there.
 ///
-/// Звідси й поділ праці між цією функцією і `depth_probe`:
+/// Hence the division of labour between this function and `depth_probe`:
 ///
-/// - «глибина цього **не розрізняє**» — сюди. Це властивість формату й
-///   проєкції, і доводиться вона збігом бітів. На GPU те саме твердження
-///   недоказове: коли обидві поверхні дають однакове значення, переможця
-///   вирішує трактування нічиєї й зайва точність драйвера, а не глибина —
-///   саме на цьому тест F3 і розійшовся між llvmpipe, RADV і Metal.
-/// - «глибина це **розрізняє**» — на GPU. Там різниця справді є, і зайва
-///   точність драйвера її не з'їдає, а лише підтверджує.
+/// - "depth **cannot** tell these apart" -- here. That is a property of the
+///   format and the projection, and it is proved by matching bits. On the GPU
+///   the same claim is unprovable: when both surfaces give the same value, the
+///   winner is decided by tie-breaking and the driver's extra precision rather
+///   than by depth -- which is exactly where the F3 test diverged between
+///   llvmpipe, RADV and Metal.
+/// - "depth **can** tell these apart" -- on the GPU. The difference really is
+///   there, and the driver's extra precision does not eat it but only confirms
+///   it.
 pub fn ndc(projection: Matrix, distance: f64) -> f32 {
     let z_view = (-distance) as f32;
 
@@ -159,17 +163,17 @@ pub fn ndc(projection: Matrix, distance: f64) -> f32 {
     z_clip / w_clip
 }
 
-/// Добуток двох матриць у тій самій розкладці, що [`Matrix`], —
-/// **по стовпцях** (ROADMAP-PLANETS.md, R1d).
+/// The product of two matrices in the same layout as [`Matrix`] --
+/// **column-major** (ROADMAP-PLANETS.md, R1d).
 ///
-/// Потрібен рівно одному місцю: патч приносить вершини у світових осях, тож
-/// шейдеру треба проєкція, помножена на поворот вигляду. Робити це множення
-/// в шейдері на кожну вершину означало б платити за нього мільйони разів на
-/// кадр замість одного разу на кадр тут.
+/// Needed by exactly one place: a patch brings vertices in world axes, so the
+/// shader needs the projection multiplied by the view rotation. Doing that
+/// multiplication in the shader per vertex would mean paying for it millions of
+/// times per frame instead of once per frame here.
 ///
-/// Розкладка названа вголос, бо переплутати її тихо — найлегше: обидві
-/// матриці 4×4 з `f32`, і транспонований добуток так само малює картинку,
-/// просто не ту.
+/// The layout is named out loud, because mixing it up silently is the easiest
+/// thing to do: both matrices are 4x4 of `f32`, and a transposed product draws a
+/// picture just as well, only not the right one.
 pub fn multiply(a: Matrix, b: Matrix) -> Matrix {
     let mut out = [[0.0f32; 4]; 4];
     for (col, out_col) in out.iter_mut().enumerate() {
@@ -184,11 +188,12 @@ pub fn multiply(a: Matrix, b: Matrix) -> Matrix {
 mod tests {
     use super::*;
 
-    /// Ті самі числа, що бере `engine/tests/depth.rs` на GPU.
+    /// The same numbers `engine/tests/depth.rs` takes on the GPU.
     const NEAR: f64 = 0.1;
     const FOV_Y: f64 = std::f64::consts::PI / 3.0;
 
-    /// Далека площина щедра — ×10 від відстані, як у `depth_probe::measure`.
+    /// The far plane is generous -- 10x the distance, as in
+    /// `depth_probe::measure`.
     fn pair(reversed: bool, distance: f64, gap: f64) -> (f32, f32) {
         let projection = if reversed {
             reversed_infinite(FOV_Y, 1.0, NEAR)
@@ -199,14 +204,16 @@ mod tests {
         (ndc(projection, distance), ndc(projection, distance - gap))
     }
 
-    /// Звичайна проєкція на 10⁷ м не розрізняє навіть 100 м — і це не «майже».
+    /// A conventional projection at 1e7 m cannot resolve even 100 m -- and this
+    /// is not "almost".
     ///
-    /// Обидві поверхні лягають рівно на далеку площину: `z_ndc = 1.0` бітово,
-    /// і не тому, що випадок стоїть на межі округлення. `1 − near/z` на 10⁷ м
-    /// давно за межею мантиси, тож той самий біт дає будь-який зазор аж до
-    /// кількох тисяч метрів; для `near = 0.1` це починається вище ~1.7·10⁶ м.
-    /// Тобто «взяти зазор із запасом» тут не допомагає в принципі — саме тому
-    /// твердження живе в арифметиці, а не поруч із сусідами на GPU.
+    /// Both surfaces land exactly on the far plane: `z_ndc = 1.0` bitwise, and
+    /// not because the case sits on a rounding boundary. `1 - near/z` at 1e7 m is
+    /// long past the mantissa, so the same bit comes out for any gap up to
+    /// several thousand metres; for `near = 0.1` that starts above ~1.7e6 m. So
+    /// "take a gap with margin" does not help here in principle -- which is why
+    /// the claim lives in arithmetic rather than next to its neighbours on the
+    /// GPU.
     #[test]
     fn a_conventional_projection_collapses_a_hundred_metres_at_ten_million() {
         let (far, near) = pair(false, 1e7, 100.0);
@@ -214,19 +221,20 @@ mod tests {
         assert_eq!(
             far.to_bits(),
             near.to_bits(),
-            "звичайна проєкція раптом розвела ці дві поверхні ({far} проти \
-             {near}) — тоді порівняння в F3 доводить не те, що заявлено, і \
-             причину треба знайти"
+            "the conventional projection suddenly told these two surfaces \
+             apart ({far} against {near}) -- then the F3 comparison proves \
+             something other than claimed, and the cause must be found"
         );
         assert_eq!(
             far.to_bits(),
             1.0_f32.to_bits(),
-            "обидві мали впертися рівно в далеку площину, а вийшло {far} — \
-             тоді це вже інший випадок, ніж описано вище"
+            "both should have landed exactly on the far plane, and it came out \
+             {far} -- then this is a different case from the one described above"
         );
     }
 
-    /// Дзеркало до попереднього: без нього «звичайна не може» — не порівняння.
+    /// A mirror of the previous one: without it "the conventional cannot" is
+    /// not a comparison.
     #[test]
     fn reversed_z_keeps_the_same_pair_apart() {
         let (far, near) = pair(true, 1e7, 100.0);
@@ -234,23 +242,24 @@ mod tests {
         assert_ne!(
             far.to_bits(),
             near.to_bits(),
-            "reversed-Z злив ті самі дві поверхні в один біт ({far}) — тоді \
-             ламається вся підстава брати його замість звичайної"
+            "reversed-Z merged those same two surfaces into one bit ({far}) -- \
+             then the whole reason to take it over the conventional one breaks"
         );
         assert!(
             near > far,
-            "reversed-Z: ближче — це БІЛЬШЕ (звідси COMPARE = Greater), а \
-             вийшло {near} проти {far}"
+            "reversed-Z: closer is GREATER (hence COMPARE = Greater), and it \
+             came out {near} against {far}"
         );
     }
 
-    /// Межа, а не помилка: те саме твердження, що тримає PROJECT.md §7.
+    /// A limit rather than a bug: the same claim PROJECT.md section 7 rests
+    /// on.
     #[test]
     fn a_metre_at_a_hundred_million_collapses_even_in_reversed_z() {
         assert!(
             resolvable_gap(1e8) > 1.0,
-            "оцінка каже, що метр на 10⁸ м мав би бути роздільним — тоді \
-             арифметика в resolvable_gap розійшлася з дійсністю"
+            "the estimate says a metre at 1e8 m should be resolvable -- then \
+             the arithmetic in resolvable_gap has parted with reality"
         );
 
         let (far, near) = pair(true, 1e8, 1.0);
@@ -258,51 +267,25 @@ mod tests {
         assert_eq!(
             far.to_bits(),
             near.to_bits(),
-            "метр на 10⁸ м раптом роздільний ({far} проти {near}). Це добра \
-             новина, але вона суперечить розрахунку — перевірте формат глибини"
+            "a metre at 1e8 m is suddenly resolvable ({far} against {near}). \
+             Good news, but it contradicts the calculation -- check the depth \
+             format"
         );
     }
 
-    /// Скільки ULP між двома додатними f32. Для однакового знака й порядку
-    /// біти йдуть монотонно, тож різниця бітів — це відстань у ULP.
+    /// How many ULP lie between two positive f32s. For the same sign and
+    /// exponent the bits are monotonic, so a difference of bits is a distance in
+    /// ULP.
     fn ulps_between(a: f32, b: f32) -> u32 {
-        assert!(a > 0.0 && b > 0.0, "рахунок ULP тут лише для додатних");
+        assert!(
+            a > 0.0 && b > 0.0,
+            "the ULP count here is for positives only"
+        );
         a.to_bits().abs_diff(b.to_bits())
     }
 
-    /// **Сторожовий тест до `engine/tests/depth.rs`, а не самостійне
-    /// твердження про глибину.**
-    ///
-    /// `reversed_z_resolves_a_metre_at_ten_million` стоїть на різниці рівно в
-    /// 1 ULP — це і є край, який міряв F3, і запасу там немає свідомо. Поки
-    /// різниця є, твердження законне; якщо арифметика колись зсунеться на
-    /// один біт, той тест почервоніє **на GPU**, тобто там, де причину видно
-    /// найгірше: чорний кадр і чужий растеризатор виглядають однаково.
-    ///
-    /// Тому число закріплене тут, у строгому f32, де воно і живе. Порядок
-    /// читання при червоному: спершу цей тест, і лише якщо він зелений —
-    /// рушій, драйвер і залізо.
-    ///
-    /// **Виміряне попередження, якого ROADMAP не мав: запас залежить не лише
-    /// від відстані, а й від мантиси `near`.** Той самий метр на тих самих
-    /// 10⁷ м дає:
-    ///
-    /// ```text
-    ///     near = 0.1   -> 1 ULP     near = 0.15  -> 0 ULP
-    ///     near = 0.2   -> 1 ULP     near = 1.0   -> 1 ULP
-    /// ```
-    ///
-    /// Тобто степені двійки від 0.1 дають те саме бітово (`near` справді
-    /// скорочується — модуль про це й каже), а 0.15 клітинку **зливає**.
-    /// Наслідок практичний: якщо камері колись поміняють `near` на щось не
-    /// кратне степеню двійки, GPU-тест може лишитись зеленим через
-    /// трактування нічиєї растеризатором, нічого при цьому не доводячи. Ось
-    /// цей тест скаже про це прямо й одразу.
-    ///
-    /// Чого він **не** ловить, і це перевірено мутацією: перенести `ndc` у
-    /// f64 з фінальним звуженням до f32 — біти ті самі. Не помилка, а межа
-    /// призначення: він сторожить одне число, а не арифметику модуля.
-    /// Найменший роздільний зазор на відстані `z` — двійковим пошуком по бітах.
+    /// The smallest resolvable gap at distance `z` -- by binary search over
+    /// bits.
     fn smallest_gap(projection: Matrix, z: f64) -> f64 {
         let (mut lo, mut hi) = (0.0f64, z);
         for _ in 0..200 {
@@ -316,35 +299,35 @@ mod tests {
         hi
     }
 
-    /// **Скінченний діапазон не роздільніший за нескінченний. Ніде.**
+    /// **A finite range is no sharper than an infinite one. Anywhere.**
     ///
-    /// Це головне число R4b, і воно суперечить тому, чого від поділу на
-    /// діапазони чекали. Викладка обіцяла `Δz ≈ z·2⁻²⁴·(1 − z/far)`, тобто
-    /// ідеальну роздільність біля далекої площини; арифметика в `f32` цього не
-    /// дає, і причина проста — `z_clip = A·z_view + B` біля далекої площини
-    /// **скорочується катастрофічно**: два числа порядку `near` дають нуль, і
-    /// точність різниці лишається порядку `near·2⁻²⁴`. Поділивши на нахил
-    /// `A = near/span`, отримуємо назад ті самі `far·2⁻²⁴`.
+    /// This is the main number of R4b, and it contradicts what was expected from
+    /// splitting into ranges. The derivation promised `dz ~ z*2^-24*(1 - z/far)`,
+    /// that is perfect resolution near the far plane; `f32` arithmetic does not
+    /// deliver it, and the reason is simple -- `z_clip = A*z_view + B` near the
+    /// far plane **cancels catastrophically**: two numbers of order `near` give
+    /// zero, and the precision of the difference stays of order `near*2^-24`.
+    /// Dividing by the slope `A = near/span` gives back the same `far*2^-24`.
     ///
-    /// Виміряно (зазор у метрах, той самий двійковий пошук по бітах):
+    /// Measured (gap in metres, the same binary search over bits):
     ///
     /// ```text
-    ///     z       нескінченний   z біля far    z біля near   z·6·10⁻⁸
-    ///     10⁵ м      0.0039        0.0039        0.0039        0.0060
-    ///     10⁶ м      0.0313        0.0313        0.0312        0.0600
-    ///     10⁷ м      0.5000        0.5000        0.5000        0.6000
-    ///     10⁸ м      4.0000        4.0000        4.0000        6.0000
-    ///     4·10⁸ м   16.0000       16.0000       16.0000       24.0000
+    ///     z          infinite    z near far    z near near    z*6e-8
+    ///     1e5 m        0.0039        0.0039         0.0039     0.0060
+    ///     1e6 m        0.0313        0.0313         0.0312     0.0600
+    ///     1e7 m        0.5000        0.5000         0.5000     0.6000
+    ///     1e8 m        4.0000        4.0000         4.0000     6.0000
+    ///     4e8 m       16.0000       16.0000        16.0000    24.0000
     /// ```
     ///
-    /// Три стовпці збігаються до біта. Отже **діапазони не купують
-    /// роздільності** — і те саме стосується самої межі між ними: площина
-    /// відсікання стоїть на тій самій арифметиці, тож розділити нею дві
-    /// поверхні ближче, ніж `z·6·10⁻⁸`, теж не можна.
+    /// Three columns agree to the bit. So **ranges do not buy resolution** --
+    /// and the same goes for the boundary between them: the clipping plane
+    /// stands on the same arithmetic, so two surfaces closer than `z*6e-8`
+    /// cannot be separated by it either.
     ///
-    /// Чим тоді виправдані чотири проходи — сказано в
-    /// `frame::Frame::plan`: не точністю глибини, а scaled space, тобто
-    /// правом малювати далеке на **вигаданій** відстані.
+    /// What then justifies four passes is stated in `frame::Frame::plan`: not
+    /// depth precision but scaled space, that is the right to draw the far away
+    /// at an **invented** distance.
     #[test]
     fn a_finite_range_is_no_sharper_than_an_infinite_one() {
         for z in [1.0e5, 1.0e6, 1.0e7, 1.0e8, 4.0e8] {
@@ -353,47 +336,82 @@ mod tests {
             let at_near = smallest_gap(reversed_finite(FOV_Y, 1.0, z, z * 100.0), z * 1.001);
 
             println!(
-                "  {z:9.1e}: нескінченний {infinite:.4} м, біля far {at_far:.4} м, \
-                 біля near {at_near:.4} м, оцінка {:.4} м",
+                "  {z:9.1e}: infinite {infinite:.4} m, near far {at_far:.4} m, \
+                 near near {at_near:.4} m, estimate {:.4} m",
                 z * f64::from(f32::EPSILON)
             );
 
-            // Рівність, а не «приблизно»: три шляхи впираються в ту саму
-            // мантису. Допуск тут ховав би саме те, що вимірюється.
+            // Equality rather than "approximately": three routes hit the same
+            // mantissa. A tolerance here would hide the very thing measured.
             assert_eq!(
                 infinite, at_far,
-                "на {z:.1e} м далекий край діапазону виявився іншим — тоді \
-                 висновок R4b треба переписати, а не підправити тут"
+                "at {z:.1e} m the far edge of the range came out different -- \
+                 then the R4b conclusion must be rewritten, not patched here"
             );
-            // Біля ближньої площини різниця в один крок пошуку допустима:
-            // сама відстань зсунута на 0.1%.
+            // Near the near plane a difference of one search step is
+            // acceptable: the distance itself is offset by 0.1%.
             assert!(
                 (at_near - infinite).abs() <= infinite * 0.01,
-                "на {z:.1e} м ближній край дав {at_near:.4} м проти {infinite:.4}"
+                "at {z:.1e} m the near edge gave {at_near:.4} m against {infinite:.4}"
             );
             assert!(
                 infinite <= z * f64::from(f32::EPSILON),
-                "виміряний зазор {infinite:.4} м більший за оцінку згори"
+                "the measured gap {infinite:.4} m exceeds the upper estimate"
             );
         }
     }
 
+    /// **A guard test for `engine/tests/depth.rs`, not a standalone claim about
+    /// depth.**
+    ///
+    /// `reversed_z_resolves_a_metre_at_ten_million` stands on a difference of
+    /// exactly 1 ULP -- that is the edge F3 measured, and there is deliberately
+    /// no margin there. While the difference exists the claim is legitimate; if
+    /// the arithmetic ever shifts by one bit, that test goes red **on the GPU**,
+    /// that is where the cause is hardest to see: a black frame and someone
+    /// else's rasteriser look the same.
+    ///
+    /// So the number is pinned here, in strict f32, where it lives. Reading
+    /// order when red: this test first, and only if it is green -- the engine,
+    /// the driver and the hardware.
+    ///
+    /// **A measured warning the ROADMAP did not have: the margin depends not
+    /// only on the distance but on the mantissa of `near`.** The same metre at
+    /// the same 1e7 m gives:
+    ///
+    /// ```text
+    ///     near = 0.1   -> 1 ULP     near = 0.15  -> 0 ULP
+    ///     near = 0.2   -> 1 ULP     near = 1.0   -> 1 ULP
+    /// ```
+    ///
+    /// So powers of two times 0.1 give the same bits (`near` really does cancel
+    /// -- the module says as much), while 0.15 **collapses** the cell. The
+    /// practical consequence: if the camera's `near` is ever changed to
+    /// something that is not a power of two, the GPU test may stay green through
+    /// the rasteriser's tie-breaking while proving nothing. This test says so
+    /// directly and at once.
+    ///
+    /// What it does **not** catch, and this was verified by mutation: moving
+    /// `ndc` into f64 with a final narrowing to f32 gives the same bits. Not a
+    /// flaw but the limit of its purpose: it guards one number, not the module's
+    /// arithmetic.
     #[test]
     fn a_metre_at_ten_million_is_exactly_one_ulp() {
         let (far, near) = pair(true, 1e7, 1.0);
 
         assert!(
             near > far,
-            "reversed-Z: ближче — це БІЛЬШЕ, а вийшло {near} проти {far}"
+            "reversed-Z: closer is GREATER, and it came out {near} against {far}"
         );
         assert_eq!(
             ulps_between(near, far),
             1,
-            "запас цієї клітинки змінився: між {near} і {far} тепер {} ULP, \
-             а не 1. Якщо нуль — reversed_z_resolves_a_metre_at_ten_million у \
-             engine/tests/depth.rs більше не доводить нічого й проходить \
-             випадково; якщо більше — арифметика глибини змінилась, і число в \
-             PROJECT.md §7 треба переміряти, а не підправити тут",
+            "the margin of this cell has changed: between {near} and {far} \
+             there are now {} ULP, not 1. If zero -- \
+             reversed_z_resolves_a_metre_at_ten_million in engine/tests/depth.rs \
+             no longer proves anything and passes by accident; if more -- the \
+             depth arithmetic has changed, and the number in PROJECT.md \
+             section 7 must be re-measured, not patched here",
             ulps_between(near, far)
         );
     }

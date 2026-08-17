@@ -1,157 +1,167 @@
-//! Правило матеріалу: колір поверхні від нахилу й рельєфу (ROADMAP, T4).
+//! The material rule: surface colour from slope and relief (ROADMAP, T4).
 //!
-//! Колірний тайлсет Місяця несе шість рівнів, тобто вузол завширшки ~2.7 км, а
-//! джерело (LROC WAC) — 100 м на піксель, з якого кукер бере точкову вибірку.
-//! Рельєфу ж [`crate::detail`] дорощує октави аж до ~106 м. Отже зблизька гори
-//! гострі, а колір поверх них — рівна пляма, і різниця між ними росте з кожним
-//! кроком камери вниз.
+//! The Moon's colour tileset carries six levels, that is a node ~2.7 km wide,
+//! while the source (LROC WAC) is 100 m per pixel, from which the cooker takes a
+//! point sample. Terrain, meanwhile, gets octaves grown by [`crate::detail`]
+//! down to ~106 m. So up close the mountains are sharp while the colour over
+//! them is a flat blob, and the gap between them grows with every step the
+//! camera takes downward.
 //!
-//! Заповнити цю різницю другою текстурою не можна: її просто немає. Тому те
-//! саме, що R7c зробив висоті, тут робиться кольору — **правилом**, а не
-//! даними: яскравість зсувається від нахилу місцевості й від процедурного
-//! рельєфу, який на ній стоїть.
+//! That gap cannot be filled with a second texture: there simply is none. So
+//! what R7c did for height is done here for colour -- by a **rule** rather than
+//! by data: brightness is shifted by the terrain slope and by the procedural
+//! relief standing on it.
 //!
-//! ## Чому саме нахил і рельєф, а не висота над сферою
+//! ## Why slope and relief rather than height above the sphere
 //!
-//! Висота над опорним радіусом уже **є** в кольорі: моря лежать нижче й
-//! темніші, материки вище й світліші, і мозаїка це знає з вимірів. Правило,
-//! яке додало б до цього власну залежність від висоти, малювало б поверх даних
-//! другу відповідь на те саме питання — і на Землі (T7) розійшлося б з
-//! батиметрією видимо.
+//! Height above the reference radius is **already** in the colour: seas lie
+//! lower and are darker, continents higher and lighter, and the mosaic knows
+//! that from measurements. A rule that added its own dependence on height would
+//! paint a second answer to the same question over the data -- and on Earth (T7)
+//! would visibly disagree with the bathymetry.
 //!
-//! Нахил такого дубля не має: на масштабі вузла мозаїки його не видно взагалі,
-//! а фізика за ним справжня — на крутому схилі реголіт зсувається, оголюючи
-//! світліший незрілий матеріал; саме тому стінки свіжих кратерів світлі.
+//! Slope has no such duplicate: at the scale of a mosaic node it is not visible
+//! at all, and the physics behind it is real -- on a steep slope regolith slides
+//! away, exposing lighter immature material; that is why the walls of fresh
+//! craters are bright.
 //!
-//! ⚠ **Вода — виняток, і він не суперечить сказаному** (T7f). Висота входить у
-//! правило рівно одним бітом: «чи та поверхня, яку ми бачимо, і є та, що
-//! описана в DEM». Під рівнем моря — ні: у кадрі там вода, а нахил під нею
-//! належить дну. Сила правила від висоти не залежить і там: вона або та сама,
-//! або нуль. Це інша величина, ніж «яскравість росте з висотою», проти якої
-//! написано абзац вище.
+//! WARNING: **water is an exception, and it does not contradict the above**
+//! (T7f). Height enters the rule by exactly one bit: "is the surface we see the
+//! one the DEM describes". Below sea level it is not: what is in the frame there
+//! is water, while the slope beneath it belongs to the sea floor. The strength
+//! of the rule does not depend on height there either: it is either the same or
+//! zero. That is a different quantity from "brightness grows with height", which
+//! the paragraph above argues against.
 //!
-//! ## Земля не дістає власного `SLOPE_REF`, і це рішення (T7f)
+//! ## Earth does not get its own `SLOPE_REF`, and that is a decision (T7f)
 //!
-//! Розподіл нахилу на `assets/earth.dem` учетверо пологіший за місячний на тій
-//! самій базі виміру: медіана 0.0058 проти 0.035, дев'яностий процентиль 0.0295
-//! проти 0.128. Спокуса перерахувати [`SLOPE_REF`] під Землю сильна й
-//! неправильна: на Місяці правило існує тому, що колірних даних там немає
-//! (одноканальна пляма WAC), а Земля має мозаїку Blue Marble у **тій самій**
-//! сітці, що й DEM. Поріг, підігнаний під земний розподіл, дав би горам повні
-//! +30% яскравості поверх виміряного альбедо — тобто замалював би дані
-//! правилом. Зі сталою 0.15 правило на Землі тихе (1.06 на дев'яностому
-//! процентилі суші), і саме цього від нього тут і треба.
+//! The slope distribution on `assets/earth.dem` is four times gentler than the
+//! Moon's on the same measurement base: median 0.0058 against 0.035, ninetieth
+//! percentile 0.0295 against 0.128. The temptation to recompute [`SLOPE_REF`]
+//! for Earth is strong and wrong: on the Moon the rule exists because there is
+//! no colour data there (the single-channel WAC blob), while Earth has the Blue
+//! Marble mosaic in the **same** grid as the DEM. A threshold fitted to Earth's
+//! distribution would give mountains the full +30% brightness on top of measured
+//! albedo -- that is, paint over the data with a rule. With the constant at 0.15
+//! the rule is quiet on Earth (1.06 at the ninetieth percentile of land), and
+//! that is exactly what is wanted from it here.
 //!
-//! Льоду окремої гілки теж немає: у мозаїці він уже білий. Правило для нього
-//! було б другою відповіддю на питання, на яке дані відповіли.
+//! Ice gets no branch of its own either: in the mosaic it is already white. A
+//! rule for it would be a second answer to a question the data has answered.
 //!
-//! ## Три правила, успадковані від деталі висоти
+//! ## Three rules inherited from the height detail
 //!
-//! **1. Аргументи — величини, а не стан ассета.** `slope` приходить у
-//! радіанах-на-одиницю, `detail_m` у метрах, нормувальник — з **радіуса тіла**
-//! ([`crate::detail::base_m`]). Глибина піраміди в правило не входить ніде:
-//! перекукування ассета з іще одним рівнем не має права перефарбувати схил, як
-//! не має права переграти гори.
+//! **1. The arguments are quantities, not asset state.** `slope` arrives in
+//! radians-per-unit, `detail_m` in metres, the normaliser comes from the
+//! **body's radius** ([`crate::detail::base_m`]). The pyramid depth enters the
+//! rule nowhere: recooking the asset with one more level has no right to repaint
+//! a slope, just as it has no right to replay the mountains.
 //!
-//! **2. Рахується у вершині, і саме тому шва немає.** Обидва аргументи вже
-//! пораховані `vertex_terrain` і обидва на спільному вузлі двох патчів **бітово
-//! одні** — `slope` за R7c, шорсткість як функція нормалі з буфера геометрії.
-//! Отже неперервність кольору на межі рівнів не доводиться, а успадковується.
+//! **2. Computed in the vertex, and that is why there is no seam.** Both
+//! arguments are already computed by `vertex_terrain` and both are **bitwise
+//! identical** at a node shared by two patches -- `slope` by R7c, roughness as a
+//! function of the normal from the geometry buffer. So colour continuity at a
+//! level boundary is not proved but inherited.
 //!
-//! ⚠ Спокуса взяти нахил з `ddx/ddy` у фрагменті сильна — там лежить справжня
-//! геометрична нормаль зі всім рельєфом, і безкоштовно. Але вона нормаль
-//! **трикутника**, тобто функція рівня патча: два сусіди різних рівнів дали б
-//! на спільному ребрі два різні кольори, і шов ліг би рівно там, де R2b його
-//! прибрав.
+//! WARNING: the temptation to take the slope from `ddx/ddy` in the fragment is
+//! strong -- the true geometric normal with all the relief is there, and for
+//! free. But it is the normal of a **triangle**, that is a function of the patch
+//! level: two neighbours of different levels would give two different colours on
+//! the shared edge, and a seam would fall exactly where R2b removed it.
 //!
-//! **3. Рівнина лишається рівниною.** Обидва доданки помножені на той самий
-//! нахил, тож на дні моря правило повертає рівно одиницю, а не «майже
-//! одиницю»: колір там лишається тим, що виміряв WAC.
+//! **3. Flat ground stays flat ground.** Both terms are multiplied by the same
+//! slope, so on a sea floor the rule returns exactly one, not "almost one": the
+//! colour there stays what WAC measured.
 
-/// Наскільки яскравіший найкрутіший схил за рівнину.
+/// How much brighter the steepest slope is than flat ground.
 ///
-/// Параметр вигляду, не виміряна величина: справжній фотометричний контраст
-/// свіжого реголіту залежить від фазового кута, якого в кадрі ще немає. Міняти
-/// вільно, доки перевірки етапу зелені.
+/// A look parameter, not a measured quantity: the real photometric contrast of
+/// fresh regolith depends on the phase angle, which the frame does not have yet.
+/// Change freely while the stage's checks are green.
 pub const SLOPE_GAIN: f64 = 0.30;
 
-/// Нахил, на якому підсвітка схилу виходить на повну.
+/// The slope at which the slope highlight reaches full strength.
 ///
-/// **Виміряно на справжньому ассеті, а не взято з фізики.** Спокуса поставити
-/// сюди кут природного укосу реголіту (~0.3, тобто 17°) сильна й неправильна:
-/// той кут стосується **місцевого** схилу, а `slope_at` віддає нахил, міряний
-/// на кроці вузла того тайла, який патч читає, — 5330 м на найглибшому рівні
-/// Місяця, тобто згладжений.
-/// Розподіл по `assets/moon.dem` (31 104 вузли найглибшого рівня):
+/// **Measured on a real asset rather than taken from physics.** The temptation
+/// to put the angle of repose of regolith here (~0.3, that is 17 degrees) is
+/// strong and wrong: that angle concerns the **local** slope, while `slope_at`
+/// returns a slope measured at the node step of the tile the patch reads --
+/// 5330 m at the Moon's deepest level, that is smoothed.
+/// The distribution over `assets/moon.dem` (31,104 nodes of the deepest level):
 ///
-/// | частка | нахил | кут |
+/// | fraction | slope | angle |
 /// |---|---|---|
-/// | 50% | 0.035 | 2.0° |
-/// | 90% | 0.128 | 7.3° |
-/// | 99% | 0.221 | 12.5° |
-/// | максимум | 0.410 | 22.3° |
+/// | 50% | 0.035 | 2.0 deg |
+/// | 90% | 0.128 | 7.3 deg |
+/// | 99% | 0.221 | 12.5 deg |
+/// | maximum | 0.410 | 22.3 deg |
 ///
-/// Тобто при 0.3 правило вмикалося б на одній тисячній тіла й на решті не
-/// робило б нічого. 0.15 — це приблизно дев'яностий процентиль: половина
-/// поверхні дістає чверть діапазону, схили кратерів насичують його, а рівне
-/// дно моря лишається рівним.
+/// So at 0.3 the rule would switch on over one thousandth of the body and do
+/// nothing on the rest. 0.15 is roughly the ninetieth percentile: half the
+/// surface gets a quarter of the range, crater walls saturate it, and a flat sea
+/// floor stays flat.
 ///
-/// ⚠ Число прив'язане до **бази виміру**, не до тіла, і лишається сталою рушія
-/// після T7: Земля дала вчетверо пологіший розподіл, але їй правило й має бути
-/// тихим — розбір у вступі модуля.
+/// WARNING: the number is tied to the **measurement base**, not to a body, and
+/// remains an engine constant after T7: Earth gave a distribution four times
+/// gentler, but the rule is supposed to be quiet there -- the argument is in the
+/// module introduction.
 pub const SLOPE_REF: f64 = 0.15;
 
-/// Наскільки гребінь процедурного рельєфу світліший за сусідню западину.
+/// How much brighter a procedural relief crest is than the hollow beside it.
 ///
-/// Множник до [`crate::detail::Detail::roughness`] — числа порядку одиниці, у
-/// якого всі октави важать порівну. Розкид самої шорсткості на практиці ±0.5,
-/// тож на схилі в [`SLOPE_REF`] це приблизно ±0.2 яскравості, а на рівнині
-/// рівно нуль.
+/// A factor on [`crate::detail::Detail::roughness`] -- a number of order one in
+/// which all octaves weigh the same. The spread of the roughness itself is +-0.5
+/// in practice, so on a slope of [`SLOPE_REF`] that is about +-0.2 of
+/// brightness, and exactly zero on flat ground.
 ///
-/// ⚠ Перша версія правила брала не шорсткість, а **висоту деталі в метрах**,
-/// поділену на її ж амплітуду. Виміряно на кадрі: ±1% яскравості, тобто менше
-/// за один рівень восьмибітної шкали — правило було в кадрі й не було видно.
-/// Причина не в множнику: у висоті найгрубіша октава важить у 32 рази більше
-/// за найдрібнішу, тож колір ніс би пляму завширшки 3.4 км замість деталі.
+/// WARNING: the first version of the rule took not the roughness but the
+/// **detail height in metres**, divided by its own amplitude. Measured on a
+/// frame: +-1% of brightness, that is less than one level of an eight-bit scale
+/// -- the rule was in the frame and was not visible. The cause was not the
+/// factor: in height the coarsest octave weighs 32 times more than the finest,
+/// so the colour would carry a 3.4 km blob instead of detail.
 pub const RELIEF_GAIN: f64 = 0.45;
 
-/// Межі множника.
+/// Bounds on the factor.
 ///
-/// Не косметика: альбедо не буває від'ємним, а множник більший за ~2 вибив би
-/// найсвітліші ділянки мозаїки за край шкали ще до тонмапера (той приходить
-/// у T5).
+/// Not cosmetic: albedo is never negative, and a factor above ~2 would push the
+/// brightest parts of the mosaic past the end of the scale before the
+/// tonemapper (which arrives in T5).
 pub const MIN_TINT: f64 = 0.35;
-/// Верхня межа множника, пара до [`MIN_TINT`].
+/// The upper bound on the factor, the counterpart of [`MIN_TINT`].
 pub const MAX_TINT: f64 = 1.80;
 
-/// Множник альбедо у вузлі.
+/// The albedo factor at a node.
 ///
-/// * `slope` — нахил місцевості, [`crate::tiles::Terrain::slope_at`];
-/// * `roughness` — [`crate::detail::Detail::roughness`] у тому ж вузлі.
+/// * `slope` -- the terrain slope, [`crate::tiles::Terrain::slope_at`];
+/// * `roughness` -- [`crate::detail::Detail::roughness`] at the same node.
 ///
-/// Жоден з двох аргументів не походить від ассета: перший — величина в
-/// метрах на метр, другий — шум за позицією на тілі. Ні глибині піраміди, ні
-/// кроку тайлсета сюди немає куди зайти, і саме тому перекукування ассета не
-/// перефарбовує схили.
+/// Neither argument comes from the asset: the first is a quantity in metres per
+/// metre, the second is noise by position on the body. Neither the pyramid depth
+/// nor the tileset step has any way in here, and that is why recooking the asset
+/// does not repaint slopes.
 ///
-/// Обидва доданки помножені на нахил — це і є «рівнина лишається рівниною»:
-/// колірний шум з'являється рівно там, де є рельєф, який його виправдовує.
+/// Both terms are multiplied by the slope -- that is what "flat ground stays
+/// flat ground" means: colour noise appears exactly where there is relief to
+/// justify it.
 ///
-/// Третій аргумент — `submerged`, тобто «цей вузол нижчий за рівень моря
-/// тіла» ([`crate::tiles::Terrain::sea_units`]). Під водою правило віддає
-/// **бітову одиницю**, і причина не в смаку: воно підсвічує схил, а під водою
-/// у кадрі видно не схил дна, а поверхню моря. Виміряно на `assets/earth.dem`
+/// The third argument is `submerged`, that is "this node is lower than the
+/// body's sea level" ([`crate::tiles::Terrain::sea_units`]). Under water the
+/// rule returns a **bitwise one**, and the reason is not taste: it highlights a
+/// slope, and under water what the frame shows is not the slope of the sea floor
+/// but the surface of the sea. Measured on `assets/earth.dem`
 /// (`--example slope_histogram assets/earth.dem`):
 ///
-/// | | медіана | 90% | 99% | множник на 90% |
+/// | | median | 90% | 99% | factor at 90% |
 /// |---|---|---|---|---|
-/// | вода | 0.0071 | 0.0333 | 0.0996 | 1.067 |
-/// | суша | 0.0030 | 0.0201 | 0.0557 | 1.040 |
+/// | water | 0.0071 | 0.0333 | 0.0996 | 1.067 |
+/// | land | 0.0030 | 0.0201 | 0.0557 | 1.040 |
 ///
-/// Тобто дно **крутіше** за сушу — серединні хребти й жолоби, — і правило без
-/// цієї гілки малювало б батиметрію поверх рівної води, причому яскравіше, ніж
-/// гори на суходолі. Це той самий довід, що у вступі модуля: не давати другу
-/// відповідь на питання, на яке дані вже відповіли.
+/// So the sea floor is **steeper** than the land -- mid-ocean ridges and
+/// trenches -- and without this branch the rule would draw bathymetry over flat
+/// water, and brighter than mountains on land at that. The same argument as in
+/// the module introduction: do not give a second answer to a question the data
+/// has already answered.
 pub fn tint(slope: f64, roughness: f64, submerged: bool) -> f64 {
     if submerged {
         return 1.0;
@@ -169,7 +179,7 @@ mod tests {
 
     const RADIUS: f64 = 1_737_400.0;
 
-    /// Рельєф зі сталим нахилом — лінійний за частками грані.
+    /// Terrain with a constant slope -- linear in face fractions.
     fn ramp(levels: u32) -> Terrain {
         let mut grids = Vec::with_capacity(Terrain::count(levels));
         for level in 0..levels {
@@ -196,17 +206,19 @@ mod tests {
         Terrain::build(levels, RADIUS, 1.0, tiles::NO_SEA, &grids)
     }
 
-    /// На межі рівнів колір один, і це не домовленість, а наслідок.
+    /// At a level boundary the colour is one, and that is a consequence rather
+    /// than an agreement.
     ///
-    /// Уся конструкція правила стоїть на тому, що воно рахується у **вершині**
-    /// з двох чисел, які на спільному вузлі двох патчів різних рівнів однакові.
-    /// Тут це перевіряється складеним: напрямок вузла (R2b), нахил (R7c),
-    /// шорсткість і сам множник — по черзі, тож коли колись зламається, буде
-    /// видно **що саме**, а не лише «шов з'явився».
+    /// The whole construction of the rule stands on it being computed in the
+    /// **vertex** from two numbers that are equal at a node shared by two
+    /// patches of different levels. This is checked piece by piece here: the
+    /// node direction (R2b), the slope (R7c), the roughness and the factor
+    /// itself -- so when it breaks one day it will be visible **what exactly**
+    /// broke, not merely that "a seam appeared".
     ///
-    /// Патчі беруться глибші за піраміду навмисно: саме там працюють вікна
-    /// `Terrain::window`, і саме там два рівні читають той самий тайл різними
-    /// кроками.
+    /// The patches are taken deeper than the pyramid on purpose: that is where
+    /// the `Terrain::window` windows work, and where two levels read the same
+    /// tile with different steps.
     #[test]
     fn a_level_boundary_gets_one_colour_from_both_sides() {
         let terrain = ramp(3);
@@ -216,8 +228,8 @@ mod tests {
             i: 5,
             j: 3,
         };
-        // Дитина (0, 0) накриває вузли [0, SIDE/2] батька; її вузол (2a, 2b)
-        // збігається з батьковим (a, b).
+        // Child (0, 0) covers the parent's nodes [0, SIDE/2]; its node
+        // (2a, 2b) coincides with the parent's (a, b).
         let fine = coarse.children()[0];
         let base = detail::base_m(RADIUS);
         let (distance, focal) = (4.0e3, 623.5);
@@ -227,7 +239,7 @@ mod tests {
             for b in [0usize, 3, SIDE / 4, SIDE / 2] {
                 let here = coarse.vertex(a, b, 1.0);
                 let there = fine.vertex(2 * a, 2 * b, 1.0);
-                assert_eq!(here, there, "вузол ({a}, {b}) роз'їхався геометрично");
+                assert_eq!(here, there, "node ({a}, {b}) drifted apart geometrically");
 
                 let slope = (
                     terrain.slope_at(&coarse, a, b),
@@ -236,7 +248,7 @@ mod tests {
                 assert_eq!(
                     slope.0.to_bits(),
                     slope.1.to_bits(),
-                    "нахил у вузлі ({a}, {b}): {} проти {}",
+                    "slope at node ({a}, {b}): {} against {}",
                     slope.0,
                     slope.1
                 );
@@ -248,31 +260,31 @@ mod tests {
                 assert_eq!(
                     rough.0.to_bits(),
                     rough.1.to_bits(),
-                    "шорсткість у вузлі ({a}, {b})"
+                    "roughness at node ({a}, {b})"
                 );
 
                 assert_eq!(
                     tint(slope.0, rough.0, false).to_bits(),
                     tint(slope.1, rough.1, false).to_bits(),
-                    "множник у вузлі ({a}, {b})"
+                    "factor at node ({a}, {b})"
                 );
                 checked += 1;
             }
         }
-        println!("  {checked} спільних вузлів межі рівнів дали один множник");
-        assert!(checked >= 20, "перевірено лише {checked} вузлів");
+        println!("  {checked} shared level-boundary nodes gave one factor");
+        assert!(checked >= 20, "only {checked} nodes were checked");
     }
 
-    /// На рівнині правило не робить **нічого** — і саме рівно нічого.
+    /// On flat ground the rule does **nothing** -- and exactly nothing.
     ///
-    /// Бітова одиниця, а не «близько до одиниці»: на дні моря колір мусить
-    /// лишитися тим, що виміряв WAC, і кадр із пласким рельєфом мусить бути
-    /// той самий, що до T4.
+    /// A bitwise one rather than "close to one": on a sea floor the colour must
+    /// stay what WAC measured, and a frame with flat terrain must be the same as
+    /// before T4.
     ///
-    /// Перевіряється при **будь-якій** шорсткості, включно з тією, якої на
-    /// рівнині не буває: шум там і так нульовий (його амплітуда пропорційна
-    /// нахилу), але правило не має права покладатися на це — доданок, забутий
-    /// поза множенням на нахил, розфарбував би дно моря плямами.
+    /// Checked at **any** roughness, including values that do not occur on flat
+    /// ground: the noise there is zero anyway (its amplitude is proportional to
+    /// the slope), but the rule has no right to rely on that -- a term left
+    /// outside the multiplication by slope would blotch the sea floor.
     #[test]
     fn flat_ground_keeps_the_colour_the_mosaic_measured() {
         for roughness in [-6.0, -0.5, 0.0, 0.5, 6.0] {
@@ -280,17 +292,18 @@ mod tests {
             assert_eq!(
                 got.to_bits(),
                 1.0f64.to_bits(),
-                "рівнина при шорсткості {roughness} дала {got}"
+                "flat ground at roughness {roughness} gave {got}"
             );
         }
     }
 
-    /// Під водою правило віддає бітову одиницю за будь-якого входу (T7f).
+    /// Under water the rule returns a bitwise one for any input (T7f).
     ///
-    /// Бітову, а не «майже»: під водою в кадрі видно поверхню моря, і колір
-    /// там мусить лишитися рівно тим, що виміряла мозаїка. Перевіряється на
-    /// найкрутіших схилах, які взагалі бувають, — саме там гілка й потрібна,
-    /// бо дно океану виміряно крутішим за сушу.
+    /// Bitwise, not "almost": under water the frame shows the surface of the
+    /// sea, and the colour there must stay exactly what the mosaic measured.
+    /// Checked on the steepest slopes that occur at all -- that is where the
+    /// branch is needed, because the ocean floor was measured steeper than the
+    /// land.
     #[test]
     fn under_water_the_rule_returns_exactly_one() {
         for slope in [0.0, 0.01, SLOPE_REF, 1.0, 1e6] {
@@ -299,10 +312,10 @@ mod tests {
                 assert_eq!(
                     got.to_bits(),
                     1.0f64.to_bits(),
-                    "нахил {slope}, шорсткість {roughness} під водою дали {got}"
+                    "slope {slope}, roughness {roughness} under water gave {got}"
                 );
-                // І та сама точка над водою правилом таки чіпається — інакше
-                // перевірка вище проходила б і на вимкненому правилі.
+                // And the same point above water is touched by the rule --
+                // otherwise the check above would pass with the rule off.
                 if slope > 0.0 {
                     assert_ne!(tint(slope, roughness, false), 1.0);
                 }
@@ -310,7 +323,7 @@ mod tests {
         }
     }
 
-    /// Крутіший схил світліший, і монотонно.
+    /// A steeper slope is brighter, and monotonically so.
     #[test]
     fn a_steeper_slope_is_brighter() {
         let mut previous = f64::NEG_INFINITY;
@@ -319,69 +332,74 @@ mod tests {
             let got = tint(slope, 0.0, false);
             assert!(
                 got >= previous - 1e-15,
-                "нахил {slope:.2} дав {got:.4} після {previous:.4}"
+                "slope {slope:.2} gave {got:.4} after {previous:.4}"
             );
             previous = got;
         }
-        // І підсвітка справді насичується там, де сказано.
+        // And the highlight really does saturate where it says it does.
         let at_ref = tint(SLOPE_REF, 0.0, false);
         let beyond = tint(SLOPE_REF * 3.0, 0.0, false);
         assert_eq!(
             at_ref.to_bits(),
             beyond.to_bits(),
-            "насичення не спрацювало"
+            "saturation did not happen"
         );
         assert!((at_ref - (1.0 + SLOPE_GAIN)).abs() < 1e-12);
     }
 
-    /// Гребінь світліший за западину, і симетрично.
+    /// A crest is brighter than a hollow, and symmetrically so.
     #[test]
     fn a_crest_is_brighter_than_the_hollow_beside_it() {
         let crest = tint(SLOPE_REF, 0.5, false);
         let hollow = tint(SLOPE_REF, -0.5, false);
-        println!("  гребінь {crest:.4}, западина {hollow:.4}");
+        println!("  crest {crest:.4}, hollow {hollow:.4}");
         assert!(
             crest > hollow,
-            "гребінь {crest:.4} не світліший за {hollow:.4}"
+            "crest {crest:.4} is not brighter than {hollow:.4}"
         );
         let level = tint(SLOPE_REF, 0.0, false);
         assert!(
             ((crest - level) - (level - hollow)).abs() < 1e-12,
-            "рельєф зсунув середню яскравість схилу"
+            "relief shifted the mean brightness of the slope"
         );
     }
 
-    /// Контраст рельєфу росте з нахилом, а не стоїть сталим.
+    /// The relief contrast follows the slope rather than staying constant.
     ///
-    /// Це те, що відрізняє **правило матеріалу** від просто накладеного шуму:
-    /// однаковий по всьому тілу колірний шум виглядав би килимом, і рівне дно
-    /// моря було б таким самим строкатим, як стінка кратера.
+    /// This is what distinguishes a **material rule** from simply overlaid
+    /// noise: colour noise uniform over the whole body would look like a carpet,
+    /// and a flat sea floor would be as speckled as a crater wall.
     #[test]
     fn the_relief_contrast_follows_the_slope() {
         let swing = |slope: f64| tint(slope, 0.5, false) - tint(slope, -0.5, false);
-        assert_eq!(swing(0.0), 0.0, "на рівнині рельєф пофарбував порожнечу");
+        assert_eq!(
+            swing(0.0),
+            0.0,
+            "on flat ground the relief painted nothing at all"
+        );
 
-        // Нижче насичення розмах пропорційний нахилу — не «росте», а саме
-        // пропорційний. Порівнюється відношення, тож перевірка не залежить від
-        // самого [`SLOPE_REF`], який виведений з розподілу в ассеті й може
-        // змінитися разом із ним.
+        // Below saturation the swing is proportional to the slope -- not
+        // "grows" but exactly proportional. The ratio is compared, so the check
+        // does not depend on [`SLOPE_REF`] itself, which is derived from the
+        // distribution in the asset and may change with it.
         let unit = swing(SLOPE_REF) / SLOPE_REF;
         for slope in [0.01, 0.05, SLOPE_REF / 2.0, SLOPE_REF] {
             let got = swing(slope) / slope;
             assert!(
                 (got - unit).abs() < 1e-12,
-                "на нахилі {slope} розмах на одиницю нахилу {got:.6}, а не {unit:.6}"
+                "at slope {slope} the swing per unit slope is {got:.6}, not {unit:.6}"
             );
         }
-        println!("  розмах на одиницю нахилу {unit:.4}, насичення на {SLOPE_REF}");
-        // І вище насичення він більше не росте.
+        println!("  swing per unit slope {unit:.4}, saturation at {SLOPE_REF}");
+        // And above saturation it grows no further.
         assert_eq!(swing(SLOPE_REF * 4.0), swing(SLOPE_REF));
     }
 
-    /// Множник не виходить за межі й не стає NaN на жодному вході.
+    /// The factor never leaves its bounds and never becomes NaN on any input.
     ///
-    /// Включно з тими, яких не буває: від'ємний нахил, шорсткість у сто разів
-    /// більша за можливу. Правило живе в шейдері, де перевіряти вхід нічим.
+    /// Including inputs that do not occur: a negative slope, a roughness a
+    /// hundred times larger than possible. The rule lives in a shader, where
+    /// there is nothing to validate input with.
     #[test]
     fn the_tint_never_leaves_its_bounds() {
         for slope in [-1.0, 0.0, 0.01, 0.3, 1.0, 10.0, 1e6] {
@@ -389,11 +407,11 @@ mod tests {
                 let got = tint(slope, roughness, false);
                 assert!(
                     got.is_finite(),
-                    "нахил {slope}, шорсткість {roughness} → {got}"
+                    "slope {slope}, roughness {roughness} -> {got}"
                 );
                 assert!(
                     (MIN_TINT..=MAX_TINT).contains(&got),
-                    "нахил {slope}, шорсткість {roughness} → {got}"
+                    "slope {slope}, roughness {roughness} -> {got}"
                 );
             }
         }
