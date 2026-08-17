@@ -1,29 +1,31 @@
-//! Планета підсвічує тіньовий бік корабля (етап T, крок T6).
+//! The planet lights the shadowed side of the ship (stage T, step T6).
 //!
-//! Три твердження, і всі три названі в ROADMAP до того, як щось написано:
-//! тіньовий бік корпусу на низькій орбіті **не чорний**, колір підсвітки —
-//! це колір поверхні під ним (**над морем і над материком він різний, і це
-//! число**), а на нічному боці сяйво **гасне**.
+//! Three claims, and all three were named in ROADMAP before anything was
+//! written: in low orbit the shadowed side of the hull is **not black**, the
+//! colour of the shine is the colour of the surface below it (**over a mare
+//! and over a highland it differs, and that is a number**), and over the night
+//! side the shine **goes out**.
 //!
-//! ## Маска береться з кадру без планети
+//! ## The mask is taken from a frame without the planet
 //!
-//! Питання тут — про пікселі, яких **не дістає світило**: саме вони до T6
-//! були рівно `[0, 0, 0]`, бо ambient у кадрі нуль (PROJECT.md §7). Знайти їх
-//! можна лише в кадрі, де планети немає взагалі; класифікувати за кольором
-//! не можна з тієї самої причини, з якої це довелося виправляти в
-//! `tests/sun.rs`: чорний піксель корпусу й чорний піксель тіні не
-//! розрізняються ніяк.
+//! The question here is about the pixels **the light source does not reach**:
+//! those were exactly `[0, 0, 0]` before T6, because ambient in the frame is
+//! zero (PROJECT.md section 7). They can only be found in a frame with no
+//! planet at all; classifying by colour is impossible for the same reason it
+//! had to be fixed in `tests/sun.rs`: a black hull pixel and a black shadow
+//! pixel are indistinguishable.
 //!
-//! ## Море проти материка перевіряється **поворотом тіла**
+//! ## Mare against highland is checked by **turning the body**
 //!
-//! Корабель, камера, світило й сама планета лишаються бітово тими самими —
-//! міняється лише `Body::orientation`, тобто те, яка ділянка асета опиняється
-//! під кораблем. Пересунути корабель уздовж поверхні було б слабшою
-//! перевіркою: разом з місцем поїхали б і напрямок «вниз», і кут світила, і
-//! відношення яскравостей перестало б бути відношенням відбивних здатностей.
+//! The ship, the camera, the light source and the planet itself stay bitwise
+//! identical -- only `Body::orientation` changes, i.e. which part of the asset
+//! ends up under the ship. Moving the ship along the surface would be a weaker
+//! check: the direction "down" and the light angle would travel with the
+//! place, and the ratio of brightnesses would stop being a ratio of
+//! reflectances.
 //!
-//! Побічно це єдиний оракул на **поворот у систему тіла** в `shine_of`:
-//! забутий поворот лишає обидва кадри однаковими.
+//! Incidentally this is the only oracle for the **rotation into the body's
+//! frame** in `shine_of`: a forgotten rotation leaves both frames identical.
 
 use engine::camera::Camera;
 use engine::cubesphere::FACES;
@@ -37,23 +39,24 @@ use engine::tiles::{self, Colour, Terrain, STORED};
 const SIZE: u32 = 256;
 const MOON_RADIUS_M: f64 = 1_737_400.0;
 
-/// Висота корабля над поверхнею, метри. Низька орбіта — саме той випадок, про
-/// який крок і говорить: диск планети займає майже півсферу.
+/// The ship's altitude above the surface, metres. Low orbit is exactly the
+/// case the step talks about: the planet's disc takes up nearly a hemisphere.
 const ALTITUDE_M: f64 = 100_000.0;
 
-/// Корабель і відстань до нього, метри.
+/// The ship and the distance to it, metres.
 const HEIGHT_M: f64 = 20.0;
 const RANGE_M: f64 = 45.0;
 
-/// Рівнів у пірамідах — по одному: питання тесту не про піраміду, а про те,
-/// звідки береться альбедо.
+/// One level per pyramid: the test's question is not about the pyramid but
+/// about where the albedo comes from.
 const LEVELS: u32 = 1;
 
-/// Відбивні здатності фікстури — виміряні числа Місяця, не вигадані.
+/// The fixture's reflectances -- measured numbers of the Moon, not invented
+/// ones.
 ///
-/// Медіана мозаїки LROC WAC — 0.044, контраст море-материк — приблизно
-/// 0.021 проти 0.12 (T2c). Саме вони й лежать у фікстурі, тож відношення в
-/// кадрі мусить бути відношенням цих двох.
+/// The median of the LROC WAC mosaic is 0.044, and the mare-highland contrast
+/// is roughly 0.021 against 0.12 (T2c). Those are what lie in the fixture, so
+/// the ratio in the frame has to be the ratio of these two.
 const MARE: f64 = 0.021;
 const HIGHLAND: f64 = 0.12;
 const SCALE: f32 = 0.25;
@@ -61,21 +64,22 @@ const SCALE: f32 = 0.25;
 fn gpu() -> Option<Gpu> {
     let gpu = Gpu::for_tests()?;
     if !gpu.bindless {
-        eprintln!("ПРОПУЩЕНО: адаптер без bindless ({})", gpu.describe());
+        eprintln!("SKIPPED: adapter without bindless ({})", gpu.describe());
         return None;
     }
     Some(gpu)
 }
 
-/// Світило вдень: підкорабельна точка освітлена (`cos = 0.6`).
+/// The light by day: the sub-ship point is lit (`cos = 0.6`).
 const SUN_DAY: [f64; 3] = [0.6, 0.0, 0.8];
-/// Світило вночі: те саме, дзеркально через термінатор.
+/// The light by night: the same, mirrored across the terminator.
 const SUN_NIGHT: [f64; 3] = [-0.6, 0.0, 0.8];
 
-/// Сцена: корабель на низькій орбіті, планета під ним (або без неї).
+/// The scene: the ship in low orbit, the planet below it (or absent).
 ///
-/// Камера стоїть **навскіс і знизу**: згори вона бачила б лише той бік, що
-/// дивиться на світило, і питати про тіньовий бік не було б у чого.
+/// The camera stands **off-axis and from below**: from above it would see only
+/// the side facing the light source, and there would be nothing to ask about
+/// the shadowed side.
 fn scene(sun: [f64; 3], body: Option<Body>, roughness: f32, metallic: f32) -> Scene {
     let centre = [MOON_RADIUS_M + ALTITUDE_M, 0.0, 0.0];
     let eye = [
@@ -83,8 +87,8 @@ fn scene(sun: [f64; 3], body: Option<Body>, roughness: f32, metallic: f32) -> Sc
         centre[1] - RANGE_M * 0.75,
         centre[2] - RANGE_M * 0.59,
     ];
-    // «Вгору» для камери — від планети: інакше кадр перевернутий, і читати
-    // його оком у PNG незручно без жодної користі.
+    // "Up" for the camera is away from the planet: otherwise the frame is
+    // upside down, which makes reading the PNG by eye awkward for no gain.
     let camera = Camera::look_at(eye, centre, [1.0, 0.0, 0.0]);
 
     let mut scene = Scene::new(camera);
@@ -104,7 +108,7 @@ fn scene(sun: [f64; 3], body: Option<Body>, roughness: f32, metallic: f32) -> Sc
     scene
 }
 
-/// Планета під кораблем: гладка, свого кольору.
+/// The planet below the ship: smooth, in its own colour.
 fn smooth(colour: [f32; 4]) -> Body {
     Body {
         centre: [0.0, 0.0, 0.0],
@@ -116,18 +120,20 @@ fn smooth(colour: [f32; 4]) -> Body {
     }
 }
 
-/// Плаский рельєф: питання про колір, і гори лише додали б власних тіней.
+/// Flat terrain: the question is about colour, and mountains would only add
+/// shadows of their own.
 fn flat() -> Terrain {
     let grids = vec![vec![0i16; STORED * STORED]; Terrain::count(LEVELS)];
     Terrain::build(LEVELS, MOON_RADIUS_M, 0.5, tiles::NO_SEA, &grids)
 }
 
-/// Асет, у якому грань `+X` — море, а грань `−X` — материк.
+/// An asset in which the `+X` face is mare and the `-X` face is highland.
 ///
-/// Стала на грань, а не карта: питання тесту — чи береться альбедо з асета й
-/// чи в тому місці, — і стала відповідає на нього без жодної інтерполяції.
-/// Решта граней несуть третє число, тож помилка «взяли не ту грань» дає не
-/// друге зі значень, а чуже.
+/// A constant per face rather than a map: the test's question is whether the
+/// albedo is taken from the asset and from the right place, and a constant
+/// answers it with no interpolation at all. The remaining faces carry a third
+/// number, so a "took the wrong face" mistake gives not the second value but a
+/// foreign one.
 fn two_zones() -> Colour {
     let byte = |reflectance: f64| (reflectance / f64::from(SCALE) * 255.0).round() as u8;
     let mut grids = Vec::with_capacity(tiles::count(LEVELS));
@@ -139,12 +145,12 @@ fn two_zones() -> Colour {
         };
         grids.push(vec![value; Colour::tile_len(1)]);
     }
-    // Тайли рівня 0 — по одному на грань, у порядку граней (`tiles::index`).
+    // Level-0 tiles, one per face, in face order (`tiles::index`).
     assert_eq!(grids.len(), tiles::count(LEVELS));
     Colour::build(LEVELS, 1, SCALE, false, &grids)
 }
 
-/// Знімальна: одна текстура, один кадр, скільки завгодно сцен.
+/// A studio: one texture, one frame, any number of scenes.
 struct Studio {
     gpu: Gpu,
     frame: Frame,
@@ -187,15 +193,17 @@ impl Studio {
             });
         self.frame
             .draw(&self.gpu, &mut encoder, &self.view, SIZE, SIZE, scene);
-        shot::read_back(&self.gpu, encoder, &self.texture, SIZE, SIZE).expect("кадр мав вийти")
+        shot::read_back(&self.gpu, encoder, &self.texture, SIZE, SIZE)
+            .expect("the frame should have come out")
     }
 }
 
-/// Пікселі корпусу, до яких світило не дійшло, — з кадру, де немає планети.
+/// The hull pixels the light source never reached -- from the frame with no
+/// planet in it.
 ///
-/// Саме вони й були рівно чорними до T6, тож саме про них і йдеться. Разом з
-/// маскою повертається її розмір: перевірка, у якої під маскою три пікселі,
-/// перевіряє шум.
+/// Those were exactly black before T6, so they are what this is about. The
+/// mask's size comes back along with it: a check with three pixels under the
+/// mask is checking noise.
 fn unlit_mask(studio: &mut Studio, sun: [f64; 3], roughness: f32, metallic: f32) -> Vec<bool> {
     let alone = studio.take(&scene(sun, None, roughness, metallic));
     let mut mask = vec![false; (SIZE * SIZE) as usize];
@@ -212,15 +220,16 @@ fn unlit_mask(studio: &mut Studio, sun: [f64; 3], roughness: f32, metallic: f32)
     }
     assert!(
         count > 300,
-        "тіньового боку в кадрі майже немає: {count} пікселів"
+        "there is almost no shadowed side in the frame: {count} pixels"
     );
     mask
 }
 
-/// Середнє лінійне світло по каналах під маскою.
+/// The mean linear light per channel under the mask.
 ///
-/// Лінійне, а не байти: ціль знімка — sRGB (T5a), і ділити байти означало б
-/// міряти передавальну функцію замість яскравості.
+/// Linear rather than bytes: the shot's target is sRGB (T5a), and dividing
+/// bytes would mean measuring the transfer function instead of the
+/// brightness.
 fn mean_linear(shot: &Shot, mask: &[bool]) -> [f64; 3] {
     let mut sum = [0.0; 3];
     let mut count = 0.0;
@@ -240,7 +249,7 @@ fn mean_linear(shot: &Shot, mask: &[bool]) -> [f64; 3] {
     [sum[0] / count, sum[1] / count, sum[2] / count]
 }
 
-/// Скільки пікселів під маскою перестали бути рівно чорними.
+/// How many pixels under the mask stopped being exactly black.
 fn fraction_lit(shot: &Shot, mask: &[bool]) -> f64 {
     let mut lit = 0.0;
     let mut count = 0.0;
@@ -259,11 +268,11 @@ fn fraction_lit(shot: &Shot, mask: &[bool]) -> f64 {
     lit / count
 }
 
-/// Тіньовий бік не чорний удень і рівно чорний уночі.
+/// The shadowed side is not black by day and exactly black by night.
 ///
-/// Обидві половини потрібні разом. Сама по собі перша пройшла б і на
-/// «ambient 0.05», який етап T свідомо прибрав; сама по собі друга — на
-/// сяйві, якого немає взагалі.
+/// Both halves are needed together. The first on its own would pass on the
+/// "ambient 0.05" that stage T deliberately removed; the second on its own
+/// would pass on a shine that does not exist at all.
 #[test]
 fn the_shadow_side_lights_up_over_a_day_side_and_goes_out_over_the_night() {
     let Some(gpu) = gpu() else { return };
@@ -279,17 +288,18 @@ fn the_shadow_side_lights_up_over_a_day_side_and_goes_out_over_the_night() {
     ));
     let lit = fraction_lit(&day, &day_mask);
     let mean = mean_linear(&day, &day_mask);
-    println!("  день: освітлено {lit:.3} тіньового боку, {mean:?}");
-    // Не «всі», і так і має бути: сяйво приходить знизу, тож площадки, що
-    // дивляться **від** планети, лишаються рівно чорними — це та сама
-    // косинусна умова, що й для світила. Виміряно 0.65 при цій камері.
+    println!("  day: {lit:.3} of the shadowed side is lit, {mean:?}");
+    // Not "all", and that is as it should be: the shine arrives from below, so
+    // facets facing **away** from the planet stay exactly black -- the same
+    // cosine condition as for the light source. Measured at 0.65 with this
+    // camera.
     assert!(
         lit > 0.5,
-        "планета під кораблем не підсвітила тіньовий бік: {lit:.3}"
+        "the planet below the ship did not light the shadowed side: {lit:.3}"
     );
     assert!(
         mean.iter().all(|&v| v > 0.005),
-        "підсвітка є, але її не видно: {mean:?}"
+        "the shine is there but invisible: {mean:?}"
     );
 
     let night_mask = unlit_mask(&mut studio, SUN_NIGHT, roughness, metallic);
@@ -300,14 +310,14 @@ fn the_shadow_side_lights_up_over_a_day_side_and_goes_out_over_the_night() {
         metallic,
     ));
     let lit = fraction_lit(&night, &night_mask);
-    println!("  ніч: освітлено {lit:.3}");
+    println!("  night: {lit:.3} is lit");
     assert_eq!(
         lit, 0.0,
-        "над нічним боком планети тіньовий бік корпусу світиться"
+        "over the planet's night side the shadowed side of the hull glows"
     );
 }
 
-/// Підсвітка несе колір планети, а не сірий.
+/// The shine carries the planet's colour, not grey.
 #[test]
 fn the_shine_is_the_colour_of_the_planet_below() {
     let Some(gpu) = gpu() else { return };
@@ -329,23 +339,24 @@ fn the_shine_is_the_colour_of_the_planet_below() {
     ));
     let blue = mean_linear(&blue, &mask);
     let rust = mean_linear(&rust, &mask);
-    println!("  синя планета {blue:?}, руда {rust:?}");
+    println!("  blue planet {blue:?}, rust-coloured {rust:?}");
 
     assert!(
         blue[2] > 3.0 * blue[0],
-        "над синьою планетою корпус не синій: {blue:?}"
+        "over a blue planet the hull is not blue: {blue:?}"
     );
     assert!(
         rust[0] > 3.0 * rust[2],
-        "над рудою планетою корпус не рудий: {rust:?}"
+        "over a rust-coloured planet the hull is not rust-coloured: {rust:?}"
     );
 }
 
-/// Над морем корабель підсвічений слабше, ніж над материком, — і рівно в
-/// стільки разів, у скільки різняться відбивні здатності асета.
+/// Over a mare the ship is lit more dimly than over a highland -- and by
+/// exactly the factor the asset's reflectances differ by.
 ///
-/// Це і є число кроку T6. Відношення передбачається наперед, з фікстури, а не
-/// з кадру: «темніше» пройшло б і на реалізації, яка бере альбедо навмання.
+/// This is step T6's number. The ratio is predicted in advance from the
+/// fixture rather than read from the frame: "dimmer" would pass on an
+/// implementation that takes the albedo at random.
 #[test]
 fn over_the_mare_the_hull_is_dimmer_than_over_the_highland() {
     let Some(gpu) = gpu() else { return };
@@ -355,12 +366,12 @@ fn over_the_mare_the_hull_is_dimmer_than_over_the_highland() {
     let surface = studio
         .frame
         .load_surface(&studio.gpu, &flat(), Some(&two_zones()))
-        .expect("поверхня з кольором мала завантажитись");
+        .expect("the surface with colour should have loaded");
 
     let mask = unlit_mask(&mut studio, SUN_DAY, roughness, metallic);
 
-    // Обертання на 180° навколо `z` підставляє під корабель протилежну
-    // грань — і більше не міняє в сцені нічого.
+    // A 180 deg rotation about `z` puts the opposite face under the ship -- and
+    // changes nothing else in the scene.
     let mut over = |orientation: [f64; 4]| {
         let body = Body {
             centre: [0.0, 0.0, 0.0],
@@ -378,10 +389,10 @@ fn over_the_mare_the_hull_is_dimmer_than_over_the_highland() {
 
     let measured = highland[1] / mare[1];
     let expected = HIGHLAND / MARE;
-    println!("  море {mare:?}, материк {highland:?}");
-    println!("  відношення: {measured:.3} проти {expected:.3} з асета");
+    println!("  mare {mare:?}, highland {highland:?}");
+    println!("  ratio: {measured:.3} against {expected:.3} from the asset");
     assert!(
         (measured - expected).abs() < 0.1 * expected,
-        "яскравість не йде за асетом: {measured:.3} проти {expected:.3}"
+        "the brightness does not follow the asset: {measured:.3} against {expected:.3}"
     );
 }
