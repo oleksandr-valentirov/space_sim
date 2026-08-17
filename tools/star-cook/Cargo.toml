@@ -1,0 +1,23 @@
+[package]
+name = "star-cook"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+publish = false
+
+# Star catalogue cooker (ROADMAP, stage Z, Z2). Offline like the other two:
+# not linked into the game and not executed in a frame.
+#
+# No dependency reads the source, and that is deliberate rather than frugal.
+# BSC5 is a fixed-width text table described byte by byte in its own ReadMe --
+# columns 76-90 are the J2000 position, 103-107 the magnitude. Reading that
+# with a CSV or astronomy crate would mean importing thousands of lines to
+# avoid writing twenty, and the twenty are the ones with the oracle on them.
+
+[dependencies]
+# The catalogue format lives in the engine (`engine::stars`): a format's writer
+# and reader must be one piece of code.
+engine = { path = "../../engine" }
+
+[lints]
+workspace = true

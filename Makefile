@@ -27,6 +27,7 @@
 #   make cook             regenerate the asset fixture (do this deliberately!)
 #   make cook-dem         cook terrain tiles from data/lola into /assets/
 #   make cook-colour      cook colour tiles from data/wac into /assets/
+#   make cook-stars       cook the star catalogue from data/bsc5 into /assets/
 #   make model-ship       rebuild the ship model in Blender (writes to git!)
 #   make cook-ship        cook the ship from assets-src/ into /assets/
 #   make cook ANCHOR_BARYCENTRE=0   the same without barycentre anchoring --
@@ -496,6 +497,16 @@ cook-dem:
 .PHONY: cook-colour
 cook-colour:
 	cargo run --release -p dem-cook -- --colour
+
+# The star catalogue from Yale BSC5 (stage Z, Z2).
+#
+# Its own target for the same reason as `cook-colour`: a different source that
+# can be missing on its own. The catalogue is outside git (Q5) and putting it
+# on disk is still manual -- debt D18 -- so `star-cook` prints the two commands
+# that fetch it when the file is not there.
+.PHONY: cook-stars
+cook-stars:
+	cargo run --release -p star-cook
 
 # Ship from Blender (stage T, T5d).
 #

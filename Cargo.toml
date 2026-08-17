@@ -13,6 +13,7 @@ members = [
     "game",
     "tools/dem-cook",
     "tools/mesh-cook",
+    "tools/star-cook",
     "tools/gpu-probe",
     "tools/slang-probe",
 ]
