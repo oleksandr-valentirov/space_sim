@@ -1,36 +1,38 @@
-// Відбір патчів у compute (ROADMAP-PLANETS.md, R6b).
+// Patch culling in compute (ROADMAP-PLANETS.md, R6b).
 //
-// Те саме, що робить `engine::cull` на CPU, і навмисно тими самими формулами:
-// оракул кроку — збіг кількості намальованих патчів між двома незалежними
-// шляхами, і збіг цей має бути точним, а не «в межах допуску». Тому кожен
-// рядок нижче має пару в Rust, і розходження між ними — помилка, а не
-// властивість заліза.
+// The same thing `engine::cull` does on the CPU, and deliberately by the same
+// formulas: the step's oracle is that both independent paths keep the same
+// number of patches, and that agreement must be exact rather than "within
+// tolerance". So every line below has a twin in Rust, and a divergence
+// between them is a bug rather than a property of the hardware.
 //
-// ## Що лишається на CPU
+// ## What stays on the CPU
 //
-// Вибір рівня, вирівнювання й маски зшивання: вони будують набір, а набір
-// потрібен цілим ще до відбору (див. `cull.rs` — маска рахується з того, що
-// лежить у наборі, тож викидати сусідів під час обходу не можна). Сюди
-// приїжджає готовий список кандидатів, а звідси виходить його підмножина.
+// Level selection, balancing and the stitching masks: they build the set, and
+// the set is needed whole before culling (see `cull.rs` -- the mask is
+// computed from what is in the set, so neighbours cannot be discarded during
+// the traversal). A ready list of candidates arrives here and a subset of it
+// leaves.
 //
-// ## Порядок вижилих недетермінований, і це свідомо
+// ## The order of survivors is non-deterministic, deliberately
 //
-// Компактація йде атомарним лічильником, тож порядок залежить від того, які
-// групи впорались першими. Для кадру це байдуже — патчі непрозорі й
-// упорядковані глибиною, — а для звірки з CPU порівнюється **кількість**, не
-// послідовність. Записано вголос, бо в цьому проєкті недетермінізм зазвичай
-// помилка, і мовчазний виняток був би гіршим за сам виняток.
+// Compaction goes through an atomic counter, so the order depends on which
+// groups finished first. The frame does not care -- patches are opaque and
+// ordered by depth -- and the comparison with the CPU is of the **count**,
+// not the sequence. Written out loud, because in this project
+// non-determinism is usually a bug, and a silent exception would be worse
+// than the exception itself.
 
-// Кандидат: слот геометрії в кеші й маска зшивання. Та сама пара, яку читає
-// вершинна стадія — і це не збіг, а вимога: compute пише рівно те, що вона
-// потім прочитає.
+// A candidate: the geometry slot in the cache and the stitching mask. The
+// same pair the vertex stage reads -- not a coincidence but a requirement:
+// compute writes exactly what it will later read.
 struct PatchDraw
 {
     uint slot;
     uint mask;
 };
 
-// Конус патча на одиничній сфері, у системі ТІЛА.
+// The patch's cone on the unit sphere, in the BODY frame.
 struct Cone
 {
     float3 axis;
@@ -40,17 +42,17 @@ struct Cone
 
 struct CullParams
 {
-    // xyz — напрямок на камеру в системі тіла, w — косинус лімба.
+    // xyz -- direction to the camera in body frame, w -- cosine of the limb.
     float4 to_eye;
-    // Рядки повороту вигляду: світові осі → камерні.
+    // Rows of the view rotation: world axes -> camera axes.
     float4 view_right;
     float4 view_up;
     float4 view_back;
-    // x, y — тангенси півкутів кадру; z, w — нормувальники площин.
+    // x, y -- tangents of the frame half-angles; z, w -- plane normalisers.
     float4 frustum;
-    // x — скільки кандидатів, решта — нулі.
+    // x -- how many candidates, the rest zeros.
     uint4 counts;
-    // x — радіус тіла в метрах.
+    // x -- the body radius in metres.
     float4 body;
 };
 
@@ -58,29 +60,31 @@ ConstantBuffer<CullParams> params;
 
 StructuredBuffer<PatchDraw> candidates;
 StructuredBuffer<Cone> cones;
-// Початок патча відносно камери, у світових осях — він же центр
-// обмежувальної сфери. Той самий буфер, що читає вершинна стадія.
+// The patch origin relative to the camera, in world axes -- also the centre
+// of the bounding sphere. The same buffer the vertex stage reads.
 //
-// ⚠ Структура мусить збігатися з `PatchData` у `patch.slang` **полем у поле**:
-// це один буфер, і крок у ньому один. Спільного оголошення між двома
-// шейдерами немає, тож копії дві — рівно як `SIDE` і `node_of`, і з тим самим
-// висновком: правити треба обидві.
+// WARNING: the struct must match `PatchData` in `patch.slang` **field for
+//   field**: it is one buffer with one stride. There is no shared declaration
+//   between the two shaders, so there are two copies -- exactly like `SIDE`
+//   and `node_of`, with the same conclusion: both must be edited.
 //
-// Розбіжність тут не тиха: `gpu_driven::the_gpu_draws_exactly_as_many_patches_as_the_cpu_kept`
-// падає першим же кадром, бо зсунутий крок дає чужий центр, а з ним і чужий
-// відбір. Так вона й знайшлася на R7a.
+// A divergence here is not silent:
+// `gpu_driven::the_gpu_draws_exactly_as_many_patches_as_the_cpu_kept` fails on
+// the very first frame, because a shifted stride gives someone else's centre
+// and with it someone else's culling. That is how it was found at R7a.
 struct PatchData
 {
     float3 origin;
     uint tile;
     float2 window_origin;
     float window_step;
-    // Вирівнювання: тут жив `window_delta` до етапу W. Слово лишилось, бо
-    // std430 однаково вимагає восьмибайтового вирівнювання під `colour_origin`.
+    // Padding: `window_delta` lived here before stage W. The word stayed,
+    // because std430 requires eight-byte alignment before `colour_origin`
+    // anyway.
     float pad;
-    // Колірне вікно (T3b). Відбір його не читає — воно тут рівно заради
-    // **кроку** буфера, і саме тому порядок полів мусить бути той самий, що
-    // в `patch.slang`: `float2` після скалярів, інакше std430 додасть дірку.
+    // The colour window (T3b). Culling does not read it -- it is here purely
+    // for the buffer **stride**, which is why the field order must match
+    // `patch.slang`: `float2` after the scalars, or std430 adds a hole.
     uint colour_tile;
     float colour_step;
     float2 colour_origin;
@@ -89,8 +93,8 @@ struct PatchData
 StructuredBuffer<PatchData> origins;
 
 RWStructuredBuffer<PatchDraw> visible;
-// Аргументи `draw_indirect`: [vertex_count, instance_count, first_vertex,
-// first_instance]. Другий елемент — і є лічильник вижилих.
+// The `draw_indirect` arguments: [vertex_count, instance_count, first_vertex,
+// first_instance]. The second element is the survivor counter.
 RWStructuredBuffer<Atomic<uint>> indirect;
 
 [shader("compute")]
@@ -106,11 +110,12 @@ void cull_main(uint3 id : SV_DispatchThreadID)
     PatchDraw candidate = candidates[index];
     Cone cone = cones[candidate.slot];
 
-    // Горизонт: найбільше, на що патч здатний, — це cos(β − α), розкладене в
-    // cos β cos α + sin β sin α. Дослівно `cull::beyond_limb`, разом із
-    // окремим випадком «око всередині конуса»: там косинус парний і формула
-    // повернула б кут до КРАЮ шапки замість нуля, тобто викинула б патч,
-    // над яким стоїть камера. Правити треба обидві копії разом.
+    // The horizon: the best a patch can do is cos(beta - alpha), expanded to
+    // cos beta cos alpha + sin beta sin alpha. Verbatim `cull::beyond_limb`,
+    // including the "eye inside the cone" special case: the cosine is even
+    // there and the formula would return the angle to the EDGE of the cap
+    // instead of zero, discarding the patch the camera stands over. Both
+    // copies must be edited together.
     float cos_beta = clamp(dot(cone.axis, params.to_eye.xyz), -1.0, 1.0);
     if (cos_beta < cone.cos_half)
     {
@@ -122,9 +127,10 @@ void cull_main(uint3 id : SV_DispatchThreadID)
         }
     }
 
-    // Frustum: обмежувальна сфера патча проти чотирьох бічних площин.
-    // Центр — початок патча (він лежить на осі конуса), радіус — хорда до
-    // найдальшого вузла. Дослівно `cull::bounding_sphere` і `cull::frustum`.
+    // Frustum: the patch's bounding sphere against the four side planes. The
+    // centre is the patch origin (it lies on the cone axis), the radius is the
+    // chord to the furthest node. Verbatim `cull::bounding_sphere` and
+    // `cull::frustum`.
     float3 centre = origins[candidate.slot].origin;
     float radius = params.body.x * sqrt(max(2.0 - 2.0 * cone.cos_half, 0.0));
 
@@ -145,8 +151,9 @@ void cull_main(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    // `Atomic<uint>`, а не звичайний `uint`: у WGSL атомарність — властивість
-    // ТИПУ, і без неї Slang просто не компілює точку входу під цю ціль.
+    // `Atomic<uint>` rather than a plain `uint`: in WGSL atomicity is a
+    // property of the TYPE, and without it Slang simply will not compile this
+    // entry point for this target.
     uint slot = indirect[1].add(1u);
     visible[slot] = candidate;
 }

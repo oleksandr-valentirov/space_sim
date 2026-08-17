@@ -1,50 +1,49 @@
-// Тонмапер: HDR-кадр → діапазон цілі (ROADMAP, T5c3).
+// Tonemapper: HDR frame -> the target's range (ROADMAP, T5c3).
 //
-// Прохід існує тому, що з матеріалами в кадрі з'явилися значення понад
-// одиницю. Дзеркальний відблиск корпусу при `roughness = 0.35` дає близько
-// **3.7** — тобто без цього проходу він упирався б у 255 і ставав пласким
-// білим диском, у якого немає ні форми, ні краю.
+// The pass exists because materials brought values above one into the frame.
+// The hull's specular highlight at `roughness = 0.35` reaches about **3.7** --
+// without this pass it would clip at 255 and become a flat white disc with
+// neither shape nor edge.
 //
-// ## Чому окремий прохід, а не рядок у кожному шейдері
+// ## Why a separate pass rather than a line in every shader
 //
-// Композиція аеральної перспективи робить із кадром `дст·T` і `дст + L`
-// (S5), тобто **читає** те, що вже намальовано. Тонмапити в кожному шейдері
-// означало б множити й додавати вже стиснуті числа, і повітря перестало б
-// бути фізикою. Отже сцена йде в `Rgba16Float`, а стискання — один раз,
-// наприкінці.
+// Aerial perspective composition does `dst*T` and `dst + L` with the frame
+// (S5), i.e. it **reads** what is already drawn. Tonemapping in each shader
+// would multiply and add already compressed numbers, and the air would stop
+// being physics. So the scene goes into `Rgba16Float` and the compression
+// happens once, at the end.
 //
-// ## Крива: тотожність до коліна, стиснення після
+// ## The curve: identity below the knee, compression above
 //
-// `y = x` при `x ≤ K`; далі `y = 1 − (1−K)²/(x − 2K + 1)`. Неперервна разом
-// з першою похідною (в точці `K` обидві частини дають `K` і нахил 1), прямує
-// до одиниці на нескінченності.
+// `y = x` for `x <= K`; then `y = 1 - (1-K)^2/(x - 2K + 1)`. Continuous
+// together with its first derivative (at `K` both halves give `K` and slope
+// 1), tending to one at infinity.
 //
-// ⚠ **Тотожність нижче коліна — головна властивість, а не спрощення.** Уся
-// дифузна робота етапу T живе там: відбивна здатність Місяця 0.02…0.25, колір
-// мозаїки, правило матеріалу. Крива, яка чіпає ці значення (Reinhard, ACES,
-// PBR Neutral), змінила б кожне з них — тобто змусила б переміряти всі
-// оракули заново й позбавила б сенсу звірку «байт проти виміряного числа»
-// (T5b). Тут же після проходу вони лишаються **бітово ті самі**.
+// WARNING: identity below the knee is the main property, not a
+//   simplification. All the diffuse work of stage T lives there: the Moon's
+//   reflectance 0.02 to 0.25, the mosaic colour, the material rule. A curve
+//   that touches those values (Reinhard, ACES, PBR Neutral) would change every
+//   one of them -- forcing every oracle to be remeasured and robbing the "byte
+//   against a measured number" comparison of its meaning (T5b). Here they come
+//   out of the pass **bit for bit the same**.
 //
-// Обов'язок цієї кривої рівно один: не дати відблиску злипнутися в білу
-// пляму. Плівкову характеристику з підйомом тіней, якщо вона колись
-// знадобиться, доведеться вводити разом з експозицією й еталоном вигляду —
-// це T5d, і воно заблоковане.
+// This curve has exactly one duty: to keep the highlight from collapsing into
+// a white blob. A film characteristic with lifted shadows, should it ever be
+// needed, will have to arrive together with exposure and a reference look --
+// that is T5d, and it is blocked.
 //
-// ## Поканально
+// ## Per channel
 //
-// Кожен канал стискається окремо, тож дуже яскравий кольоровий відблиск
-// повзе до білого. Так поводиться й перевитримка справжньої матриці; варіант
-// «стиснути яскравість, лишити відтінок» дає кольорові плями там, де око
-// чекає білого.
+// Each channel is compressed separately, so a very bright coloured highlight
+// crawls towards white. A real sensor behaves that way when overexposed; the
+// "compress the luminance, keep the hue" variant gives coloured blobs where
+// the eye expects white.
 
-// Коліно кривої — `engine::tonemap::KNEE`. Звіряє тест, бо константа тут і
-// константа там — два місця.
 static const float KNEE = 0.8;
 
-// Кадр сцени в лінійному світлі. Семплера немає навмисно: прохід один в один
-// по пікселях, тож `Load` за цілими координатами точний, а фільтрація тут
-// могла б лише зіпсувати.
+// The scene frame in linear light. There is no sampler on purpose: the pass
+// is one to one in pixels, so `Load` at integer coordinates is exact, and
+// filtering here could only spoil it.
 Texture2D<float4> scene;
 
 float compress(float x)
@@ -62,8 +61,8 @@ struct VertexOutput
     float4 position : SV_Position;
 };
 
-// Повноекранний **трикутник**, а не два: спільне ребро двох трикутників
-// растеризується двічі, і на повний екран це помітно.
+// A fullscreen **triangle**, not two: the shared edge of two triangles is
+// rasterised twice, and at fullscreen that shows.
 [shader("vertex")]
 VertexOutput vertex_main(uint vertex : SV_VertexID)
 {
@@ -76,8 +75,9 @@ VertexOutput vertex_main(uint vertex : SV_VertexID)
 [shader("fragment")]
 float4 fragment_main(float4 position : SV_Position) : SV_Target
 {
-    // `SV_Position` у фрагменті — координата пікселя цілі, тож орієнтація
-    // збігається з текстурою за побудовою, і перевертати нічого не треба.
+    // `SV_Position` in the fragment is the target pixel coordinate, so the
+    // orientation matches the texture by construction and nothing needs
+    // flipping.
     float3 c = scene.Load(int3(int(position.x), int(position.y), 0)).rgb;
     return float4(compress(c.r), compress(c.g), compress(c.b), 1.0);
 }

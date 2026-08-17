@@ -1,35 +1,40 @@
-// Корабель у кадрі (етап V, крок V2).
+// The ship in the frame (stage V, step V2).
 //
-// Позиції у вершинному буфері вже camera-relative — та сама угода, що в
-// line.slang і sphere.slang: CPU відняв позицію камери в double й звузив
-// результат (ROADMAP F4, engine::camera). Тут лишається тільки проєкція.
+// Positions in the vertex buffer are already camera-relative -- the same
+// convention as in line.slang and sphere.slang: the CPU subtracted the camera
+// position in double and narrowed the result (ROADMAP F4, engine::camera).
+// Only the projection is left here.
 //
-// ⚠ **Усе тут — у КАМЕРНИХ осях**: позиції, нормалі й напрямок на світило.
-// Позиції такими приходять за побудовою (`Camera::relative` повертає, а не
-// лише віднімає), а з T5c шейдер бере з них напрямок на око — `view =
-// −position`. Отже нормаль і світило мусять бути в тому самому просторі, і
-// повертає їх той самий CPU-прохід. Робити це в шейдері означало б другу
-// матрицю на корабель, тобто ще один uniform із динамічним зсувом — при тому,
-// що вершин тут півтори тисячі, а не мільйон.
+// WARNING: **everything here is in CAMERA axes** -- positions, normals and the
+//   direction to the star. Positions arrive that way by construction
+//   (`Camera::relative` rotates rather than merely subtracting), and since T5c
+//   the shader takes the direction to the eye from them: `view = -position`.
+//   So the normal and the star must be in the same space, and the same CPU
+//   pass rotates them. Doing it in the shader would mean a second matrix per
+//   ship, i.e. another uniform with a dynamic offset -- and there are fifteen
+//   hundred vertices here, not a million.
 //
-// Освітлення — Cook-Torrance з GGX (T5c), дослівний двійник `engine::brdf`.
-// Правити треба обидва; оракул — збіг чисел, і його дає `tests/hull.rs`.
+// The lighting is Cook-Torrance with GGX (T5c), a verbatim twin of
+// `engine::brdf`. Both must be edited; the oracle is that the numbers agree,
+// and `tests/hull.rs` provides it.
 //
-// Чого тут ще немає з моделі PROJECT.md §7: сяйва планети SH-пробою (T6) і
-// напрямку на світило з ефемериди (борг D16). Ambient лишається нулем —
-// вигаданого «трохи світла звідусіль» тут не буде.
+// What is still missing from the model of PROJECT.md §7: planetshine by an SH
+// probe (T6) and the direction to the star from the ephemeris (debt D16).
+// Ambient stays zero -- there will be no invented "a little light from
+// everywhere" here.
 
-// Колір сюди не входить: він атрибут вершини, з тієї самої причини, що в
-// line.slang. Кораблів у кадрі кілька, виклик малювання на кожен, а всі записи
-// в чергу відбуваються ДО проходу — тобто з uniform виграв би останній.
+// The colour is not in here: it is a vertex attribute, for the same reason as
+// in line.slang. There are several ships in a frame, one draw call each, and
+// all queue writes happen BEFORE the pass -- so in a uniform the last one
+// would win.
 struct Uniforms
 {
     float4x4 projection;
-    float4 light_dir;   // напрямок ДО світила, КАМЕРНІ осі, xyz
+    float4 light_dir;   // direction TO the star, CAMERA axes, xyz
 };
 
-// Динамічний зсув вибирає прохід глибини — так само, як у ламаних. Буфер
-// один, крок 256 байтів (frame::PASS_STRIDE).
+// A dynamic offset selects the depth pass, as with the polylines. One buffer,
+// a stride of 256 bytes (frame::PASS_STRIDE).
 ConstantBuffer<Uniforms> uniforms;
 
 struct VertexInput
@@ -37,12 +42,13 @@ struct VertexInput
     float3 position : POSITION;
     float3 normal : NORMAL;
     float4 colour : COLOR;
-    // x — шорсткість, y — метал. Атрибут вершини, як і колір, і з тієї самої
-    // причини: кораблів у кадрі кілька, а з uniform виграв би останній.
+    // x -- roughness, y -- metallic. A vertex attribute like the colour and
+    // for the same reason: there are several ships in a frame, and in a
+    // uniform the last one would win.
     float2 material : MATERIAL;
-    // Сяйво планети (T6): напрямок **до неї** в камерних осях і опромінення
-    // по каналах. На вершину, бо два кораблі можуть висіти над різними
-    // місцями; `engine::planetshine` рахує це раз на корабель.
+    // Planetshine (T6): the direction **to the planet** in camera axes and
+    // the per-channel irradiance. Per vertex, because two ships can hang over
+    // different places; `engine::planetshine` computes it once per ship.
     float3 shine_dir : SHINEDIR;
     float3 shine_rgb : SHINERGB;
 };
@@ -55,10 +61,10 @@ struct VertexOutput
     nointerpolation float2 material : MATERIAL;
     nointerpolation float3 shine_dir : SHINEDIR;
     nointerpolation float3 shine_rgb : SHINERGB;
-    // Позиція вершини **відносно камери** — з неї фрагмент бере напрямок на
-    // око. Camera-relative тут не оптимізація, а сама угода буфера: позиція
-    // вже прийшла такою, тож око стоїть у нулі, і напрямок до нього — це
-    // просто `−position`.
+    // The vertex position **relative to the camera** -- the fragment takes
+    // the direction to the eye from it. Camera-relative is not an optimisation
+    // here but the buffer's convention: the position already arrived that way,
+    // so the eye is at zero and the direction to it is just `-position`.
     float3 view : VIEWDIR;
 };
 
@@ -76,14 +82,14 @@ VertexOutput vertex_main(VertexInput input)
     return output;
 }
 
-// Нормальне відбиття діелектрика — `engine::brdf::DIELECTRIC_F0`.
+// Normal-incidence reflectance of a dielectric -- `engine::brdf::DIELECTRIC_F0`.
 static const float DIELECTRIC_F0 = 0.04;
-// Найменша шорсткість — `engine::brdf::MIN_ROUGHNESS`. Нижче за неї пік `D`
-// вибиває `f32`: нескінченність в одному пікселі й нуль у сусідньому.
+// The smallest roughness -- `engine::brdf::MIN_ROUGHNESS`. Below it the peak
+// of `D` overflows `f32`: infinity in one pixel and zero in the next.
 static const float MIN_ROUGHNESS = 0.045;
 static const float PI = 3.14159265358979323846;
 
-// GGX / Trowbridge-Reitz — двійник `brdf::distribution`.
+// GGX / Trowbridge-Reitz -- the twin of `brdf::distribution`.
 float distribution(float n_dot_h, float roughness)
 {
     float a = max(roughness, MIN_ROUGHNESS);
@@ -93,9 +99,9 @@ float distribution(float n_dot_h, float roughness)
     return a2 / (PI * d * d);
 }
 
-// Сміт з кореляцією висот, уже поділений на `4(n·l)(n·v)` — двійник
-// `brdf::visibility`. Окремий знаменник давав би нуль на нуль на дотичних
-// кутах; це той самий клас, що `max(x, 1e-30)` у повітрі.
+// Height-correlated Smith, already divided by `4(n.l)(n.v)` -- the twin of
+// `brdf::visibility`. A separate denominator would give zero over zero at
+// grazing angles; the same class as `max(x, 1e-30)` in the air.
 float visibility(float n_dot_v, float n_dot_l, float roughness)
 {
     float a = max(roughness, MIN_ROUGHNESS);
@@ -106,7 +112,7 @@ float visibility(float n_dot_v, float n_dot_l, float roughness)
     return 0.5 / max(v + l, 1e-30);
 }
 
-// Шлік — двійник `brdf::fresnel`.
+// Schlick -- the twin of `brdf::fresnel`.
 float3 fresnel(float3 f0, float v_dot_h)
 {
     float t = saturate(1.0 - v_dot_h);
@@ -114,7 +120,8 @@ float3 fresnel(float3 f0, float v_dot_h)
     return f0 + (float3(1.0) - f0) * t5;
 }
 
-// Скільки світла йде в око з одиниці опромінення — двійник `brdf::radiance`.
+// How much light reaches the eye per unit of irradiance -- the twin of
+// `brdf::radiance`.
 float3 radiance(float3 n, float3 v, float3 l, float3 base, float roughness, float metallic)
 {
     float n_dot_l = dot(n, l);
@@ -128,7 +135,7 @@ float3 radiance(float3 n, float3 v, float3 l, float3 base, float roughness, floa
     float n_dot_h = saturate(dot(n, h));
     float v_dot_h = saturate(dot(v, h));
 
-    // Метал не має дифузного відбиття, а його `F0` — це базовий колір.
+    // A metal has no diffuse reflection, and its `F0` is the base colour.
     float3 f0 = lerp(float3(DIELECTRIC_F0), base, metallic);
     float3 f = fresnel(f0, v_dot_h);
     float3 specular = distribution(n_dot_h, roughness)
@@ -144,11 +151,12 @@ float4 fragment_main(VertexOutput input) : SV_Target
     float3 n = normalize(input.normal);
     float3 v = normalize(input.view);
 
-    // ⚠ Нормаль розвертається до ока, і це не косметика: пайплайн корабля
-    // малює **без відсікання граней**, тож у кадр законно потрапляє
-    // внутрішній бік оболонки. Без розвороту BRDF відповідає на такий
-    // фрагмент нулем — і корпус дістає чорні плями там, де мусить бути
-    // освітлена поверхня. Те саме робить `patch.slang` з нормаллю фасетки.
+    // WARNING: the normal is flipped towards the eye, and that is not
+    // cosmetics: the ship pipeline draws **with no face culling**, so the
+    // inner side of the shell legitimately reaches the frame. Without the flip
+    // the BRDF answers such a fragment with zero, and the hull gets black
+    // patches where a lit surface should be. `patch.slang` does the same with
+    // the facet normal.
     if (dot(n, v) < 0.0)
     {
         n = -n;
@@ -158,13 +166,13 @@ float4 fragment_main(VertexOutput input) : SV_Target
     float metallic = input.material.y;
     float3 base = input.colour.rgb;
 
-    // Світило: опромінення одиничне.
+    // The star: unit irradiance.
     float3 out = radiance(n, v, uniforms.light_dir.xyz, base, roughness, metallic);
 
-    // Планета знизу (T6). Ambient немає й не буде: тіньовий бік корпусу
-    // світиться рівно тим, що відбила поверхня під ним, і нічим більше
-    // (PROJECT.md §7). На нічному боці `shine_rgb` нульовий, тож доданок
-    // зникає сам, без жодної гілки.
+    // The planet below (T6). There is no ambient and will not be: the shadow
+    // side of the hull is lit by exactly what the surface under it reflected
+    // and by nothing else (PROJECT.md §7). On the night side `shine_rgb` is
+    // zero, so the term vanishes by itself with no branch.
     out += radiance(n, v, normalize(input.shine_dir), base, roughness, metallic)
         * input.shine_rgb;
 

@@ -1,20 +1,21 @@
-// Ламана в кадрі (ROADMAP J1).
+// A polyline in the frame (ROADMAP J1).
 //
-// Позиції у вершинному буфері вже camera-relative, як і в sphere.slang: CPU
-// відняв позицію камери в double й звузив результат (ROADMAP F4,
-// engine::camera). Тут лишається тільки проєкція.
+// Positions in the vertex buffer are already camera-relative, as in
+// sphere.slang: the CPU subtracted the camera position in double and narrowed
+// the result (ROADMAP F4, engine::camera). Only the projection is left here.
 //
-// Чому не trajectory.slang, у якого вже є перетворення фрейму: той малює
-// відносно Землі-в-момент-t і має власну «камеру» одним зсувом, без базису.
-// Йому байдуже, куди дивиться гравець, — а тут не байдуже. Обертовий фрейм
-// (PROJECT.md §7) приїде сюди тоді ж, коли з'явиться сервіс фреймів, і
-// заміною цього шейдера, а не другим шляхом рендера.
+// Why not trajectory.slang, which already has a frame transform: that one
+// draws relative to Earth-at-time-t and has its own "camera" as a single
+// offset, with no basis. It does not care where the player looks -- here that
+// matters. The rotating frame (PROJECT.md §7) will arrive here when the frame
+// service does, as a replacement for this shader rather than a second render
+// path.
 
-// Колір — атрибут вершини, а не поле uniform. Ламаних у кадрі кілька, і в
-// кожної свій колір, тож у uniform він вимагав би або динамічного зсуву, або
-// перезапису буфера між викликами draw усередині одного проходу — а записи в
-// чергу всі відбуваються ДО проходу, тож виграв би останній. Шістнадцять
-// байтів на вершину дешевші за цей клас помилки.
+// The colour is a vertex attribute rather than a uniform field. There are
+// several polylines in a frame, each with its own colour, so in a uniform it
+// would need either a dynamic offset or a buffer rewrite between draw calls
+// inside one pass -- and all queue writes happen BEFORE the pass, so the last
+// one would win. Sixteen bytes per vertex are cheaper than that class of bug.
 
 struct Uniforms
 {

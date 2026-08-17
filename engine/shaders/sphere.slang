@@ -1,19 +1,19 @@
-// Сфера в реальному масштабі (ROADMAP F5).
+// A sphere at real scale (ROADMAP F5).
 //
-// Позиції у вершинному буфері вже camera-relative — та сама угода, що в
-// depth_quad.slang: камера в (0,0,0), CPU відняв світові координати в
-// double й звузив результат (ROADMAP F4, engine::camera). Тут лишається
-// тільки проєкція.
+// Positions in the vertex buffer are already camera-relative -- the same
+// convention as in depth_quad.slang: the camera sits at (0,0,0), the CPU
+// subtracted the world coordinates in double and narrowed the result
+// (ROADMAP F4, engine::camera). Only the projection is left here.
 //
-// Освітлення — тимчасове ламберт-затінення з невеликим ambient, щоб форма
-// сфери була видна оком. Це НЕ фінальна модель з PROJECT.md §7 (нуль
-// ambient, SH-проба від кольору планети) — та чекає на реальне сонце й
-// атмосферу.
+// The lighting is temporary Lambert shading with a little ambient, so that
+// the shape of the sphere is visible. This is NOT the final model of
+// PROJECT.md §7 (zero ambient, an SH probe from the planet's colour) -- that
+// waits for a real sun and an atmosphere.
 
 struct Uniforms
 {
     float4x4 projection;
-    float4 light_dir;   // напрямок ДО джерела світла, світовий простір, xyz
+    float4 light_dir;   // direction TO the light source, world space, xyz
     float4 colour;
 };
 

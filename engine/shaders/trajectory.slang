@@ -1,29 +1,29 @@
-// Траєкторія: перетворення фрейму у вертексному шейдері (ROADMAP F6).
+// Trajectory: the frame transform in the vertex shader (ROADMAP F6).
 //
-// Вершинні дані — геоцентричні: vessel_local і moon_local уже без Землі
-// (Земля в кожній вершині своя, для миті цього семпла), а не через
-// відняття камери. Це той самий camera-relative принцип (F4, F5), лише
-// прив'язаний до Землі-в-момент-t замість камери: апарат ніколи не
-// відходить далі кількох Мм від Місяця, тож числа лишаються малі на всій
-// 233-денній місії, хоч сама Земля тим часом проходить по геліоцентричній
-// орбіті мільярди метрів.
+// The vertex data is geocentric: vessel_local and moon_local already have
+// Earth subtracted (a different Earth per vertex, for that sample's instant)
+// rather than the camera. This is the same camera-relative principle (F4,
+// F5), only tied to Earth-at-time-t instead of the camera: the vessel never
+// goes further than a few Mm from the Moon, so the numbers stay small across
+// the whole 233-day mission, while Earth itself travels billions of metres
+// along its heliocentric orbit.
 //
-// Обертовий фрейм рахується тут, а не на CPU: та сама формула, що вже
-// звірена з `frame_from_inertial` (C, `core/frame.h`) у
-// `engine::trajectory::rotating_position` — `engine/tests/trajectory.rs`
-// звіряє їх до 7·10⁻⁷ дистанційних одиниць.
+// The rotating frame is computed here rather than on the CPU: the same
+// formula already compared with `frame_from_inertial` (C, `core/frame.h`) in
+// `engine::trajectory::rotating_position` -- `engine/tests/trajectory.rs`
+// matches them to 7e-7 distance units.
 //
-// Два вершинних входи, не uniform-прапорець. Спершу було зроблено через
-// `mix(geocentric, rotating, uniforms.rotating)` в одній точці входу — і
-// це стабільно давало порожній кадр саме для rotating=1 на цьому GPU
-// (AMD RADV VANGOGH, ACO): фрагментний шейдер читав uniform правильно
-// (перевірено виводом значення в колір), а вершинний — ні, навіть через
-// проміжну локальну змінну. Причина лишилась незʼясованою — findings такого
-// роду йдуть у ROADMAP, не в код; тут висновок практичний: дві точки входу
-// однозначно уникають того самого шляху компілятора, і «перемикання
-// миттєве» від цього не постраждало — обидва пайплайни компілюються один
-// раз при першому виклику `render`, вершинні буфери спільні, перемикання
-// фрейму — це вибір готового пайплайна, не перерахунок вершин.
+// Two vertex entry points, not a uniform flag. The first version used
+// `mix(geocentric, rotating, uniforms.rotating)` in one entry point -- and it
+// reliably gave an empty frame for rotating=1 on this GPU (AMD RADV VANGOGH,
+// ACO): the fragment shader read the uniform correctly (verified by writing
+// the value into the colour) while the vertex shader did not, even through an
+// intermediate local. The cause was never established -- findings of that
+// kind go into ROADMAP, not into code; the practical conclusion is here: two
+// entry points unambiguously avoid that compiler path, and "switching is
+// instant" did not suffer -- both pipelines are compiled once on the first
+// `render` call, the vertex buffers are shared, and switching the frame picks
+// a ready pipeline rather than recomputing vertices.
 
 struct Uniforms
 {
@@ -40,9 +40,9 @@ ConstantBuffer<Uniforms> uniforms;
 
 struct VertexInput
 {
-    float3 vessel_local : POSITION;   // апарат мінус Земля в момент t
-    float3 moon_local : TEXCOORD0;    // Місяць мінус Земля в момент t (= d)
-    float3 z_axis : NORMAL;           // нормаль миттєвої площини Земля-Місяць
+    float3 vessel_local : POSITION;   // vessel minus Earth at time t
+    float3 moon_local : TEXCOORD0;    // Moon minus Earth at time t (= d)
+    float3 z_axis : NORMAL;           // normal of the instantaneous Earth-Moon plane
 };
 
 struct VertexOutput
@@ -50,8 +50,8 @@ struct VertexOutput
     float4 position : SV_Position;
 };
 
-/// Спільна частина обох точок входу: ортонормований базис (x, y, z) з
-/// Земля-Місяць лінії та миттєвої нормалі площини.
+/// The shared part of both entry points: an orthonormal basis (x, y, z) from
+/// the Earth-Moon line and the instantaneous plane normal.
 float3x3 synodic_basis(float3 moon_local, float3 z_axis, out float length_scale)
 {
     float3 d = moon_local;
@@ -63,9 +63,10 @@ float3x3 synodic_basis(float3 moon_local, float3 z_axis, out float length_scale)
 
 float4 project(float3 view_basis_pos, Uniforms u)
 {
-    // Камера дивиться вздовж «y» цього базису: розкид орбіти там на порядки
-    // менший, ніж по x (уздовж Земля-Місяць) і z (упоперек площини) —
-    // виміряно (ROADMAP F6), тож саме під цим кутом видно форму, а не лінію.
+    // The camera looks along the "y" of this basis: the orbit's spread there
+    // is orders smaller than along x (the Earth-Moon line) or z (across the
+    // plane) -- measured (ROADMAP F6), so it is from this angle that the shape
+    // is visible rather than a line.
     float3 view = float3(view_basis_pos.x, view_basis_pos.z, -view_basis_pos.y) + u.view_offset;
     return mul(u.projection, float4(view, 1.0));
 }
@@ -76,8 +77,8 @@ VertexOutput vertex_geocentric(VertexInput input)
     float length_scale;
     float3x3 basis = synodic_basis(input.moon_local, input.z_axis, length_scale);
 
-    // Щирий інерціальний вигляд: той самий базис для кута огляду, але без
-    // зсуву початку координат і без масштабування.
+    // An honest inertial view: the same basis for the viewing angle, but with
+    // no origin shift and no scaling.
     float3 geocentric = mul(basis, input.vessel_local);
 
     VertexOutput output;
@@ -91,8 +92,8 @@ VertexOutput vertex_rotating(VertexInput input)
     float length_scale;
     float3x3 basis = synodic_basis(input.moon_local, input.z_axis, length_scale);
 
-    // Початок координат — барицентр (mu-зважений), масштаб — L. Формула —
-    // дзеркало engine::trajectory::rotating_position.
+    // The origin is the barycentre (mu-weighted), the scale is L. The formula
+    // mirrors engine::trajectory::rotating_position.
     float3 origin = uniforms.mu * input.moon_local;
     float3 rotating = mul(basis, input.vessel_local - origin) / length_scale;
 

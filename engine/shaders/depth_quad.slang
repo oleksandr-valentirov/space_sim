@@ -1,20 +1,20 @@
-// Плаский чотирикутник на заданій відстані — для заміру роздільності
-// глибини (ROADMAP F3).
+// A flat quad at a given distance, for measuring depth resolution
+// (ROADMAP F3).
 //
-// Вершини рахуються з індексу, геометрії ззовні немає: перевіряється буфер
-// глибини, а не робота з буферами вершин. Чотирикутник свідомо більший за
-// екран, щоб перекриття двох таких було на весь кадр і мерехтіння не можна
-// було проґавити на краю.
+// Vertices are computed from the index and no geometry comes from outside:
+// what is checked is the depth buffer, not work with vertex buffers. The quad
+// is deliberately larger than the screen, so that the overlap of two of them
+// covers the whole frame and flicker cannot be missed at an edge.
 //
-// Координати одразу в камерному просторі: камера в (0,0,0), дивиться вздовж
-// -z. Це вже той camera-relative, який PROJECT.md §7 вимагає, — світові
-// координати у float не потрапляють навіть тут.
+// Coordinates are already in camera space: the camera sits at (0,0,0) looking
+// along -z. This is the camera-relative convention PROJECT.md §7 requires --
+// world coordinates never reach a float, not even here.
 
 struct Params
 {
     float4x4 projection;
     float4 colour;
-    float4 placement;   // xyz — центр у камерному просторі, w — півширина
+    float4 placement;   // xyz -- centre in camera space, w -- half width
 };
 
 ConstantBuffer<Params> params;
@@ -28,7 +28,7 @@ struct VertexOutput
 [shader("vertex")]
 VertexOutput vertex_main(uint index: SV_VertexID)
 {
-    // Два трикутники: 0,1,2 і 2,1,3.
+    // Two triangles: 0,1,2 and 2,1,3.
     uint corner = (index < 3) ? index : (index == 3 ? 2 : (index == 4 ? 1 : 3));
 
     float x = ((corner & 1) == 0) ? -1.0 : 1.0;

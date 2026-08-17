@@ -1,11 +1,11 @@
-// Перший трикутник (ROADMAP F2).
+// The first triangle (ROADMAP F2).
 //
-// Вершини рахуються з індексу, буферів немає: на цьому кроці перевіряється
-// шлях «шейдер доїхав і намалював», а не робота з геометрією. Буфери
-// прийдуть із F5, коли з'явиться справжня сфера.
+// Vertices are computed from the index and there are no buffers: this step
+// checks the "the shader arrived and drew" path, not work with geometry.
+// Buffers come with F5, when there is a real sphere.
 //
-// Компілюється в WGSL: sh scripts/build_shaders.sh
-// Чому WGSL, а не SPIR-V — ROADMAP P1.
+// Compiled to WGSL: sh scripts/build_shaders.sh
+// Why WGSL and not SPIR-V -- ROADMAP P1.
 
 struct VertexOutput
 {
