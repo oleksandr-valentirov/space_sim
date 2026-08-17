@@ -528,36 +528,40 @@ pub struct Frame {
 
     lines: Lines,
 
-    /// Кораблі (етап V). Порожній список кораблів у сцені не коштує нічого:
-    /// ні завантаження, ні виклику малювання — саме на цьому стоїть те, що
-    /// знімок зондів рушія лишився бітово тим самим.
+    /// Ships (stage V). An empty ship list in the scene costs nothing: no
+    /// upload, no draw call -- that is exactly what keeps the engine's probe
+    /// screenshot bitwise identical.
     ships: Ships,
 
-    /// План цього кадру: проходи в порядку малювання (R4a). Поле, а не
-    /// змінна, щоб не виділяти вектор щокадру.
+    /// This frame's plan: the passes in draw order (R4a). A field rather than a
+    /// local, so as not to allocate a vector every frame.
     passes: Vec<Pass>,
 
-    /// Повітря: сталі таблиці, таблиця неба на цей кадр і сам прохід (етап S).
+    /// The air: the constant tables, this frame's sky table and the pass itself
+    /// (stage S).
     ///
-    /// Полем кадру, а не окремою підсистемою поруч: небо малюється тим самим
-    /// проходом, що й усе інше, і ділить із ним і глибину, і ціль.
+    /// A field of the frame rather than a separate subsystem alongside: the sky
+    /// is drawn by the same pass as everything else and shares both the depth
+    /// buffer and the target with it.
     sky: Sky,
 
-    /// Скільки коштував прохід по вершинах ламаних в останньому `draw`, мс.
+    /// What the pass over the polylines' vertices cost in the last `draw`, ms.
     ///
-    /// Існує заради боргу D7 і читається зондом гри (`game::perf_probe`, N1):
-    /// саме на цьому числі стоїть розвилка кроку — чи справді ламані найдорожчі
-    /// в кадрі. Міряється завжди, а не за прапорцем: два `Instant::now` на кадр
-    /// — це десятки наносекунд проти сотень мікросекунд самого проходу, і
-    /// вимір, який умикають окремо, вмикають не тоді, коли він потрібен.
+    /// It exists for debt D7 and is read by the game's probe
+    /// (`game::perf_probe`, N1): the step's fork rests on this number -- whether
+    /// the polylines really are the most expensive thing in the frame. Measured
+    /// always rather than behind a flag: two `Instant::now` per frame are tens
+    /// of nanoseconds against hundreds of microseconds of the pass itself, and a
+    /// measurement that is switched on separately gets switched on at the wrong
+    /// time.
     lines_upload_ms: f64,
 }
 
 impl Frame {
     pub fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Frame {
-        // Сцена малюється у **HDR**, і лише останній прохід — у ціль, яку
-        // дав викликач (T5c3). Тому всі пайплайни сцени будуються з
-        // [`HDR_FORMAT`], а `format` бачить тільки тонмапер.
+        // The scene is drawn into **HDR**, and only the last pass into the
+        // target the caller gave (T5c3). So all the scene's pipelines are built
+        // with [`HDR_FORMAT`], and only the tonemapper sees `format`.
         Frame {
             planet: Planet::new(gpu, HDR_FORMAT),
             depth: None,
@@ -571,25 +575,26 @@ impl Frame {
         }
     }
 
-    /// Скільки коштував прохід по вершинах ламаних в останньому [`Frame::draw`],
-    /// мс (D7, N1).
+    /// What the pass over the polylines' vertices cost in the last
+    /// [`Frame::draw`], ms (D7, N1).
     pub fn lines_upload_ms(&self) -> f64 {
         self.lines_upload_ms
     }
 
-    /// Завантажити рельєф у кадр і дістати хендл на нього
-    /// (ROADMAP-PLANETS.md, R5c).
+    /// Load terrain into the frame and get a handle to it (ROADMAP-PLANETS.md,
+    /// R5c).
     ///
-    /// По **текстурі на тайл**, а не по шару спільного масиву: правило 6
-    /// етапу R вимагає bindless, і різниця не термінологічна. У
-    /// `texture_2d_array` спільний розмір і жорстка стеля шарів (256 у
-    /// downlevel-лімітах, тобто менше, ніж тайлів у першому ж асеті), у
-    /// bindless-масиву — ні того, ні того.
+    /// A **texture per tile**, not a layer of a shared array: rule 6 of stage R
+    /// demands bindless, and the difference is not terminological. A
+    /// `texture_2d_array` has a shared size and a hard ceiling on layers (256 in
+    /// the downlevel limits, i.e. fewer than there are tiles in the very first
+    /// asset); a bindless array has neither.
     ///
-    /// Помилка тут гучна навмисно. Пристрій без bindless — це бекенд, який і
-    /// так не ціль (PROJECT.md §7 називає Vulkan, D3D12, Metal), і мовчазне
-    /// «намалюємо гладко» дало б планету без гір, яку ніхто не відрізнить від
-    /// планети, чий асет не завантажився.
+    /// The error here is loud deliberately. A device without bindless is a
+    /// backend that is not a target anyway (PROJECT.md section 7 names Vulkan,
+    /// D3D12, Metal), and a silent "we will draw it smooth" would give a planet
+    /// without mountains that nobody could tell from a planet whose asset failed
+    /// to load.
     pub fn load_terrain(
         &mut self,
         gpu: &Gpu,
@@ -598,25 +603,26 @@ impl Frame {
         self.load_surface(gpu, terrain, None)
     }
 
-    /// Замінити корпус корабля скукованою моделлю (етап T, крок T5d3).
+    /// Replace the ship's hull with a cooked model (stage T, step T5d3).
     ///
-    /// Хендла не видає — на відміну від поверхні, тут нема чого вибирати:
-    /// меш у кадрі один. Асета може не бути на диску (`/assets/` не в git),
-    /// і тоді кадр малює процедурну заглушку V1 — рівно як тіло без тайлсета
-    /// малюється своїм кольором.
+    /// It hands out no handle -- unlike the surface, there is nothing to choose
+    /// here: the frame has one mesh. The asset may be missing from disk
+    /// (`/assets/` is not in git), and then the frame draws V1's procedural stub
+    /// -- exactly as a body without a tileset is drawn in its own colour.
     ///
-    /// Масштаб лишається за грою: у файлі меш одиничної висоти, а `height_m`
-    /// і `extent` з нього гра кладе у `Scene::Ship` сама.
+    /// Scale stays with the game: the file holds a mesh of unit height, and the
+    /// game puts `height_m` and `extent` from it into `Scene::Ship` itself.
     pub fn load_ship(&mut self, gpu: &Gpu, model: &crate::mesh::Model) {
         self.ships.load(gpu, &model.mesh, &model.paint);
     }
 
-    /// Рельєф **і колір** одним хендлом (етап T, T3b).
+    /// Terrain **and colour** under one handle (stage T, T3b).
     ///
-    /// Одна поверхня — один слот, і не тому, що так менше коду: група
-    /// прив'язки в кадру одна, і два незалежні хендли дозволяли б стан «колір
-    /// цього тіла з чужим рельєфом». Колір необов'язковий: асета може не бути
-    /// на диску (Q5), і тоді тіло малюється своїм `Body::colour`, як до кроку.
+    /// One surface, one slot, and not because it is less code: the frame has one
+    /// bind group, and two independent handles would allow the state "this
+    /// body's colour with someone else's terrain". Colour is optional: the asset
+    /// may be missing from disk (Q5), and then the body is drawn in its own
+    /// `Body::colour`, as before the step.
     pub fn load_surface(
         &mut self,
         gpu: &Gpu,
@@ -625,24 +631,24 @@ impl Frame {
     ) -> Result<scene::TerrainId, String> {
         if self.planet.terrain.is_none() {
             return Err(format!(
-                "рельєф вимагає bindless-масиву текстур, а адаптер його не має: {}",
+                "terrain requires a bindless texture array, and the adapter does not have one: {}",
                 gpu.describe()
             ));
         }
         let count = tiles::Terrain::count(terrain.levels);
         let colour_count = colour.map(|c| tiles::count(c.levels)).unwrap_or(0);
-        for (what, n) in [("рельєфу", count), ("кольору", colour_count)] {
+        for (what, n) in [("terrain", count), ("colour", colour_count)] {
             if n > MAX_TILES as usize {
                 return Err(format!(
-                    "{n} тайлів {what} проти стелі масиву {MAX_TILES} — підніміть MAX_TILES"
+                    "{n} {what} tiles against an array ceiling of {MAX_TILES} -- raise MAX_TILES"
                 ));
             }
         }
 
-        // Сітка тепер одна на обидва тайлсети — рівно сітка патча: ореол
-        // зник із рельєфу разом із запеченим нахилом (версія 4) і з кольору,
-        // де його ніколи не читали (версія 3). Параметром лишається, бо
-        // текстура однаково мусить знати свій бік.
+        // The grid is now one for both tilesets -- exactly the patch's grid: the
+        // halo disappeared from the terrain along with the baked slope (version
+        // 4) and from the colour, where it was never read (version 3). It stays a
+        // parameter because the texture has to know its side anyway.
         let upload = |label, format, side: u32, bytes_per_texel: u32, payload: &[&[u8]]| {
             let mut views = Vec::with_capacity(payload.len());
             for bytes in payload {
@@ -679,10 +685,10 @@ impl Frame {
             views
         };
 
-        // Цілі зі знаком у висот і байт у кольору — рівно те, що лежить у
-        // тайлі: жодного перетворення між асетом і текстурою, отже й жодного
-        // місця, де воно поїде. Два канали в рельєфу — висота й нахил, і
-        // лежать вони в одному текселі саме тому, що вибірка в них одна.
+        // Signed integers for heights and a byte for colour -- exactly what lies
+        // in the tile: no conversion between asset and texture, hence no place
+        // for one to drift. The terrain's two channels are height and slope, and
+        // they lie in one texel precisely because they share one sample.
         let height_tiles: Vec<&[u8]> = (0..count).map(|i| terrain.tile_bytes(i)).collect();
         let heights = upload(
             "terrain tile",
@@ -691,9 +697,9 @@ impl Frame {
             4,
             &height_tiles,
         );
-        // Порожній масив прив'язати не можна, тож тіло без кольору дістає одну
-        // текстуру-заглушку — той самий прийом, що й `no_tiles`. Читати її
-        // ніхто не буде: `terrain.y` в уніформах лишиться нулем.
+        // An empty array cannot be bound, so a body without colour gets one stub
+        // texture -- the same trick as `no_tiles`. Nobody will read it:
+        // `terrain.y` in the uniforms will stay zero.
         let blank = vec![0u8; tiles::NODES * tiles::NODES];
         let colour_tiles: Vec<&[u8]> = match colour {
             Some(c) => (0..colour_count).map(|i| c.tile_bytes(i)).collect(),
@@ -755,12 +761,13 @@ impl Frame {
             .collect()
     }
 
-    /// Скільки патчів GPU справді намалював для кожного тіла останнього кадру
+    /// How many patches the GPU actually drew for each body of the last frame
     /// (ROADMAP-PLANETS.md, R6b).
     ///
-    /// Існує заради оракула, і це не приховується: R3 робив відбір на CPU не
-    /// тому, що так простіше, а щоб R6b мав із чим звірити своє число. Читати
-    /// це в кадрі не можна — тут `poll(Wait)`, тобто повна зупинка конвеєра.
+    /// It exists for the oracle, and that is not hidden: R3 did the culling on
+    /// the CPU not because that is simpler but so that R6b would have something
+    /// to check its number against. This must not be read inside a frame -- there
+    /// is a `poll(Wait)` here, i.e. a full stall of the pipeline.
     pub fn drawn_patches(&self, gpu: &Gpu) -> Result<Vec<u32>, String> {
         let mut out = Vec::with_capacity(self.planet.bodies.len());
         for body in &self.planet.bodies {
@@ -785,10 +792,10 @@ impl Frame {
                     submission_index: None,
                     timeout: None,
                 })
-                .map_err(|e| format!("не дочекалися GPU: {e}"))?;
+                .map_err(|e| format!("did not wait for the GPU: {e}"))?;
             let data = slice
                 .get_mapped_range()
-                .map_err(|e| format!("буфер не відобразився: {e}"))?;
+                .map_err(|e| format!("the buffer was not mapped: {e}"))?;
             out.push(u32::from_le_bytes(data[4..8].try_into().unwrap()));
             drop(data);
             staging.unmap();
@@ -796,22 +803,23 @@ impl Frame {
         Ok(out)
     }
 
-    /// Ближня площина під поточну висоту камери.
+    /// The near plane for the camera's current altitude.
     ///
-    /// Не стала: камера рухається від поверхні до орбіти, а F5 показав, що
-    /// near мусить лишати запас під найближчу вершину меша, а не впиратися
-    /// в неї. Десята частина висоти дає той самий порядок запасу, що F5
-    /// узяв руками (near = 1 м при прольоті на 10 м).
+    /// Not a constant: the camera moves from the surface to orbit, and F5 showed
+    /// that near must leave margin under the nearest vertex of the mesh rather
+    /// than butt against it. A tenth of the altitude gives the same order of
+    /// margin F5 took by hand (near = 1 m on a flyby at 10 m).
     ///
-    /// Висота — над **найближчим** тілом сцени, а не над Землею в початку
-    /// координат (R1e): камера біля Місяця, яка міряє висоту від Землі,
-    /// отримала б near у 4·10⁷ м і зрізала б увесь Місяць.
+    /// The altitude is above the **nearest** body of the scene, not above an
+    /// Earth at the origin (R1e): a camera near the Moon measuring its altitude
+    /// from Earth would get a near of 4e7 m and clip away the whole Moon.
     ///
-    /// Роздільність глибини від near не залежить узагалі — це виміряно на
-    /// F3 (`Δz ≈ z·6·10⁻⁸`, near скорочується), тож тут немає чого
-    /// підбирати заради z-fighting.
-    /// Без `self` навмисно: це чиста арифметика над сценою, і перевіряти її
-    /// не має вимагати ні GPU, ні кадру.
+    /// Depth resolution does not depend on near at all -- that is measured in F3
+    /// (`dz ~= z*6e-8`, near cancels out), so there is nothing to tune here for
+    /// the sake of z-fighting.
+    ///
+    /// Without `self` deliberately: this is pure arithmetic over the scene, and
+    /// checking it should require neither a GPU nor a frame.
     fn near_for(scene: &Scene) -> f64 {
         let eye = scene.camera.position();
         let length = |v: [f64; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
@@ -826,10 +834,11 @@ impl Frame {
             altitude = altitude.min(length(d) - body.radius_m);
         }
 
-        // Корабель — та сама арифметика, і саме заради неї крок існує (V2).
-        // Без цього рядка `near` виводилася з висоти над тілом: на орбіті
-        // 400 км це 40 км, тобто корпус за десять метрів від камери
-        // відсікався цілком, і кадр від третьої особи був порожнім.
+        // A ship is the same arithmetic, and the step exists for exactly that
+        // (V2). Without this line `near` was derived from the altitude above a
+        // body: in a 400 km orbit that is 40 km, i.e. a hull ten metres from the
+        // camera was clipped away entirely and the third-person frame was
+        // empty.
         for ship in &scene.ships {
             let d = [
                 ship.centre[0] - eye[0],
@@ -839,8 +848,9 @@ impl Frame {
             altitude = altitude.min(length(d) - ship.extent_m);
         }
 
-        // Порожнє небо: міряти висоту нема над чим, лишається відстань до
-        // початку координат — там-таки й ламані, якщо вони є.
+        // An empty sky: there is nothing to measure altitude above, so the
+        // distance to the origin is what is left -- and that is where the
+        // polylines are too, if there are any.
         if !altitude.is_finite() {
             altitude = length(eye);
         }
@@ -866,9 +876,10 @@ impl Frame {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: depth::FORMAT,
-            // `TEXTURE_BINDING` — заради композиції аеральної перспективи
-            // (S5): вона читає глибину, щоб знати, доки шейдити повітря, і
-            // робить це в окремому проході, де глибина вже не ціль.
+            // `TEXTURE_BINDING` is for the composition of aerial perspective
+            // (S5): it reads the depth to know how far to shade the air, and it
+            // does so in a separate pass, where the depth is no longer a
+            // target.
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
@@ -880,7 +891,7 @@ impl Frame {
         });
     }
 
-    /// Проміжна ціль сцени під поточний розмір кадру.
+    /// The scene's intermediate target for the frame's current size.
     fn ensure_hdr(&mut self, gpu: &Gpu, width: u32, height: u32) {
         if let Some(hdr) = &self.hdr {
             if hdr.width == width && hdr.height == height {
@@ -926,16 +937,17 @@ impl Frame {
         });
     }
 
-    /// Записує в `encoder` усе, що складає кадр.
+    /// Writes everything the frame is made of into `encoder`.
     ///
-    /// Один метод, а не пара «оновити / записати»: розділені, вони дають
-    /// спосіб забути перше й отримати кадр з учорашньою камерою або з
-    /// depth-текстурою чужого розміру. Тут це неможливо.
+    /// One method, not a pair of "update / record": split apart, they give a way
+    /// to forget the first and get a frame with yesterday's camera or with a
+    /// depth texture of the wrong size. Here that is impossible.
     ///
-    /// Що саме малювати, каже [`Scene`] — і це вся межа між рушієм і грою
-    /// (PROJECT.md §6), тепер разом із тілами: з R1e кадр малює те, що лежить
-    /// у [`Scene::bodies`], а не одну сферу радіуса Землі в початку координат.
-    /// Порожній список тіл означає порожнє небо.
+    /// What exactly to draw is said by [`Scene`] -- and that is the whole
+    /// boundary between engine and game (PROJECT.md section 6), now including the
+    /// bodies: since R1e the frame draws what lies in [`Scene::bodies`], not one
+    /// sphere of Earth's radius at the origin. An empty body list means an empty
+    /// sky.
     pub fn draw(
         &mut self,
         gpu: &Gpu,
@@ -951,28 +963,30 @@ impl Frame {
         let aspect = f64::from(width) / f64::from(height);
         Frame::plan(&mut self.passes, scene, aspect);
 
-        // Повітря (етап S). Нічого не коштує, коли його немає: тіло без
-        // атмосфери не запускає ні таблиць, ні проходу, і кадр лишається
-        // бітово тим самим, що до етапу, — на цьому стоїть правило 4.
-        // **Повітря — не завжди** (S5, S7). Уся робота з ним коштує стільки ж,
-        // скільки б не було в сцені, тож пропускати її треба тоді, коли крізь
-        // повітря нема чого дивитися. Умова одна на все: товщина шару в
-        // пікселях кадру. Шар, тонший за піксель, не змінить жодного — ні
-        // таблицею неба, ні об'ємом.
+        // The air (stage S). It costs nothing when there is none: a body without
+        // an atmosphere starts neither tables nor a pass, and the frame stays
+        // bitwise the same as before the stage -- rule 4 rests on that.
         //
-        // Одна умова, а не дві, і це виміряно: на 10⁹ м об'єм уже пропускався,
-        // а таблиця неба рахувалася, і разом із повноекранним проходом вона
-        // коштувала 0.05 мс за диск повітря завширшки в шістнадцяту пікселя.
-        // Двох режимів «видно наполовину» тут не існує.
+        // **The air is not always there** (S5, S7). All the work on it costs the
+        // same whatever is in the scene, so it must be skipped when there is
+        // nothing to see through the air. One condition covers everything: the
+        // thickness of the shell in frame pixels. A shell thinner than a pixel
+        // will not change a single one -- neither through the sky table nor
+        // through the volume.
+        //
+        // One condition and not two, and that is measured: at 1e9 m the volume
+        // was already being skipped while the sky table was still computed, and
+        // together with a full-screen pass it cost 0.05 ms for an air disc a
+        // sixteenth of a pixel wide. There is no "half-visible" mode here.
         let focal = lod::focal_px(FOV_Y, f64::from(height));
         let air = Frame::air_view(scene, aspect).filter(|(atmosphere, bottom, view, _)| {
             Frame::shell_px(atmosphere, *bottom, view, focal) >= 1.0
         });
         let aerial = air.is_some();
         if let Some((atmosphere, bottom, view, surface)) = &air {
-            // Альбедо під небом — з тайлсета тіла, порахованого при
-            // завантаженні. Немає тайлсета — нуль, тобто рівно те, що робив
-            // прохід до T7h.
+            // The albedo under the sky comes from the body's tileset, computed
+            // at load time. No tileset means zero, i.e. exactly what the pass did
+            // before T7h.
             let albedo = surface
                 .and_then(|id| self.planet.terrains.get(id.0))
                 .map_or([0.0; 3], |slot| slot.albedo);
@@ -981,9 +995,10 @@ impl Frame {
             self.sky.prepare_aerial(encoder);
         }
 
-        // Планети: камера віднімається раз на патч, у `double`, а поворот
-        // їде в матриці (R1d). Кількість роботи на CPU більше не залежить
-        // від кількості вершин — тільки від кількості патчів і тіл.
+        // Planets: the camera is subtracted once per patch, in `double`, and the
+        // rotation rides in the matrix (R1d). The amount of CPU work no longer
+        // depends on the number of vertices -- only on the number of patches and
+        // bodies.
         self.planet.upload(
             gpu,
             scene,
@@ -992,33 +1007,40 @@ impl Frame {
             f64::from(height),
         );
 
-        // Ламані проходять той самий шлях, що вершини сфери: віднімання й
-        // поворот у double, звуження до f32 останнім кроком. Інакше
-        // траєкторія за 4·10⁸ м від камери тремтіла б, а сфера поруч — ні.
+        // The polylines take the same path as the sphere's vertices: subtraction
+        // and rotation in double, narrowing to f32 as the last step. Otherwise a
+        // trajectory 4e8 m from the camera would shimmer while the sphere next to
+        // it would not.
         let upload_start = std::time::Instant::now();
         self.lines.upload(gpu, scene, &self.passes);
         self.lines_upload_ms = upload_start.elapsed().as_secs_f64() * 1000.0;
 
-        // Кораблі: та сама дорога, що в ламаних, і той самий порядок —
-        // віднімання в `double`, звуження останнім кроком.
+        // Ships: the same road as the polylines, and the same order --
+        // subtraction in `double`, narrowing as the last step.
         self.ships
             .upload(gpu, scene, &self.passes, &self.planet.terrains);
 
-        // Відбір — до проходів кадру, окремим compute-проходом (R6b). Бар'єри
-        // між ним і читанням `indirect` розставляє wgpu сам: він бачить, що
-        // той самий буфер щойно писали.
+        // Culling comes before the frame's passes, in a compute pass of its own
+        // (R6b). The barriers between it and the reading of `indirect` are placed
+        // by wgpu itself: it sees that the same buffer was just written.
         self.planet.cull(encoder);
 
         if aerial {
-            let depth = self.depth.as_ref().expect("ensure_depth щойно її створив");
+            let depth = self
+                .depth
+                .as_ref()
+                .expect("ensure_depth has just created it");
             self.sky.bind_depth(gpu, &depth.view, width, height);
             for (index, plan) in self.passes.iter().enumerate() {
                 self.sky.set_range(gpu, index, plan.depth_a, plan.depth_b);
             }
         }
 
-        let depth = self.depth.as_ref().expect("ensure_depth щойно її створив");
-        let hdr = self.hdr.as_ref().expect("ensure_hdr щойно її створив");
+        let depth = self
+            .depth
+            .as_ref()
+            .expect("ensure_depth has just created it");
+        let hdr = self.hdr.as_ref().expect("ensure_hdr has just created it");
 
         for (index, plan) in self.passes.iter().enumerate() {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1039,8 +1061,8 @@ impl Frame {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &depth.view,
                     depth_ops: Some(wgpu::Operations {
-                        // Очищається на кожному проході: діапазони не
-                        // змагаються за біти глибини, їх упорядковує порядок.
+                        // Cleared on every pass: the ranges do not compete for
+                        // depth bits, the order arranges them.
                         load: wgpu::LoadOp::Clear(depth::CLEAR),
                         store: wgpu::StoreOp::Store,
                     }),
@@ -1051,11 +1073,12 @@ impl Frame {
                 occlusion_query_set: None,
             });
 
-            // Небо — **першим у найдальшому діапазоні**, одразу після очищення
-            // кольору. Далі геометрія лягає зверху за звичайним тестом глибини,
-            // а ближчі діапазони домальовують поверх, бо колір вони не чистять.
-            // Власного запису глибини прохід неба не робить: воно нескінченно
-            // далеко, і сперечатися з ним нема про що.
+            // The sky comes **first in the farthest range**, right after the
+            // colour clear. Geometry then lands on top of it by the ordinary
+            // depth test, and nearer ranges draw over it because they do not
+            // clear colour. The sky pass writes no depth of its own: it is
+            // infinitely far away, and there is nothing to argue with it
+            // about.
             if index == 0 {
                 if let Some((atmosphere, _, view, _)) = &air {
                     self.sky.draw(&mut pass, view.radius() < atmosphere.top_m);
@@ -1067,12 +1090,13 @@ impl Frame {
             self.lines.draw(&mut pass, scene, index);
             drop(pass);
 
-            // Композиція — **окремим проходом одразу після свого діапазону**, і
-            // окремим саме тому, що вона читає глибину: та сама текстура не
-            // буває одночасно ціллю й ресурсом. А після свого — бо кожен
-            // діапазон чистить глибину, тобто своя глибина є рівно тут.
-            // Пікселі, у яких цей діапазон нічого не намалював, композиція
-            // пропускає: нуль у reversed-Z означає «нескінченно далеко».
+            // The composition goes in **a separate pass right after its own
+            // range**, and separate precisely because it reads the depth: the
+            // same texture is never a target and a resource at once. And after
+            // its own range because every range clears the depth, i.e. its own
+            // depth exists exactly here. Pixels in which this range drew nothing
+            // are skipped by the composition: zero in reversed-Z means
+            // "infinitely far away".
             if aerial {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("aerial composite"),
