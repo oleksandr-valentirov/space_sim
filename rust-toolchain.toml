@@ -1,17 +1,19 @@
-# Тулчейн проєкту. rustup читає цей файл і сам бере потрібне.
+# The project's toolchain. rustup reads this file and picks up what is needed.
 #
-# Навіщо: на машині можуть співіснувати два cargo — системний з apt і той,
-# що поставив rustup. Без цього файлу вибір залежав би від порядку в PATH,
-# тобто ні від чого. Це той самий клас помилки, що й прапорці ядра у двох
-# місцях: не падає, просто тихо збирає не тим.
+# Why: two cargos can coexist on a machine -- the system one from apt and the one
+# rustup installed. Without this file the choice would depend on the order in
+# PATH, i.e. on nothing. That is the same class of bug as core flags kept in two
+# places: it does not fail, it just quietly builds with the wrong one.
 #
-# ⚠ Файл читає САМЕ rustup. Системний cargo з apt його не бачить і збиратиме
-#   своєю версією. Як перевірити, чим збираєте, — README.md, «Версія Rust».
+# WARNING: it is rustup SPECIFICALLY that reads this file. A system cargo from
+#   apt does not see it and will build with its own version. How to check what
+#   you are building with -- README.md, "Версія Rust".
 #
-# channel = "stable", а не закріплена версія: відтворюваність у цьому проєкті
-# живе не тут. Числа рахує C, його прапорці — в core/cflags.txt, а звірка —
-# у хешах сценаріїв. Rust тут оркеструє, і закріплювати його патч-версію
-# означало б обслуговувати те, що ні на що не впливає.
+# channel = "stable" rather than a pinned version: reproducibility in this
+# project does not live here. The numbers are computed by C, its flags are in
+# core/cflags.txt, and the comparison is in the scenario hashes. Rust
+# orchestrates here, and pinning its patch version would mean maintaining
+# something that affects nothing.
 
 [toolchain]
 channel = "stable"

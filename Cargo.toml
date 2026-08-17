@@ -1,8 +1,7 @@
-# Робоча область. Поки що один член — межа C↔Rust (ROADMAP D1).
+# The workspace.
 #
-# Решта крейтів з PROJECT.md §3 (core-rs, engine, game, tools) додаються сюди
-# у міру появи, а не наперед: порожній крейт у members ламає `cargo build`,
-# і це був би шум замість плану.
+# Crates are added here as they appear rather than in advance: an empty crate in
+# members breaks `cargo build`, which would be noise instead of a plan.
 
 [workspace]
 resolver = "2"
@@ -18,36 +17,37 @@ members = [
     "tools/slang-probe",
 ]
 
-# Мінімальна версія Rust.
+# The minimum Rust version.
 #
-# Було 1.75 — стільки вимагав cargo заради таблиці [lints]. Стало 1.87: цього
-# вимагає wgpu 30, який приїхав із розвідкою P0 (tools/gpu-probe).
+# It was 1.75 -- that is what cargo demanded for the [lints] table. Then 1.87,
+# demanded by wgpu 30, which arrived with reconnaissance P0 (tools/gpu-probe).
+# Now 1.95, demanded by egui 0.36, which arrived with U1a (the game's interface,
+# ROADMAP-UI.md). The threshold here is always someone else's -- it is set by the
+# most demanding dependency, not by our code; rustup stable on the developer's
+# machine is 1.97.1, so there is margin.
 #
-# Тулчейн задає rust-toolchain.toml, але його читає лише rustup, тож
-# системний cargo з apt міг би зібрати проєкт мовчки й не тим. Тепер не
-# зіб'є — але перевірено, що падає він НЕ на цьому порозі: спершу спотикається
-# про транзитивну залежність на edition2024 і каже саме про неї. Тобто гучно,
-# але не пояснюючи причини. Причина — у README.md, «Версія Rust».
-# І стало 1.95: цього вимагає egui 0.36, який приїхав із U1a (інтерфейс гри,
-# ROADMAP-UI.md). Поріг тут завжди чужий — його задає найвимогливіша
-# залежність, а не наш код; rustup stable на машині розробника 1.97.1, тож
-# запас є. Причина, з якої поріг узагалі записаний, лишається тією самою:
-# збірка не тим тулчейном має падати гучно, а не мовчки.
+# The toolchain is set by rust-toolchain.toml, but only rustup reads that, so a
+# system cargo from apt could build the project silently with the wrong one. Now
+# it will not -- but it is measured that it fails NOT on this threshold: it first
+# trips over a transitive dependency on edition2024 and speaks about that one.
+# That is, loudly, but without explaining the reason. The reason is in README.md,
+# "Версія Rust".
 [workspace.package]
 rust-version = "1.95"
 
-# Профіль релізу чіпаємо свідомо й мінімально. Оптимізація Rust на бітову
-# відтворюваність ядра не впливає — числа рахує C, і його прапорці задані
-# в core/cflags.txt, а не тут (PROJECT.md §4).
+# The release profile is touched deliberately and minimally. Rust optimisation
+# does not affect the bitwise reproducibility of the core -- the numbers are
+# computed by C, and its flags are set in core/cflags.txt, not here
+# (PROJECT.md section 4).
 [profile.release]
 debug = true
 
-# clippy увімкнений, попередження = помилки (CLAUDE.md §«Стиль Rust»).
+# clippy is on, warnings = errors (CLAUDE.md, "Стиль Rust — свідомо простий").
 #
-# Тут — лише групи clippy. «Попередження компілятора = помилки» вмикається
-# в CI через `-D warnings`, а не тут, і це свідомо: `deny(warnings)` у
-# маніфесті робить помилкою кожну недописану змінну під час редагування,
-# тобто заважає рівно тоді, коли код пишуть. У CI воно ловить те саме,
-# але не свариться на незакінчену думку.
+# Only clippy's groups are here. "Compiler warnings = errors" is turned on in CI
+# through `-D warnings` rather than here, and that is deliberate:
+# `deny(warnings)` in the manifest makes every half-written variable an error
+# while editing, i.e. gets in the way exactly when the code is being written. In
+# CI it catches the same thing without scolding an unfinished thought.
 [workspace.lints.clippy]
 all = "deny"

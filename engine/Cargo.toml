@@ -6,35 +6,36 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-# Межа C↔Rust. З H5 рушій рахує траєкторії сам, а не читає їх з CSV —
-# `engine::live`. Ніякого `unsafe` це сюди не приносить: увесь він лишається
-# в `core-rs` (CLAUDE.md, інваріант 1).
+# The C<->Rust boundary. Since H5 the engine computes trajectories itself rather
+# than reading them from CSV -- `engine::live`. This brings no `unsafe` here: all
+# of it stays in `core-rs` (CLAUDE.md, invariant 1).
 core-rs = { path = "../core-rs" }
 
 pollster = "1.0.1"
 wgpu = "30"
 winit = "0.30"
 
-# Знімок кадру у файл. Кодек не пишемо самі (PROJECT.md, «чого НЕ робимо»);
-# png малий і робить рівно одне.
+# A screenshot of the frame into a file. We do not write the codec ourselves
+# (CLAUDE.md, "Чого НЕ робимо"); png is small and does exactly one thing.
 png = "0.18"
 
-# Інтерфейс (ROADMAP-UI.md, U1). Провід живе тут, віджети пише `game` — і
-# саме тому `engine` реекспортує `egui`: двох версій egui в грі не може
-# виникнути за побудовою, а не за домовленістю.
+# The interface (ROADMAP-UI.md, U1). The wiring lives here, the widgets are
+# written by `game` -- and that is exactly why `engine` re-exports `egui`: two
+# versions of egui in the game cannot arise by construction rather than by
+# agreement.
 #
-# 0.36 вимагає wgpu ^30 і winit ^0.30.13 — рівно те, що вже стоїть вище.
-# `egui-winit` без типових фіч: вони тягнуть `accesskit` з власним деревом
-# залежностей, а доступність зараз не в обсязі. `links` тут не потрібен —
-# сторонні крейти, не наші.
+# 0.36 requires wgpu ^30 and winit ^0.30.13 -- exactly what already stands above.
+# `egui-winit` without default features: they pull in `accesskit` with a
+# dependency tree of its own, and accessibility is out of scope for now. `links`
+# is not needed here -- these are third-party crates, not ours.
 egui = "0.36"
 egui-wgpu = "0.36"
 egui-winit = { version = "0.36", default-features = false }
 
-# Тільки для тестів рельєфу (R5c): щоб перевірити, що тайл доїжджає до
-# кадру, тест мусить його скукувати. Залежність саме `dev-`, тобто в гру
-# кукер не лінкується — і напрямок `dem-cook → engine` від цього не
-# перевертається: `cargo` бачить цикл лише між звичайними залежностями.
+# For the terrain tests only (R5c): to check that a tile reaches the frame, the
+# test must cook it. The dependency is a `dev-` one specifically, i.e. the cooker
+# is not linked into the game -- and the direction `dem-cook -> engine` is not
+# reversed by it: `cargo` sees a cycle only between ordinary dependencies.
 [dev-dependencies]
 dem-cook = { path = "../tools/dem-cook" }
 
