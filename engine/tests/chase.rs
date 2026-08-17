@@ -1,13 +1,13 @@
-//! Камера третьої особи справді показує, як корабель повертається (етап V,
-//! крок V4).
+//! The third-person camera really does show the ship turning (stage V, step
+//! V4).
 //!
-//! Оракул — **частка змінених пікселів**, а не «виглядає інакше». Камера при
-//! цьому стоїть нерухомо: рухається тільки корабель, тож усе, що змінилося в
-//! кадрі, змінив саме поворот.
+//! The oracle is the **share of changed pixels**, not "it looks different". The
+//! camera stands still while it does: only the ship moves, so everything that
+//! changed in the frame was changed by the rotation itself.
 //!
-//! Це й перевіряє головне рішення `engine::chase`: камера бере від корабля
-//! позицію, а не орієнтацію. Прив'язана до осей корабля, вона дала б нуль тут
-//! у всіх трьох рядках одразу.
+//! That is what checks the main decision of `engine::chase`: the camera takes
+//! position from the ship, not orientation. Tied to the ship's axes, it would
+//! give zero here on all three rows at once.
 
 use engine::chase::Chase;
 use engine::gpu::Gpu;
@@ -17,12 +17,13 @@ use engine::{frame, ship, shot};
 
 const SIZE: u32 = 256;
 
-/// Корабель стоїть далеко від початку координат — там, де `f32` уже нічого не
-/// тримає, а camera-relative тримає (F4).
+/// The ship stands far from the origin -- where `f32` no longer holds anything
+/// and camera-relative does (F4).
 const CENTRE: [f64; 3] = [4.1e6, -2.7e6, 3.3e6];
 
-/// Орієнтир «вгору» — косий, щоб жодна вісь корабля не збіглася з віссю
-/// екрана: симетрична фікстура вже ховала дві помилки поспіль (D13, D14).
+/// The "up" reference is oblique, so that no axis of the ship coincides with an
+/// axis of the screen: a symmetric fixture has already hidden two bugs in a row
+/// (D13, D14).
 fn up() -> [f64; 3] {
     let v = [0.37, -0.51, 0.77_f64];
     let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
@@ -39,14 +40,14 @@ fn scene_with(orientation: [f64; 4]) -> Scene {
         roughness: engine::ship::HULL_ROUGHNESS,
         metallic: engine::ship::HULL_METALLIC,
     };
-    // Порожнє небо навмисно: жодного тіла, жодної ламаної. Те, що змінилося в
-    // кадрі, могло змінити тільки повернення корабля.
+    // An empty sky deliberately: no body, no polyline. Whatever changed in the
+    // frame could only have been changed by the ship turning.
     let mut scene = Scene::new(Chase::default().camera(&ship, up()));
     scene.ships.push(ship);
     scene
 }
 
-/// Кватерніон повороту на `angle` навколо осі `axis`.
+/// The quaternion of a rotation by `angle` about the axis `axis`.
 fn turn(axis: [f64; 3], angle: f64) -> [f64; 4] {
     let half = 0.5 * angle;
     let (s, c) = half.sin_cos();
@@ -58,11 +59,11 @@ fn drawn(shot: &Shot, x: u32, y: u32) -> bool {
     [p[0], p[1], p[2]] != frame::CLEAR_BYTES
 }
 
-/// Скільки пікселів силуету змінилося, у частках від самого силуету.
+/// How many silhouette pixels changed, as a share of the silhouette itself.
 ///
-/// Знаменник — об'єднання двох силуетів, а не весь кадр: корабель займає в
-/// кадрі кілька відсотків, і частка від кадру говорила б про поле зору, а не
-/// про поворот.
+/// The denominator is the union of the two silhouettes, not the whole frame:
+/// the ship takes a few percent of the frame, and a share of the frame would
+/// speak about the field of view rather than about the rotation.
 fn silhouette_change(a: &Shot, b: &Shot) -> f64 {
     let mut union = 0usize;
     let mut differing = 0usize;
@@ -77,11 +78,11 @@ fn silhouette_change(a: &Shot, b: &Shot) -> f64 {
             }
         }
     }
-    assert!(union > 0, "у кадрі немає корабля взагалі");
+    assert!(union > 0, "there is no ship in the frame at all");
     differing as f64 / union as f64
 }
 
-/// Прямокутник, у який вписаний силует.
+/// The rectangle the silhouette is inscribed in.
 fn bounds(shot: &Shot) -> (u32, u32, u32, u32) {
     let mut bounds: Option<(u32, u32, u32, u32)> = None;
     for y in 0..shot.height {
@@ -95,25 +96,27 @@ fn bounds(shot: &Shot) -> (u32, u32, u32, u32) {
             });
         }
     }
-    bounds.expect("у кадрі немає корабля")
+    bounds.expect("there is no ship in the frame")
 }
 
-/// Поворот навколо кожної з трьох осей видно в кадрі.
+/// A rotation about each of the three axes is visible in the frame.
 ///
-/// Кут — 40°, а не 90°, і це не смак: **стабілізаторів чотири**, тож чверть
-/// оберту навколо носа переводить силует сам у себе, і крен виглядав би
-/// нерухомим за будь-якої правильної камери. Сорок градусів не збігаються з
-/// жодною симетрією меша.
+/// The angle is 40 deg, not 90, and that is not taste: **there are four fins**,
+/// so a quarter turn about the nose maps the silhouette onto itself, and roll
+/// would look motionless under any correct camera. Forty degrees coincide with
+/// no symmetry of the mesh.
 ///
-/// Виміряно, у частках силуету: **0.578 навколо x, 0.305 навколо y і 0.107
-/// навколо z**. Третє число менше не через камеру, а через форму: корпус —
-/// тіло обертання, тож крен видно лише стабілізаторами й ілюмінатором. Рівно
-/// це V1 і виміряв на самому меші, коли викинутий ілюмінатор обвалив
-/// неузгодженість крену до 8·10⁻¹⁶.
+/// Measured, as shares of the silhouette: **0.578 about x, 0.305 about y and
+/// 0.107 about z**. The third number is smaller not because of the camera but
+/// because of the shape: the hull is a solid of revolution, so roll is visible
+/// only through the fins and the porthole. That is exactly what V1 measured on
+/// the mesh itself, when removing the porthole collapsed the roll mismatch to
+/// 8e-16.
 ///
-/// Поріг — 0.05, удвічі нижчий за найслабше з трьох: він ловить «камера
-/// повернулася разом із кораблем» (нуль) і «поворот не доїхав до GPU» (теж
-/// нуль), а не міряє точні числа, яким нема на що спертися.
+/// The threshold is 0.05, twice below the weakest of the three: it catches "the
+/// camera turned along with the ship" (zero) and "the rotation did not reach
+/// the GPU" (zero too), it does not measure exact numbers that have nothing to
+/// rest on.
 #[test]
 fn every_axis_of_rotation_changes_the_silhouette() {
     let Some(gpu) = Gpu::for_tests() else {
@@ -122,7 +125,7 @@ fn every_axis_of_rotation_changes_the_silhouette() {
 
     let angle = 40.0_f64.to_radians();
     let upright = shot::take_scene(&gpu, SIZE, SIZE, &scene_with([1.0, 0.0, 0.0, 0.0]))
-        .expect("кадр з кораблем");
+        .expect("a frame with a ship");
 
     for (name, axis) in [
         ("x", [1.0, 0.0, 0.0]),
@@ -130,21 +133,22 @@ fn every_axis_of_rotation_changes_the_silhouette() {
         ("z", [0.0, 0.0, 1.0]),
     ] {
         let turned = shot::take_scene(&gpu, SIZE, SIZE, &scene_with(turn(axis, angle)))
-            .expect("кадр з кораблем");
+            .expect("a frame with a ship");
         let change = silhouette_change(&upright, &turned);
         assert!(
             change > 0.05,
-            "поворот навколо {name}: силует змінився лише на {change}"
+            "rotation about {name}: the silhouette changed by only {change}"
         );
     }
 }
 
-/// Камера тримає корабель у кадрі, як би він не крутився.
+/// The camera keeps the ship in frame however it turns.
 ///
-/// Друга половина того самого твердження: поворот міняє силует, але не тягне
-/// його з кадру — інакше «змінилося все» означало б, що корабель просто
-/// поїхав за край. Перевіряється центр описаного прямокутника: він мусить
-/// лишитися в центрі кадру з точністю до розміру самого корабля.
+/// The other half of the same statement: a rotation changes the silhouette but
+/// does not drag it out of the frame -- otherwise "everything changed" would
+/// mean the ship had simply left over the edge. What is checked is the centre
+/// of the bounding rectangle: it must stay in the centre of the frame to within
+/// the size of the ship itself.
 #[test]
 fn the_ship_stays_in_the_middle_however_it_turns() {
     let Some(gpu) = Gpu::for_tests() else {
@@ -158,20 +162,21 @@ fn the_ship_stays_in_the_middle_however_it_turns() {
         turn([0.0, 1.0, 0.0], angle),
         turn([0.0, 0.0, 1.0], angle),
     ] {
-        let shot =
-            shot::take_scene(&gpu, SIZE, SIZE, &scene_with(orientation)).expect("кадр з кораблем");
+        let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene_with(orientation))
+            .expect("a frame with a ship");
         let (x0, y0, x1, y1) = bounds(&shot);
         let centre = [
             0.5 * f64::from(x0 + x1) - 0.5 * f64::from(SIZE),
             0.5 * f64::from(y0 + y1) - 0.5 * f64::from(SIZE),
         ];
-        // Допуск — половина висоти силуету: центр описаного прямокутника не
-        // збігається з центром корабля (ніс довший за хвіст), і вимагати
-        // більшого означало б перевіряти форму меша, а не камеру.
+        // The tolerance is half the height of the silhouette: the centre of the
+        // bounding rectangle does not coincide with the centre of the ship (the
+        // nose is longer than the tail), and demanding more would mean checking
+        // the shape of the mesh rather than the camera.
         let tolerance = 0.5 * f64::from(y1 - y0 + 1);
         assert!(
             centre[0].abs() < tolerance && centre[1].abs() < tolerance,
-            "корабель зсунувся на {centre:?} px за допуску {tolerance}"
+            "the ship shifted by {centre:?} px against a tolerance of {tolerance}"
         );
     }
 }
