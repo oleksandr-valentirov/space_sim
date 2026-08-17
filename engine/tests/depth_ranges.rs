@@ -1,13 +1,15 @@
-//! Два діапазони глибини вперше в справжній сцені (етап V, крок V3).
+//! Two depth ranges in a real scene for the first time (stage V, step V3).
 //!
-//! До цього кроку `plan` рахував один прохід завжди: сцена зондів рушія має
-//! розмах 22.7, тобто менший за один буфер глибини (F3: сім порядків). Кадр
-//! із корпусом за метри й планетою за мільйони метрів — перший, у якому їх
-//! два, і перша перевірка того, заради чого Q2 лишив діапазони в конструкції.
+//! Before this step `plan` always counted one pass: the engine-probe scene has
+//! a span of 22.7, i.e. less than one depth buffer (F3: seven orders). A frame
+//! with a hull metres away and a planet millions of metres away is the first
+//! with two of them, and the first check of what Q2 kept the ranges in the
+//! design for.
 //!
-//! Тут перевіряється те, що можна побачити лише на GPU: чи цілий корпус і чи
-//! немає шва там, де діапазони сходяться. Арифметика самої межі — юніт-тести
-//! `engine::frame` (`the_range_boundary_never_falls_inside_the_hull`).
+//! What is checked here is what only a GPU can show: whether the hull is
+//! whole, and whether there is a seam where the ranges meet. The arithmetic of
+//! the boundary itself is in the `engine::frame` unit tests
+//! (`the_range_boundary_never_falls_inside_the_hull`).
 
 use engine::camera::Camera;
 use engine::gpu::Gpu;
@@ -19,10 +21,12 @@ const SIZE: u32 = 256;
 const FOV_Y: f64 = std::f64::consts::PI / 3.0;
 const ASPECT: f64 = 1.0;
 
-/// Висота камери над ґрунтом у сцені [`ship_over_the_ground`], метри.
+/// The camera's altitude above the ground in the [`ship_over_the_ground`]
+/// scene, metres.
 const EYE_ALTITUDE_M: f64 = 1000.0;
 
-/// Скільки метрів від камери до корабля в тій самій сцені, упоперек і вниз.
+/// How many metres from the camera to the ship in that same scene, across and
+/// down.
 const GROUND_RANGE_M: f64 = 12.0;
 const GROUND_DROP_M: f64 = 4.0;
 
@@ -37,8 +41,8 @@ fn earth() -> Body {
         orientation: [1.0, 0.0, 0.0, 0.0],
         tiles: TileSet::Smooth,
         colour: frame::COLOUR,
-        // Без повітря навмисно: фон лишається кольором очищення, тож будь-яка
-        // дірка в кадрі видна як дірка. Небо накрило б її собою.
+        // No air, deliberately: the background stays the clear colour, so any
+        // hole in the frame shows up as a hole. A sky would cover it over.
         air: None,
     }
 }
@@ -60,7 +64,7 @@ fn drawn(shot: &Shot, x: u32, y: u32) -> bool {
     [p[0], p[1], p[2]] != frame::CLEAR_BYTES
 }
 
-/// Прямокутник, у який вписані всі намальовані пікселі.
+/// The rectangle bounding every drawn pixel.
 fn lit_bounds(shot: &Shot) -> Option<(u32, u32, u32, u32)> {
     let mut bounds: Option<(u32, u32, u32, u32)> = None;
     for y in 0..shot.height {
@@ -77,9 +81,10 @@ fn lit_bounds(shot: &Shot) -> Option<(u32, u32, u32, u32)> {
     bounds
 }
 
-/// Силует того самого меша, порахований на CPU — оракул V2, без змін, окрім
-/// одного: корабель тут не в початку координат, тож меш треба перенести туди,
-/// де він стоїть. Поворот тотожний, і це вибір сцени, а не спрощення оракула.
+/// The silhouette of the same mesh computed on the CPU -- the V2 oracle,
+/// unchanged except in one thing: the ship here is not at the origin, so the
+/// mesh has to be moved to where it stands. The rotation is the identity, and
+/// that is a choice of the scene rather than a simplification of the oracle.
 fn projected_bounds(camera: &Camera, height_m: f64, centre: [f64; 3]) -> (f64, f64, f64, f64) {
     let mesh = ship::generate(height_m);
     let mut bounds = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
@@ -87,7 +92,7 @@ fn projected_bounds(camera: &Camera, height_m: f64, centre: [f64; 3]) -> (f64, f
         let world = [p[0] + centre[0], p[1] + centre[1], p[2] + centre[2]];
         let screen = camera
             .to_screen(FOV_Y, SIZE, SIZE, world)
-            .expect("вершина позаду камери — сцена не та");
+            .expect("a vertex behind the camera -- wrong scene");
         bounds.0 = bounds.0.min(f64::from(screen[0]));
         bounds.1 = bounds.1.min(f64::from(screen[1]));
         bounds.2 = bounds.2.max(f64::from(screen[0]));
@@ -96,15 +101,17 @@ fn projected_bounds(camera: &Camera, height_m: f64, centre: [f64; 3]) -> (f64, f
     bounds
 }
 
-/// Корабель на орбіті, планета **за спиною камери**.
+/// The ship in orbit, the planet **behind the camera**.
 ///
-/// Диск Землі з 400 км займає 70.2° від надира, тобто з кадру, спрямованого в
-/// зеніт, він випадає цілком при будь-якому куті огляду до 109°. Проходів при
-/// цьому все одно два: `far_for` міряє розмах сцени, а не того, що видно —
-/// планета лишається в сцені й тягне далеку межу на 1.3·10⁷ м.
+/// From 400 km the Earth's disc spans 70.2 deg from the nadir, so it falls
+/// entirely out of a frame aimed at the zenith for any field of view up to
+/// 109 deg. There are still two passes at that: `far_for` measures the span of
+/// the scene, not of what is visible -- the planet stays in the scene and pulls
+/// the far boundary out to 1.3e7 m.
 ///
-/// Тому в кадрі є рівно корабель, і його силует можна порівняти з проєкцією
-/// тим самим оракулом, що в V2 — але тепер із двома діапазонами, а не одним.
+/// So the frame holds exactly the ship, and its silhouette can be compared
+/// against the projection by the same oracle as in V2 -- but now with two
+/// ranges instead of one.
 fn ship_against_space() -> Scene {
     let radius = sphere::EARTH_RADIUS_M + 400_000.0;
     let eye = [radius, 0.0, 0.0];
@@ -117,11 +124,11 @@ fn ship_against_space() -> Scene {
     scene
 }
 
-/// Місцевий базис сцени з ґрунтом: `up` — від центра планети, `east` і
-/// `north` — упоперек.
+/// The local basis of the ground scene: `up` away from the planet's centre,
+/// `east` and `north` across it.
 ///
-/// Напрямок косий навмисно: фікстура, що стоїть рівно над центром грані куба,
-/// уже ховала дві помилки поспіль (D13, D14).
+/// The direction is oblique deliberately: a fixture standing exactly over the
+/// centre of a cube face has already hidden two mistakes in a row (D13, D14).
 fn ground_basis() -> ([f64; 3], [f64; 3], [f64; 3]) {
     let unit = |v: [f64; 3]| {
         let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
@@ -137,33 +144,37 @@ fn ground_basis() -> ([f64; 3], [f64; 3], [f64; 3]) {
     (up, east, north)
 }
 
-/// Корабель поруч із камерою, обидва за кілометр над ґрунтом.
+/// The ship beside the camera, both a kilometre above the ground.
 ///
-/// Це вигляд від третьої особи в польоті, і сцена потрібна саме тому, що в ній
-/// **межа діапазонів ріже видиму поверхню посеред кадру**: near = 0.96 м
-/// (десята частина відстані до корпусу), far = 1.27·10⁷ м, тобто межа стоїть
-/// за 3.51 км, а горизонт із кілометра — за 113 км.
+/// This is the third-person view in flight, and the scene is needed precisely
+/// because in it **the range boundary cuts the visible surface in the middle
+/// of the frame**: near = 0.96 m (a tenth of the distance to the hull),
+/// far = 1.27e7 m, so the boundary stands at 3.51 km while the horizon from a
+/// kilometre up is at 113 km.
 ///
-/// ## Чому кілометр, а не десять метрів — і чому це не смак
+/// ## Why a kilometre and not ten metres -- and why that is not taste
 ///
-/// Висота камери **скорочується**, і в цьому вся річ. `near` — десята частина
-/// висоти, `far` — приблизно діаметр планети, тож для камери **без корабля**
-/// межа завжди виходить `√(2R·h/10)`, тобто рівно `горизонт/3.16`. Ґрунт на
-/// такій відстані стоїть під кутом 1.58 нахилу горизонту — а сам нахил на
-/// десяти метрах це 1.77 мрад проти пікселя в 4.09 мрад. Тобто вся ділянка
-/// другого діапазону лежить **у чверті пікселя** під горизонтом, і перевірити
-/// там не можна нічого: виміряно зламом, розсунуті вчетверо площини лишали
-/// кадр без жодної дірки.
+/// The camera's altitude **cancels**, and therein lies the whole thing. `near`
+/// is a tenth of the altitude, `far` is roughly the planet's diameter, so for a
+/// camera **without a ship** the boundary always comes out as
+/// `sqrt(2R*h/10)`, i.e. exactly `horizon/3.16`. Ground at that distance sits
+/// at 1.58 of the horizon's dip angle -- and the dip itself at ten metres is
+/// 1.77 mrad against a pixel of 4.09 mrad. So the whole strip of the second
+/// range lies **within a quarter of a pixel** below the horizon, and nothing
+/// can be checked there: measured by breaking it, planes pushed apart
+/// fourfold left the frame without a single hole.
 ///
-/// Корабель за дванадцять метрів розриває це співвідношення: `near` тепер
-/// його, а не висоти, тож межа лишається на трьох із половиною кілометрах,
-/// поки горизонт іде на сто тринадцять. Ґрунт на межі стоїть під 16°,
-/// горизонт — під 1°, і між ними шістдесят рядків кадру.
+/// A ship twelve metres away breaks that relation: `near` is now its distance
+/// rather than the altitude, so the boundary stays at three and a half
+/// kilometres while the horizon goes out to a hundred and thirteen. Ground at
+/// the boundary sits at 16 deg and the horizon at 1 deg, with sixty rows of
+/// frame between them.
 ///
-/// Корабель опущений на чотири метри нижче камери навмисно: так увесь корпус
-/// лежить **під** лінією горизонту. Корабель, що стирчить у небо, дає в своїх
-/// стовпцях законні пікселі фону під носом, і оракул шва довелося б робити
-/// складнішим за те, що він перевіряє.
+/// The ship is dropped four metres below the camera deliberately: that way the
+/// whole hull lies **below** the horizon line. A ship poking up into the sky
+/// gives legitimate background pixels under its nose in its own columns, and
+/// the seam oracle would have to be made more complicated than what it
+/// checks.
 fn ship_over_the_ground() -> Scene {
     let radius = sphere::EARTH_RADIUS_M;
     let (up, east, _) = ground_basis();
@@ -187,37 +198,40 @@ fn ship_over_the_ground() -> Scene {
     scene
 }
 
-/// Обидві сцени справді дають два діапазони — інакше решта файлу перевіряє
-/// однопрохідний кадр і мовчить про це.
+/// Both scenes really do ask for two ranges -- otherwise the rest of the file
+/// is checking a single-pass frame and saying nothing about it.
 ///
-/// Друге твердження — про сцену з ґрунтом, і воно й робить перевірку шва
-/// непорожньою: **межа мусить лягти між камерою й горизонтом**. Горизонт
-/// сфери — точна формула, `√(2Rh)`, без наближень, тож і це число сцени, а не
-/// смак. Ляже межа далі — шва не буде з тієї простої причини, що обидва
-/// діапазони не сходяться ніде у видимому кадрі.
+/// The second claim is about the ground scene, and it is what makes the seam
+/// check non-empty: **the boundary has to land between the camera and the
+/// horizon**. A sphere's horizon is an exact formula, `sqrt(2Rh)`, with no
+/// approximations, so this too is a number of the scene rather than taste. If
+/// the boundary lands further out there will be no seam, for the simple reason
+/// that the two ranges meet nowhere in the visible frame.
 #[test]
 fn both_scenes_ask_for_two_depth_ranges() {
     let orbit = frame::Frame::depth_ranges(&ship_against_space(), ASPECT);
-    assert_eq!(orbit.len(), 2, "корабель на орбіті: {orbit:?}");
+    assert_eq!(orbit.len(), 2, "the ship in orbit: {orbit:?}");
 
     let ground = frame::Frame::depth_ranges(&ship_over_the_ground(), ASPECT);
-    assert_eq!(ground.len(), 2, "корабель на ґрунті: {ground:?}");
+    assert_eq!(ground.len(), 2, "the ship over the ground: {ground:?}");
 
     let horizon = (2.0 * sphere::EARTH_RADIUS_M * EYE_ALTITUDE_M).sqrt();
     assert!(
         ground[1] < horizon,
-        "межа {} м лежить за горизонтом ({horizon} м) — ґрунту з другого \
-         діапазону в кадрі немає, і шву нема де з'явитися",
+        "the boundary at {} m lies beyond the horizon ({horizon} m) -- there is \
+         no ground from the second range in frame, and no place for a seam to \
+         appear",
         ground[1]
     );
 }
 
-/// Другий діапазон не забирає корпус: силует той самий, що й без нього.
+/// The second range does not clip the hull: the silhouette is the same as
+/// without it.
 ///
-/// Оракул — проєкція меша через `Camera::to_screen`, тобто рівно той, яким
-/// V2 міряв корабель в однопрохідному кадрі. Допуск асиметричний із тієї ж
-/// причини: растеризатор здатен загубити вістря, але не намалювати поза
-/// геометрією.
+/// The oracle is the mesh projected through `Camera::to_screen`, i.e. exactly
+/// the one V2 measured the ship with in a single-pass frame. The tolerance is
+/// asymmetric for the same reason: a rasteriser can lose a spike, but it
+/// cannot draw outside the geometry.
 #[test]
 fn two_ranges_do_not_clip_the_hull() {
     let Some(gpu) = gpu() else {
@@ -225,39 +239,44 @@ fn two_ranges_do_not_clip_the_hull() {
     };
 
     let scene = ship_against_space();
-    let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene).expect("кадр з кораблем");
-    let (x0, y0, x1, y1) = lit_bounds(&shot).expect("у кадрі порожньо — корабля немає");
+    let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene).expect("the frame with the ship");
+    let (x0, y0, x1, y1) = lit_bounds(&shot).expect("the frame is empty -- there is no ship");
     let expected = projected_bounds(&scene.camera, ship::DEFAULT_HEIGHT_M, scene.ships[0].centre);
 
     let inside = |what: &str, drawn: f64, want: f64, sign: f64| {
         let over = sign * (drawn - want);
         assert!(
             over <= 1.0,
-            "{what}: кадр вийшов за проєкцію на {over} px ({drawn} проти {want})"
+            "{what}: the frame went past the projection by {over} px ({drawn} \
+             against {want})"
         );
         assert!(
             over >= -2.5,
-            "{what}: кадр не дотягнув до проєкції {} px ({drawn} проти {want})",
+            "{what}: the frame fell short of the projection by {} px ({drawn} \
+             against {want})",
             -over
         );
     };
-    inside("ліворуч", f64::from(x0), expected.0, -1.0);
-    inside("вгорі", f64::from(y0), expected.1, -1.0);
-    inside("праворуч", f64::from(x1), expected.2, 1.0);
-    inside("внизу", f64::from(y1), expected.3, 1.0);
+    inside("left", f64::from(x0), expected.0, -1.0);
+    inside("top", f64::from(y0), expected.1, -1.0);
+    inside("right", f64::from(x1), expected.2, 1.0);
+    inside("bottom", f64::from(y1), expected.3, 1.0);
 }
 
-/// Рядок горизонту в кожному стовпці кадру — **з геометрії, а не з кадру**.
+/// The horizon row in every column of the frame -- **from geometry, not from
+/// the frame**.
 ///
-/// Дотичні точки сфери з ока на радіусі `r` лежать на колі, і воно виражається
-/// точно: `E·T = R²` для `|T| = R`, звідки `T(φ) = (R²/r)·up + R·√(1−R²/r²)·w(φ)`.
-/// Спроєктований `Camera::to_screen`, цей набір і є лінією горизонту.
+/// The tangent points of a sphere from an eye at radius `r` lie on a circle,
+/// and it is expressed exactly: `E.T = R^2` for `|T| = R`, whence
+/// `T(phi) = (R^2/r)*up + R*sqrt(1 - R^2/r^2)*w(phi)`. Projected through
+/// `Camera::to_screen`, that set is the horizon line.
 ///
-/// Питати про неї кадр не можна, і це головний урок цієї перевірки: дірка
-/// **на самому горизонті** просто зсуває «перший намальований піксель» униз, і
-/// оракул, який бере горизонт із кадру, не бачить її взагалі. Виміряно
-/// зламом: розсунуті на порядок площини забирають шість рядків ґрунту, а
-/// перевірка «нижче першого намальованого дірок немає» лишається зеленою.
+/// The frame must not be asked about it, and that is this check's main lesson:
+/// a hole **right on the horizon** merely shifts the "first drawn pixel" down,
+/// and an oracle that takes the horizon from the frame does not see it at all.
+/// Measured by breaking it: planes pushed apart by an order of magnitude take
+/// away six rows of ground while the check "there are no holes below the first
+/// drawn pixel" stays green.
 fn horizon_rows(camera: &Camera, altitude_m: f64) -> Vec<Option<f64>> {
     let radius = sphere::EARTH_RADIUS_M;
     let r = radius + altitude_m;
@@ -267,8 +286,9 @@ fn horizon_rows(camera: &Camera, altitude_m: f64) -> Vec<Option<f64>> {
     let across = radius * (1.0 - (radius / r) * (radius / r)).sqrt();
 
     let mut rows: Vec<Option<f64>> = vec![None; SIZE as usize];
-    // Кроків більше, ніж стовпців, і з великим запасом: горизонт перетинає
-    // кадр навскіс, тож рідка вибірка лишила б стовпці без відповіді.
+    // More steps than columns, and with a large margin: the horizon crosses the
+    // frame at an angle, so a sparse sampling would leave columns without an
+    // answer.
     let steps = 20_000;
     for k in 0..steps {
         let phi = 2.0 * std::f64::consts::PI * f64::from(k) / f64::from(steps);
@@ -296,19 +316,19 @@ fn horizon_rows(camera: &Camera, altitude_m: f64) -> Vec<Option<f64>> {
     rows
 }
 
-/// Там, де діапазони сходяться, поверхня не рветься — і доходить до самого
-/// горизонту.
+/// Where the ranges meet, the surface does not tear -- and it reaches all the
+/// way to the horizon.
 ///
-/// Два твердження, і друге важливіше за перше:
+/// Two claims, and the second matters more than the first:
 ///
-/// - **ґрунт починається на горизонті**, а не там, де вийшло. Саме сюди
-///   впав би шов на межі діапазонів: у цій сцені межа стоїть за 3.57 км, а
-///   горизонт — за 11.3 км, тобто ділянка другого діапазону тонка й лежить
-///   упритул до горизонту;
-/// - **нижче горизонту дірок немає жодної.**
+/// - **the ground begins at the horizon**, not wherever it happened to. That
+///   is exactly where a seam at the range boundary would land: in this scene
+///   the boundary stands at 3.57 km and the horizon at 11.3 km, so the strip
+///   of the second range is thin and lies right up against the horizon;
+/// - **below the horizon there is not one hole.**
 ///
-/// Допуск — піксель: горизонт лягає між рядками, і растеризатор фарбує той,
-/// центр якого накрито.
+/// The tolerance is a pixel: the horizon lands between rows, and the
+/// rasteriser paints the one whose centre is covered.
 #[test]
 fn the_surface_has_no_seam_where_the_ranges_meet() {
     let Some(gpu) = gpu() else {
@@ -316,7 +336,7 @@ fn the_surface_has_no_seam_where_the_ranges_meet() {
     };
 
     let scene = ship_over_the_ground();
-    let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene).expect("кадр із ґрунтом");
+    let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene).expect("the frame with ground");
     let horizon = horizon_rows(&scene.camera, EYE_ALTITUDE_M);
 
     let mut checked = 0;
@@ -324,7 +344,7 @@ fn the_surface_has_no_seam_where_the_ranges_meet() {
         let Some(row) = horizon[x as usize] else {
             continue;
         };
-        // Стовпці, у яких горизонт не влазить у кадр, нічого не стверджують.
+        // Columns where the horizon does not fit in the frame assert nothing.
         if !(1.0..f64::from(shot.height) - 1.0).contains(&row) {
             continue;
         }
@@ -334,20 +354,22 @@ fn the_surface_has_no_seam_where_the_ranges_meet() {
         for y in first..shot.height {
             assert!(
                 drawn(&shot, x, y),
-                "стовпець {x}: під горизонтом (рядок {row}) дірка в рядку {y}"
+                "column {x}: below the horizon (row {row}) there is a hole in \
+                 row {y}"
             );
         }
-        // І навпаки: над горизонтом ґрунту немає, інакше «дірок немає»
-        // виконувалось би тим, що намальовано геть усе.
+        // And conversely: there is no ground above the horizon, otherwise
+        // "there are no holes" would be satisfied by everything being drawn.
         let above = row.floor() as u32;
         assert!(
             above < 2 || !drawn(&shot, x, above - 2),
-            "стовпець {x}: над горизонтом (рядок {row}) щось намальовано"
+            "column {x}: above the horizon (row {row}) something is drawn"
         );
     }
 
     assert!(
         checked > SIZE / 2,
-        "горизонт перевірено лише в {checked} стовпцях із {SIZE} — сцена не та"
+        "the horizon was checked in only {checked} columns out of {SIZE} -- \
+         wrong scene"
     );
 }
