@@ -1,13 +1,15 @@
-//! Сцена, яку гра дає рушієві, справді доїжджає до пікселів (ROADMAP J1).
+//! The scene the game hands the engine really does reach the pixels
+//! (ROADMAP J1).
 //!
-//! Тести `trajectory.rs` доводять, що числа правильні; ці — що вони
-//! потрапляють у кадр. Без другого перше нічого не варте: порожня сцена й
-//! правильна дають однаково «зелений тест», якщо не подивитися на пікселі.
+//! The tests in `trajectory.rs` prove the numbers are right; these prove they
+//! get into the frame. Without the second the first is worth nothing: an
+//! empty scene and a correct one both give a "green test" if nobody looks at
+//! the pixels.
 //!
-//! Оракул тут не аналітичний, і не може ним бути: форма halo-орбіти в
-//! перспективі не має короткої формули. Тому перевіряються твердження, які
-//! ламаються від реальних помилок — що лінія є, що вона зникає разом із
-//! траєкторією, і що камера її рухає.
+//! The oracle here is not analytic and cannot be: the shape of a halo orbit
+//! in perspective has no short formula. So the claims checked are ones that
+//! break under real bugs -- that the line is there, that it disappears with
+//! the trajectory, and that the camera moves it.
 
 use engine::frame;
 use engine::gpu::Gpu;
@@ -18,12 +20,12 @@ use game::{mission, view};
 const SIZE: u32 = 256;
 
 fn gpu() -> Option<Gpu> {
-    // Спільний помічник рушія: він же вирішує, чи пропуск дозволений
-    // (`SPACE_SIM_REQUIRE_GPU`, U6c), і друкує назву адаптера в лог.
+    // The engine's shared helper: it also decides whether skipping is allowed
+    // (`SPACE_SIM_REQUIRE_GPU`, U6c) and prints the adapter name to the log.
     Gpu::for_tests()
 }
 
-/// Скільки пікселів не є фоном.
+/// How many pixels are not background.
 fn lit(shot: &Shot) -> u64 {
     let mut count = 0;
     for y in 0..shot.height {
@@ -37,65 +39,65 @@ fn lit(shot: &Shot) -> u64 {
     count
 }
 
-/// Порахований прогноз видно в кадрі, а непорахованого — ні.
+/// A computed forecast shows in the frame, and an uncomputed one does not.
 ///
-/// Різниця між двома кадрами і є доказом: якби перший малював щось інше
-/// (скажімо, саму планету), обидва числа були б однаково ненульові.
+/// The difference between the two frames is the proof: if the first drew
+/// something else (the planet, say), both numbers would be equally non-zero.
 #[test]
 fn the_prediction_appears_in_the_frame_and_only_when_it_exists() {
     let Some(gpu) = gpu() else { return };
 
     let camera = || Orbit::at_altitude(mission::CAMERA_ALTITUDE_M).camera();
-    let mut world = mission::world(&mission::default_asset()).expect("світ будується");
+    let mut world = mission::world(&mission::default_asset()).expect("the world builds");
 
-    // Ще нічого не пораховано: у кадрі лише планета, і з мільярда метрів вона
-    // займає кілька пікселів.
+    // Nothing computed yet: only the planet is in the frame, and from a
+    // billion metres it takes a few pixels.
     let empty = shot::take_scene(&gpu, SIZE, SIZE, &view::build(&world.snapshot(), camera()))
-        .expect("кадр");
+        .expect("frame");
     let empty_lit = lit(&empty);
 
     world.run_to_end(1.0, 8);
     let full = shot::take_scene(&gpu, SIZE, SIZE, &view::build(&world.snapshot(), camera()))
-        .expect("кадр");
+        .expect("frame");
     let full_lit = lit(&full);
 
     assert!(
         empty_lit < 100,
-        "порожній прогноз намалював {empty_lit} пікселів — це вже не сама планета"
+        "an empty forecast drew {empty_lit} pixels -- that is no longer just the planet"
     );
     assert!(
         full_lit > empty_lit + 500,
-        "прогноз додав лише {} пікселів ({full_lit} проти {empty_lit})",
+        "the forecast added only {} pixels ({full_lit} against {empty_lit})",
         full_lit - empty_lit
     );
 
-    // PNG звідси не пишеться навмисно: `cargo test` запускає бінарник з
-    // каталогу крейта, і файл ліг би в `game/build/`, а не там, де на нього
-    // дивляться. Знімок робить `cargo run -p game -- --shot`.
+    // No PNG is written here on purpose: `cargo test` runs the binary from the
+    // crate directory, so the file would land in `game/build/` rather than
+    // where anyone looks. Screenshots come from `cargo run -p game -- --shot`.
 }
 
-/// Камера рухає ламану так само, як рухає планету.
+/// The camera moves the prediction the way it moves the planet.
 ///
-/// Найдешевша перевірка того, що ламана йде тим самим шляхом camera-relative,
-/// що й вершини сфери: якби вона проєктувалася окремо (скажімо, зі своїм
-/// зсувом, як у `trajectory_render`), обертання камери її б не зачепило.
+/// The cheapest check that the polyline goes down the same camera-relative
+/// path as the sphere's vertices: were it projected separately (with its own
+/// offset, as in `trajectory_render`), rotating the camera would not touch it.
 #[test]
 fn the_camera_moves_the_prediction_too() {
     let Some(gpu) = gpu() else { return };
 
-    let mut world = mission::world(&mission::default_asset()).expect("світ будується");
+    let mut world = mission::world(&mission::default_asset()).expect("the world builds");
     world.run_to_end(1.0, 8);
     let snapshot = world.snapshot();
 
     let mut orbit = Orbit::at_altitude(mission::CAMERA_ALTITUDE_M);
     let before =
-        shot::take_scene(&gpu, SIZE, SIZE, &view::build(&snapshot, orbit.camera())).expect("кадр");
+        shot::take_scene(&gpu, SIZE, SIZE, &view::build(&snapshot, orbit.camera())).expect("frame");
 
-    // Чверть оберту: орбіта лежить у площині, і збоку вона зобов'язана
-    // виглядати інакше.
+    // A quarter turn: the orbit lies in a plane, and from the side it is bound
+    // to look different.
     orbit.drag(300.0, 0.0);
     let after =
-        shot::take_scene(&gpu, SIZE, SIZE, &view::build(&snapshot, orbit.camera())).expect("кадр");
+        shot::take_scene(&gpu, SIZE, SIZE, &view::build(&snapshot, orbit.camera())).expect("frame");
 
     let differing = (0..SIZE)
         .flat_map(|y| (0..SIZE).map(move |x| (x, y)))
@@ -104,76 +106,81 @@ fn the_camera_moves_the_prediction_too() {
 
     assert!(
         differing > 200,
-        "обертання камери змінило лише {differing} пікселів — ламана її не слухає"
+        "rotating the camera changed only {differing} pixels -- the polyline does \
+         not listen to it"
     );
 }
 
 // ---------------------------------------------------------------------------
-// Тіла в сцені (ROADMAP-PLANETS.md, R1c)
+// Bodies in the scene (ROADMAP-PLANETS.md, R1c)
 
-/// Сцена несе тіла як **дані**: центр, розмір, поворот.
+/// The scene carries bodies as **data**: centre, size, rotation.
 ///
-/// Оракул — не пікселі (R1c нічого ще не малює по-новому), а три твердження
-/// про числа, кожне з яких ловить свою помилку:
+/// The oracle is not pixels (R1c draws nothing new yet) but three claims
+/// about numbers, each catching its own bug:
 ///
-/// 1. Земля рівно в початку координат — кадр геоцентричний, і якби віднімання
-///    робилося не від неї, вона поїхала б на 1.5·10¹¹ м;
-/// 2. Місяць за 3.6–4.1·10⁸ м від неї — тобто це справді Місяць, а не
-///    баріцентрична позиція, яку забули перевести;
-/// 3. Земля повернута, а її поворот змінюється з часом — інакше в сцену
-///    приїхала б одиниця, яку ніхто б не помітив, доки на планеті не з'явиться
-///    рельєф.
+/// 1. Earth exactly at the origin -- the frame is geocentric, and if the
+///    subtraction were not from it, Earth would drift by 1.5e11 m;
+/// 2. the Moon at 3.6-4.1e8 m from it -- i.e. it really is the Moon and not a
+///    barycentric position somebody forgot to convert;
+/// 3. Earth is rotated, and its rotation changes with time -- otherwise an
+///    identity would arrive in the scene and nobody would notice until the
+///    planet got terrain.
 #[test]
 fn the_scene_carries_the_bodies_as_data() {
     use game::world::{EARTH, MOON};
 
-    let mut world = mission::world(&mission::default_asset()).expect("світ");
+    let mut world = mission::world(&mission::default_asset()).expect("world");
     let orbit = Orbit::at_altitude(mission::CAMERA_ALTITUDE_M);
 
     let scene = view::build(&world.snapshot(), orbit.camera());
-    assert_eq!(scene.bodies.len(), 2, "у фікстурі два тіла з розміром");
+    assert_eq!(
+        scene.bodies.len(),
+        2,
+        "the fixture has two bodies with a radius"
+    );
 
     let earth = scene.bodies[0];
     let moon = scene.bodies[1];
 
-    // 1. Земля — початок координат кадру.
+    // 1. Earth is the origin of the frame.
     assert_eq!(earth.centre, [0.0, 0.0, 0.0]);
     assert!(
         (earth.radius_m - 6.371e6).abs() < 1.0e4,
-        "радіус Землі з ассета: {}",
+        "Earth's radius from the asset: {}",
         earth.radius_m
     );
 
-    // 2. Місяць — на відстані Місяця.
+    // 2. The Moon is at the Moon's distance.
     let distance =
         (moon.centre[0].powi(2) + moon.centre[1].powi(2) + moon.centre[2].powi(2)).sqrt();
     println!(
-        "  Місяць за {:.4e} м, радіус {:.4e} м",
+        "  the Moon at {:.4e} m, radius {:.4e} m",
         distance, moon.radius_m
     );
     assert!(
         (3.6e8..4.1e8).contains(&distance),
-        "Місяць опинився за {distance:.3e} м — це не орбіта Місяця"
+        "the Moon ended up at {distance:.3e} m -- that is not the Moon's orbit"
     );
     assert!(
         (moon.radius_m - 1.7374e6).abs() < 1.0e4,
-        "радіус Місяця з ассета: {}",
+        "the Moon's radius from the asset: {}",
         moon.radius_m
     );
 
-    // 3. Поворот є, він одиничний за довжиною й змінюється з часом.
+    // 3. The rotation exists, is unit length and changes with time.
     let length = |q: [f64; 4]| (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
     assert!((length(earth.orientation) - 1.0).abs() < 1e-9);
     assert_ne!(
         earth.orientation,
         [1.0, 0.0, 0.0, 0.0],
-        "Земля приїхала неповернутою — орієнтацію десь загубили"
+        "Earth arrived unrotated -- the orientation was lost somewhere"
     );
 
-    // Через кілька годин поворот інший, і саме Землі: Місяць за той самий час
-    // повертається помітно менше (доба проти місяця).
-    // Шість годин по годиннику світу. Спершу порахувати прогноз, інакше
-    // курсор упреться в горизонт і нікуди не зрушить.
+    // Six hours later the rotation is different, and it is Earth's: over the
+    // same time the Moon turns noticeably less (a day against a month).
+    // Compute the forecast first, or the cursor runs into the horizon and goes
+    // nowhere.
     world.tick(64);
     let want = world.snapshot().t + 6.0 * 3600.0;
     while world.snapshot().t < want {
@@ -182,44 +189,45 @@ fn the_scene_carries_the_bodies_as_data() {
     let later = view::build(&world.snapshot(), orbit.camera());
     assert_ne!(
         later.bodies[0].orientation, earth.orientation,
-        "за шість годин Земля не повернулася"
+        "Earth did not turn in six hours"
     );
 
     let turned = |a: [f64; 4], b: [f64; 4]| {
-        // Кут між двома кватерніонами: 2·acos|⟨a, b⟩|.
+        // The angle between two quaternions: 2*acos|<a, b>|.
         let d = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]).abs();
         2.0 * d.clamp(-1.0, 1.0).acos()
     };
     let earth_turn = turned(earth.orientation, later.bodies[0].orientation);
     let moon_turn = turned(moon.orientation, later.bodies[1].orientation);
     println!(
-        "  за 6 год: Земля на {:.3}°, Місяць на {:.3}°",
+        "  in 6 h: Earth by {:.3} deg, the Moon by {:.3} deg",
         earth_turn.to_degrees(),
         moon_turn.to_degrees()
     );
     assert!(
         earth_turn > moon_turn * 10.0,
-        "Земля повернулася на {:.3}°, Місяць на {:.3}° — за шість годин \
-         різниця мала б бути в десятки разів",
+        "Earth turned by {:.3} deg and the Moon by {:.3} deg -- over six hours the \
+         difference should be tens of times",
         earth_turn.to_degrees(),
         moon_turn.to_degrees()
     );
 
-    // Індекси тіл лишилися в грі, а не поїхали в рушій: `Body` про них не
-    // знає взагалі, і саме тому цей рядок тут — як нагадування, а не як
-    // перевірка.
+    // Body indices stayed in the game rather than travelling into the engine:
+    // `Body` knows nothing about them, which is why this line is a reminder
+    // rather than a check.
     assert_eq!([EARTH, MOON], [3, 4]);
 }
 
 // ---------------------------------------------------------------------------
-// Тіла в пікселях (ROADMAP-PLANETS.md, R1e)
+// Bodies in pixels (ROADMAP-PLANETS.md, R1e)
 
-/// Око, з якого Земля й Місяць рівновіддалені.
+/// An eye equidistant from Earth and the Moon.
 ///
-/// Точка на серединному перпендикулярі до відрізка Земля-Місяць: відстань до
-/// обох однакова **за побудовою**. Тоді видимі розміри відносяться рівно як
-/// радіуси, без поправки на дальність, — інакше довелося б доводити, скільки
-/// саме дальність з'їла з різниці, а це вже не оракул, а підгонка.
+/// A point on the perpendicular bisector of the Earth-Moon segment: the
+/// distance to both is equal **by construction**. Then the apparent sizes are
+/// in exactly the ratio of the radii, with no correction for range --
+/// otherwise one would have to prove how much the range ate of the
+/// difference, and that is fitting rather than an oracle.
 fn eye_beside(earth: [f64; 3], moon: [f64; 3], distance: f64) -> [f64; 3] {
     let line = sub(moon, earth);
     let mid = [
@@ -227,7 +235,8 @@ fn eye_beside(earth: [f64; 3], moon: [f64; 3], distance: f64) -> [f64; 3] {
         earth[1] + line[1] / 2.0,
         earth[2] + line[2] / 2.0,
     ];
-    // Убік від лінії тіл — будь-куди, аби перпендикулярно.
+    // Away from the line of the bodies -- anywhere, as long as it is
+    // perpendicular.
     let away = unit(cross(line, [0.0, 0.0, 1.0]));
     [
         mid[0] + away[0] * distance,
@@ -257,14 +266,17 @@ fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     ]
 }
 
-/// Радіус диска тіла в пікселях, коли воно **в центрі** кадру.
+/// The radius of a body's disc in pixels when it is **in the centre** of the
+/// frame.
 ///
-/// `asin(R/d)` — точний кут силуету опуклої сфери (F5), далі тангенс через
-/// половину поля зору: та сама арифметика, що в проєкційній матриці.
+/// `asin(R/d)` is the exact silhouette half-angle of a convex sphere (F5),
+/// then a tangent through half the field of view: the same arithmetic as in
+/// the projection matrix.
 ///
-/// Тільки в центрі: збоку сфера проєктується в еліпс (тим помітніший, чим
-/// далі від осі), і кругла формула там просто не про ту фігуру. Саме тому
-/// розміри міряються трьома кадрами, а не одним.
+/// Only in the centre: off axis a sphere projects to an ellipse (the further
+/// out, the more noticeably so), and the circular formula is simply not about
+/// that figure. That is why sizes are measured with three frames rather than
+/// one.
 fn disc_radius_px(radius_m: f64, distance_m: f64, height: u32) -> f64 {
     let half_angle = (radius_m / distance_m).asin();
     half_angle.tan() / (frame::FOV_Y / 2.0).tan() * f64::from(height) / 2.0
@@ -275,7 +287,8 @@ fn is_lit(shot: &Shot, x: u32, y: u32) -> bool {
     [p[0], p[1], p[2]] != frame::CLEAR_BYTES
 }
 
-/// Скільки світлих пікселів у квадраті навколо точки, і де їхній центр ваги.
+/// How many lit pixels lie in a square around a point, and where their centre
+/// of mass is.
 fn blob(shot: &Shot, centre: [f32; 2], half: f64) -> (u64, [f64; 2]) {
     let mut count = 0u64;
     let mut sum = [0.0f64; 2];
@@ -302,33 +315,35 @@ fn blob(shot: &Shot, centre: [f32; 2], half: f64) -> (u64, [f64; 2]) {
     (count, middle)
 }
 
-/// Обидва тіла зі снапшоту — на своїх місцях і свого розміру.
+/// Both bodies from the snapshot are in their places and at their size.
 ///
-/// Це те, чого не закрив R1c: сцена вже несла два тіла, а кадр і далі малював
-/// одну сферу радіуса Землі в початку координат.
+/// This is what R1c left open: the scene already carried two bodies while the
+/// frame kept drawing one sphere of Earth's radius at the origin.
 ///
-/// Кадрів три, і це не марнотратство. Око в усіх одне — на серединному
-/// перпендикулярі, звідки тіла рівновіддалені. Перший кадр дивиться між ними
-/// й відповідає на «де вони»: центр ваги диска проти проєкції центра тіла,
-/// плюс порожнє небо навколо. Другий і третій дивляться на кожне тіло окремо
-/// й відповідають на «якого вони розміру»: рівно в центрі кадру силует —
-/// круг, і його радіус має точну формулу. Збоку той самий силует — еліпс
-/// (виміряно: 35×26 пікселів за 41° від осі), і круглий оракул там міряв би
-/// не те.
+/// Three frames, and that is not extravagance. The eye is the same in all --
+/// on the perpendicular bisector, from where the bodies are equidistant. The
+/// first frame looks between them and answers "where are they": the centre of
+/// mass of the disc against the projection of the body's centre, plus empty
+/// sky around. The second and third look at each body alone and answer "what
+/// size are they": exactly in the centre of the frame the silhouette is a
+/// circle with an exact formula for its radius. Off centre the same
+/// silhouette is an ellipse (measured: 35x26 pixels at 41 degrees off axis),
+/// and a circular oracle would be measuring the wrong thing.
 #[test]
 fn both_bodies_land_where_they_are_and_at_the_size_they_are() {
     let Some(gpu) = gpu() else { return };
 
     const WIDTH: u32 = 2048;
     const HEIGHT: u32 = 1024;
-    /// Стільки, щоб обидва тіла влізли в кадр і жодне не торкнулося краю.
+    /// Far enough for both bodies to fit in the frame with neither touching an
+    /// edge.
     const DISTANCE_M: f64 = 2.2e8;
 
-    let world = mission::world(&mission::default_asset()).expect("світ");
+    let world = mission::world(&mission::default_asset()).expect("world");
     let snapshot = world.snapshot();
 
-    // Позиції — з тієї самої сцени, яку побачить кадр: інакше перевірялися б
-    // дві різні миті.
+    // Positions come from the same scene the frame will see: otherwise two
+    // different instants would be compared.
     let probe = view::build(&snapshot, Orbit::at_altitude(1.0e6).camera());
     let (earth, moon) = (probe.bodies[0], probe.bodies[1]);
 
@@ -337,11 +352,11 @@ fn both_bodies_land_where_they_are_and_at_the_size_they_are() {
     let d_moon = length(sub(moon.centre, eye));
     assert!(
         (d_earth - d_moon).abs() / d_earth < 1e-12,
-        "око не рівновіддалене: {d_earth:.6e} проти {d_moon:.6e}"
+        "the eye is not equidistant: {d_earth:.6e} against {d_moon:.6e}"
     );
 
-    // Погляд між тілами, «вгору» — перпендикулярно до їхньої лінії, щоб вона
-    // лягла горизонтально й кожне тіло мало свою половину кадру.
+    // Looking between the bodies, with "up" perpendicular to their line, so
+    // that the line lies horizontally and each body gets half the frame.
     let line = sub(moon.centre, earth.centre);
     let mid = [
         earth.centre[0] + line[0] / 2.0,
@@ -350,34 +365,37 @@ fn both_bodies_land_where_they_are_and_at_the_size_they_are() {
     ];
     let up = unit(cross(sub(mid, eye), line));
     let together = view::build(&snapshot, engine::camera::Camera::look_at(eye, mid, up));
-    let taken = shot::take_scene(&gpu, WIDTH, HEIGHT, &together).expect("кадр");
+    let taken = shot::take_scene(&gpu, WIDTH, HEIGHT, &together).expect("frame");
 
-    // Де вони. Радіус диска тут потрібен лише як розмір вікна, а не як оракул:
-    // збоку силует еліптичний, і вікно взяте вдвічі більшим за круг саме тому.
+    // Where they are. The disc radius is needed only as a window size here,
+    // not as an oracle: off centre the silhouette is elliptical, which is why
+    // the window is taken twice the circle.
     let mut windows = Vec::new();
-    for (name, body) in [("Земля", earth), ("Місяць", moon)] {
+    for (name, body) in [("Earth", earth), ("the Moon", moon)] {
         let distance = length(sub(body.centre, eye));
         let centre = together
             .camera
             .to_screen(frame::FOV_Y, WIDTH, HEIGHT, body.centre)
-            .expect("тіло попереду камери");
+            .expect("the body is in front of the camera");
         let half = 3.0 * disc_radius_px(body.radius_m, distance, HEIGHT) + 8.0;
 
         let (count, middle) = blob(&taken, centre, half);
         println!(
-            "  {name}: центр ваги ({:.1}, {:.1}) проти проєкції ({:.1}, {:.1}), {count} пікселів",
+            "  {name}: centre of mass ({:.1}, {:.1}) against the projection \
+             ({:.1}, {:.1}), {count} pixels",
             middle[0], middle[1], centre[0], centre[1]
         );
-        assert!(count > 0, "{name}: у кадрі немає жодного пікселя тіла");
+        assert!(count > 0, "{name}: not a single body pixel in the frame");
         assert!(
             (middle[0] - f64::from(centre[0])).hypot(middle[1] - f64::from(centre[1])) < 1.5,
-            "{name} намальований не там, де його проєкція"
+            "{name} is drawn somewhere other than its projection"
         );
         windows.push((centre, half));
     }
 
-    // Поза двома вікнами — порожнє небо: у сцені без прогнозу малювати більше
-    // нема чого, і жоден силует за своє вікно не виліз.
+    // Outside the two windows there is empty sky: in a scene with no forecast
+    // there is nothing else to draw, and neither silhouette spilled out of its
+    // window.
     let mut outside = 0u64;
     for y in 0..HEIGHT {
         for x in 0..WIDTH {
@@ -393,73 +411,78 @@ fn both_bodies_land_where_they_are_and_at_the_size_they_are() {
             }
         }
     }
-    assert_eq!(outside, 0, "поза тілами світиться {outside} пікселів");
+    assert_eq!(outside, 0, "{outside} pixels are lit outside the bodies");
 
-    // Якого вони розміру. Те саме око, погляд просто на тіло — і силует стає
-    // кругом, для якого формула точна.
+    // What size they are. The same eye, looking straight at the body -- and
+    // the silhouette becomes a circle, for which the formula is exact.
     let mut drawn = Vec::new();
-    for (name, body) in [("Земля", earth), ("Місяць", moon)] {
+    for (name, body) in [("Earth", earth), ("the Moon", moon)] {
         let distance = length(sub(body.centre, eye));
         let scene = view::build(
             &snapshot,
             engine::camera::Camera::look_at(eye, body.centre, up),
         );
-        let shot = shot::take_scene(&gpu, WIDTH, HEIGHT, &scene).expect("кадр");
+        let shot = shot::take_scene(&gpu, WIDTH, HEIGHT, &scene).expect("frame");
 
         let expected = disc_radius_px(body.radius_m, distance, HEIGHT);
         let centre = [WIDTH as f32 / 2.0, HEIGHT as f32 / 2.0];
         let (count, _) = blob(&shot, centre, 2.0 * expected + 8.0);
 
-        // Радіус із площі, а не з габариту: площа збирає весь диск, тож
-        // дискретизація краю входить у неї коренем, а не в повний зріст.
+        // The radius from the area rather than the extent: the area gathers
+        // the whole disc, so edge discretisation enters it under a square root
+        // rather than at full height.
         let measured = (count as f64 / std::f64::consts::PI).sqrt();
-        println!("  {name} у центрі кадру: радіус {measured:.2} проти {expected:.2} px");
+        println!(
+            "  {name} in the centre of the frame: radius {measured:.2} against {expected:.2} px"
+        );
         assert!(
             (measured - expected).abs() < 1.0,
-            "{name}: диск радіуса {measured:.2} px замість {expected:.2} px"
+            "{name}: a disc of radius {measured:.2} px instead of {expected:.2} px"
         );
         drawn.push((measured, body.radius_m));
     }
 
-    // І головне число кроку: розміри відносяться як радіуси. Відстань з нього
-    // випала — вона однакова, і саме заради цього око стоїть, де стоїть.
+    // And the main number of the step: the sizes are in the ratio of the
+    // radii. The distance dropped out of it -- it is the same, which is what
+    // the eye's position is for.
     let ratio = drawn[0].0 / drawn[1].0;
     let real = drawn[0].1 / drawn[1].1;
-    println!("  розміри: {ratio:.3} проти {real:.3} за радіусами");
+    println!("  sizes: {ratio:.3} against {real:.3} by radii");
     assert!(
         (ratio - real).abs() / real < 0.05,
-        "диски відносяться як {ratio:.3}, а радіуси як {real:.3}"
+        "the discs are in the ratio {ratio:.3} while the radii are {real:.3}"
     );
 }
 
-/// Повернуте тіло виглядає так само — і це не порожнє твердження.
+/// A rotated body looks the same -- and that is not an empty claim.
 ///
-/// Гладка сфера свого повороту показати **не може**: і силует, і нормаль у
-/// кожній точці переходять самі в себе. Тому перевіряється рівно те, що тут
-/// узагалі можна перевірити, і воно варте перевірки: поворот застосовано
-/// **однаково** до геометрії й до нормалей. Застосований до однієї з них — і
-/// кадр змінюється відразу: патчі роз'їжджаються або освітлення сповзає.
+/// A smooth sphere **cannot** show its rotation: both the silhouette and the
+/// normal at every point map onto themselves. So what is checked is the one
+/// thing that can be checked here, and it is worth checking: that the
+/// rotation is applied **equally** to the geometry and to the normals. Apply
+/// it to one of them and the frame changes at once: the patches part company
+/// or the lighting slides.
 ///
-/// Виміряно, а не проголошено. Чверть оберту навколо x міняє 2382 пікселі на
-/// одну одиницю яскравості (інша діагональ трикутників у сітці) і 36 пікселів
-/// помітно — **усі 36 лежать за 0.1 пікселя від краю силуету**, де сітка
-/// кубосфери й справді не симетрична до повороту. Контроль поруч: зсув центра
-/// на один радіус міняє помітно 144414 пікселів, тобто в чотири тисячі разів
-/// більше.
+/// Measured rather than declared. A quarter turn about x changes 2382 pixels
+/// by one unit of brightness (the other diagonal of the mesh triangles) and
+/// 36 pixels noticeably -- **all 36 lie within 0.1 pixel of the silhouette
+/// edge**, where the cubesphere mesh really is not symmetric under rotation.
+/// The control beside it: shifting the centre by one radius changes 144414
+/// pixels noticeably, four thousand times more.
 ///
-/// Побачити поворот **очима** можна буде з R5, коли в тіла з'явиться поверхня;
-/// доти оракул орієнтації — числа R1c (полюс, RA нульового меридіана,
-/// швидкість обертання), а не пікселі.
+/// Seeing the rotation **with the eye** becomes possible from R5, when bodies
+/// get a surface; until then the oracle for orientation is the numbers of R1c
+/// (pole, RA of the prime meridian, rotation rate) rather than pixels.
 #[test]
 fn turning_a_smooth_sphere_moves_only_the_edge_of_its_silhouette() {
     let Some(gpu) = gpu() else { return };
 
     const SIDE: u32 = 512;
     const ALTITUDE_M: f64 = 1.0e7;
-    /// Різниця, більша за цю, — вже не округлення інтерполяції.
+    /// A difference larger than this is no longer interpolation rounding.
     const NOTABLE: i32 = 4;
 
-    let world = mission::world(&mission::default_asset()).expect("світ");
+    let world = mission::world(&mission::default_asset()).expect("world");
     let snapshot = world.snapshot();
 
     let scene = |orientation: Option<[f64; 4]>, shift: f64| {
@@ -478,9 +501,10 @@ fn turning_a_smooth_sphere_moves_only_the_edge_of_its_silhouette() {
         length(sub(earth.centre, base.camera.position())),
         SIDE,
     );
-    let taken = shot::take_scene(&gpu, SIDE, SIDE, &base).expect("кадр");
+    let taken = shot::take_scene(&gpu, SIDE, SIDE, &base).expect("frame");
 
-    // Помітні розбіжності разом із тим, як далеко вони від краю силуету.
+    // Notable differences, together with how far they are from the silhouette
+    // edge.
     let notable = |other: &Shot| {
         let mut count = 0u64;
         let mut furthest = 0.0f64;
@@ -490,7 +514,7 @@ fn turning_a_smooth_sphere_moves_only_the_edge_of_its_silhouette() {
                 let difference = (0..3)
                     .map(|k| (i32::from(a[k]) - i32::from(b[k])).abs())
                     .max()
-                    .expect("три канали");
+                    .expect("three channels");
                 if difference <= NOTABLE {
                     continue;
                 }
@@ -503,8 +527,8 @@ fn turning_a_smooth_sphere_moves_only_the_edge_of_its_silhouette() {
         (count, furthest)
     };
 
-    // Чверть оберту навколо трьох осей, а не однієї: переставлена компонента
-    // кватерніона збіглася б сама із собою на осі, яку вгадали.
+    // A quarter turn about three axes rather than one: a swapped quaternion
+    // component would coincide with itself on a lucky axis.
     let half = std::f64::consts::FRAC_PI_4;
     for (name, axis) in [
         ("x", [1.0, 0.0, 0.0]),
@@ -517,37 +541,37 @@ fn turning_a_smooth_sphere_moves_only_the_edge_of_its_silhouette() {
             half.sin() * axis[1],
             half.sin() * axis[2],
         ];
-        let turned = shot::take_scene(&gpu, SIDE, SIDE, &scene(Some(turn), 0.0)).expect("кадр");
+        let turned = shot::take_scene(&gpu, SIDE, SIDE, &scene(Some(turn), 0.0)).expect("frame");
 
         let (count, furthest) = notable(&turned);
         println!(
-            "  поворот на 90° навколо {name}: помітних пікселів {count}, \
-             найдальший за {furthest:.2} px від краю силуету"
+            "  a 90 deg turn about {name}: {count} notable pixels, the furthest \
+             {furthest:.2} px from the silhouette edge"
         );
         assert!(
             count < 100,
-            "поворот навколо {name} змінив {count} пікселів помітно — геометрія \
-             й нормалі поїхали різними шляхами"
+            "the turn about {name} changed {count} pixels noticeably -- geometry \
+             and normals went different ways"
         );
         assert!(
             furthest < 1.0,
-            "поворот навколо {name} змінив піксель за {furthest:.2} px від краю \
-             силуету — це вже не край"
+            "the turn about {name} changed a pixel {furthest:.2} px from the \
+             silhouette edge -- that is no longer the edge"
         );
     }
 
-    // Контроль: те саме порівняння на зсуві в один радіус. Без нього «нічого
-    // не змінилося» означало б лише те, що порівняння сліпе.
-    let shifted = shot::take_scene(&gpu, SIDE, SIDE, &scene(None, earth.radius_m)).expect("кадр");
+    // The control: the same comparison under a shift of one radius. Without it
+    // "nothing changed" would only mean the comparison is blind.
+    let shifted = shot::take_scene(&gpu, SIDE, SIDE, &scene(None, earth.radius_m)).expect("frame");
     let (count, _) = notable(&shifted);
-    println!("  зсув на один радіус: помітних пікселів {count}");
+    println!("  a shift of one radius: {count} notable pixels");
     assert!(
         count > 50_000,
-        "зсув на радіус змінив лише {count} пікселів — порівняння нічого не бачить"
+        "a shift by a radius changed only {count} pixels -- the comparison sees nothing"
     );
 }
 
-/// Добуток кватерніонів `[w, x, y, z]`: спершу `b`, потім `a`.
+/// The quaternion product `[w, x, y, z]`: `b` first, then `a`.
 fn compose(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
     let [aw, ax, ay, az] = a;
     let [bw, bx, by, bz] = b;
@@ -560,37 +584,40 @@ fn compose(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
 }
 
 // ---------------------------------------------------------------------------
-// Обертовий фрейм (ROADMAP-UI.md, U6a2)
+// The rotating frame (ROADMAP-UI.md, U6a2)
 
-/// Синодичні координати з `view` — ті самі, що дає формула рушія, звірена з C.
+/// The synodic coordinates from `view` are those the engine's formula gives,
+/// and that formula is checked against C.
 ///
-/// Оракул тут не «петля виглядає замкненою», і саме тому він вартий чогось.
-/// `engine::trajectory::rotating_position` звірена з `frame_from_inertial`
-/// (C, `core/frame.h`) на 1345 семплах фікстури з розбіжністю 3.48·10⁻⁷ (F6);
-/// якщо перетворення гри збігається з нею на всій живій траєкторії, воно
-/// збігається і з ядром — транзитивно, без другої фікстури.
+/// The oracle here is not "the loop looks closed", which is why it is worth
+/// something. `engine::trajectory::rotating_position` was compared with
+/// `frame_from_inertial` (C, `core/frame.h`) over 1345 fixture samples with a
+/// divergence of 3.48e-7 (F6); if the game's transform agrees with it over
+/// the whole live trajectory, it agrees with the core too -- transitively,
+/// without a second fixture.
 ///
-/// Різниця між ними рівно одна й навмисна: рушій віддає безрозмірні одиниці
-/// CR3BP (поділені на `L` **своєї** миті), а гра множить їх на теперішню
-/// відстань Земля-Місяць. Тому Місяць кожного семпла лягає туди, де Місяць
-/// зараз, — і саме це тримає картинку нерухомою, поки `L` гуляє в межах
-/// 3.63–4.06·10⁸ м.
+/// There is exactly one deliberate difference: the engine returns
+/// dimensionless CR3BP units (divided by the `L` of **their own** instant),
+/// while the game multiplies them by the present Earth-Moon distance. So the
+/// Moon of every sample lands where the Moon is now -- and that is what keeps
+/// the picture still while `L` wanders between 3.63 and 4.06e8 m.
 #[test]
 fn the_rotating_frame_agrees_with_the_formula_checked_against_c() {
     use game::frame_view::ViewFrame;
 
-    let mut world = mission::world(&mission::default_asset()).expect("світ");
+    let mut world = mission::world(&mission::default_asset()).expect("world");
     world.tick(16);
     let snapshot = world.snapshot();
 
     let camera = || Orbit::at_altitude(mission::CAMERA_ALTITUDE_M).camera();
     let scene = view::build_in(&snapshot, camera(), ViewFrame::Rotating);
 
-    // Той самий сталий масштаб, яким гра множить безрозмірні координати.
+    // The same constant scale the game multiplies the dimensionless
+    // coordinates by.
     let scale = game::frame_view::SYNODIC_SCALE_M;
 
-    // Те, що мала б дати гра: формула рушія на тих самих семплах і тих самих
-    // нормалях, помножена на масштаб.
+    // What the game should have given: the engine's formula on the same
+    // samples and the same normals, times the scale.
     let vessel = &snapshot.vessels[0];
     let mut expected: Vec<[f64; 3]> = Vec::new();
     for leg in &vessel.legs {
@@ -599,10 +626,11 @@ fn the_rotating_frame_agrees_with_the_formula_checked_against_c() {
             if sample.state.t <= snapshot.t {
                 continue;
             }
-            // Рушій чекає **одиничну** нормаль (`fill_axes` її нормує), а
-            // `plane_normals` віддає `d × ḋ` як є — гра нормує сама, всередині
-            // базису. Різні контракти на ту саму величину, і мовчазна
-            // невідповідність тут дала б 10²³ м різниці.
+            // The engine expects a **unit** normal (`fill_axes` normalises
+            // it), while `plane_normals` returns `d x d_dot` as is -- the game
+            // normalises inside the basis itself. Two contracts for the same
+            // quantity, and a silent mismatch here would give 1e23 m of
+            // difference.
             let n = normals[index];
             let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
             let p = engine::trajectory::rotating_position(
@@ -616,22 +644,23 @@ fn the_rotating_frame_agrees_with_the_formula_checked_against_c() {
     }
     assert!(
         expected.len() > 500,
-        "прогноз надто короткий: {}",
+        "the forecast is too short: {}",
         expected.len()
     );
 
-    // Прогноз — найдовша ламана; історії на початку місії немає.
+    // The forecast is the longest polyline; there is no history at the start
+    // of the mission.
     let drawn = scene
         .polylines
         .iter()
         .max_by_key(|p| p.points.len())
-        .expect("у сцені є ламані")
+        .expect("the scene has polylines")
         .points
         .clone();
     assert_eq!(
         drawn.len(),
         expected.len(),
-        "кількість точок розійшлася — порівнюються різні ламані"
+        "the point counts differ -- different polylines are being compared"
     );
 
     let mut worst = 0.0f64;
@@ -640,20 +669,21 @@ fn the_rotating_frame_agrees_with_the_formula_checked_against_c() {
         worst = worst.max(e);
     }
     println!(
-        "  {} точок, найгірша розбіжність із формулою рушія {worst:.3e} м",
+        "  {} points, worst divergence from the engine's formula {worst:.3e} m",
         drawn.len()
     );
 
-    // Метр на 4·10⁸ — це 2.5·10⁻⁹ відносно, тобто рівень самої формули, а не
-    // помилка перетворення. `μ` у гри з ассета, у рушія — константа, і на
-    // цьому рівні вони теж мали б збігтися.
+    // A metre in 4e8 is 2.5e-9 relative, i.e. the level of the formula itself
+    // rather than a transform error. The game takes `mu` from the asset, the
+    // engine has it as a constant, and at this level they should agree too.
     assert!(
         worst < 1.0,
-        "розбіжність {worst:.3e} м — це вже інша формула, а не інша арифметика"
+        "a divergence of {worst:.3e} m is a different formula, not different arithmetic"
     );
 
-    // Друге число, заради якого карту й вмикають: у синодичному фреймі та сама
-    // траєкторія займає втричі менше місця, бо з неї прибрано обертання пари.
+    // The second number the map is switched on for: in the synodic frame the
+    // same trajectory takes three times less room, because the pair's rotation
+    // has been taken out of it.
     let spread = |points: &[[f64; 3]]| {
         let mut worst: f64 = 0.0;
         for p in points {
@@ -670,72 +700,74 @@ fn the_rotating_frame_agrees_with_the_formula_checked_against_c() {
         .polylines
         .iter()
         .max_by_key(|p| p.points.len())
-        .expect("у сцені є ламані")
+        .expect("the scene has polylines")
         .points
         .clone();
     let (a, b) = (spread(&inertial_points), spread(&drawn));
-    println!("  розмах: інерціально {a:.4e} м, синодично {b:.4e} м");
+    println!("  spread: inertial {a:.4e} m, synodic {b:.4e} m");
     assert!(
         b < 0.5 * a,
-        "синодичний розмах {b:.3e} проти інерціального {a:.3e} — фрейм нічого \
-         не прибрав"
+        "a synodic spread of {b:.3e} against an inertial {a:.3e} -- the frame took \
+         nothing out"
     );
 }
 
-/// Тіла в синодичному фреймі стоять там, де їм належить.
+/// The pair sits where it belongs in the synodic frame.
 ///
-/// Земля за `−μ·L` від початку координат, Місяць за `(1 − μ)·L`, обидва на осі
-/// x — це визначення фрейму, і воно ж перевіряє, що тіла пройшли **те саме**
-/// перетворення, що й ламані. Тіло, залишене в інерціальних координатах,
-/// висіло б окремо від траєкторії навколо себе.
+/// Earth at `-mu*L` from the origin, the Moon at `(1 - mu)*L`, both on the x
+/// axis -- that is the definition of the frame, and it also checks that the
+/// bodies went through **the same** transform as the polylines. A body left
+/// in inertial coordinates would hang apart from the trajectory around it.
 #[test]
 fn the_pair_sits_on_the_axis_in_the_rotating_frame() {
     use game::frame_view::ViewFrame;
 
-    let world = mission::world(&mission::default_asset()).expect("світ");
+    let world = mission::world(&mission::default_asset()).expect("world");
     let snapshot = world.snapshot();
     let camera = Orbit::at_altitude(mission::CAMERA_ALTITUDE_M).camera();
 
     let scene = view::build_in(&snapshot, camera, ViewFrame::Rotating);
     let (earth, moon) = (scene.bodies[0], scene.bodies[1]);
 
-    // Масштаб — теперішня відстань Земля-Місяць, тобто саме те, чим фрейм
-    // нормує все інше.
+    // The scale is the present Earth-Moon distance, i.e. exactly what the
+    // frame normalises everything else by.
     let l = moon.centre[0] - earth.centre[0];
     let mu = -earth.centre[0] / l;
     println!(
-        "  Земля {:?}, Місяць {:?}, L = {l:.4e} м, μ = {mu:.9}",
+        "  Earth {:?}, the Moon {:?}, L = {l:.4e} m, mu = {mu:.9}",
         earth.centre, moon.centre
     );
 
     assert!(
         (3.6e8..4.1e8).contains(&l),
-        "відстань між тілами {l:.3e} м — це не орбіта Місяця"
+        "a distance of {l:.3e} m between the bodies -- that is not the Moon's orbit"
     );
     assert!(
         (mu - 0.0121505856).abs() < 1e-6,
-        "барицентр стоїть за μ = {mu:.9}, а мало б за 0.01215",
+        "the barycentre sits at mu = {mu:.9}, but should at 0.01215",
     );
-    for (name, body) in [("Земля", earth), ("Місяць", moon)] {
+    for (name, body) in [("Earth", earth), ("the Moon", moon)] {
         assert!(
             body.centre[1].abs() < 1.0 && body.centre[2].abs() < 1.0,
-            "{name} зійшла з осі x: {:?}",
+            "{name} left the x axis: {:?}",
             body.centre
         );
     }
 }
 
-/// У синодичному фреймі Місяць стоїть; в інерціальному — за три доби йде геть.
+/// In the synodic frame the Moon stands still; in the inertial one it leaves
+/// over three days.
 ///
-/// Це і є та властивість, заради якої карта переходить в обертову систему,
-/// перевірена в пікселях, а не в числах: камера націлена на Місяць у мить A і
-/// не рухається, а світ проживає три доби. У синодичному фреймі кадр B
-/// збігається з кадром A; в інерціальному Місяць за той самий час проходить
-/// близько 36° орбіти — тобто чверть мільярда метрів — і з поля зору
-/// завширшки 5.8·10⁷ м зникає цілком.
+/// This is the property the map switches to a rotating system for, checked in
+/// pixels rather than numbers: the camera is aimed at the Moon at instant A
+/// and does not move, while the world lives three days. In the synodic frame
+/// frame B matches frame A; in the inertial one the Moon covers about 36
+/// degrees of orbit over the same time -- a quarter of a billion metres --
+/// and leaves a 5.8e7 m wide field of view entirely.
 ///
-/// Ламані зі сцени навмисно прибрані: вони рухаються в обох фреймах (апарат
-/// летить, прогноз довшає), і без цього кадр міряв би дві речі одразу.
+/// The polylines are removed from the scene on purpose: they move in both
+/// frames (the vessel flies, the forecast grows), and without that the frame
+/// would be measuring two things at once.
 #[test]
 fn the_moon_stands_still_in_the_rotating_frame_and_leaves_the_inertial_one() {
     use game::frame_view::ViewFrame;
@@ -744,20 +776,22 @@ fn the_moon_stands_still_in_the_rotating_frame_and_leaves_the_inertial_one() {
     let Some(gpu) = gpu() else { return };
 
     const SIDE: u32 = 512;
-    /// Звідки дивитись на Місяць: 5·10⁷ м дають диск близько 30 пікселів.
+    /// Where to watch the Moon from: 5e7 m gives a disc of about 30 pixels.
     const DISTANCE_M: f64 = 5.0e7;
     const DAYS: f64 = 3.0;
 
-    let mut world = mission::world(&mission::default_asset()).expect("світ");
+    let mut world = mission::world(&mission::default_asset()).expect("world");
     world.tick(16);
     let before = world.snapshot();
 
-    // Камера на кожен фрейм своя — націлена туди, де Місяць у мить A саме в
-    // цьому фреймі. Спільної камери тут бути не може: координати різні.
+    // Each frame gets its own camera, aimed where the Moon is at instant A in
+    // that very frame. There can be no shared camera here: the coordinates
+    // differ.
     let aim = |frame: ViewFrame| -> engine::camera::Camera {
         let scene = view::build_in(&before, Orbit::at_altitude(1.0e9).camera(), frame);
         let moon = scene.bodies[1].centre;
-        // Збоку від лінії Земля-Місяць, щоб Земля не влізла в кадр.
+        // To the side of the Earth-Moon line, so that Earth does not get into
+        // the frame.
         let side = [-moon[1], moon[0], 0.0];
         let n = (side[0] * side[0] + side[1] * side[1]).sqrt();
         let eye = [
@@ -768,23 +802,23 @@ fn the_moon_stands_still_in_the_rotating_frame_and_leaves_the_inertial_one() {
         engine::camera::Camera::look_at(eye, moon, [0.0, 0.0, 1.0])
     };
 
-    // Три доби світу. Прогноз спершу порахований, інакше курсор упреться в
-    // горизонт і нікуди не зрушить.
+    // Three days of world time. The forecast is computed first, or the cursor
+    // runs into the horizon and goes nowhere.
     let want = before.t + DAYS * 86400.0;
     while world.snapshot().t < want {
         world.step(DAYS * 86400.0 / mission::DEFAULT_WARP, 64);
     }
     let after = world.snapshot();
 
-    // За цей час Місяць справді пройшов те, що мав, — інакше «зник з кадру»
-    // нічого не доводило б.
+    // Over that time the Moon really did travel what it should -- otherwise
+    // "vanished from the frame" would prove nothing.
     let moon_at = |snapshot: &game::snapshot::WorldSnapshot| {
         let body = |index: i32| {
             snapshot
                 .bodies
                 .iter()
                 .find(|b| b.body == index)
-                .expect("тіло у снапшоті")
+                .expect("the body is in the snapshot")
         };
         let (earth, moon) = (body(EARTH), body(MOON));
         [
@@ -795,30 +829,30 @@ fn the_moon_stands_still_in_the_rotating_frame_and_leaves_the_inertial_one() {
     };
     let (a, b) = (moon_at(&before), moon_at(&after));
     let travelled = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
-    println!("  за {DAYS} доби Місяць пройшов {travelled:.3e} м");
+    println!("  over {DAYS} days the Moon travelled {travelled:.3e} m");
     assert!(
         travelled > 1.0e8,
-        "Місяць пройшов лише {travelled:.3e} м — світ не рухався"
+        "the Moon travelled only {travelled:.3e} m -- the world did not move"
     );
 
     for frame in [ViewFrame::Rotating, ViewFrame::Inertial] {
         let camera = aim(frame);
         let shoot = |snapshot: &game::snapshot::WorldSnapshot, camera| {
             let mut scene = view::build_in(snapshot, camera, frame);
-            // Тільки тіла: ламані рухаються в будь-якому фреймі.
+            // Bodies only: polylines move in any frame.
             scene.polylines.clear();
-            shot::take_scene(&gpu, SIDE, SIDE, &scene).expect("кадр")
+            shot::take_scene(&gpu, SIDE, SIDE, &scene).expect("frame")
         };
 
         let first = shoot(&before, camera);
         let second = shoot(&after, aim(frame));
 
-        // Порівнюється **силует**, а не колір, і це рішення V5: напрямок на
-        // світило тепер приходить з ефемериди, тож за три доби термінатор
-        // Місяця встигає переповзти диск. Тінь, що поїхала, — це правильно;
-        // диск, що поїхав, — ні, і плутати їх оракулу не можна. До V5
-        // порівняння пікселів це саме й робило: 686 змінених пікселів на
-        // нерухомому диску.
+        // The **silhouette** is compared rather than the colour, and that is a
+        // decision of V5: the direction to the star now comes from the
+        // ephemeris, so over three days the Moon's terminator crawls across
+        // the disc. A shadow that moved is right; a disc that moved is not,
+        // and the oracle may not confuse them. Before V5 comparing pixels did
+        // exactly that: 686 changed pixels on a motionless disc.
         let drawn = |shot: &Shot, x, y| {
             let p = shot.pixel(x, y);
             [p[0], p[1], p[2]] != frame::CLEAR_BYTES
@@ -829,35 +863,35 @@ fn the_moon_stands_still_in_the_rotating_frame_and_leaves_the_inertial_one() {
             .count();
         let (lit_first, lit_second) = (lit(&first), lit(&second));
 
-        println!("  {frame:?}: диск {lit_first} → {lit_second} пікселів, різних {differing}");
-        // Диск Місяця з 5·10⁷ м — 15 пікселів радіуса, тобто близько 730
-        // пікселів площі. Менше означало б, що камера дивиться не туди.
+        println!("  {frame:?}: disc {lit_first} -> {lit_second} pixels, {differing} differing");
+        // The Moon's disc from 5e7 m is 15 pixels of radius, i.e. about 730
+        // pixels of area. Less would mean the camera is looking elsewhere.
         assert!(
             lit_first > 500,
-            "{frame:?}: у першому кадрі лише {lit_first} пікселів — Місяця не видно"
+            "{frame:?}: only {lit_first} pixels in the first frame -- the Moon is not visible"
         );
 
         match frame {
-            // Стоїть: той самий диск на тих самих пікселях. Допуск — край
-            // силуету, той самий, що виміряв R1e (36 пікселів на поворот).
+            // Still: the same disc on the same pixels. The tolerance is the
+            // silhouette edge, the same one R1e measured (36 pixels per turn).
             ViewFrame::Rotating => assert!(
                 differing < 100,
-                "у синодичному фреймі за три доби змінилося {differing} пікселів — \
-                 Місяць не стоїть"
+                "in the synodic frame {differing} pixels changed over three days -- \
+                 the Moon does not stand still"
             ),
-            // Пішов: у кадрі, націленому на його вчорашнє місце, лишилось небо.
+            // Gone: in a frame aimed at yesterday's place only sky is left.
             ViewFrame::Inertial => {
                 assert!(
                     lit_second == 0,
-                    "інерціально Місяць лишив у кадрі {lit_second} пікселів — \
-                     він мав піти цілком"
+                    "inertially the Moon left {lit_second} pixels in the frame -- \
+                     it should have gone entirely"
                 );
-                // Змінився кожен піксель, який був диском, — не «багато», а
-                // рівно весь Місяць.
+                // Every pixel that was disc changed -- not "many" but the whole
+                // Moon.
                 assert!(
                     differing as u64 >= lit_first,
-                    "інерціально змінилося {differing} пікселів із {lit_first} — \
-                     диск зник не цілком"
+                    "inertially {differing} pixels of {lit_first} changed -- the disc \
+                     did not vanish entirely"
                 );
             }
         }
@@ -865,38 +899,40 @@ fn the_moon_stands_still_in_the_rotating_frame_and_leaves_the_inertial_one() {
 }
 
 // ---------------------------------------------------------------------------
-// Рельєф у грі (D12)
+// Terrain in the game (D12)
 
-/// Гра вмикає рельєф тому тілу, для якого його завантажили, — і тільки йому.
+/// The game attaches terrain to the body it was loaded for -- and only to it.
 ///
-/// Друга половина тут головна. `attach_terrain`, який ставить `Loaded` усім
-/// тілам, пройшов би перевірку «Місяць має рельєф» і зіпсував би Землю, для
-/// якої DEM у репозиторії немає взагалі: вона малювалася б місячними
-/// висотами. Тому перевіряються обидва тіла, а не одне.
+/// The second half is the main one. An `attach_terrain` that set `Loaded` on
+/// every body would pass a "the Moon has terrain" check and spoil Earth, for
+/// which there is no DEM in the repository at all: it would be drawn with
+/// lunar heights. So both bodies are checked, not one.
 #[test]
 fn the_game_attaches_terrain_to_the_moon_and_leaves_the_earth_smooth() {
     use engine::scene::{TerrainId, TileSet};
     use game::world::{EARTH, MOON};
 
-    let mut world = mission::world(&mission::default_asset()).expect("світ");
+    let mut world = mission::world(&mission::default_asset()).expect("world");
     world.tick(8);
     let snapshot = world.snapshot();
 
     let camera = || Orbit::at_altitude(mission::CAMERA_ALTITUDE_M).camera();
     let mut scene = view::build(&snapshot, camera());
 
-    // До виклику — гладкі всі, тобто те, що гра малювала до D12.
+    // Before the call all of them are smooth, i.e. what the game drew before
+    // D12.
     assert!(
         scene.bodies.iter().all(|b| b.tiles == TileSet::Smooth),
-        "сцена приїхала з рельєфом ще до того, як його ввімкнули"
+        "the scene arrived with terrain before it was switched on"
     );
 
-    // Хендл тут вигаданий навмисно: перевіряється, кому його поставили, а не
-    // що в ньому лежить, — а справжній вимагав би GPU з bindless.
+    // The handle is made up on purpose: what is checked is who got it rather
+    // than what is inside, and a real one would need a GPU with bindless.
     let id = TerrainId(0);
     view::attach_terrain(&mut scene, &snapshot, MOON, id);
 
-    // Порядок тіл у сцені той самий, що в снапшоті, без тих, що без радіуса.
+    // The order of bodies in the scene is the snapshot's, minus those with no
+    // radius.
     let with_radius: Vec<i32> = snapshot
         .bodies
         .iter()
@@ -906,7 +942,7 @@ fn the_game_attaches_terrain_to_the_moon_and_leaves_the_earth_smooth() {
     assert_eq!(
         with_radius.len(),
         scene.bodies.len(),
-        "правило порядку тіл розійшлося між build і attach_terrain"
+        "the body ordering rule diverged between build and attach_terrain"
     );
 
     for (body, drawn) in with_radius.iter().zip(&scene.bodies) {
@@ -915,29 +951,27 @@ fn the_game_attaches_terrain_to_the_moon_and_leaves_the_earth_smooth() {
         } else {
             TileSet::Smooth
         };
-        assert_eq!(
-            drawn.tiles, expected,
-            "тіло {body} отримало не той набір тайлів"
-        );
+        assert_eq!(drawn.tiles, expected, "body {body} got the wrong tile set");
     }
 
-    // І окремо — що Земля справді була в кадрі. Без цього рядка перевірка
-    // «Земля гладка» пройшла б і на сцені, у якій Землі немає.
+    // And separately, that Earth really was in the frame. Without this line
+    // "Earth is smooth" would pass for a scene with no Earth in it.
     assert!(
         with_radius.contains(&EARTH) && with_radius.contains(&MOON),
-        "у сцені мали бути обидва тіла, а є {with_radius:?}"
+        "both bodies should have been in the scene, but there are {with_radius:?}"
     );
 }
 
-/// Тіло, якого в сцені немає, не валить виклик.
+/// A body that is not in the scene does not break the call.
 ///
-/// Сцена без Місяця — законний стан (ассет без нього, тіло без радіуса), і
-/// `attach_terrain` мусить це пережити: рельєф — оздоблення, а не інваріант.
+/// A scene without the Moon is a legitimate state (an asset without it, a
+/// body with no radius), and `attach_terrain` must survive it: terrain is
+/// decoration, not an invariant.
 #[test]
 fn attaching_terrain_to_a_body_that_is_not_there_does_nothing() {
     use engine::scene::TerrainId;
 
-    let mut world = mission::world(&mission::default_asset()).expect("світ");
+    let mut world = mission::world(&mission::default_asset()).expect("world");
     world.tick(8);
     let snapshot = world.snapshot();
 
@@ -945,27 +979,31 @@ fn attaching_terrain_to_a_body_that_is_not_there_does_nothing() {
     let mut scene = view::build(&snapshot, camera);
     let before: Vec<_> = scene.bodies.iter().map(|b| b.tiles).collect();
 
-    // 99 — тіла з таким номером в ассеті немає.
+    // 99 -- there is no body with that index in the asset.
     view::attach_terrain(&mut scene, &snapshot, 99, TerrainId(0));
 
     let after: Vec<_> = scene.bodies.iter().map(|b| b.tiles).collect();
-    assert_eq!(before, after, "невідоме тіло змінило чужі тайли");
+    assert_eq!(
+        before, after,
+        "an unknown body changed someone else's tiles"
+    );
 }
 
-/// Повітря є в Землі й немає в Місяця (ROADMAP-ATMOSPHERE.md, S1).
+/// Earth carries air and the Moon does not (ROADMAP-ATMOSPHERE.md, S1).
 ///
-/// Тіло без атмосфери — це не «ще не зробили», а факт про Місяць, і рушій
-/// має право на ньому економити. Тест ловить рівно ту помилку, яку легко
-/// зробити при першому викликачі: повісити повітря на всі тіла ассета.
+/// A body without an atmosphere is not "not done yet" but a fact about the
+/// Moon, and the engine has the right to save on it. The test catches exactly
+/// the bug that is easy to make with the first caller: hanging air on every
+/// body in the asset.
 #[test]
 fn the_earth_carries_air_and_the_moon_does_not() {
-    let mut world = mission::world(&mission::default_asset()).expect("світ будується");
+    let mut world = mission::world(&mission::default_asset()).expect("the world builds");
     world.run_to_day(mission::start().t + 2.0 * 86400.0, 1.0, 8);
     let snapshot = world.snapshot();
     let scene = view::build(&snapshot, Orbit::at_altitude(1.0e9).camera());
 
-    // Порядок тіл у сцені — той самий, що в снапшоті, з пропуском
-    // безрозмірних (`view::attach_terrain` спирається на це саме правило).
+    // The order of bodies in the scene is the snapshot's, skipping those with
+    // no radius (`view::attach_terrain` relies on the same rule).
     let mut with_air = 0;
     for body in &scene.bodies {
         if body.air.is_some() {
@@ -975,7 +1013,7 @@ fn the_earth_carries_air_and_the_moon_does_not() {
     assert_eq!(
         with_air,
         1,
-        "повітря має бути рівно в одного тіла з {}",
+        "exactly one body of {} should have air",
         scene.bodies.len()
     );
 
@@ -983,35 +1021,39 @@ fn the_earth_carries_air_and_the_moon_does_not() {
         .bodies
         .iter()
         .find(|b| b.air.is_some())
-        .expect("щойно порахували");
-    let air = earth.air.expect("щойно перевірили");
-    // Верхня межа стоїть над радіусом **із ассета**, а не над константою.
+        .expect("just counted");
+    let air = earth.air.expect("just checked");
+    // The upper boundary stands above the radius **from the asset**, not above
+    // a constant.
     assert!(
         (air.thickness_m(earth.radius_m) - engine::scene::Atmosphere::EARTH_THICKNESS_M).abs()
             < 1.0,
-        "шар {} м над радіусом {}",
+        "a layer of {} m above a radius of {}",
         air.thickness_m(earth.radius_m),
         earth.radius_m
     );
 }
 
 // ---------------------------------------------------------------------------
-// Світло з ефемериди (борг D16, крок V5)
+// Light from the ephemeris (debt D16, step V5)
 
-/// Напрямок на світило приходить із ефемериди й міняється з датою місії.
+/// The direction to the star comes from the ephemeris and changes with the
+/// mission date.
 ///
-/// Два твердження, і кожне закриває свою половину боргу D16:
+/// Two claims, each closing its half of debt D16:
 ///
-/// - **звідки.** Напрямок мусить збігтися з тим, що дає сам снапшот:
-///   одиничний вектор із Землі на Сонце. Стала, зашита в рушій, збіглася б
-///   хіба випадково;
-/// - **коли.** За сто діб місії Земля проходить майже третину оберту, і
-///   напрямок мусить піти за нею. Саме це означає «пора доби в грі залежить
-///   від дати», і саме цього не було до кроку.
+/// - **where from.** The direction must match what the snapshot itself gives:
+///   the unit vector from Earth to the Sun. A constant baked into the engine
+///   would match only by accident;
+/// - **when.** Over a hundred days of mission Earth covers almost a third of
+///   its orbit, and the direction must follow. That is what "the time of day
+///   in the game depends on the date" means, and it is what was missing
+///   before the step.
 ///
-/// Сто діб, а не пів року, — межа ассета: фікстура вкриває 120 діб
-/// (`core/cook/cook_fixture.c`), і за них Сонце йде на 98°, тобто скалярний
-/// добуток падає нижче 0.2. Пів року дало б −1, але поза ассетом.
+/// A hundred days rather than half a year is the asset's limit: the fixture
+/// covers 120 days (`core/cook/cook_fixture.c`), over which the Sun moves 98
+/// degrees, so the dot product falls below 0.2. Half a year would give -1,
+/// but outside the asset.
 #[test]
 fn the_sun_comes_from_the_ephemeris_and_moves_with_the_date() {
     use game::world::EARTH;
@@ -1021,8 +1063,8 @@ fn the_sun_comes_from_the_ephemeris_and_moves_with_the_date() {
             .bodies
             .iter()
             .find(|b| b.body == EARTH)
-            .expect("Земля у снапшоті");
-        let sun = snapshot.sun.expect("Сонце в ассеті є");
+            .expect("Earth is in the snapshot");
+        let sun = snapshot.sun.expect("the asset has the Sun");
         let d = [
             sun[0] - earth.position[0],
             sun[1] - earth.position[1],
@@ -1032,17 +1074,17 @@ fn the_sun_comes_from_the_ephemeris_and_moves_with_the_date() {
         [d[0] / n, d[1] / n, d[2] / n]
     };
 
-    let mut world = mission::world(&mission::default_asset()).expect("світ");
+    let mut world = mission::world(&mission::default_asset()).expect("world");
     world.tick(16);
     let before = world.snapshot();
     let first = view::build(&before, Orbit::at_altitude(1.0e9).camera());
 
-    // Сцена інерціальна, тож напрямок у ній — рівно геоцентричний.
+    // The scene is inertial, so its direction is exactly the geocentric one.
     let want = geocentric_sun(&before);
     for k in 0..3 {
         assert!(
             (first.sun[k] - want[k]).abs() < 1.0e-12,
-            "світло сцени {:?} не з ефемериди ({want:?})",
+            "the scene's light {:?} does not come from the ephemeris ({want:?})",
             first.sun
         );
     }
@@ -1055,6 +1097,6 @@ fn the_sun_comes_from_the_ephemeris_and_moves_with_the_date() {
     let moved: f64 = (0..3).map(|k| first.sun[k] * second.sun[k]).sum();
     assert!(
         moved < 0.5,
-        "за {days} діб напрямок на Сонце майже не змінився: cos = {moved}"
+        "over {days} days the direction to the Sun hardly changed: cos = {moved}"
     );
 }
