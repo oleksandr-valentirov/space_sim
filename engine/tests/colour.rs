@@ -1,9 +1,10 @@
-//! Колір — властивість тіла, а не кадру (етап T, крок T1).
+//! Colour is a property of a body, not of the frame (stage T, step T1).
 //!
-//! Оракул навмисно вимагає **двох** тіл. З одним пройшла б і та реалізація,
-//! якої крок позбувається: колір їде в uniform із динамічним зсувом на прохід,
-//! і «останній викликач виграв» — рівно та помилка, через яку колір ламаних
-//! свого часу став атрибутом вершини (J1). Одне тіло її не показує ніяк.
+//! The oracle deliberately demands **two** bodies. With one, the very
+//! implementation this step gets rid of would pass too: colour rides in a
+//! uniform with a dynamic offset per pass, and "the last caller won" -- exactly
+//! the bug that once made polyline colour a vertex attribute (J1). A single
+//! body does not show it at all.
 
 use engine::camera::Camera;
 use engine::gpu::Gpu;
@@ -13,12 +14,12 @@ use engine::{frame, shot, sphere};
 
 const SIZE: u32 = 256;
 
-/// Дві планети обабіч осі погляду, кожна зі своїм кольором.
+/// Two planets on either side of the view axis, each with its own colour.
 ///
-/// Радіус земний, рознесені на чотири радіуси, камера — за двадцять. Числа
-/// підібрані так, щоб обидва диски цілком влазили в кадр і не торкались:
-/// диски, що перекрилися б, зробили б «де чий піксель» питанням глибини, а не
-/// кольору.
+/// Earth radius, four radii apart, camera at twenty. The numbers are chosen so
+/// that both discs fit into the frame whole and do not touch: discs that
+/// overlapped would make "whose pixel is this" a question of depth rather than
+/// of colour.
 fn two_bodies(left: [f32; 4], right: [f32; 4]) -> Scene {
     let radius = sphere::EARTH_RADIUS_M;
     let body = |centre: [f64; 3], colour: [f32; 4]| Body {
@@ -37,23 +38,23 @@ fn two_bodies(left: [f32; 4], right: [f32; 4]) -> Scene {
     scene
 }
 
-/// Колонка, у якій камера бачить центр тіла.
+/// The column in which the camera sees the centre of a body.
 ///
-/// Питається в самої камери, а не виводиться з осей: `+y` світу в цьому кадрі
-/// лягає **праворуч** по екрану, і перший підхід до цього тесту припустив
-/// протилежне. Здогад про напрямок осі — це рівно те, що оракул має брати з
-/// коду, а не з голови.
+/// Asked of the camera itself rather than derived from the axes: world `+y` in
+/// this frame lands **to the right** on screen, and the first attempt at this
+/// test assumed the opposite. A guess about the direction of an axis is exactly
+/// what an oracle must take from the code, not from one's head.
 fn screen_x(scene: &Scene, index: usize) -> f64 {
     let centre = scene.bodies[index].centre;
     let screen = scene
         .camera
         .to_screen(frame::FOV_Y, SIZE, SIZE, centre)
-        .expect("тіло позаду камери — сцена не та");
+        .expect("the body is behind the camera -- wrong scene");
     f64::from(screen[0])
 }
 
-/// Середня колонка пікселів, у яких перший канал переважає третій (або
-/// навпаки), і скільки їх.
+/// The mean column of the pixels in which the first channel dominates the third
+/// (or the other way round), and how many there are.
 fn centroid(shot: &Shot, red: bool) -> (f64, usize) {
     let mut count = 0usize;
     let mut sum = 0.0;
@@ -73,11 +74,13 @@ fn centroid(shot: &Shot, red: bool) -> (f64, usize) {
     (sum / count.max(1) as f64, count)
 }
 
-/// Два тіла різних кольорів дають у кадрі два кольори, і кожен на своєму боці.
+/// Two bodies of different colours give two colours in the frame, each on its
+/// own side.
 ///
-/// Двох тверджень мало по одному: «обидва кольори є» пройшло б і тоді, коли
-/// вони помінялися місцями, а «ліве ліворуч» — коли обидва тіла сірі й
-/// класифікація ловить шум. Разом вони називають і колір, і власника.
+/// One of the two statements alone would be too little: "both colours are
+/// there" would pass even when they had swapped places, and "the left one is on
+/// the left" when both bodies are grey and the classification is catching
+/// noise. Together they name both the colour and its owner.
 #[test]
 fn two_bodies_keep_their_own_colours() {
     let Some(gpu) = Gpu::for_tests() else {
@@ -87,36 +90,37 @@ fn two_bodies_keep_their_own_colours() {
     let red = [0.9, 0.1, 0.1, 1.0];
     let blue = [0.1, 0.1, 0.9, 1.0];
     let scene = two_bodies(red, blue);
-    let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene).expect("кадр із двома тілами");
+    let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene).expect("a frame with two bodies");
 
     let (red_x, red_n) = centroid(&shot, true);
     let (blue_x, blue_n) = centroid(&shot, false);
 
-    // Диск земного радіуса з двадцяти радіусів — близько 850 пікселів у кадрі
-    // 256×256. Поріг на порядок нижчий: він відрізняє «тіло є» від «кілька
-    // пікселів шуму на термінаторі», а не міряє площу.
-    assert!(red_n > 100, "червоних пікселів лише {red_n}");
-    assert!(blue_n > 100, "синіх пікселів лише {blue_n}");
-    // Де кожне тіло — знає камера. Червоне те, що першим у списку.
+    // An Earth-radius disc from twenty radii -- about 850 pixels in a 256x256
+    // frame. The threshold is an order of magnitude lower: it tells "the body
+    // is there" from "a few noise pixels on the terminator", it does not
+    // measure area.
+    assert!(red_n > 100, "only {red_n} red pixels");
+    assert!(blue_n > 100, "only {blue_n} blue pixels");
+    // Where each body is, the camera knows. Red is the one first in the list.
     let (want_red, want_blue) = (screen_x(&scene, 0), screen_x(&scene, 1));
     assert!(
         (red_x - want_red).abs() < 20.0,
-        "червоний центр у колонці {red_x}, а тіло — в {want_red}"
+        "the red centre is in column {red_x}, but the body is at {want_red}"
     );
     assert!(
         (blue_x - want_blue).abs() < 20.0,
-        "синій центр у колонці {blue_x}, а тіло — в {want_blue}"
+        "the blue centre is in column {blue_x}, but the body is at {want_blue}"
     );
 
-    // І навпаки: помінявши кольори місцями, кадр мусить помінятися теж.
-    // Без цього перевірка вище пройшла б і на кадрі, де колір не читається з
-    // тіла взагалі, а береться з порядку малювання.
+    // And the other way round: swapping the colours must swap the frame too.
+    // Without this the check above would pass on a frame where the colour is
+    // not read from the body at all but taken from the draw order.
     let swapped = two_bodies(blue, red);
-    let shot = shot::take_scene(&gpu, SIZE, SIZE, &swapped).expect("кадр із двома тілами");
+    let shot = shot::take_scene(&gpu, SIZE, SIZE, &swapped).expect("a frame with two bodies");
     let (red_x, _) = centroid(&shot, true);
     let (blue_x, _) = centroid(&shot, false);
     assert!(
         (red_x - want_blue).abs() < 20.0 && (blue_x - want_red).abs() < 20.0,
-        "колір не пішов за тілом: червоний у {red_x}, синій у {blue_x}"
+        "the colour did not follow the body: red at {red_x}, blue at {blue_x}"
     );
 }
