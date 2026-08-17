@@ -1,18 +1,19 @@
-//! Прохід стиснення в кадрі (етап T, крок T5c3).
+//! The compression pass in the frame (stage T, step T5c3).
 //!
-//! Оракул — **точний байт**, а не вигляд відблиску, і фікстура зроблена так,
-//! щоб інше в нього не входило.
+//! The oracle is an **exact byte**, not the look of a highlight, and the
+//! fixture is built so that nothing else enters it.
 //!
-//! Джерело значень понад одиницю тут не матеріал корпусу, а `Body::colour`,
-//! і це рішення. Дзеркальний пік GGX для такої перевірки не годиться:
-//! при дотичних кутах він законно доходить до сотень, а крива прямує до
-//! одиниці асимптотично, тож у останній байт усе одно потрапляє все, що
-//! більше за ~57 — тобто «зрізання» там є завжди й нічого не доводить.
-//! Гладке тіло, освітлене точно з боку камери, натомість дає в центрі диска
-//! **рівно** свій колір: `0.05 + 0.95·1 = 1`.
+//! The source of values above one here is `Body::colour` rather than the hull
+//! material, and that is a decision. The GGX specular peak is no good for such
+//! a check: at grazing angles it legitimately reaches the hundreds, while the
+//! curve approaches one asymptotically, so everything above ~57 lands in the
+//! last byte anyway -- i.e. "clipping" is always there and proves nothing. A
+//! smooth body lit exactly from the camera's side, by contrast, gives
+//! **exactly** its own colour at the centre of the disc:
+//! `0.05 + 0.95*1 = 1`.
 //!
-//! Отже байт у центрі кадру — це `srgb(compress(colour))`, і в цьому рівнянні
-//! немає жодного вільного числа.
+//! So the byte at the centre of the frame is `srgb(compress(colour))`, and
+//! there is not one free number in that equation.
 
 use engine::camera::Camera;
 use engine::gpu::Gpu;
@@ -21,7 +22,7 @@ use engine::{shot, sphere, srgb, tonemap};
 
 const SIZE: u32 = 128;
 
-/// Гладке тіло, освітлене точно з боку камери.
+/// A smooth body lit exactly from the camera's side.
 fn scene(colour: [f32; 4]) -> Scene {
     let distance = sphere::EARTH_RADIUS_M * 3.0;
     let eye = [distance, 0.0, 0.0];
@@ -38,61 +39,67 @@ fn scene(colour: [f32; 4]) -> Scene {
     scene
 }
 
-/// Яскравість понад одиницю доходить у кадр тим байтом, який дає крива.
+/// A brightness above one reaches the frame as the byte the curve gives.
 ///
-/// Чотири значення: одне нижче коліна (там крива зобов'язана бути тотожністю),
-/// одне трохи вище, і два далеко вище — рівно того порядку, який дає відблиск
-/// корпусу. Без проходу стиснення три останні дали б однаковий `255`.
+/// Four values: one below the knee (where the curve is obliged to be the
+/// identity), one slightly above, and two far above -- of exactly the order a
+/// hull highlight gives. Without the compression pass the last three would
+/// give an identical `255`.
 #[test]
 fn a_body_brighter_than_one_lands_on_the_byte_the_curve_predicts() {
     let Some(gpu) = Gpu::for_tests() else { return };
 
     let mut seen = Vec::new();
     for value in [0.5f32, 0.95, 1.5, 2.0, 3.7] {
-        let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene([value; 4])).expect("кадр");
+        let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene([value; 4])).expect("frame");
         let got = shot.pixel(SIZE / 2, SIZE / 2)[0];
         let expected = srgb::linear_to_byte(tonemap::compress(f64::from(value)));
         println!(
-            "  {value} → крива {:.4} → чекали байт {expected}, у кадрі {got}",
+            "  {value} -> curve {:.4} -> expected byte {expected}, in frame \
+             {got}",
             tonemap::compress(f64::from(value))
         );
         assert!(
             got.abs_diff(expected) <= 1,
-            "яскравість {value} мала дати байт {expected}, а кадр дав {got}"
+            "brightness {value} should have given byte {expected}, and the \
+             frame gave {got}"
         );
         seen.push(got);
     }
 
-    // І три яскравості понад одиницю мусять лишитися **різними**: саме це
-    // прохід і додає. Без нього тут було б 255, 255, 255.
+    // And the three brightnesses above one have to stay **distinct**: that is
+    // what the pass adds. Without it this would read 255, 255, 255.
     assert!(
         seen[1] < seen[2] && seen[2] < seen[3] && seen[3] < seen[4],
-        "яскравості понад коліном злиплися: {seen:?}"
+        "the brightnesses above the knee merged: {seen:?}"
     );
     assert!(
         seen[4] < 255,
-        "найяскравіша все одно зрізалася в {}",
+        "the brightest one clipped anyway at {}",
         seen[4]
     );
 }
 
-/// Нижче коліна прохід не змінює **нічого**, і це перевіряється кадром.
+/// Below the knee the pass changes **nothing**, and that is checked by the
+/// frame.
 ///
-/// На цьому стоять усі оракули етапу T, які міряють байти: відбивна здатність
-/// Місяця (T5b), правило матеріалу (T4b), кольорові тайли (T3b). Якби крива
-/// чіпала темні значення, кожен з них довелося б переміряти.
+/// Every stage-T oracle that measures bytes rests on this: the Moon's
+/// reflectance (T5b), the material rule (T4b), the colour tiles (T3b). If the
+/// curve touched the dark values, every one of them would have to be
+/// remeasured.
 #[test]
 fn below_the_knee_the_pass_is_invisible() {
     let Some(gpu) = Gpu::for_tests() else { return };
 
     for value in [0.02f32, 0.1, 0.35, 0.79] {
-        let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene([value; 4])).expect("кадр");
+        let shot = shot::take_scene(&gpu, SIZE, SIZE, &scene([value; 4])).expect("frame");
         let got = shot.pixel(SIZE / 2, SIZE / 2)[0];
         let expected = srgb::linear_to_byte(f64::from(value));
-        println!("  {value} → байт {expected}, у кадрі {got}");
+        println!("  {value} -> byte {expected}, in frame {got}");
         assert!(
             got.abs_diff(expected) <= 1,
-            "яскравість {value} нижче коліна дала {got} замість {expected}"
+            "brightness {value} below the knee gave {got} instead of \
+             {expected}"
         );
     }
 }
@@ -145,13 +152,14 @@ fn the_exposure_reaches_the_shader_and_one_changes_nothing() {
     );
 }
 
-/// Крива записана двічі — у Rust і в шейдері — і мусить збігатися.
+/// The curve is written down twice -- in Rust and in the shader -- and has to
+/// match.
 #[test]
 fn the_shader_carries_the_same_knee() {
     let source = include_str!("../shaders/tonemap.slang");
     let wanted = format!("static const float KNEE = {};", tonemap::KNEE);
     assert!(
         source.contains(&wanted),
-        "у shaders/tonemap.slang немає рядка «{wanted}»"
+        "shaders/tonemap.slang has no line \"{wanted}\""
     );
 }

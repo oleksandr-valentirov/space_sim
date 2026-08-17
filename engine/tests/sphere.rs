@@ -1,14 +1,15 @@
-//! Сфера в реальному масштабі: проліт від поверхні до орбіти без розривів
+//! A sphere at real scale: a flight from the surface to orbit with no breaks
 //! (ROADMAP F5).
 //!
-//! Три твердження:
+//! Three claims:
 //!
-//!   1. близько до поверхні сфера займає весь кадр — вона опукла й велика,
-//!      інакше десь загубилась камера-relative арифметика;
-//!   2. на орбіті (10⁷ м) виміряний силует збігається з точною формулою
-//!      `asin(R/(R+висота))` — без цього перше нічого не доводить;
-//!   3. між ними покриття кадру НЕ зростає — стрибок уверх і був би тим
-//!      самим розривом, який критерій F5 забороняє.
+//!   1. close to the surface the sphere fills the whole frame -- it is convex
+//!      and large, otherwise the camera-relative arithmetic got lost
+//!      somewhere;
+//!   2. at orbit (1e7 m) the measured silhouette matches the exact formula
+//!      `asin(R/(R+altitude))` -- without this the first proves nothing;
+//!   3. between them the frame coverage does NOT grow -- a jump upward would
+//!      be exactly the break the F5 criterion forbids.
 
 use engine::flight_probe::{expected_coverage, sweep};
 use engine::gpu::Gpu;
@@ -19,14 +20,14 @@ const STEPS: u32 = 15;
 
 fn samples() -> Option<Vec<engine::flight_probe::Sample>> {
     let Ok(gpu) = Gpu::new(wgpu::Instance::default(), None) else {
-        eprintln!("ПРОПУЩЕНО: немає адаптера wgpu");
+        eprintln!("SKIPPED: no wgpu adapter");
         return None;
     };
 
-    // Низька роздільність меша: тест перевіряє масштаб і глибину, не якість
-    // тесселяції — і швидший headless-прогін.
+    // A low-resolution mesh: the test checks scale and depth, not tessellation
+    // quality -- and a headless run is faster that way.
     let mesh = sphere::generate(sphere::EARTH_RADIUS_M, 32, 64);
-    Some(sweep(&gpu, SIZE, &mesh, STEPS).expect("проліт мав пройти"))
+    Some(sweep(&gpu, SIZE, &mesh, STEPS).expect("the sweep should have run"))
 }
 
 #[test]
@@ -37,7 +38,8 @@ fn the_sphere_fills_the_frame_ten_metres_up() {
     let first = &samples[0];
     assert!(
         first.coverage > 0.99,
-        "на висоті {} м сфера мала заповнити весь кадр, зайняла {}",
+        "at altitude {} m the sphere should have filled the whole frame, it \
+         took {}",
         first.altitude,
         first.coverage
     );
@@ -51,18 +53,19 @@ fn the_silhouette_matches_the_analytic_disc_at_orbit() {
     let last = samples.last().unwrap();
 
     let expected = expected_coverage(last.expected_half_angle, 1.0)
-        .expect("на 10⁷ м диск мав уміститись у кадр");
+        .expect("at 1e7 m the disc should have fitted in the frame");
 
     assert!(
         (last.coverage - expected).abs() < 0.02,
-        "виміряне покриття {:.4} проти аналітичного {:.4} на висоті {:.0e} м",
+        "measured coverage {:.4} against the analytic {:.4} at altitude \
+         {:.0e} m",
         last.coverage,
         expected,
         last.altitude
     );
 }
 
-/// Найсильніше твердження кроку: саме воно й перевіряє «без розривів».
+/// The step's strongest claim: this is the one that checks "with no breaks".
 #[test]
 fn coverage_never_grows_as_altitude_increases() {
     let Some(samples) = samples() else {
@@ -73,7 +76,8 @@ fn coverage_never_grows_as_altitude_increases() {
         let [a, b] = pair else { unreachable!() };
         assert!(
             b.coverage <= a.coverage + 1e-9,
-            "покриття зросло з висотою: {:.4} м -> {:.4} м дало {:.4} -> {:.4}",
+            "coverage grew with altitude: {:.4} m -> {:.4} m gave {:.4} -> \
+             {:.4}",
             a.altitude,
             b.altitude,
             a.coverage,

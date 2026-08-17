@@ -1,12 +1,12 @@
-//! Обидва фрейми траєкторії справді малюють щось на екрані (ROADMAP F6).
+//! Both trajectory frames really do draw something on screen (ROADMAP F6).
 //!
-//! Не «на око»: перша версія цього рендера мовчки давала порожній кадр
-//! рівно для обертового фрейму — пайплайн збирався, `draw` виконувався без
-//! жодної помилки чи попередження від wgpu, і єдиним симптомом був чорний
-//! PNG. Причина лишилась не до кінця з'ясованою (`trajectory.slang`,
-//! коментар над двома точками входу), а цей тест — застава від регресії
-//! того самого класу: раз він ловить порожній кадр, шейдер можна міняти
-//! не передивляючись знімки вручну щоразу.
+//! Not "by eye": the first version of this renderer silently produced an empty
+//! frame for the rotating frame specifically -- the pipeline built, `draw` ran
+//! without a single error or warning from wgpu, and the only symptom was a
+//! black PNG. The cause was never fully established (`trajectory.slang`, the
+//! comment above the two entry points), and this test is the surety against a
+//! regression of that same class: since it catches an empty frame, the shader
+//! can be changed without eyeballing the shots by hand every time.
 
 use engine::gpu::Gpu;
 use engine::trajectory;
@@ -46,7 +46,7 @@ fn both_frames_draw_visible_pixels() {
             colour: [0.9, 0.6, 0.2, 1.0],
         },
     )
-    .expect("геоцентричний рендер мав пройти");
+    .expect("the geocentric render should have run");
 
     let rotating = render(
         &gpu,
@@ -59,17 +59,17 @@ fn both_frames_draw_visible_pixels() {
             colour: [0.3, 0.8, 0.9, 1.0],
         },
     )
-    .expect("обертовий рендер мав пройти");
+    .expect("the rotating render should have run");
 
     assert!(
         lit_pixels(&geocentric) > 100,
-        "геоцентричний кадр майже порожній: {} пікселів",
+        "the geocentric frame is nearly empty: {} pixels",
         lit_pixels(&geocentric)
     );
     assert!(
         lit_pixels(&rotating) > 100,
-        "обертовий кадр майже порожній: {} пікселів — саме так виглядав баг \
-         із двома точками входу до виправлення",
+        "the rotating frame is nearly empty: {} pixels -- that is exactly how \
+         the two-entry-point bug looked before it was fixed",
         lit_pixels(&rotating)
     );
 }
