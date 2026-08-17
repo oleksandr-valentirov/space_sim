@@ -1,16 +1,17 @@
-//! Сітка вікон рахується в нитці планувальника (ROADMAP-UI.md, U5b).
+//! The window grid is computed in the planner thread (ROADMAP-UI.md, U5b).
 //!
-//! Три твердження, і жодне з них не про пікселі:
+//! Three claims, none of them about pixels:
 //!
-//! 1. сітка з нитки — та сама, що прямий виклик межі, клітинка в клітинку;
-//! 2. там, де розв'язку немає, лишається **дірка**, а не нуль;
-//! 3. нитка від сітки не глухне: правило скасування в неї одне на два види
-//!    роботи, і сітка ним не виламується.
+//! 1. the grid from the thread is the same as a direct call to the boundary,
+//!    cell for cell;
+//! 2. where there is no solution a **hole** is left, not a zero;
+//! 3. the thread does not go deaf from a grid: it has one cancellation rule
+//!    for two kinds of work, and the grid does not break it.
 //!
-//! Перше з них — про осі. `t1` і `tof` обидва додатні й обидва в секундах, тож
-//! транспонована сітка виглядає цілком правдоподібно; U5a ловив це на межі,
-//! тут те саме ловиться на щільній сітці, де клітинку ще треба покласти в
-//! правильний рядок.
+//! The first is about the axes. `t1` and `tof` are both positive and both in
+//! seconds, so a transposed grid looks entirely plausible; U5a caught that at
+//! the boundary, here the same thing is caught on a dense grid, where a cell
+//! also has to land in the right row.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -26,21 +27,22 @@ const PATIENCE: Duration = Duration::from_secs(20);
 fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
     let deadline = Instant::now() + PATIENCE;
     while !done() {
-        assert!(Instant::now() < deadline, "не дочекалися: {what}");
+        assert!(Instant::now() < deadline, "never arrived: {what}");
         std::thread::yield_now();
     }
 }
 
 fn ephemeris() -> Arc<core_rs::Ephemeris> {
-    Arc::new(core_rs::Ephemeris::load(&mission::default_asset()).expect("фікстура"))
+    Arc::new(core_rs::Ephemeris::load(&mission::default_asset()).expect("fixture"))
 }
 
-/// Стани відходу для сітки.
+/// Departure states for the grid.
 ///
-/// Беруться з початкового стану місії, зсунутого в часі, а не з живої
-/// траєкторії, і це навмисно: розгортці байдуже, звідки прийшли стани, а
-/// прогін світу коштував би секунди на кожен тест. Те, що стани справді
-/// беруться з траєкторії, перевіряє окремий тест наприкінці.
+/// Taken from the mission's initial state shifted in time rather than from a
+/// live trajectory, and that is deliberate: the sweep does not care where the
+/// states came from, and running the world would cost seconds per test. That
+/// the states really do come from a trajectory is checked by a separate test
+/// at the end.
 fn departures(count: usize, step: f64, from: f64) -> Vec<core_rs::State> {
     let base = mission::start();
     (0..count)
@@ -51,8 +53,8 @@ fn departures(count: usize, step: f64, from: f64) -> Vec<core_rs::State> {
         .collect()
 }
 
-/// Сітка, що цілком лежить у проміжку ассета: фікстура знає 120 діб від
-/// J2000, тож відхід до 60-ї доби плюс переліт до 10 — із запасом усередині.
+/// A grid entirely inside the asset's span: the fixture knows 120 days from
+/// J2000, so a departure up to day 60 plus a transfer up to 10 is well inside.
 fn inside(id: u64, mu: f64) -> GridRequest {
     GridRequest {
         id,
@@ -68,38 +70,41 @@ fn inside(id: u64, mu: f64) -> GridRequest {
 fn ask_for(planner: &Planner, request: &GridRequest) -> Grid {
     planner.request(Request::Grid(request.clone()));
     let mut got = None;
-    wait_until("сітка", || {
+    wait_until("the grid", || {
         if let Some(grid) = planner.latest_grid() {
             got = Some(grid);
         }
         got.as_ref().is_some_and(|g: &Grid| g.id == request.id)
     });
-    got.expect("щойно перевірили")
+    got.expect("just checked")
 }
 
-/// Клітинка каже правду про перельот, і перевіряє це не сама розгортка.
+/// A cell tells the truth about its transfer, and it is not the sweep that
+/// checks it.
 ///
-/// Оракул тут навмисно **не** «сітка проти `porkchop_compute_eph`»: обидва
-/// шляхи розв'язували б ту саму задачу Ламберта, а помилка вибору системи
-/// координат по обидва боки скоротилася б. Саме так вона й прожила від U5a до
-/// цього тесту — з баріцентричною фікстурою дуга будувалася навколо початку
-/// координат із `mu` Землі, тобто навколо Сонця з масою Землі, і числа
-/// виглядали правдоподібно (2–9.6 км/с).
+/// The oracle here is deliberately **not** "the grid against
+/// `porkchop_compute_eph`": both paths would solve the same Lambert problem,
+/// and an error in the choice of coordinate frame would cancel on both sides.
+/// That is exactly how it lived from U5a until this test -- with a
+/// barycentric fixture the arc was built around the origin with Earth's `mu`,
+/// i.e. around the Sun with Earth's mass, and the numbers looked plausible
+/// (2 to 9.6 km/s).
 ///
-/// Тому перевіряється сама фізика клітинки, трьома незалежними твердженнями:
+/// So the physics of the cell is checked instead, by three independent
+/// claims:
 ///
-/// 1. апарат, що отримав `dv` і полетів **двома тілами**, приходить туди, де
-///    в цей момент буде тіло призначення (кеплерівська дуга, не інтегратор);
-/// 2. `dv_m_s` — це довжина `dv`, а не інше число поруч;
-/// 3. `v_inf_arrive` — швидкість відносно тіла, а не відносно центра.
+/// 1. a vessel given `dv` and flown as **two bodies** arrives where the
+///    target body will be at that moment (a Kepler arc, not the integrator);
+/// 2. `dv_m_s` is the length of `dv` and not some neighbouring number;
+/// 3. `v_inf_arrive` is the speed relative to the body, not to the centre.
 #[test]
 fn a_cell_is_a_transfer_that_actually_arrives() {
     let eph = ephemeris();
     let mu = eph.body_mu(EARTH);
-    assert!(mu > 0.0, "фікстура мусить знати масу Землі");
+    assert!(mu > 0.0, "the fixture must know Earth's mass");
 
     let request = inside(1, mu);
-    let planner = Planner::spawn(eph.clone(), mission::config()).expect("планувальник");
+    let planner = Planner::spawn(eph.clone(), mission::config()).expect("the planner");
 
     let started = Instant::now();
     let grid = ask_for(&planner, &request);
@@ -117,40 +122,43 @@ fn a_cell_is_a_transfer_that_actually_arrives() {
             let Some(cell) = grid.at(i, j) else { continue };
             let (t1, tof) = (grid.t1[i], grid.tof[j]);
 
-            // Скажені клітинки — повз перевірку, і межа тут не про фізику, а
-            // про **власний розв'язувач цього тесту**: на дузі в сотню
-            // кілометрів за секунду універсальна змінна втрачає знаки на
-            // гіперболічних косинусах, і перевірка починає падати на своїй
-            // точності, а не на чужій помилці. Такого вікна гравець і не
-            // обере — воно на порядок дорожче за все, чим літають.
+            // Wild cells are skipped, and the bound is not about physics but
+            // about **this test's own solver**: on an arc of a hundred
+            // kilometres per second the universal variable loses digits in the
+            // hyperbolic cosines, and the check starts failing on its own
+            // accuracy rather than on someone else's bug. A player would not
+            // pick such a window anyway -- it is an order dearer than anything
+            // flown.
             if cell.dv_m_s > 10_000.0 || cell.v_inf_arrive > 10_000.0 {
                 wild += 1;
                 continue;
             }
 
-            // Стан апарата в момент відходу — той самий, що ми подали, — і
-            // маневр із клітинки поверх нього.
+            // The vessel state at departure is the one we supplied, with the
+            // cell's manoeuvre on top of it.
             let from = request.depart[i];
-            let centre = eph.body_state(EARTH, t1).expect("Земля в межах ассета");
+            let centre = eph
+                .body_state(EARTH, t1)
+                .expect("Earth within the asset's span");
             let target = eph
                 .body_state(MOON, t1 + tof)
-                .expect("Місяць у межах ассета");
+                .expect("the Moon within the asset's span");
             let centre_then = eph
                 .body_state(EARTH, t1 + tof)
-                .expect("Земля в межах ассета");
+                .expect("Earth within the asset's span");
 
-            // Довжина маневру — довжина вектора маневру. Дрібниця, яку легко
-            // порушити, показавши поруч сусіднє число.
+            // The length of the manoeuvre is the length of its vector. A
+            // trifle that is easy to break by showing a neighbouring number.
             let length = (cell.dv[0].powi(2) + cell.dv[1].powi(2) + cell.dv[2].powi(2)).sqrt();
             assert!(
                 (length - cell.dv_m_s).abs() <= 1e-9 * length.max(1.0),
-                "({i}, {j}): |dv| = {length}, а показано {}",
+                "({i}, {j}): |dv| = {length}, but {} is shown",
                 cell.dv_m_s
             );
 
-            // Куди приведе ця дуга. Кеплер, а не наш інтегратор: клітинка й
-            // рахувалася кеплерівською задачею, і питання рівно в тому, чи
-            // зроблено це в правильній системі координат.
+            // Where this arc leads. Kepler, not our integrator: the cell was
+            // computed by a Kepler problem too, and the question is exactly
+            // whether it was done in the right frame.
             let r0 = [
                 from.r.x - centre.r.x,
                 from.r.y - centre.r.y,
@@ -174,21 +182,22 @@ fn a_cell_is_a_transfer_that_actually_arrives() {
             .sqrt();
             let distance = (want[0].powi(2) + want[1].powi(2) + want[2].powi(2)).sqrt();
 
-            // Допуск — частка відстані, а не метри: порівнюються два
-            // розв'язки тієї самої кеплерівської задачі різними методами
-            // (Ламберт проти універсальної змінної). Помилка ж, яку тест
-            // ловить, інша за порядком узагалі: не той центр — 1.5·10¹¹ м,
-            // не те тіло — 4·10⁸ м.
+            // The tolerance is a fraction of the distance rather than metres:
+            // two solutions of the same Kepler problem by different methods
+            // are being compared (Lambert against the universal variable). The
+            // error the test catches is of a different order entirely: the
+            // wrong centre is 1.5e11 m, the wrong body 4e8 m.
             assert!(
                 miss <= 1e-6 * distance,
-                "({i}, {j}): дуга промахнулася повз Місяць на {miss:.3e} м \
-                 при відстані {distance:.3e} м — це не той переліт",
+                "({i}, {j}): the arc missed the Moon by {miss:.3e} m at a distance \
+                 of {distance:.3e} m -- that is not this transfer",
             );
             worst_miss = worst_miss.max(miss / distance);
 
-            // Швидкість на приході — відносно **тіла**, а не відносно центра.
-            // Різниця — це швидкість Місяця, близько кілометра за секунду:
-            // помітно на око в панелі й ніяк не помітно в коді.
+            // The arrival speed is relative to the **body**, not to the
+            // centre. The difference is the Moon's speed, about a kilometre
+            // per second: obvious to the eye in the panel and invisible in the
+            // code.
             let moon_v = [
                 target.v.x - centre_then.v.x,
                 target.v.y - centre_then.v.y,
@@ -198,13 +207,13 @@ fn a_cell_is_a_transfer_that_actually_arrives() {
                 + (arrive_v[1] - moon_v[1]).powi(2)
                 + (arrive_v[2] - moon_v[2]).powi(2))
             .sqrt();
-            // Допуск той самий і з тієї ж причини: помилка «відносно
-            // центра» становила б швидкість Місяця, тобто кілометр за
-            // секунду — на дев'ять порядків більше.
+            // The same tolerance for the same reason: a "relative to the
+            // centre" error would be the Moon's speed, a kilometre per second
+            // -- nine orders larger.
             assert!(
                 (relative - cell.v_inf_arrive).abs() <= 1e-6 * relative,
-                "({i}, {j}): відносно Місяця виходить {relative:.1} м/с, \
-                 а клітинка каже {:.1}",
+                "({i}, {j}): relative to the Moon it comes out {relative:.1} m/s, \
+                 while the cell says {:.1}",
                 cell.v_inf_arrive
             );
 
@@ -212,24 +221,25 @@ fn a_cell_is_a_transfer_that_actually_arrives() {
         }
     }
 
-    // Сорок — не кругле число, а запас під те, скільки їх тут насправді:
-    // стани відходу в цьому тесті штучні (позиція стоїть, Місяць їде), тож
-    // більшість вікон виходить скаженими. Важить, що перевірених достатньо
-    // й що вони не зникли зовсім.
+    // Forty is not a round number but a margin under how many there really
+    // are: the departure states in this test are artificial (the position
+    // stands still while the Moon travels), so most windows come out wild.
+    // What matters is that enough are checked and that they have not vanished
+    // entirely.
     assert!(
         checked >= 40,
-        "перевірено лише {checked} клітинок, ще {wild} відкинуто як скажені"
+        "only {checked} cells checked, another {wild} discarded as wild"
     );
     println!(
-        "  перевірено {checked} клітинок, {wild} скажених повз; \
-         найгірший промах перевірки {worst_miss:.1e} від відстані"
+        "  {checked} cells checked, {wild} wild ones skipped; \
+         worst miss of the check {worst_miss:.1e} of the distance"
     );
 
-    let (low, high) = grid.scale().expect("сітка, де нічого не зійшлося");
-    let (i, j, best) = grid.best().expect("найкраще вікно");
+    let (low, high) = grid.scale().expect("a grid where nothing converged");
+    let (i, j, best) = grid.best().expect("the best window");
     println!(
-        "  {checked} клітинок із {} за {took:?}; ціна від {low:.0} до {high:.0} м/с;\n  \
-         найдешевше: відхід на добі {:.1}, переліт {:.1} доби, {:.0} + {:.0} м/с",
+        "  {checked} cells of {} in {took:?}; price from {low:.0} to {high:.0} m/s;\n  \
+         cheapest: departure on day {:.1}, transfer {:.1} days, {:.0} + {:.0} m/s",
         grid.cells.len(),
         (grid.t1[i] - mission::start().t) / DAY,
         grid.tof[j] / DAY,
@@ -237,29 +247,30 @@ fn a_cell_is_a_transfer_that_actually_arrives() {
         best.v_inf_arrive
     );
 
-    // Найкраще вікно — справді найдешевше з усіх, а не перше-ліпше.
+    // The best window really is the cheapest of them all, not the first found.
     for cell in grid.cells.iter().flatten() {
         assert!(cell.total() >= best.total());
     }
     assert!(
         (low - best.total()).abs() < 1e-9,
-        "межа шкали й мінімум різні"
+        "the end of the scale and the minimum differ"
     );
 }
 
-/// Кеплерівське просування стану на `dt` — універсальна змінна, поділ навпіл.
+/// Kepler propagation of a state by `dt` -- universal variable, bisection.
 ///
-/// Друга реалізація тієї самої фізики, і саме тому вона тут: якби перевірка
-/// кликала `lambert_solve`, вона порівнювала б розгортку саму з собою.
-/// Повертає позицію й швидкість: перша каже, чи дуга справді приводить до
-/// Місяця, друга — чи `v_inf_arrive` порахована відносно тіла.
+/// A second implementation of the same physics, and that is precisely why it
+/// is here: were the check to call `lambert_solve`, it would compare the
+/// sweep with itself. It returns position and velocity: the first says
+/// whether the arc really leads to the Moon, the second whether
+/// `v_inf_arrive` is measured relative to the body.
 ///
-/// Поділ навпіл, а не Ньютон, і це не лінощі: час як функція універсальної
-/// аномалії монотонно зростає, тож пошук у вилці збігається завжди, тоді як
-/// Ньютон із наближенням для еліпса розлітається на гіперболічній дузі —
-/// а маневр із halo-орбіти до Місяця буває саме гіперболічним. Тест, який
-/// падає через власний розв'язувач, гірший за відсутній: він каже, що
-/// зламане те, що ціле.
+/// Bisection rather than Newton, and that is not laziness: time as a function
+/// of the universal anomaly increases monotonically, so a bracketed search
+/// always converges, while Newton with an elliptic initial guess flies apart
+/// on a hyperbolic arc -- and a burn from a halo orbit to the Moon is often
+/// hyperbolic. A test that fails because of its own solver is worse than no
+/// test: it says the sound thing is broken.
 fn kepler(r0: [f64; 3], v0: [f64; 3], dt: f64, mu: f64) -> ([f64; 3], [f64; 3]) {
     let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
     let r = dot(r0, r0).sqrt();
@@ -267,22 +278,22 @@ fn kepler(r0: [f64; 3], v0: [f64; 3], dt: f64, mu: f64) -> ([f64; 3], [f64; 3]) 
     let rv = dot(r0, v0);
     let root = mu.sqrt();
 
-    // Час, до якого приводить універсальна аномалія x.
+    // The time the universal anomaly x leads to.
     let time_of = |x: f64| -> f64 {
         let (c, s) = stumpff(alpha * x * x);
         (rv / root * x * x * c + (1.0 - alpha * r) * x * x * x * s + r * x) / root
     };
 
-    // Вилка: розсуваємо верхню межу, доки не перескочимо dt.
+    // The bracket: push the upper bound out until it overshoots dt.
     let mut low = 0.0;
     let mut high = 1.0;
     while time_of(high) < dt {
         high *= 2.0;
-        assert!(high < 1e12, "дуга не досягає {dt} с за жодної аномалії");
+        assert!(high < 1e12, "the arc never reaches {dt} s at any anomaly");
     }
 
-    // Сто поділів — це 2⁻¹⁰⁰ від початкової вилки, тобто далеко за подвійну
-    // точність; зупиняє цикл сама рівність меж.
+    // A hundred halvings is 2^-100 of the initial bracket, far beyond double
+    // precision; the loop is stopped by the bounds meeting.
     for _ in 0..100 {
         let mid = 0.5 * (low + high);
         if mid <= low || mid >= high {
@@ -321,7 +332,7 @@ fn kepler(r0: [f64; 3], v0: [f64; 3], dt: f64, mu: f64) -> ([f64; 3], [f64; 3]) 
     (position, velocity)
 }
 
-/// Функції Стампфа C(z) і S(z), рядами біля нуля.
+/// The Stumpff functions C(z) and S(z), by series near zero.
 fn stumpff(z: f64) -> (f64, f64) {
     if z > 1e-6 {
         let sz = z.sqrt();
@@ -334,20 +345,21 @@ fn stumpff(z: f64) -> (f64, f64) {
     }
 }
 
-/// За краєм ассета клітинка **зникає**, а не коштує нуль.
+/// Past the end of the asset a cell **disappears** rather than costing zero.
 ///
-/// Це та сама різниця, заради якої сітка щільна: нуль — найдешевший переліт
-/// із можливих, тобто на плоті він виглядав би найкращим вікном, і гравець
-/// клікнув би саме туди. Фікстура покриває 120 діб, тож переліт, що
-/// приземляється пізніше, ефемериді нема з чого порахувати.
+/// That is the very difference the dense grid exists for: zero is the
+/// cheapest transfer possible, so on the plot it would look like the best
+/// window and the player would click exactly there. The fixture covers 120
+/// days, so a transfer landing later gives the ephemeris nothing to compute
+/// from.
 #[test]
 fn a_window_past_the_end_of_the_asset_is_a_hole_not_a_bargain() {
     let eph = ephemeris();
     let mu = eph.body_mu(EARTH);
-    let planner = Planner::spawn(eph, mission::config()).expect("планувальник");
+    let planner = Planner::spawn(eph, mission::config()).expect("the planner");
 
-    // Відхід на 115-й добі, переліт від доби до дванадцяти: перші стовпці ще
-    // всередині 120 діб, останні — вже за краєм.
+    // Departure on day 115, transfers from one day to twelve: the first
+    // columns are still inside the 120 days, the last are past the edge.
     let request = GridRequest {
         id: 7,
         depart: departures(1, DAY, 115.0 * DAY),
@@ -360,50 +372,59 @@ fn a_window_past_the_end_of_the_asset_is_a_hole_not_a_bargain() {
 
     let grid = ask_for(&planner, &request);
 
-    let inside = grid.at(0, 0).expect("переліт на добу ще влазить у 120 діб");
+    let inside = grid
+        .at(0, 0)
+        .expect("a one-day transfer still fits into 120 days");
     assert!(
         inside.total() > 0.0,
-        "клітинка всередині проміжку не може коштувати нуль"
+        "a cell inside the span cannot cost zero"
     );
     assert_eq!(
         grid.at(0, 11),
         None,
-        "переліт до 127-ї доби — за краєм ассета, а сітка щось про нього знає"
+        "a transfer to day 127 is past the end of the asset, yet the grid knows \
+         something about it"
     );
 
     let holes = grid.cells.iter().filter(|c| c.is_none()).count();
-    println!("  {holes} дірок із {} клітинок", grid.cells.len());
-    assert!(holes > 0, "заборонених зон не видно — перевіряти нема чого");
+    println!("  {holes} holes out of {} cells", grid.cells.len());
+    assert!(holes > 0, "no forbidden zones in sight -- nothing to check");
 
-    // І найкраще вікно шукається серед того, що є, а не серед дірок.
-    let (_, j, _) = grid.best().expect("хоч одне вікно");
+    // And the best window is looked for among what exists, not among the
+    // holes.
+    let (_, j, _) = grid.best().expect("at least one window");
     assert!(
         grid.at(0, j).is_some(),
-        "найкращим вікном названо дірку — саме цього щільна сітка й не дозволяє"
+        "a hole was named the best window -- which is exactly what the dense grid \
+         does not allow"
     );
 }
 
-/// Обране вікно справді доводить апарат до Місяця (ROADMAP-UI.md, U5d).
+/// The chosen window really takes the vessel to the Moon (ROADMAP-UI.md,
+/// U5d).
 ///
-/// Наскрізна перевірка, і єдина, яка не вірить сітці на слово: стани відходу
-/// беруться з живої траєкторії, маневр — із клітинки, а летить апарат
-/// **повною моделлю сил** у нитці планувальника. Кеплер тут ніде не бере
-/// участі; питання рівно одне — чи прилетів.
+/// An end-to-end check, and the only one that does not take the grid at its
+/// word: the departure states come from a live trajectory, the manoeuvre from
+/// a cell, and the vessel flies under the **full force model** in the planner
+/// thread. Kepler takes no part here; there is exactly one question -- did it
+/// arrive.
 ///
-/// Число, заради якого тест і написаний, — у друку: наскільки двотіловий
-/// патч-конік розминається з реальністю. Це не похибка й не борг, а ціна
-/// самого інструмента: сітка **обирає вікно**, а траєкторію потім уточнює
-/// диференціальна корекція (PROJECT.md §8). Тому й допуск нижче грубий —
-/// він стверджує «в той бік і близько», а не «влучив».
+/// The number the test was written for is in the printout: by how much the
+/// two-body patched conic parts with reality. That is neither an error nor a
+/// debt but the price of the instrument itself: the grid **chooses a window**,
+/// and the trajectory is then refined by differential correction (PROJECT.md
+/// §8). Hence the coarse tolerance below -- it claims "that way and close",
+/// not "hit".
 #[test]
 fn a_chosen_window_flies_the_vessel_to_the_moon() {
-    let sim = game::sim::Sim::spawn(mission::world(&mission::default_asset()).expect("світ"))
-        .expect("нитка симуляції");
+    let sim = game::sim::Sim::spawn(mission::world(&mission::default_asset()).expect("world"))
+        .expect("the simulation thread");
     sim.send(game::sim::Command::TogglePause);
 
-    // Дати прогнозу відійти якнайдалі: вісь відходу не має права вилізти за
-    // пораховане (`app::grid_request`), інакше стани відходу — вигадка.
-    wait_until("горизонт", || {
+    // Let the forecast run as far ahead as it can: the departure axis has no
+    // right to reach past what is computed (`app::grid_request`), or the
+    // departure states are made up.
+    wait_until("the horizon", || {
         let s = sim.snapshot();
         s.vessels[0].computed_to > s.t + 30.0 * DAY
     });
@@ -411,10 +432,11 @@ fn a_chosen_window_flies_the_vessel_to_the_moon() {
     let snapshot = sim.snapshot();
     let vessel = &snapshot.vessels[0];
     let eph = sim.ephemeris();
-    let planner = Planner::spawn(eph.clone(), mission::config()).expect("планувальник");
+    let planner = Planner::spawn(eph.clone(), mission::config()).expect("the planner");
 
-    // Точнісінько те, що робить `app::grid_request`, тільки з чистого коду
-    // тесту: стани відходу — з траєкторії, крок — щоб уміститися в пораховане.
+    // Exactly what `app::grid_request` does, only from the test's own code:
+    // departure states from the trajectory, the step chosen to fit inside what
+    // is computed.
     let span = vessel.computed_to - snapshot.t;
     let step = (span / 40.0).min(DAY);
     let depart: Vec<core_rs::State> = (0..40)
@@ -434,18 +456,18 @@ fn a_chosen_window_flies_the_vessel_to_the_moon() {
         },
     );
 
-    let (i, j, cell) = grid.best().expect("хоч одне вікно");
+    let (i, j, cell) = grid.best().expect("at least one window");
     let (t1, tof) = (grid.t1[i], grid.tof[j]);
     println!(
-        "  обране вікно: відхід на добі {:.2}, переліт {:.2} доби, \
-         маневр {:.1} м/с, прихід {:.1} м/с",
+        "  chosen window: departure on day {:.2}, transfer {:.2} days, \
+         manoeuvre {:.1} m/s, arrival {:.1} m/s",
         (t1 - mission::start().t) / DAY,
         tof / DAY,
         cell.dv_m_s,
         cell.v_inf_arrive
     );
 
-    // Маневр рівно такий, який покладе в чернетку `app::choose_window`.
+    // Exactly the manoeuvre `app::choose_window` would put in the draft.
     let mut plan = game::plan::Plan::new();
     plan.insert(game::plan::Manoeuvre {
         t: t1,
@@ -465,16 +487,17 @@ fn a_chosen_window_flies_the_vessel_to_the_moon() {
     }));
 
     let mut preview = None;
-    wait_until("прев'ю обраного вікна", || {
+    wait_until("the preview of the chosen window", || {
         if let Some(got) = planner.latest() {
             preview = Some(got);
         }
         preview.as_ref().is_some_and(|p| p.id == 12)
     });
-    let preview = preview.expect("щойно перевірили");
+    let preview = preview.expect("just checked");
 
-    // Найближчий підхід до Місяця — по семплах прев'ю. Позицію Місяця несе
-    // сам семпл (`leg::Sample::moon`), тож ефемерида тут не потрібна.
+    // The closest approach to the Moon, over the preview's samples. The Moon's
+    // position is carried by the sample itself (`leg::Sample::moon`), so no
+    // ephemeris is needed here.
     let closest = |legs: &[std::sync::Arc<game::leg::Leg>]| -> (f64, f64) {
         let mut best = (f64::INFINITY, 0.0);
         for leg in legs {
@@ -497,10 +520,10 @@ fn a_chosen_window_flies_the_vessel_to_the_moon() {
     let (with_burn, when) = closest(&preview.legs);
     let (without_burn, _) = closest(&vessel.legs);
 
-    // І окремо — відстань саме в ту мить, яку обіцяла клітинка. Найближчий
-    // підхід може трапитися й раніше: повна модель веде апарат інакше, ніж
-    // двотілова дуга, і різниця між цими двома числами — це і є те, що
-    // потім прибирає корекція.
+    // And separately, the distance at exactly the instant the cell promised.
+    // The closest approach can happen earlier: the full model leads the vessel
+    // differently from a two-body arc, and the difference between these two
+    // numbers is what the correction later removes.
     let at_arrival = preview
         .legs
         .iter()
@@ -510,7 +533,7 @@ fn a_chosen_window_flies_the_vessel_to_the_moon() {
                 (a.state.t - (t1 + tof)).abs(),
                 (b.state.t - (t1 + tof)).abs(),
             );
-            x.partial_cmp(&y).expect("час — не NaN")
+            x.partial_cmp(&y).expect("time is not NaN")
         })
         .map(|s| {
             ((s.state.r.x - s.moon[0]).powi(2)
@@ -518,11 +541,14 @@ fn a_chosen_window_flies_the_vessel_to_the_moon() {
                 + (s.state.r.z - s.moon[2]).powi(2))
             .sqrt()
         })
-        .expect("прев'ю не порожнє");
-    println!("  у мить обіцяного приходу: {:.0} км", at_arrival / 1000.0);
+        .expect("the preview is not empty");
+    println!(
+        "  at the promised arrival instant: {:.0} km",
+        at_arrival / 1000.0
+    );
 
     println!(
-        "  найближчий підхід: {:.0} км на добі {:.2} (без маневру — {:.0} км)",
+        "  closest approach: {:.0} km on day {:.2} (without the manoeuvre -- {:.0} km)",
         with_burn / 1000.0,
         (when - mission::start().t) / DAY,
         without_burn / 1000.0
@@ -530,27 +556,27 @@ fn a_chosen_window_flies_the_vessel_to_the_moon() {
 
     assert!(
         with_burn < without_burn,
-        "з маневром апарат підійшов не ближче, ніж без нього: {with_burn:.3e} \
-         проти {without_burn:.3e} м — це не переліт до Місяця"
+        "with the manoeuvre the vessel came no closer than without it: \
+         {with_burn:.3e} against {without_burn:.3e} m -- that is no transfer to the Moon"
     );
     assert!(
         with_burn < 1.0e8,
-        "найближчий підхід {with_burn:.3e} м — це чверть відстані до Місяця й \
-         далі, тобто вікно нікуди не веде"
+        "a closest approach of {with_burn:.3e} m is a quarter of the distance to \
+         the Moon and more, i.e. the window leads nowhere"
     );
 }
 
-/// Сітка не виламує правила скасування, спільного на два види роботи.
+/// A grid does not break the cancellation rule shared by two kinds of work.
 ///
-/// Порожні осі — це запит ні про що, і відповіді на нього немає (нитка не
-/// вигадує порожній плот). Перевірити «нічого не прийшло» можна лише через те,
-/// що прийшло далі: якби нитка на такому запиті глухла, наступна відповідь не
-/// прийшла б ніколи.
+/// Empty axes are a request about nothing, and there is no answer to it (the
+/// thread does not invent an empty plot). "Nothing arrived" can only be
+/// checked through what arrives next: had the thread gone deaf on such a
+/// request, the following answer would never come.
 #[test]
 fn an_empty_axis_leaves_the_thread_working() {
     let eph = ephemeris();
     let mu = eph.body_mu(EARTH);
-    let planner = Planner::spawn(eph, mission::config()).expect("планувальник");
+    let planner = Planner::spawn(eph, mission::config()).expect("the planner");
 
     planner.request(Request::Grid(GridRequest {
         id: 1,
@@ -567,19 +593,19 @@ fn an_empty_axis_leaves_the_thread_working() {
     assert!(grid.cells.iter().flatten().count() > 0);
 }
 
-/// Прев'ю після сітки доходить — і навпаки.
+/// A preview asked for after a grid still arrives -- and the other way round.
 ///
-/// Два види роботи йдуть одним каналом саме для цього: правило «новіше
-/// скасовує старіше» лишається одне, і жоден вид не має власної черги, у якій
-/// можна застрягти.
+/// Both kinds of work go over one channel exactly for this: the "newer
+/// cancels older" rule stays single, and neither kind has a queue of its own
+/// to get stuck in.
 #[test]
 fn a_preview_asked_after_a_grid_still_arrives() {
-    let sim = game::sim::Sim::spawn(mission::world(&mission::default_asset()).expect("світ"))
-        .expect("нитка симуляції");
+    let sim = game::sim::Sim::spawn(mission::world(&mission::default_asset()).expect("world"))
+        .expect("the simulation thread");
     sim.send(game::sim::Command::TogglePause);
 
     let burn_t = mission::start().t + 30.0 * DAY;
-    wait_until("горизонт", || {
+    wait_until("the horizon", || {
         sim.snapshot().vessels[0].computed_to > burn_t
     });
 
@@ -589,7 +615,7 @@ fn a_preview_asked_after_a_grid_still_arrives() {
 
     let eph = sim.ephemeris();
     let mu = eph.body_mu(EARTH);
-    let planner = Planner::spawn(eph, mission::config()).expect("планувальник");
+    let planner = Planner::spawn(eph, mission::config()).expect("the planner");
 
     let mut plan = game::plan::Plan::new();
     plan.insert(game::plan::Manoeuvre {
@@ -610,28 +636,28 @@ fn a_preview_asked_after_a_grid_still_arrives() {
     }));
 
     let mut preview = None;
-    wait_until("прев'ю після сітки", || {
+    wait_until("the preview after the grid", || {
         if let Some(got) = planner.latest() {
             preview = Some(got);
         }
         preview.as_ref().is_some_and(|p| p.id == 2)
     });
-    assert!(!preview.expect("щойно перевірили").legs.is_empty());
+    assert!(!preview.expect("just checked").legs.is_empty());
 }
 
 // ---------------------------------------------------------------------------
-// Плот: зображення, осі, курсор (U5c)
+// The plot: image, axes, cursor (U5c)
 //
-// Ані ассета, ані нитки тут уже немає — сітка збирається руками. Так і
-// задумано: усе нижче перевіряє переклад сітки в екран, а він не має права
-// залежати від того, звідки сітка взялася.
+// Neither the asset nor the thread appears below -- the grid is built by hand.
+// That is the point: everything here checks the translation of a grid into a
+// screen, and that has no right to depend on where the grid came from.
 
 use engine::egui;
 use game::hud;
 use game::porkchop::{cell_at, colour, Cell};
 use game::text::Language;
 
-/// Сітка 4×3 з дірою в кутку: ціни ростуть зі збільшенням обох індексів.
+/// A 4x3 grid with a hole in the corner: prices grow with both indices.
 fn handmade() -> Grid {
     let t1: Vec<f64> = (0..4).map(|i| f64::from(i) * DAY).collect();
     let tof: Vec<f64> = (1..4).map(|j| f64::from(j) * DAY).collect();
@@ -639,7 +665,7 @@ fn handmade() -> Grid {
     let mut cells = Vec::new();
     for i in 0..t1.len() {
         for j in 0..tof.len() {
-            // Правий верхній кут — заборонена зона.
+            // The top right corner is a forbidden zone.
             cells.push(if i == 3 && j == 2 {
                 None
             } else {
@@ -660,11 +686,11 @@ fn handmade() -> Grid {
     }
 }
 
-/// Дірка прозора, ціна — ні, і дешеве не схоже на дороге.
+/// A hole is transparent, a price is not, and cheap does not look like dear.
 ///
-/// Це три властивості кольору, від яких залежить, чи можна плоту вірити.
-/// Найважливіша — перша: непрозора дірка лягла б на ту саму шкалу, що й ціни,
-/// і око почало б порівнювати її з ними.
+/// Three properties of the colour that decide whether the plot can be
+/// trusted. The first matters most: an opaque hole would sit on the same
+/// scale as the prices, and the eye would start comparing it with them.
 #[test]
 fn a_hole_is_transparent_and_a_price_is_not() {
     let cheap = Cell {
@@ -679,22 +705,23 @@ fn a_hole_is_transparent_and_a_price_is_not() {
     };
     let (low, high) = (cheap.total(), costly.total());
 
-    assert_eq!(colour(None, low, high)[3], 0, "дірка мусить бути прозорою");
+    assert_eq!(colour(None, low, high)[3], 0, "a hole must be transparent");
     assert_eq!(colour(Some(cheap), low, high)[3], 255);
     assert_eq!(colour(Some(costly), low, high)[3], 255);
     assert_ne!(
         colour(Some(cheap), low, high),
         colour(Some(costly), low, high),
-        "кінці шкали пофарбовані однаково — плот нічого не показує"
+        "the ends of the scale are painted alike -- the plot shows nothing"
     );
 
-    // Уся сітка однакова — це дешевий кінець, а не дорогий і не ділення на нуль.
+    // A uniform grid is the cheap end, not the dear one and not a division by
+    // zero.
     let flat = colour(Some(cheap), low, low);
     assert_eq!(flat, colour(Some(cheap), low, high));
     assert_eq!(flat[3], 255);
 }
 
-/// Шкала монотонна: дорожче — не «інакше», а далі в один бік.
+/// The scale is monotone: dearer is not "different" but further one way.
 #[test]
 fn the_scale_goes_one_way() {
     let (low, high) = (100.0, 1000.0);
@@ -717,40 +744,46 @@ fn the_scale_goes_one_way() {
         let now = colour(Some(cell), low, high);
         assert!(
             now[0] >= previous[0] && now[2] <= previous[2],
-            "на кроці {step} шкала повернула назад: {previous:?} → {now:?}"
+            "at step {step} the scale turned back: {previous:?} -> {now:?}"
         );
         previous = now;
     }
 }
 
-/// Низ плоту — найкоротший переліт, і саме тут ламається переворот осі.
+/// The bottom of the plot is the shortest flight, and this is where the axis
+/// flip breaks.
 ///
-/// Зображення йде рядками згори вниз, а `tof` на плоті росте вгору. Забути
-/// цей переворот легко, а виглядає забуття як цілком правдоподібний плот, у
-/// якому курсор просто відповідає дзеркально.
+/// The image goes in rows from the top down, while `tof` on the plot grows
+/// upwards. Forgetting the flip is easy, and it looks like a perfectly
+/// plausible plot in which the cursor merely answers mirrored.
 #[test]
 fn the_bottom_of_the_plot_is_the_shortest_flight() {
     let grid = handmade();
 
-    assert_eq!(cell_at(&grid, 0.01, 0.01), Some((0, 0)), "лівий нижній кут");
-    assert_eq!(cell_at(&grid, 0.99, 0.99), Some((3, 2)), "правий верхній");
+    assert_eq!(
+        cell_at(&grid, 0.01, 0.01),
+        Some((0, 0)),
+        "the bottom left corner"
+    );
+    assert_eq!(cell_at(&grid, 0.99, 0.99), Some((3, 2)), "the top right");
     assert_eq!(
         cell_at(&grid, 0.01, 0.99),
         Some((0, 2)),
-        "лівий верхній: перший відхід, найдовший переліт"
+        "the top left: first departure, longest transfer"
     );
 
-    // Поза плотом клітинки немає — інакше промах повз край читався б як
-    // вибір крайньої.
+    // Outside the plot there is no cell -- otherwise a miss past the edge
+    // would read as picking the outermost one.
     assert_eq!(cell_at(&grid, -0.1, 0.5), None);
     assert_eq!(cell_at(&grid, 0.5, 1.2), None);
 }
 
-/// Числа під курсором — числа тієї клітинки, а не сусідньої.
+/// The numbers under the cursor are that cell's numbers, not a neighbour's.
 ///
-/// Панель малюється без вікна: `RawInput` із позицією миші, і те, що вийшло,
-/// шукається серед намальованого тексту. Пікселі тут ні до чого — панель із
-/// NaN виглядає точнісінько так само, як панель із правильними числами.
+/// The panel is drawn without a window: `RawInput` with a mouse position, and
+/// the result is looked for among the drawn text. Pixels have nothing to do
+/// with it -- a panel full of NaN looks exactly like a panel with the right
+/// numbers.
 #[test]
 fn the_readout_shows_the_cell_under_the_cursor() {
     let grid = handmade();
@@ -775,15 +808,16 @@ fn the_readout_shows_the_cell_under_the_cursor() {
             .collect()
     };
 
-    // Кадр-розігрів: до першого малювання плот не має ні місця, ні розміру.
+    // The warm-up frame: before the first draw the plot has neither place nor
+    // size.
     draw(Vec::new());
 
     let rect = context
         .read_response(egui::Id::new(hud::PLOT_IMAGE))
-        .expect("плот мусить бути намальований")
+        .expect("the plot must have been drawn")
         .rect;
 
-    // Наводимо на клітинку (2, 0): третій відхід, найкоротший переліт.
+    // Point at cell (2, 0): the third departure, the shortest transfer.
     let at = egui::pos2(
         rect.min.x + rect.width() * (2.5 / 4.0),
         rect.max.y - rect.height() * (0.5 / 3.0),
@@ -791,17 +825,17 @@ fn the_readout_shows_the_cell_under_the_cursor() {
     let said = draw(vec![egui::Event::PointerMoved(at)]);
     let all = said.join(" | ");
 
-    let cell = grid.at(2, 0).expect("клітинка (2, 0) не дірка");
+    let cell = grid.at(2, 0).expect("cell (2, 0) is not a hole");
     assert!(
         all.contains(&format!("{:.0} / {:.0}", cell.dv_m_s, cell.v_inf_arrive)),
-        "серед намальованого немає чисел клітинки (2, 0): {all}"
+        "the numbers of cell (2, 0) are not among what was drawn: {all}"
     );
     assert!(
         all.contains("1.00 days"),
-        "переліт клітинки (2, 0) — доба, а панель каже: {all}"
+        "the transfer of cell (2, 0) is one day, but the panel says: {all}"
     );
 
-    // А тепер дірка — і вона мусить назватися діркою, а не мовчати.
+    // And now the hole -- it must name itself rather than stay silent.
     let hole = egui::pos2(
         rect.min.x + rect.width() * (3.5 / 4.0),
         rect.max.y - rect.height() * (2.5 / 3.0),
@@ -812,11 +846,11 @@ fn the_readout_shows_the_cell_under_the_cursor() {
             Language::English,
             game::text::Key::NoSolution
         )),
-        "заборонена зона нічого не сказала про себе: {said}"
+        "the forbidden zone said nothing about itself: {said}"
     );
 }
 
-/// Клік по плоту обирає вікно — те, на яке дивилися.
+/// A click on the plot chooses a window -- the one being looked at.
 #[test]
 fn a_click_chooses_the_window_under_the_pointer() {
     let grid = handmade();
@@ -841,12 +875,12 @@ fn a_click_chooses_the_window_under_the_pointer() {
     assert_eq!(
         draw(&mut state, Vec::new()),
         Vec::new(),
-        "плот сам не клікає"
+        "the plot does not click by itself"
     );
 
     let rect = context
         .read_response(egui::Id::new(hud::PLOT_IMAGE))
-        .expect("плот мусить бути намальований")
+        .expect("the plot must have been drawn")
         .rect;
     let at = egui::pos2(
         rect.min.x + rect.width() * (1.5 / 4.0),
@@ -876,7 +910,7 @@ fn a_click_chooses_the_window_under_the_pointer() {
     assert_eq!(state.chosen, Some((1, 1)));
 }
 
-/// Кнопка просить сітку — і рівно це, без жодного вибору вікна.
+/// The button asks for a grid -- and only that, with no window chosen.
 #[test]
 fn the_button_asks_for_a_grid_and_nothing_else() {
     let context = egui::Context::default();
@@ -900,7 +934,7 @@ fn the_button_asks_for_a_grid_and_nothing_else() {
     draw(Vec::new());
     let centre = context
         .read_response(egui::Id::new(hud::PLOT_COMPUTE))
-        .expect("кнопка мусить бути намальована")
+        .expect("the button must have been drawn")
         .rect
         .center();
 
@@ -923,7 +957,7 @@ fn the_button_asks_for_a_grid_and_nothing_else() {
     assert_eq!(actions, vec![hud::PorkchopAction::Compute]);
 }
 
-/// Увесь текст фігури — плаский список рядків.
+/// All the text of a shape, as a flat list of strings.
 fn texts(shape: &egui::epaint::Shape) -> Vec<String> {
     match shape {
         egui::epaint::Shape::Text(text) => vec![text.galley.text().to_string()],

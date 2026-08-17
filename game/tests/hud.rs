@@ -1,14 +1,14 @@
-//! Панель часу показує снапшот і надсилає рівно те, що натиснули
+//! The time panel shows the snapshot and sends exactly what was clicked
 //! (ROADMAP-UI.md, U2b).
 //!
-//! Вікна тут немає, і навіть GPU немає: панель — це віджети й команди, а не
-//! пікселі. Те, як вона **виглядає**, перевіряє знімок у `engine`
-//! (`ui_probe.rs`); те, що вона **робить**, перевіряється тут, і ці дві
-//! перевірки навмисно різні.
+//! There is no window here and not even a GPU: the panel is widgets and
+//! commands, not pixels. How it **looks** is checked by a screenshot in
+//! `engine` (`ui_probe.rs`); what it **does** is checked here, and the two
+//! checks are deliberately different.
 //!
-//! Головне твердження кроку — друга його половина: клік кладе `TogglePause`
-//! **і нічого більше**. Перша половина («кладе») пройшла б і на панелі, яка
-//! на кожен кадр надсилає всі три команди одразу.
+//! The main claim of the step is its second half: a click puts `TogglePause`
+//! in **and nothing else**. The first half ("puts it in") would pass for a
+//! panel that sends all three commands every frame.
 
 use engine::egui;
 
@@ -28,24 +28,26 @@ fn snapshot(warp: f64, stall: Option<Stall>) -> WorldSnapshot {
         t: mission::start().t + 3.5 * 86400.0,
         warp,
         stall,
-        // Тіл у цій панелі немає: час і warp від них не залежать, а порожній
-        // список — законний стан сцени, а не заглушка.
+        // No bodies in this panel: time and warp do not depend on them, and an
+        // empty list is a legitimate scene state rather than a stub.
         bodies: Vec::new(),
-        // Ні тіл, ні світила: панель не малює ні того, ні того.
+        // No bodies and no star: the panel draws neither.
         sun: None,
         vessels: Vec::new(),
     }
 }
 
-/// Малює панель один раз із заданим вводом і повертає команди.
+/// Draws the panel once with the given input and returns the commands.
 ///
-/// `at` — куди клікнули; `None` означає «миша осторонь», тобто панель просто
-/// показує. Кадр-розігрів обов'язковий: egui знає, де опинилися кнопки, лише
-/// намалювавши їх один раз, тож у першому кадрі клікати нема по чому.
+/// `at` is where the click landed; `None` means "the mouse is elsewhere",
+/// i.e. the panel merely shows. The warm-up frame is mandatory: egui only
+/// knows where the buttons ended up after drawing them once, so in the first
+/// frame there is nothing to click.
 fn click_at(snapshot: &WorldSnapshot, at: Option<egui::Pos2>) -> Vec<Command> {
     let context = egui::Context::default();
-    // Зі справжнім стилем (U7c): панель, намальована типовим egui, має інші
-    // відступи й розміри кнопок, тобто тест клікав би не туди, куди гравець.
+    // With the real style (U7c): a panel drawn by stock egui has different
+    // paddings and button sizes, so the test would click elsewhere than the
+    // player does.
     game::palette::apply(&context);
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
 
@@ -59,8 +61,8 @@ fn click_at(snapshot: &WorldSnapshot, at: Option<egui::Pos2>) -> Vec<Command> {
         let mut output = context.run_ui(input, |ui| {
             commands = hud::time_panel(ui, Language::English, snapshot);
         });
-        // Текстури тут нікому не потрібні — малювання немає, — але
-        // `TexturesDelta` падає в `Drop`, якщо її не застосувати (U1a).
+        // Nobody needs the textures here -- nothing is drawn -- but
+        // `TexturesDelta` panics in `Drop` if it is not applied (U1a).
         output.textures_delta.clear();
         commands
     };
@@ -88,19 +90,18 @@ fn click_at(snapshot: &WorldSnapshot, at: Option<egui::Pos2>) -> Vec<Command> {
     draw(events)
 }
 
-/// Точка в середині кнопки за її сталою адресою (`hud::PAUSE` тощо).
+/// The centre of a button found by its stable id (`hud::PAUSE` and friends).
 ///
-/// Шукається саме віджет, а не координата: підібрані руками пікселі тихо
-/// протухають від першої зміни відступів, і тест починає клікати в порожнечу,
-/// лишаючись зеленим.
+/// The widget is looked up rather than a coordinate: hand-picked pixels go
+/// stale with the first padding change, and the test starts clicking into
+/// empty space while staying green.
 fn button_centre(snapshot: &WorldSnapshot, id: &str) -> egui::Pos2 {
     let context = egui::Context::default();
-    // Зі справжнім стилем (U7c): панель, намальована типовим egui, має інші
-    // відступи й розміри кнопок, тобто тест клікав би не туди, куди гравець.
+    // The real style, as in `click_at`.
     game::palette::apply(&context);
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
 
-    // Два кадри: у першому egui лише дізнається, де що лежить.
+    // Two frames: in the first egui only learns where everything lies.
     for _ in 0..2 {
         let input = egui::RawInput {
             screen_rect: Some(screen),
@@ -115,21 +116,21 @@ fn button_centre(snapshot: &WorldSnapshot, id: &str) -> egui::Pos2 {
     context
         .read_response(egui::Id::new(id))
         .map(|response| response.rect.center())
-        .unwrap_or_else(|| panic!("кнопки «{id}» немає в панелі"))
+        .unwrap_or_else(|| panic!("there is no \"{id}\" button in the panel"))
 }
 
-/// Панель без кліків не надсилає нічого.
+/// A panel nobody touched sends nothing.
 ///
-/// Це та половина твердження, яку легко забути: панель, що надсилає команду
-/// щокадру, зробила б гру некерованою, і жоден тест «кнопка працює» цього б
-/// не помітив.
+/// This is the half that is easy to forget: a panel sending a command every
+/// frame would make the game uncontrollable, and no "the button works" test
+/// would notice.
 #[test]
 fn a_panel_nobody_touched_sends_nothing() {
     let snapshot = snapshot(1000.0, None);
     assert_eq!(click_at(&snapshot, None), Vec::new());
 }
 
-/// Клік по «pause» кладе рівно `TogglePause`.
+/// A click on "pause" puts in exactly `TogglePause`.
 #[test]
 fn the_pause_button_sends_exactly_one_command() {
     let snapshot = snapshot(1000.0, None);
@@ -138,14 +139,14 @@ fn the_pause_button_sends_exactly_one_command() {
     assert_eq!(
         click_at(&snapshot, Some(centre)),
         vec![Command::TogglePause],
-        "клік по паузі мав покласти рівно одну команду"
+        "a click on pause should have put in exactly one command"
     );
 }
 
-/// А клік по «faster» — рівно `ScaleWarp(2.0)`, і жодної паузи.
+/// And a click on "faster" puts in exactly `ScaleWarp(2.0)`, with no pause.
 ///
-/// Друга кнопка потрібна, бо тест з однією пройшов би й на панелі, яка на
-/// будь-який клік відповідає `TogglePause`.
+/// The second button is needed because a test with one would pass for a panel
+/// that answers any click with `TogglePause`.
 #[test]
 fn the_faster_button_scales_the_warp() {
     let snapshot = snapshot(1000.0, None);
@@ -157,10 +158,10 @@ fn the_faster_button_scales_the_warp() {
     );
 }
 
-/// Пауза перейменовує власну кнопку.
+/// A pause renames its own button.
 ///
-/// Кнопка, що в паузі каже «pause», — це та сама помилка, що мовчазне
-/// підгальмовування: гравець бачить стан, якого немає.
+/// A button that says "pause" while paused is the same bug as silent
+/// throttling: the player sees a state that does not exist.
 #[test]
 fn the_button_says_resume_while_paused() {
     let running = snapshot(1000.0, None);
@@ -174,13 +175,13 @@ fn the_button_says_resume_while_paused() {
 }
 
 // ---------------------------------------------------------------------------
-// Панель апарата (U2c)
+// The vessel panel (U2c)
 
-/// Апарат на коловій орбіті навколо Землі, яка сама рухається.
+/// A vessel on a circular orbit around an Earth that is itself moving.
 ///
-/// Земля не в початку координат навмисно: панель має міряти висоту й
-/// швидкість **відносно тіла**, і апарат, порахований від початку координат,
-/// пройшов би перевірку лише на нерухомій Землі в нулі.
+/// Earth is away from the origin on purpose: the panel must measure altitude
+/// and speed **relative to the body**, and a vessel computed from the origin
+/// would pass only for a motionless Earth at zero.
 fn vessel_with_plan(t: f64) -> game::snapshot::VesselSnapshot {
     use core_rs::{State, Stop, Vec3d};
     use game::leg::{Leg, Sample};
@@ -193,8 +194,8 @@ fn vessel_with_plan(t: f64) -> game::snapshot::VesselSnapshot {
     let offset = [7.0e6, 0.0, 0.0];
     let relative_v = [0.0, 7500.0, 100.0];
 
-    // Два семпли: другий потрібен, щоб швидкість тіла була скінченною
-    // різницею, а не нулем.
+    // Two samples: the second is needed so that the body's velocity is a
+    // finite difference rather than zero.
     let sample_at = |dt: f64| Sample {
         state: State {
             t: t + dt,
@@ -221,8 +222,9 @@ fn vessel_with_plan(t: f64) -> game::snapshot::VesselSnapshot {
     let state = samples[0].state;
 
     let mut plan = Plan::new();
-    // Дві осі ненульові навмисно: маневр з однією не розрізняє суму норм і
-    // суму компонент, і мутація «складати компоненти» пройшла б повз.
+    // Two non-zero axes on purpose: a manoeuvre with one does not tell a sum
+    // of norms from a sum of components, and the "add the components" mutation
+    // would slip past.
     plan.insert(Manoeuvre {
         t: t + 2.0 * 86400.0,
         dv: [3.0, 4.0, 0.0],
@@ -237,8 +239,8 @@ fn vessel_with_plan(t: f64) -> game::snapshot::VesselSnapshot {
     game::snapshot::VesselSnapshot {
         id: VesselId(0),
         name: "probe".to_string(),
-        // Константи Якобі в цій фікстурі немає: вона про панелі, а не про
-        // карту (U6b3).
+        // No Jacobi constant in this fixture: it is about panels, not about
+        // the map (U6b3).
         jacobi: None,
         legs: vec![Arc::new(Leg {
             entry: state,
@@ -258,7 +260,8 @@ fn vessel_with_plan(t: f64) -> game::snapshot::VesselSnapshot {
     }
 }
 
-/// Кожне число панелі збігається з порахованим зі снапшоту іншим шляхом.
+/// Every number in the panel agrees with one computed from the snapshot
+/// another way.
 #[test]
 fn the_vessel_panel_agrees_with_the_snapshot() {
     const RADIUS: f64 = 6_371_000.0;
@@ -268,57 +271,59 @@ fn the_vessel_panel_agrees_with_the_snapshot() {
 
     let readout = hud::read_vessel(&world, &world.vessels[0], RADIUS);
 
-    // Висота: апарат зміщений на 7000 км від центра Землі.
+    // Altitude: the vessel is offset by 7000 km from Earth's centre.
     assert!(
         (readout.altitude_m - (7.0e6 - RADIUS)).abs() < 1.0,
-        "висота {} м",
+        "altitude {} m",
         readout.altitude_m
     );
 
-    // Швидкість відносно тіла: 7500 і 100 по двох осях.
+    // Speed relative to the body: 7500 and 100 along two axes.
     let expected_speed = (7500.0f64 * 7500.0 + 100.0 * 100.0).sqrt();
     assert!(
         (readout.speed_m_s - expected_speed).abs() < 1e-3,
-        "швидкість {} м/с проти {expected_speed}",
+        "speed {} m/s against {expected_speed}",
         readout.speed_m_s
     );
 
-    // Δv плану — сума норм: |(3,4,0)| + |(-3,-4,0)| = 10, тоді як сума
-    // компонент дала б нуль. Саме це й розрізняє два маневри в різні боки.
+    // The plan's dv is a sum of norms: |(3,4,0)| + |(-3,-4,0)| = 10, while a
+    // sum of components would give zero. That is what tells two opposite
+    // manoeuvres apart.
     assert!(
         (readout.total_dv_m_s - 10.0).abs() < 1e-9,
-        "Δv {} м/с, а сума норм — 10",
+        "dv {} m/s, while the sum of norms is 10",
         readout.total_dv_m_s
     );
 
-    // До наступного маневру — дві доби, а не п'ять: перший, що попереду.
+    // Two days to the next manoeuvre, not five: the first one ahead.
     assert_eq!(readout.next_burn_s, Some(2.0 * 86400.0));
 
     assert!((readout.computed_ahead_s - 3.0 * 86400.0).abs() < 1e-9);
     assert!(!readout.failed);
 }
 
-/// Маневр у минулому наступним не вважається.
+/// A burn already flown is not counted as the next one.
 #[test]
 fn a_burn_already_flown_is_not_the_next_one() {
     let mut world = snapshot(1000.0, None);
     let vessel = vessel_with_plan(world.t);
     world.vessels.push(vessel);
 
-    // Курсор перескочив обидва маневри.
+    // The cursor jumped past both manoeuvres.
     world.t += 6.0 * 86400.0;
     let readout = hud::read_vessel(&world, &world.vessels[0], 6_371_000.0);
     assert_eq!(readout.next_burn_s, None);
 }
 
-/// Клік у рядку розкладу кладе рівно `SeekTo` тієї події (U3b).
+/// A click on a schedule row puts in exactly `SeekTo` of its own event (U3b).
 #[test]
 fn a_schedule_row_seeks_to_its_own_event() {
     use game::schedule::{Kind, Marker};
 
     let world = snapshot(1000.0, None);
     let markers = [
-        // Позаду курсора — рядка не буде взагалі: назад курсор не ходить.
+        // Behind the cursor -- there will be no row at all: the cursor does
+        // not go back.
         Marker {
             kind: Kind::Periapsis,
             t: world.t - 100.0,
@@ -337,8 +342,7 @@ fn a_schedule_row_seeks_to_its_own_event() {
     ];
 
     let context = egui::Context::default();
-    // Зі справжнім стилем (U7c): панель, намальована типовим egui, має інші
-    // відступи й розміри кнопок, тобто тест клікав би не туди, куди гравець.
+    // The real style, as in `click_at`.
     game::palette::apply(&context);
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
 
@@ -357,15 +361,19 @@ fn a_schedule_row_seeks_to_its_own_event() {
     };
 
     draw(Vec::new());
-    assert_eq!(draw(Vec::new()), Vec::new(), "розклад сам нічого не шле");
+    assert_eq!(
+        draw(Vec::new()),
+        Vec::new(),
+        "the schedule sends nothing by itself"
+    );
 
-    // Рядок з індексом 2 — це третій маркер: перший відкинуто як минулий,
-    // але адреса рядка йде за номером у списку, а не за порядком на екрані.
+    // Row index 2 is the third marker: the first is dropped as past, but the
+    // row id follows the position in the list rather than the order on screen.
     let id = egui::Id::new(format!("{}{}", hud::SEEK, 2));
     let centre = context
         .read_response(id)
         .map(|response| response.rect.center())
-        .expect("рядок перицентра має бути намальований");
+        .expect("the periapsis row should have been drawn");
 
     let clicked = draw(vec![
         egui::Event::PointerMoved(centre),
@@ -387,12 +395,13 @@ fn a_schedule_row_seeks_to_its_own_event() {
 }
 
 // ---------------------------------------------------------------------------
-// Редактор маневрів (U4a)
+// The manoeuvre editor (U4a)
 
-/// Малює панель плану кілька кадрів і повертає дії останнього.
+/// Draws the plan panel over several frames and returns the actions of the
+/// last one.
 ///
-/// Кадр-розігрів тут потрібен двічі: egui дізнається геометрію віджетів лише
-/// намалювавши їх, а `DragValue` ще й тримає власний стан редагування.
+/// The warm-up frame is needed twice here: egui learns widget geometry only
+/// by drawing it, and `DragValue` also keeps its own editing state.
 fn plan_frames(
     draft: &mut hud::PlanDraft,
     now: f64,
@@ -400,8 +409,7 @@ fn plan_frames(
     notice: Option<&str>,
 ) -> Vec<hud::PlanAction> {
     let context = egui::Context::default();
-    // Зі справжнім стилем (U7c): панель, намальована типовим egui, має інші
-    // відступи й розміри кнопок, тобто тест клікав би не туди, куди гравець.
+    // The real style, as in `click_at`.
     game::palette::apply(&context);
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
 
@@ -426,7 +434,7 @@ fn plan_frames(
         let centre = context
             .read_response(egui::Id::new(*id))
             .map(|response| response.rect.center())
-            .unwrap_or_else(|| panic!("віджета «{id}» немає в панелі"));
+            .unwrap_or_else(|| panic!("there is no \"{id}\" widget in the panel"));
 
         events.push(egui::Event::PointerMoved(centre));
         events.push(egui::Event::PointerButton {
@@ -446,35 +454,40 @@ fn plan_frames(
     draw(draft, events)
 }
 
-/// Панель, якої ніхто не чіпав, нічого не просить.
+/// A plan nobody touched asks for nothing.
 ///
-/// Без цього «правка породжує рівно один запит» перевіряло б лише те, що
-/// запит узагалі буває: панель, яка щокадру просить прев'ю, перевантажила б
-/// планувальник і виглядала б так само правильно.
+/// Without this, "an edit gives exactly one request" would only check that a
+/// request happens at all: a panel asking for a preview every frame would
+/// swamp the planner and look just as correct.
 #[test]
 fn an_untouched_plan_asks_for_nothing() {
     let mut draft = hud::PlanDraft::default();
     assert_eq!(plan_frames(&mut draft, 0.0, &[], None), Vec::new());
 }
 
-/// Додавання маневру дає рівно один запит прев'ю — з тим планом, що показано.
+/// Adding a manoeuvre gives exactly one preview request -- with the plan that
+/// is shown.
 #[test]
 fn adding_a_burn_asks_for_exactly_one_preview() {
     let mut draft = hud::PlanDraft::default();
     let actions = plan_frames(&mut draft, 0.0, &[hud::PLAN_ADD], None);
 
-    assert_eq!(actions.len(), 1, "мав бути рівно один запит: {actions:?}");
+    assert_eq!(
+        actions.len(),
+        1,
+        "there should have been exactly one request: {actions:?}"
+    );
     match &actions[0] {
         hud::PlanAction::Preview(plan) => {
             assert_eq!(plan.manoeuvres().len(), 1);
-            // Той самий план, що в чернетці на екрані — не «схожий».
+            // The same plan as the draft on screen -- not a "similar" one.
             assert_eq!(plan, &draft.plan());
         }
-        other => panic!("очікували прев'ю, отримали {other:?}"),
+        other => panic!("expected a preview, got {other:?}"),
     }
 }
 
-/// «Летіти цим» кладе рівно той план, який показано.
+/// "Fly this" puts in exactly the plan that was shown.
 #[test]
 fn committing_sends_the_plan_that_was_shown() {
     let mut draft = hud::PlanDraft::default();
@@ -486,7 +499,7 @@ fn committing_sends_the_plan_that_was_shown() {
     assert_eq!(actions, vec![hud::PlanAction::Commit(shown)]);
 }
 
-/// Видалення рядка теж просить прев'ю, і план коротшає.
+/// Deleting a row also asks for a preview, and the plan gets shorter.
 #[test]
 fn deleting_a_row_asks_for_a_preview_of_what_is_left() {
     let mut draft = hud::PlanDraft::default();
@@ -501,23 +514,21 @@ fn deleting_a_row_asks_for_a_preview_of_what_is_left() {
     assert_eq!(
         actions,
         vec![hud::PlanAction::Preview(draft.plan())],
-        "після видалення прев'ю мусить бути про те, що лишилось"
+        "after a deletion the preview must be about what is left"
     );
 }
 
-/// Відповідь світу видно на панелі, а не лише в логах (правило 8).
+/// The world's answer is visible on the panel, not only in the logs (rule 8).
 ///
-/// Перевіряється саме намальований текст: панель, яка отримала відмову й
-/// мовчки лишила старий план на екрані, — це та помилка, від якої правило 8
-/// й існує.
+/// It is the drawn text that is checked: a panel that got a refusal and
+/// silently left the old plan on screen is the very bug rule 8 exists for.
 #[test]
 fn a_refusal_is_drawn_where_the_player_looks() {
     use game::text::{tr, Key};
 
     let refusal = tr(Language::English, Key::RejectedInThePast);
     let context = egui::Context::default();
-    // Зі справжнім стилем (U7c): панель, намальована типовим egui, має інші
-    // відступи й розміри кнопок, тобто тест клікав би не туди, куди гравець.
+    // The real style, as in `click_at`.
     game::palette::apply(&context);
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
     let mut draft = hud::PlanDraft::default();
@@ -538,10 +549,13 @@ fn a_refusal_is_drawn_where_the_player_looks() {
         .any(|clipped| shape_says(&clipped.shape, refusal));
     output.textures_delta.clear();
 
-    assert!(drawn, "відмови «{refusal}» немає серед намальованого");
+    assert!(
+        drawn,
+        "the refusal \"{refusal}\" is not among what was drawn"
+    );
 }
 
-/// Чи є в фігурі текст із заданим рядком.
+/// Whether a shape holds text containing the given string.
 fn shape_says(shape: &egui::epaint::Shape, needle: &str) -> bool {
     match shape {
         egui::epaint::Shape::Text(text) => text.galley.text().contains(needle),
@@ -551,20 +565,19 @@ fn shape_says(shape: &egui::epaint::Shape, needle: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Панель вигляду (ROADMAP-UI.md, U6a4)
+// The view panel (ROADMAP-UI.md, U6a4)
 
-/// Малює панель вигляду один раз і повертає, що вона віддала.
+/// Draws the view panel once and returns what it handed back.
 fn click_view(
     frame: game::frame_view::ViewFrame,
     language: Language,
     at: Option<egui::Pos2>,
 ) -> hud::ViewChoice {
-    // Кривої тут немає навмисно: цей тест про перемикач, а підпис до кривої
-    // перевіряється окремо (U6b4).
+    // No curve here on purpose: this test is about the switch, and the
+    // curve's caption is checked separately (U6b4).
     let curve = None;
     let context = egui::Context::default();
-    // Зі справжнім стилем (U7c): панель, намальована типовим egui, має інші
-    // відступи й розміри кнопок, тобто тест клікав би не туди, куди гравець.
+    // The real style, as in `click_at`.
     game::palette::apply(&context);
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
 
@@ -608,8 +621,7 @@ fn click_view(
 fn view_button_centre(frame: ViewFrame, language: Language, id: &str) -> egui::Pos2 {
     let curve = None;
     let context = egui::Context::default();
-    // Зі справжнім стилем (U7c): панель, намальована типовим egui, має інші
-    // відступи й розміри кнопок, тобто тест клікав би не туди, куди гравець.
+    // The real style, as in `click_at`.
     game::palette::apply(&context);
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
 
@@ -627,15 +639,16 @@ fn view_button_centre(frame: ViewFrame, language: Language, id: &str) -> egui::P
     context
         .read_response(egui::Id::new(id))
         .map(|response| response.rect.center())
-        .unwrap_or_else(|| panic!("кнопки «{id}» немає в панелі"))
+        .unwrap_or_else(|| panic!("there is no \"{id}\" button in the panel"))
 }
 
-/// Клік перемикає фрейм, і туди, і назад.
+/// A click switches the frame, both ways.
 ///
-/// Обидва напрямки, бо перемикач, який завжди повертає «обертовий», пройшов би
-/// перевірку в один бік. І окремо — кадр без кліку: панель, що обирає фрейм
-/// щокадру, зробила б перемикач некерованим так само, як панель, що щокадру
-/// шле команду (той самий урок, що в `a_panel_nobody_touched_sends_nothing`).
+/// Both directions, because a switch that always returns "rotating" would
+/// pass a one-way check. And separately, a frame with no click: a panel
+/// choosing a frame every frame would make the switch uncontrollable just as
+/// a panel sending a command every frame would (the same lesson as in
+/// `a_panel_nobody_touched_sends_nothing`).
 #[test]
 fn the_frame_button_switches_both_ways_and_only_when_clicked() {
     let english = Language::English;
@@ -655,14 +668,14 @@ fn the_frame_button_switches_both_ways_and_only_when_clicked() {
     );
 }
 
-/// Клік по перемикачу мови міняє мову — і **тільки** її.
+/// A click on the language switch changes the language -- and **only** it.
 ///
-/// Друга половина тут головна: обидва перемикачі живуть в одній панелі, і
-/// панель, що на будь-який клік віддає обидва поля, зробила б фрейм
-/// некерованим рівно тоді, коли гравець вибирає мову.
+/// The second half is the main one: both switches live in one panel, and a
+/// panel that hands back both fields on any click would make the frame
+/// uncontrollable exactly when the player picks a language.
 ///
-/// Обидва напрямки, бо перемикач, який завжди повертає українську, пройшов би
-/// перевірку в один бік — і зламався б рівно тоді, коли нею скористаються.
+/// Both directions, because a switch that always returns Ukrainian would pass
+/// a one-way check and break exactly when it is used.
 #[test]
 fn the_language_button_switches_both_ways_and_touches_nothing_else() {
     for (from, to) in [
@@ -675,35 +688,39 @@ fn the_language_button_switches_both_ways_and_touches_nothing_else() {
         assert_eq!(
             choice.language,
             Some(to),
-            "з {from:?} мали перемкнути на {to:?}"
+            "from {from:?} it should have switched to {to:?}"
         );
         assert_eq!(
             choice.frame, None,
-            "вибір мови зачепив фрейм — панель віддає обидва поля на один клік"
+            "choosing a language touched the frame -- the panel hands back both \
+             fields on one click"
         );
     }
 
-    // І навпаки: клік по фрейму не міняє мови.
+    // And the other way round: a click on the frame does not change the
+    // language.
     let centre = view_button_centre(ViewFrame::Inertial, Language::English, hud::FRAME);
     let choice = click_view(ViewFrame::Inertial, Language::English, Some(centre));
     assert_eq!(choice.frame, Some(ViewFrame::Rotating));
-    assert_eq!(choice.language, None, "вибір фрейму зачепив мову");
+    assert_eq!(
+        choice.language, None,
+        "choosing a frame touched the language"
+    );
 }
 
-/// Панель справді розмовляє обома мовами.
+/// The panel really speaks both languages.
 ///
-/// Тест на таблицю (`text.rs`) доводить, що рядки **існують**; цей — що вони
-/// **доходять до екрана**. Між ними та сама різниця, що між «ключ є» і
-/// «віджет його взяв»: літерал, забутий у коді панелі, проходить перший тест
-/// і валить другий.
+/// The table test (`text.rs`) proves the strings **exist**; this one proves
+/// they **reach the screen**. The difference is the one between "the key is
+/// there" and "the widget took it": a literal forgotten in the panel code
+/// passes the first test and fails this one.
 #[test]
 fn the_panel_speaks_both_languages() {
     use game::text::{tr, Key};
 
     let drawn = |language: Language| -> String {
         let context = egui::Context::default();
-        // Зі справжнім стилем (U7c): панель, намальована типовим egui, має інші
-        // відступи й розміри кнопок, тобто тест клікав би не туди, куди гравець.
+        // The real style, as in `click_at`.
         game::palette::apply(&context);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
         let mut text = String::new();
@@ -734,74 +751,74 @@ fn the_panel_speaks_both_languages() {
 
     assert!(
         english.contains(tr(Language::English, Key::View)),
-        "англійський заголовок не потрапив у панель: {english}"
+        "the English heading did not reach the panel: {english}"
     );
     assert!(
         ukrainian.contains(tr(Language::Ukrainian, Key::View)),
-        "українського заголовка немає в панелі: {ukrainian}"
+        "the Ukrainian heading is not in the panel: {ukrainian}"
     );
     assert_ne!(
         english, ukrainian,
-        "панель намалювала те саме обома мовами — рядки не йдуть через таблицю"
+        "the panel drew the same in both languages -- the strings do not go \
+         through the table"
     );
 }
 
-/// Перемикач фрейму не надсилає в світ нічого.
+/// The frame switch sends nothing to the world.
 ///
-/// Це і є та властивість, заради якої він повертає фрейм, а не команду: вибір
-/// вигляду не має права торкнутися ні часу, ні плану (правило 1 етапу U).
-/// Перевіряється поруч із панеллю часу на тому самому кліку: якби фрейм ішов
-/// каналом, тут була б команда.
+/// That is the property it returns a frame rather than a command for: the
+/// choice of view has no right to touch either the time or the plan (rule 1
+/// of stage U). Checked beside the time panel on the same click: were the
+/// frame going over the channel, there would be a command here.
 #[test]
 fn choosing_a_frame_sends_no_command() {
     let snapshot = snapshot(1000.0, None);
     let centre = view_button_centre(ViewFrame::Inertial, Language::English, hud::FRAME);
 
-    // Той самий клік по тих самих координатах, але в панель часу: команд
-    // немає, бо там у цьому місці нічого немає.
+    // The same click at the same coordinates, but into the time panel: no
+    // commands, because there is nothing there in that spot.
     assert_eq!(click_at(&snapshot, Some(centre)), Vec::new());
 }
 
-/// Підпис до кривої з'являється разом із нею, і застереження — завжди.
+/// The curve's caption appears together with the curve, and the warning
+/// appears every time.
 ///
-/// Твердження друге тут головне: «довідка, а не межа» не може бути
-/// повідомленням про негаразди, яке з'являється в поганому випадку. Крива, яку
-/// показали як стіну хоч раз, уже збрехала — а гравець не має способу
-/// дізнатися, коли саме їй вірити.
+/// The second claim is the main one: "advice, not a wall" cannot be a trouble
+/// message that shows up in the bad case. A curve once shown as a wall has
+/// already lied -- and the player has no way of knowing when to believe it.
 ///
-/// Перевіряється через `read_curve` і `view_panel` разом: перше дістає числа зі
-/// снапшоту (без ефемериди, правило 5), друге їх показує лише в тому фреймі, де
-/// крива існує.
+/// Checked through `read_curve` and `view_panel` together: the first takes
+/// the numbers from the snapshot (without the ephemeris, rule 5), the second
+/// shows them only in the frame where the curve exists.
 #[test]
 fn the_curve_caption_appears_with_the_curve_and_warns_every_time() {
     use game::frame_view::ViewFrame;
     use game::text::{tr, Key};
 
-    let mut world = game::mission::world(&game::mission::default_asset()).expect("світ");
+    let mut world = game::mission::world(&game::mission::default_asset()).expect("world");
     world.tick(8);
     let snapshot = world.snapshot();
 
-    let curve = hud::read_curve(&snapshot).expect("C рахується в нитці світу");
+    let curve = hud::read_curve(&snapshot).expect("C is computed in the world thread");
     println!(
-        "  C = {:.4}, апарат далеко: {}",
+        "  C = {:.4}, the vessel is far away: {}",
         curve.jacobi, curve.far_away
     );
     assert!(
         (2.0..4.0).contains(&curve.jacobi),
-        "C = {} — це вже не система Земля-Місяць",
+        "C = {} -- that is no longer the Earth-Moon system",
         curve.jacobi
     );
     assert!(
         !curve.far_away,
-        "на старті місії апарат біля Місяця, а не за двома відстанями пари"
+        "at mission start the vessel is near the Moon, not two pair distances away"
     );
 
-    // Що саме намальовано, видно з тексту панелі: egui віддає його разом із
-    // формами, і це той самий шлях, яким його побачить гравець.
+    // What exactly was drawn is visible from the panel's text: egui hands it
+    // back with the shapes, and that is the same path the player sees it by.
     let drawn = |frame: ViewFrame| -> String {
         let context = egui::Context::default();
-        // Зі справжнім стилем (U7c): панель, намальована типовим egui, має інші
-        // відступи й розміри кнопок, тобто тест клікав би не туди, куди гравець.
+        // The real style, as in `click_at`.
         game::palette::apply(&context);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SIZE, SIZE));
         let mut text = String::new();
@@ -829,19 +846,19 @@ fn the_curve_caption_appears_with_the_curve_and_warns_every_time() {
 
     let rotating = drawn(ViewFrame::Rotating);
     let inertial = drawn(ViewFrame::Inertial);
-    println!("  обертовий: {rotating}");
+    println!("  rotating: {rotating}");
 
     let advice = tr(Language::English, Key::CurveIsAdvice);
     assert!(
         rotating.contains(advice),
-        "у обертовому фреймі немає застереження: {rotating}"
+        "the rotating frame has no warning: {rotating}"
     );
     assert!(
         rotating.contains(&format!("{:.4}", curve.jacobi)),
-        "панель не показала саму C: {rotating}"
+        "the panel did not show C itself: {rotating}"
     );
     assert!(
         !inertial.contains(advice),
-        "в інерціальному фреймі кривої немає, а підпис до неї є: {inertial}"
+        "the inertial frame has no curve, yet its caption is there: {inertial}"
     );
 }
