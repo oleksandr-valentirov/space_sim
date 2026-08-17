@@ -31,6 +31,11 @@
 # once -- `make cook`.
 !/data/fixture/*.eph
 
+# Badge JSON written by scripts/badge_json.sh. It is generated on every push to
+# main and lives in the `badges` branch, which shares no commit with this one;
+# a copy on main would be a second answer to the same question, aging.
+/badges/
+
 # Python: scripts/ are helper utilities, no bytecode kept
 __pycache__/
 *.pyc

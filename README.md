@@ -1,7 +1,23 @@
 # space_sim
 
+[![покриття C-ядра](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Foleksandr-valentirov%2Fspace_sim%2Fbadges%2Fc.json)](https://github.com/oleksandr-valentirov/space_sim/actions/workflows/coverage.yml)
+[![покриття Rust](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Foleksandr-valentirov%2Fspace_sim%2Fbadges%2Frust.json)](https://github.com/oleksandr-valentirov/space_sim/actions/workflows/coverage.yml)
+[![valgrind](https://github.com/oleksandr-valentirov/space_sim/actions/workflows/valgrind.yml/badge.svg)](https://github.com/oleksandr-valentirov/space_sim/actions/workflows/valgrind.yml)
+
 Космічний симулятор зі справжньою N-body орбітальною механікою. Числове ядро
 на C, оркестрація та рендер на Rust + wgpu.
+
+Перші дві плашки — покриття рядків: `/core` своїми юніт-тестами на C
+(`make coverage`) і Rust-крейти через `cargo test --workspace`. Обидва числа
+рахує [coverage.yml](.github/workflows/coverage.yml) на пуш у `main` і кладе
+шилдсівським JSON у гілку `badges` — сервісу покриття тут немає навмисно, як і
+порогів: відсоток каже, **де бракує тестів**, а не чи код правильний, і як
+гейт він купував би тести, написані заради числа.
+
+Третя — стан `valgrind.yml`. Він має фільтр `paths` на C, тож показує
+**останній прогін**, а не стан саме цього коміта: пуш, що C не чіпав, лишає
+попередню відповідь на місці. Це і є правильне читання — коли питання ставили
+востаннє, відповідь була така.
 
 - **Архітектурні рішення** — [PROJECT.md](PROJECT.md). Джерело істини.
 - **Послідовність робіт і виміряні результати** — [ROADMAP.md](ROADMAP.md).
@@ -90,6 +106,7 @@ feature `edition2024` is required ... not stabilized in this version of Cargo (1
 make test        # усе про C: «поліція libm», юніт-тести, звірка хешів
 make asan        # ті самі юніт-тести під ASan+UBSan (~5 хв)
 make valgrind    # ті самі юніт-тести під valgrind (~6 хв)
+make coverage    # покриття рядків /core юніт-тестами (плашка в README, не гейт)
 make csv         # вивід ядра у build/csv/*.csv
 make plots       # графіки з CSV у build/plots/*.png (потрібен matplotlib)
 make bench       # інтегратор, силова модель, пропускна здатність (скіл perf-probe)
@@ -101,6 +118,16 @@ cargo test --workspace   # межа C↔Rust, рушій, гра
 cargo run -p game        # сама гра: вікно
 cargo clippy --all-targets -- -D warnings
 cargo run -q --example flags    # ті самі прапорці, з боку cargo
+
+cargo llvm-cov --workspace --summary-only   # покриття Rust, друга плашка
+```
+
+`cargo llvm-cov` — окремий інструмент, у гейт не входить і в
+`rust-toolchain.toml` його немає. Ставиться так само, як його ставить CI:
+
+```sh
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov     # або готовий бінарник з релізів проєкту
 ```
 
 Обидві збірки читають прапорці з `core/cflags.txt` і більше нізвідки. Що вони

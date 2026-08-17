@@ -17,6 +17,8 @@
 #   make asan             the same unit tests under ASan+UBSan (memory errors)
 #   make valgrind         the same unit tests under valgrind (uninitialised
 #                         memory -- which ASan does not see)
+#   make coverage         line coverage of the C sources by the unit tests
+#                         (the README badge; not a gate)
 #   make check-libm       the "libm police" only (ROADMAP A2)
 #   make determinism      compare scenario hashes against the golden file
 #   make determinism-bless update the golden hashes (do this deliberately!)
@@ -204,8 +206,9 @@ DEP := $(CORE_OBJ:.o=.d) $(OFFLINE_OBJ:.o=.d) $(PLANNING_OBJ:.o=.d) \
 
 -include $(DEP)
 
-.PHONY: all test unit asan valgrind check-libm determinism determinism-bless \
-        hashes cook cook-dem cook-colour model-ship cook-ship csv plots bench flags clean
+.PHONY: all test unit asan valgrind coverage check-libm determinism \
+        determinism-bless hashes cook cook-dem cook-colour model-ship \
+        cook-ship csv plots bench flags clean
 
 all: $(LIB) $(LIB_OFFLINE) $(LIB_PLANNING)
 
@@ -372,6 +375,65 @@ valgrind: $(TEST_BIN)
 	if [ $$fail -ne 0 ]; then echo "VALGRIND FAILED"; exit 1; fi; \
 	echo ""; \
 	echo "valgrind: no uninitialised reads and no memory errors"
+
+# Line coverage of the C sources by the unit tests -- the README badge.
+#
+# NOT a gate, and deliberately not part of `make test`. A percentage says where
+# tests are missing; it does not say whether the code is right. Turned into a
+# threshold it buys tests written to move the number.
+#
+# Third target with flags of its own, after asan and valgrind, for the same
+# reason as those two: --coverage changes codegen, so it must never touch the
+# tree the numbers come from. core/cflags.txt stays the only source of the
+# flags that determine numbers -- these determine nothing but counters.
+#
+# The one thing here that is easy to get wrong: the objects are compiled ONCE
+# into $(COV_DIR) and every test binary links THE SAME object files. That is
+# what makes the counters merge -- gcc writes one .gcda per object file and
+# each run adds to it, so a line covered by any test counts once. Compiling the
+# sources into every binary separately, the way `make asan` does, would instead
+# give one set of counters per binary (gcc names the aux files after the
+# output), and 31 partial reports cannot be summed: a line reached by two tests
+# would count twice.
+COV_DIR   := $(BUILD)/cov
+COV_SRC   := $(CORE_SRC) $(OFFLINE_SRC) $(PLANNING_SRC)
+COV_OBJ   := $(patsubst %.c,$(COV_DIR)/%.o,$(COV_SRC))
+COV_BIN   := $(patsubst core/test/%.c,$(COV_DIR)/test/%$(EXE),$(TEST_SRC))
+COV_FLAGS := --coverage
+
+# Without this make treats the instrumented objects as intermediate files --
+# built by one pattern rule, used only by another -- and DELETES them after
+# every run, printing thirty rm lines and recompiling the whole core next time.
+.SECONDARY: $(COV_OBJ)
+
+$(COV_DIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(COV_FLAGS) $(OFFLINE_DEFS) \
+		-Icore -Icore/offline -Icore/planning -c $< -o $@
+
+# -lm always, as in the asan target: the "libm police" checks the shipped
+# build/core tree, and this is not it.
+$(COV_DIR)/test/%$(EXE): core/test/%.c $(COV_OBJ)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(COV_FLAGS) -Icore -Icore/offline -Icore/planning \
+		-o $@ $< $(COV_OBJ) $(LDLIBS_OFFLINE)
+
+# Stale .gcda are deleted before the run: counters ACCUMULATE across runs by
+# design, so without this every `make coverage` would add the previous run to
+# itself. The percentage would barely move -- which is exactly why the mistake
+# would survive unnoticed.
+#
+# stdout to /dev/null, like `make asan`: what the tests compute was already
+# said by `make unit`, and what matters here is only that they all ran.
+coverage: $(COV_BIN)
+	@find $(COV_DIR) -name '*.gcda' -delete
+	@fail=0; \
+	for t in $(COV_BIN); do \
+		echo "== $$t"; \
+		$$t > /dev/null || fail=1; \
+	done; \
+	if [ $$fail -ne 0 ]; then echo "COVERAGE RUN FAILED"; exit 1; fi
+	@sh scripts/coverage_c.sh $(COV_DIR) $(COV_SRC)
 
 $(ACTUAL): $(SCEN_BIN) $(FIXTURE)
 	@mkdir -p $(dir $@)

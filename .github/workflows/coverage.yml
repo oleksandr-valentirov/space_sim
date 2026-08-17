@@ -1,0 +1,146 @@
+# Coverage numbers for the two README badges: the C core and the Rust crates.
+#
+# THIS IS NOT A GATE. Nothing here can fail the build for a low number, and
+# there is deliberately no threshold: a percentage says where tests are
+# missing, not whether the code is right, and a threshold buys tests written to
+# move it. The job goes red only when the measurement itself broke.
+#
+# No coverage service is involved -- no Codecov, no Coveralls, no account and
+# no token. The numbers are computed here and written as shields.io "endpoint"
+# JSON to this repository's own `badges` branch; shields fetches that file and
+# draws the badge. The README links say where each number comes from.
+#
+# The third badge in the README, valgrind, needs nothing at all: GitHub serves
+# a status badge for every workflow. It shows the LAST run of valgrind.yml, and
+# because that workflow has a `paths` filter, a push touching no C leaves it
+# showing the previous result rather than going stale-grey. That is the right
+# reading -- the last time the question was asked, the answer was this.
+#
+# `paths-ignore` matches determinism.yml, and for the reason recorded in
+# ROADMAP.md (Q1, 2026-08-15): a push touching only documents must run nothing.
+# It matters more here than there -- editing the README is exactly what one
+# does to the badges, and a badge job triggered by its own documentation would
+# be a loop with no information in it.
+#
+# Only `main`, and no pull_request: the badge shows the state of main, and a
+# run that publishes nothing would cost fifteen minutes to tell nobody. Use
+# workflow_dispatch to measure by hand.
+
+name: coverage
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+
+# For the push to the `badges` branch in the last step. Nothing else here
+# writes anything.
+permissions:
+  contents: write
+
+jobs:
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # C first: it is the cheap half (about fifteen seconds against minutes),
+      # so a mistake in the measurement shows before the long half runs.
+      #
+      # `make coverage` builds the core a THIRD time, with --coverage, into its
+      # own tree. It shares no object file with the normal build, which is the
+      # point: core/cflags.txt stays the only source of the flags that
+      # determine numbers.
+      - name: C coverage
+        run: make coverage
+
+      # Software Vulkan, same as determinism.yml: without an adapter the engine
+      # and game tests skip themselves, and a skipped test contributes no
+      # coverage while looking like a green run. That would not fail anything
+      # here -- it would quietly report a smaller number, which is worse.
+      - name: Mesa
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers
+
+      # cargo-llvm-cov as a prebuilt binary from its release page, pinned. No
+      # third-party action and no `cargo install` (which compiles it from
+      # source, minutes for a tool that changes nothing about the result).
+      #
+      # llvm-tools-preview is what actually reads the .profraw files;
+      # cargo-llvm-cov is a driver around it and fails with a clear message
+      # without it.
+      - name: cargo-llvm-cov
+        env:
+          LLVM_COV_VERSION: v0.9.0
+        run: |
+          rustup component add llvm-tools-preview
+          curl -sSfL "https://github.com/taiki-e/cargo-llvm-cov/releases/download/${LLVM_COV_VERSION}/cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar xzf - -C "$HOME/.cargo/bin"
+          cargo llvm-cov --version
+
+      # The whole workspace, so the number covers the boundary, the engine and
+      # the game rather than whichever crate happens to be easiest to measure.
+      #
+      # Instrumentation touches RUST only: the core is built by the `cc` crate
+      # from core/cflags.txt and is not recompiled with coverage flags here.
+      # That is deliberate -- C has its own badge, from its own tests, and
+      # mixing the two would produce one number that answers neither question.
+      - name: Rust coverage
+        run: |
+          cargo llvm-cov --workspace --summary-only --json \
+            --output-path build/llvm-cov.json
+          # The same data as a table, into the log: when the badge moves, the
+          # per-crate rows are the only thing that says which crate moved it.
+          # `report` reuses the run above rather than repeating it.
+          cargo llvm-cov report --summary-only
+
+      - name: Badge JSON
+        run: |
+          rust=$(jq -r '.data[0].totals.lines.percent' build/llvm-cov.json)
+          sh scripts/badge_json.sh 'rust coverage' \
+            "$(printf '%.1f' "$rust")" badges/rust.json
+          sh scripts/badge_json.sh 'C core coverage' \
+            "$(cat build/cov/percent.txt)" badges/c.json
+          cat badges/rust.json badges/c.json
+
+      # The `badges` branch is a single orphan commit, force-pushed every time.
+      # Its history has no value -- it is two generated files -- and keeping one
+      # means no fetch, no merge, and no branch that grows without bound. It
+      # shares no commit with main, so nothing here can reach the code history.
+      #
+      # A fresh repository in a temporary directory rather than a second
+      # checkout of this one: `git switch --orphan` in the workspace would have
+      # to be undone before any later step, and there is no later step only
+      # until someone adds one.
+      - name: Publish badges
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tmp=$(mktemp -d)
+          cp badges/*.json "$tmp/"
+          cd "$tmp"
+          git init -q -b badges
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .
+          git commit -q -m "coverage badges for ${GITHUB_SHA}"
+          git push -q --force \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}" \
+            badges
+
+      # Always: when the measurement breaks, the reports are what says how.
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: |
+            build/llvm-cov.json
+            build/cov/percent.txt
+            badges/
+          if-no-files-found: warn
