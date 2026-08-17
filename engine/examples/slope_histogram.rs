@@ -2,11 +2,19 @@
 //!
 //! It exists for one number -- [`engine::material::SLOPE_REF`], the slope at
 //! which the slope tint reaches full strength. That number cannot be taken
-//! from physics: the angle of repose of regolith concerns the **local** slope,
-//! while `Terrain::slope_at` measures the slope over the base of the finest
-//! node of the pyramid -- 5330 m on the Moon. The difference turned out to be
-//! more than twofold, and a threshold set "from physics" switched the rule off
-//! on 999 nodes out of 1000.
+//! from physics, and the two numbers that show why come from different places:
+//!
+//! * **0.3 is physics** -- the angle of repose of regolith. It is a true
+//!   statement about the **local** slope, i.e. about a scale this asset does
+//!   not have;
+//! * **0.035 is this example** -- the median `Terrain::slope_at` of
+//!   `assets/moon.dem`, which measures over the base of the finest node of the
+//!   pyramid, 5330 m. Smoothed by that base, and smoothed is the point.
+//!
+//! Roughly tenfold apart, so a threshold set "from physics" switched the rule
+//! off on 999 nodes out of 1000. Both numbers are reproduced by the command
+//! below; the same conclusion is recorded in CLAUDE.md, "Поріг нахилу в
+//! правилі матеріалу виміряний з ассета".
 //!
 //! **The second table is about the patch level, and it appeared not for the
 //! sake of the asset but for the sake of an artefact** (T7f): on Earth from
