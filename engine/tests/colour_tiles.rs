@@ -1,22 +1,23 @@
-//! Колірний тайл у кадрі крізь другий bindless-масив (етап T, крок T3b).
+//! A colour tile in the frame through the second bindless array (stage T, step
+//! T3b).
 //!
-//! Три твердження, і кожне ловить свою помилку.
+//! Three statements, and each catches its own bug.
 //!
-//! 1. **Колір доходить до пікселя.** Кадр із тайлсетом і кадр без нього різні
-//!    — інакше асет прочитаний, завантажений і проігнорований.
-//! 2. **Карта лежить правильним боком.** Тайлсет тут — рампа **по широті**, і
-//!    вона мусить лягти в кадрі як горизонтальні смуги: яскравість міняється
-//!    згори вниз і майже не міняється зліва направо. Це ловить переставлені
-//!    осі тайла (`a` — рядок, а не колонка) і чужий номер тайла — обидві
-//!    помилки лишають кадр правдоподібним, але не смугастим.
-//! 3. **Шва між тайлами немає.** Рампа неперервна на всій сфері, тож у кадрі
-//!    не має бути жодного стрибка яскравості, більшого за крок самої рампи
-//!    між сусідніми пікселями. Тайл шириною 33 вузли накриває десятки
-//!    пікселів, тож зсув на пів вузла дав би там видиму лінію.
+//! 1. **The colour reaches the pixel.** A frame with the tileset and a frame
+//!    without it differ -- otherwise the asset was read, uploaded and ignored.
+//! 2. **The map lies the right way round.** The tileset here is a ramp **by
+//!    latitude**, and it must land in the frame as horizontal bands: brightness
+//!    changes top to bottom and barely changes left to right. This catches
+//!    swapped tile axes (`a` is the row, not the column) and a wrong tile index
+//!    -- both bugs leave the frame plausible but not striped.
+//! 3. **There is no seam between tiles.** The ramp is continuous over the whole
+//!    sphere, so there must be no jump in brightness between neighbouring pixels
+//!    larger than the ramp's own step. A tile 33 nodes wide covers dozens of
+//!    pixels, so a shift of half a node would give a visible line there.
 //!
-//! Рельєф у всіх трьох — **пласкі нулі**. Питання тут про колір, а гори
-//! домалювали б до яскравості власні тіні, тобто зробили б кожен оракул
-//! нечистим.
+//! The relief in all three is **flat zeros**. The question here is about colour,
+//! and mountains would add their own shadows to the brightness, i.e. make every
+//! oracle impure.
 
 use engine::camera::Camera;
 use engine::cubesphere::{Patch, FACES};
@@ -30,34 +31,35 @@ use engine::tiles::{self, Colour, Terrain, NODES, STORED};
 const SIZE: u32 = 256;
 const MOON_RADIUS_M: f64 = 1_737_400.0;
 
-/// Рівнів у пірамідах: у висот менше, ніж у кольору — рівно як у справжніх
-/// асетів (5 проти 6, T2a). Дрібніші числа тут лише щоб тест не кукав
-/// тисячі тайлів.
+/// Levels in the pyramids: fewer for height than for colour -- exactly as in the
+/// real assets (5 against 6, T2a). The numbers are smaller here only so that the
+/// test does not cook thousands of tiles.
 const HEIGHT_LEVELS: u32 = 2;
 const COLOUR_LEVELS: u32 = 3;
 
 fn gpu() -> Option<Gpu> {
     let gpu = Gpu::for_tests()?;
     if !gpu.bindless {
-        eprintln!("ПРОПУЩЕНО: адаптер без bindless ({})", gpu.describe());
+        eprintln!("SKIPPED: an adapter without bindless ({})", gpu.describe());
         return None;
     }
     Some(gpu)
 }
 
-/// Плаский рельєф: питання тесту про колір, і гори лише заважали б.
+/// Flat relief: the test asks about colour, and mountains would only get in the
+/// way.
 fn flat() -> Terrain {
     let grids = vec![vec![0i16; STORED * STORED]; Terrain::count(HEIGHT_LEVELS)];
     Terrain::build(HEIGHT_LEVELS, MOON_RADIUS_M, 0.5, tiles::NO_SEA, &grids)
 }
 
-/// Колір як функція **широти**: від темного на південному полюсі до світлого
-/// на північному.
+/// Colour as a function of **latitude**: from dark at the south pole to light at
+/// the north.
 ///
-/// Функція від напрямку, а не від індексів тайла, і саме тому вона неперервна
-/// на всій сфері: сусідні тайли беруть її в тій самій точці, отже дають той
-/// самий байт. Тобто фікстура сама по собі не має шва, і будь-який шов у
-/// кадрі — це кадр.
+/// A function of direction, not of tile indices, and that is exactly why it is
+/// continuous over the whole sphere: neighbouring tiles take it at the same
+/// point and so give the same byte. That is, the fixture has no seam of its own,
+/// and any seam in the frame is the frame's.
 fn latitude_ramp() -> Colour {
     let mut grids = Vec::with_capacity(tiles::count(COLOUR_LEVELS));
     for level in 0..COLOUR_LEVELS {
@@ -71,9 +73,9 @@ fn latitude_ramp() -> Colour {
                         for b in 0..NODES {
                             let unit = patch.vertex(a, b, 1.0);
                             let z = unit[2] / (unit.iter().map(|v| v * v).sum::<f64>()).sqrt();
-                            // 0.1 … 0.9 від полюса до полюса: краї шкали
-                            // лишаються вільними, щоб квантування не впиралося
-                            // ні в нуль, ні в 255.
+                            // 0.1 ... 0.9 from pole to pole: the ends of the
+                            // scale stay free so that quantisation runs into
+                            // neither zero nor 255.
                             tile.push((255.0 * (0.5 + 0.4 * z)) as u8);
                         }
                     }
@@ -85,14 +87,15 @@ fn latitude_ramp() -> Colour {
     Colour::build(COLOUR_LEVELS, 1, 0.25, false, &grids)
 }
 
-/// Місяць у кадрі, освітлений з боку камери.
+/// The Moon in frame, lit from the camera's side.
 ///
-/// Світло з ока навмисно: дифузний член тоді майже не міняється по диску, і
-/// різниця яскравості в кадрі — це різниця **кольору**, а не косинуса.
+/// Light from the eye deliberately: the diffuse term then barely changes across
+/// the disc, and a difference of brightness in the frame is a difference of
+/// **colour** rather than of a cosine.
 fn moon(tiles: TileSet, altitude: f64) -> Scene {
     let eye = [MOON_RADIUS_M + altitude, 0.0, 0.0];
-    // Вертикаль кадру — світова `+z`, тобто північ. Саме тому рампа по широті
-    // мусить лягти горизонтальними смугами.
+    // The frame's vertical is world `+z`, i.e. north. That is exactly why a ramp
+    // by latitude must land as horizontal bands.
     let mut scene = Scene::new(Camera::look_at(eye, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]));
     scene.sun = [1.0, 0.0, 0.0];
     scene.bodies.push(Body {
@@ -106,7 +109,7 @@ fn moon(tiles: TileSet, altitude: f64) -> Scene {
     scene
 }
 
-/// Яскравість пікселя, або `None` для порожнього неба.
+/// The brightness of a pixel, or `None` for empty sky.
 fn lit(shot: &Shot, x: u32, y: u32) -> Option<f64> {
     let p = shot.pixel(x, y);
     if [p[0], p[1], p[2]] == frame::CLEAR_BYTES {
@@ -115,7 +118,7 @@ fn lit(shot: &Shot, x: u32, y: u32) -> Option<f64> {
     Some((f64::from(p[0]) + f64::from(p[1]) + f64::from(p[2])) / 3.0)
 }
 
-/// Пара знімків з тієї самої камери: з кольором і без нього.
+/// A pair of screenshots from the same camera: with colour and without it.
 fn pair(gpu: &Gpu, altitude: f64) -> (Shot, Shot) {
     let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("colour shot"),
@@ -136,10 +139,10 @@ fn pair(gpu: &Gpu, altitude: f64) -> (Shot, Shot) {
     let mut frame = Frame::new(gpu, shot::FORMAT);
     let painted = frame
         .load_surface(gpu, &flat(), Some(&latitude_ramp()))
-        .expect("поверхня з кольором мала завантажитись");
+        .expect("the surface with colour should have loaded");
     let plain = frame
         .load_surface(gpu, &flat(), None)
-        .expect("поверхня без кольору мала завантажитись");
+        .expect("the surface without colour should have loaded");
 
     let mut take = |id| {
         let scene = moon(TileSet::Loaded(id), altitude);
@@ -149,13 +152,13 @@ fn pair(gpu: &Gpu, altitude: f64) -> (Shot, Shot) {
                 label: Some("shot"),
             });
         frame.draw(gpu, &mut encoder, &view, SIZE, SIZE, &scene);
-        shot::read_back(gpu, encoder, &texture, SIZE, SIZE).expect("кадр мав намалюватися")
+        shot::read_back(gpu, encoder, &texture, SIZE, SIZE).expect("the frame should have drawn")
     };
 
     (take(painted), take(plain))
 }
 
-/// Колір доходить до пікселя, і кадр без нього — інший.
+/// The colour reaches the pixel, and a frame without it is different.
 #[test]
 fn the_colour_changes_the_frame() {
     let Some(gpu) = gpu() else { return };
@@ -173,26 +176,27 @@ fn the_colour_changes_the_frame() {
             }
         }
     }
-    println!("  {changed} з {surface} пікселів поверхні змінилися");
+    println!("  {changed} of {surface} surface pixels changed");
 
-    assert!(surface > 1000, "диск замалий: {surface} пікселів");
+    assert!(surface > 1000, "the disc is too small: {surface} pixels");
     assert!(
         changed * 10 > surface * 9,
-        "колір змінив лише {changed} з {surface} пікселів"
+        "the colour changed only {changed} of {surface} pixels"
     );
 }
 
-/// Рампа по широті лягає горизонтальними смугами, а не вертикальними.
+/// A ramp by latitude shows as horizontal bands, not vertical ones.
 ///
-/// Оракул — **відношення** розкиду по вертикалі до розкиду по горизонталі.
-/// Абсолютні значення тут нічого не сказали б: вони залежать і від шкали
-/// кольору, і від дифузного члена, а відношення — ні.
+/// The oracle is the **ratio** of the vertical spread to the horizontal one. The
+/// absolute values would say nothing here: they depend both on the colour scale
+/// and on the diffuse term, while the ratio does not.
 #[test]
 fn a_latitude_ramp_shows_as_horizontal_bands() {
     let Some(gpu) = gpu() else { return };
     let (with, _) = pair(&gpu, 3.0e5);
 
-    // Середня яскравість рядка й колонки — по тих пікселях, де є поверхня.
+    // The mean brightness of a row and of a column -- over those pixels where
+    // there is surface.
     let mean = |along_row: bool, k: u32| {
         let mut sum = 0.0;
         let mut count = 0;
@@ -214,28 +218,29 @@ fn a_latitude_ramp_shows_as_horizontal_bands() {
         hi - lo
     };
     let (vertical, horizontal) = (spread(&rows), spread(&columns));
-    println!("  розкид по рядках {vertical:.1}, по колонках {horizontal:.1}");
+    println!("  spread across rows {vertical:.1}, across columns {horizontal:.1}");
 
     assert!(
         vertical > 4.0 * horizontal,
-        "рампа по широті дала розкид {vertical:.1} згори вниз і {horizontal:.1} \
-         впоперек — карта лежить не тим боком"
+        "a ramp by latitude gave a spread of {vertical:.1} top to bottom and \
+         {horizontal:.1} across -- the map lies the wrong way round"
     );
-    // І напрямок: північ угорі кадру, тобто верхні рядки світліші за нижні.
+    // And the direction: north at the top of the frame, i.e. the upper rows are
+    // lighter than the lower ones.
     assert!(
         rows[0] > rows[rows.len() - 1],
-        "північ вийшла темнішою за південь: {:.1} проти {:.1}",
+        "north came out darker than south: {:.1} against {:.1}",
         rows[0],
         rows[rows.len() - 1]
     );
 }
 
-/// Між тайлами немає шва: сусідні пікселі не стрибають.
+/// There is no seam between tiles: neighbouring pixels do not jump.
 ///
-/// Камера низько навмисно — тоді в кадрі десятки патчів, тобто десятки меж
-/// тайлів, і кожна з них проходить через диск. Поріг у одиницях яскравості:
-/// рампа міняється на ~0.5 одиниці на піксель при цьому масштабі, тож стрибок
-/// у п'ять одиниць — це не рампа, а межа.
+/// The camera is low deliberately -- then the frame holds dozens of patches, i.e.
+/// dozens of tile boundaries, and each of them crosses the disc. The threshold is
+/// in units of brightness: the ramp changes by ~0.5 units per pixel at this
+/// scale, so a jump of five units is not the ramp but a boundary.
 #[test]
 fn the_tile_boundaries_leave_no_seam() {
     let Some(gpu) = gpu() else { return };
@@ -251,8 +256,9 @@ fn the_tile_boundaries_leave_no_seam() {
                 continue;
             };
             surface += 1;
-            // Лише пікселі, чиї сусіди теж на поверхні: край диска — це
-            // законний стрибок у небо, і про нього тест не питає.
+            // Only pixels whose neighbours are on the surface too: the edge of
+            // the disc is a legitimate jump into the sky, and the test does not
+            // ask about it.
             for (dx, dy) in [(1u32, 0u32), (0, 1)] {
                 let Some(there) = lit(&with, x + dx, y + dy) else {
                     continue;
@@ -267,48 +273,54 @@ fn the_tile_boundaries_leave_no_seam() {
         }
     }
     println!(
-        "  поверхні {surface} пікселів, найбільший стрибок {worst:.1} одиниці, \
-         {jumps} з {pairs} пар"
+        "  {surface} surface pixels, largest jump {worst:.1} units, \
+         {jumps} of {pairs} pairs"
     );
 
-    // Диск мусить накривати кадр: перевірка «стрибків немає» на порожньому
-    // небі пройшла б бездоганно й не сказала б нічого.
+    // The disc must cover the frame: a check for "no jumps" on empty sky would
+    // pass flawlessly and say nothing.
     assert!(
         surface * 10 > (SIZE * SIZE) as usize * 9,
-        "поверхні лише {surface} пікселів"
+        "only {surface} pixels of surface"
     );
-    assert!(pairs > 5000, "перевірено лише {pairs} пар пікселів");
-    assert_eq!(jumps, 0, "знайшлися {jumps} стрибків — це шов між тайлами");
+    assert!(pairs > 5000, "only {pairs} pixel pairs were checked");
+    assert_eq!(
+        jumps, 0,
+        "{jumps} jumps were found -- that is a seam between tiles"
+    );
 }
 
-/// Стала мозаїка: та сама одиниця зберігання в кожному вузлі.
+/// A constant mosaic: the same storage unit in every node.
 fn plain(value: u8, scale: f32) -> Colour {
     let grids = vec![vec![value; NODES * NODES]; tiles::count(COLOUR_LEVELS)];
     Colour::build(COLOUR_LEVELS, 1, scale, false, &grids)
 }
 
-/// Піксель несе саме ту відбивну здатність, яку виміряла мозаїка (T5b).
+/// The pixel carries exactly the reflectance the mosaic measured (T5b).
 ///
-/// Це найпряміший оракул етапу й перший, який взагалі став можливим: до T5b у
-/// шейдері стояла заглушка `terrain.y = 1`, тобто кадр малював **одиниці
-/// зберігання**, а не альбедо, і питати про фізичне число не було сенсу. Тепер
-/// множник — `Colour::scale`, і весь ланцюг перевіряється одним рівнянням.
+/// This is the stage's most direct oracle and the first that became possible at
+/// all: before T5b the shader held the stub `terrain.y = 1`, i.e. the frame drew
+/// **storage units** rather than albedo, and asking about a physical number made
+/// no sense. Now the multiplier is `Colour::scale`, and the whole chain is
+/// checked by one equation.
 ///
-/// Фікстура прибирає з дороги все, крім самого альбедо:
+/// The fixture clears everything but the albedo itself out of the way:
 ///
-/// * рельєф плаский, тож правило матеріалу дає рівно одиницю;
-/// * мозаїка стала, тож вибірка й вікна нічого не додають;
-/// * світло вздовж погляду, а тіло далеко — у центрі кадру нормаль дивиться
-///   і в камеру, і на світило, тобто дифузний член рівно один, і множники
-///   `0.05 + 0.95·cos` з шейдера в передбачення не входять узагалі.
+/// * the relief is flat, so the material rule gives exactly one;
+/// * the mosaic is constant, so sampling and windows add nothing;
+/// * the light is along the view and the body is far away -- at the centre of the
+///   frame the normal looks both at the camera and at the light source, i.e. the
+///   diffuse term is exactly one, and the shader's `0.05 + 0.95*cos` factors do
+///   not enter the prediction at all.
 ///
-/// Лишається `байт = srgb(unit · scale)` — і саме це число тест і порівнює.
+/// What is left is `byte = srgb(unit * scale)` -- and that is the number the test
+/// compares.
 #[test]
 fn the_pixel_carries_the_reflectance_the_mosaic_measured() {
     let Some(gpu) = gpu() else { return };
 
-    // Три відбивні здатності, що накривають діапазон Місяця: темне море,
-    // типовий матерік, світлий промінь свіжого кратера.
+    // Three reflectances covering the Moon's range: a dark mare, a typical
+    // highland, the bright ray of a fresh crater.
     for (value, scale) in [(45u8, 0.25f32), (160, 0.25), (255, 0.25)] {
         let colour = plain(value, scale);
         let expected_reflectance = colour.reflectance(0, 0, 0, 0);
@@ -332,7 +344,7 @@ fn the_pixel_carries_the_reflectance_the_mosaic_measured() {
         let mut frame = Frame::new(&gpu, shot::FORMAT);
         let id = frame
             .load_surface(&gpu, &flat(), Some(&colour))
-            .expect("поверхня мала завантажитись");
+            .expect("the surface should have loaded");
         let mut encoder = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -340,22 +352,22 @@ fn the_pixel_carries_the_reflectance_the_mosaic_measured() {
             });
         let scene = moon(TileSet::Loaded(id), 3.0e5);
         frame.draw(&gpu, &mut encoder, &view, SIZE, SIZE, &scene);
-        let shot = shot::read_back(&gpu, encoder, &texture, SIZE, SIZE).expect("кадр");
+        let shot = shot::read_back(&gpu, encoder, &texture, SIZE, SIZE).expect("a frame");
 
         let got = shot.pixel(SIZE / 2, SIZE / 2)[0];
         println!(
-            "  одиниця {value} × {scale} = {expected_reflectance:.4}: чекали байт \
-             {expected}, у кадрі {got}"
+            "  unit {value} x {scale} = {expected_reflectance:.4}: expected byte \
+             {expected}, in the frame {got}"
         );
         assert!(
             got.abs_diff(expected) <= 1,
-            "відбивна здатність {expected_reflectance:.4} мала дати байт \
-             {expected}, а кадр дав {got}"
+            "a reflectance of {expected_reflectance:.4} should have given byte \
+             {expected}, but the frame gave {got}"
         );
     }
 }
 
-/// Стала чотириканальна мозаїка в sRGB — те, що несе Земля (T7e).
+/// A constant four-channel mosaic in sRGB -- what Earth carries (T7e).
 fn plain_rgba(rgb: [u8; 3]) -> Colour {
     let mut tile = Vec::with_capacity(NODES * NODES * 4);
     for _ in 0..NODES * NODES {
@@ -365,25 +377,26 @@ fn plain_rgba(rgb: [u8; 3]) -> Colour {
     Colour::build(COLOUR_LEVELS, 4, 1.0, true, &grids)
 }
 
-/// Чотириканальний тайлсет малює свій колір, а не свій перший канал (T7g).
+/// A four-channel tileset paints its own colour, not its first channel (T7g).
 ///
-/// Три речі ловляться однією фікстурою, і кожна з них раніше була неможлива:
+/// Three things are caught by one fixture, and each of them was impossible
+/// before:
 ///
-/// 1. **канали не переплутані.** Значення взяті різними навмисно — червоний
-///    менший за синій, як у справжнього океану. Обмін `r` і `b` дає той самий
-///    кадр на будь-якому сірому тесті й видно лише тут;
-/// 2. **sRGB розкодовано рівно один раз.** Байт у тайлі — кодований, апаратура
-///    розкодовує його при читанні текселя, а ціль кодує назад. Отже кадр
-///    мусить повернути **той самий байт**, що лежить в асеті: подвійне
-///    розкодування дало б помітно темніший піксель, жодного — світліший;
-/// 3. **одноканальний тайлсет не зламався.** Гілка за `terrain.z` живе у
-///    фрагментній стадії, і сусідні тести вище перевіряють саме її другу
-///    половину — сірий Місяць лишився сірим.
+/// 1. **the channels are not swapped.** The values are deliberately different --
+///    red smaller than blue, as in a real ocean. Swapping `r` and `b` gives the
+///    same frame on any grey test and is visible only here;
+/// 2. **sRGB is decoded exactly once.** The byte in the tile is encoded, the
+///    hardware decodes it when reading the texel, and the target encodes it back.
+///    So the frame must return **the same byte** that lies in the asset: a double
+///    decode would give a noticeably darker pixel, none at all a lighter one;
+/// 3. **the single-channel tileset did not break.** The branch on `terrain.z`
+///    lives in the fragment stage, and the neighbouring tests above check its
+///    other half -- the grey Moon stayed grey.
 #[test]
 fn a_four_channel_tileset_paints_its_own_colour() {
     let Some(gpu) = gpu() else { return };
 
-    // Океан BMNG: темний, синій, з різними каналами.
+    // BMNG ocean: dark, blue, with different channels.
     for rgb in [[5u8, 17, 43], [197, 155, 107]] {
         let colour = plain_rgba(rgb);
 
@@ -405,7 +418,7 @@ fn a_four_channel_tileset_paints_its_own_colour() {
         let mut frame = Frame::new(&gpu, shot::FORMAT);
         let id = frame
             .load_surface(&gpu, &flat(), Some(&colour))
-            .expect("поверхня мала завантажитись");
+            .expect("the surface should have loaded");
         let mut encoder = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -413,15 +426,18 @@ fn a_four_channel_tileset_paints_its_own_colour() {
             });
         let scene = moon(TileSet::Loaded(id), 3.0e5);
         frame.draw(&gpu, &mut encoder, &view, SIZE, SIZE, &scene);
-        let shot = shot::read_back(&gpu, encoder, &texture, SIZE, SIZE).expect("кадр");
+        let shot = shot::read_back(&gpu, encoder, &texture, SIZE, SIZE).expect("a frame");
 
         let got = shot.pixel(SIZE / 2, SIZE / 2);
-        println!("  асет {rgb:?} → кадр [{}, {}, {}]", got[0], got[1], got[2]);
+        println!(
+            "  asset {rgb:?} -> frame [{}, {}, {}]",
+            got[0], got[1], got[2]
+        );
         for (channel, &in_frame) in got.iter().take(3).enumerate() {
             let expected = srgb::linear_to_byte(colour.reflectance(0, 0, 0, channel as u32));
             assert!(
                 in_frame.abs_diff(expected) <= 1,
-                "канал {channel}: чекали {expected}, у кадрі {in_frame}"
+                "channel {channel}: expected {expected}, in the frame {in_frame}"
             );
         }
     }
