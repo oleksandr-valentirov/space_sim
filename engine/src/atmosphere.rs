@@ -781,6 +781,28 @@ pub fn aerial_span(air: &Atmosphere, bottom: f64, r: f64) -> (f64, f64) {
     (near, far.max(near + 1.0))
 }
 
+/// Where the volume's depth axis is half spent: `z = tau / (tau + tau0)`
+/// (D17b).
+///
+/// **A property of the air, not a tuning knob**, and that is the point. It is
+/// the whole vertical optical depth of the atmosphere -- the closed form above,
+/// evaluated from the surface -- so a denser sky moves it without anyone
+/// choosing a number.
+///
+/// Earth gives **0.1468**, and it beats every value picked by hand:
+/// `--example aerial_slices` sweeps 0.05/0.1/0.2/0.4 and the best of those is
+/// 2.35%, while the air's own number gives **2.26%**. That is the whole reason
+/// this is a function and not a constant.
+///
+/// Green, and measured rather than preferred: all three channels share one
+/// density profile, so their `tau(d)` differ by a scale factor only, and
+/// scaling both `tau` and `tau0` leaves `z` unchanged. Only the ratio between
+/// channels is left to decide, and it is decided by measurement -- red 0.0662
+/// gives 3.46%, blue 0.2761 gives 2.59%, green 0.1468 gives 2.26%.
+pub fn aerial_tau0(air: &Atmosphere, bottom: f64) -> f64 {
+    vertical_optical_depth(air, bottom, bottom)[1]
+}
+
 /// The Rayleigh phase function: `3/(16pi)*(1 + cos^2(theta))`.
 ///
 /// Symmetric forward and backward, and that is why the sky is bright behind

@@ -219,6 +219,44 @@ fn main() {
             );
         }
     }
+
+    // D17b: tau0 is not chosen, it is the air's own vertical optical depth.
+    // Which channel, though, is a question with an answer rather than a taste --
+    // all three share one density profile, so scaling tau and tau0 together
+    // leaves z alone, and only the ratio between channels is left to decide.
+    println!("\n-- tau0 from the air itself, per channel --");
+    let vertical = atmosphere::vertical_optical_depth(&air, BOTTOM, BOTTOM);
+    println!("{:>8} {:>10} {:>14}", "channel", "tau0", "worst |err| %");
+    for (name, tau0) in [
+        ("red", vertical[0]),
+        ("green", vertical[1]),
+        ("blue", vertical[2]),
+    ] {
+        let mut worst: f64 = 0.0;
+        for i in 0..=70 {
+            let theta = f64::from(i);
+            let dir = [theta.to_radians().sin(), 0.0, -theta.to_radians().cos()];
+            let d = ground_distance(r, dir);
+            let exact = march(&model, &air, r, dir, sun, d, 2048).last().unwrap().1[1];
+            let volume = read_optical(
+                &air,
+                &model,
+                r,
+                dir,
+                sun,
+                d,
+                atmosphere::AERIAL_Z,
+                tau0,
+                true,
+            );
+            worst = worst.max(((volume - exact) / exact * 100.0).abs());
+        }
+        println!("{name:>8} {tau0:>10.4} {worst:>13.2}%");
+    }
+    println!(
+        "atmosphere::aerial_tau0 gives {:.4}",
+        atmosphere::aerial_tau0(&air, BOTTOM)
+    );
 }
 
 /// The volume as it is today, but with a chosen slice count.
