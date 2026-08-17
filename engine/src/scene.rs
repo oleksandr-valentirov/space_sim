@@ -1,188 +1,204 @@
-//! Що малювати. Межа між рушієм і грою (ROADMAP J1, PROJECT.md §6).
+//! What to draw. The boundary between the engine and the game (ROADMAP J1,
+//! PROJECT.md section 6).
 //!
-//! Це продовження вже прийнятого «кадр не знає про вікно» на один рівень
-//! вище: **рушій не знає про гру**. Тут немає ні апаратів, ні планів, ні
-//! часу — лише камера й геометрія. Хто ці ламані порахував і що вони
-//! означають, [`crate::frame`] не питає й питати не має.
+//! This continues the already accepted "the frame does not know about the
+//! window" one level up: **the engine does not know about the game**. There are
+//! no vessels here, no plans and no time -- only a camera and geometry. Who
+//! computed these polylines and what they mean, [`crate::frame`] does not ask
+//! and must not.
 //!
-//! Напрямок залежностей від цього стає одностороннім і лишається таким:
-//! `game → engine`, ніколи навпаки. Гра щокадру перекладає свій снапшот у
-//! [`Scene`]; переклад дешевий, бо ламані все одно доводиться звужувати до
-//! `f32` відносно камери, і робиться це один раз, у кадрі.
+//! The direction of dependencies thereby becomes one-way and stays that way:
+//! `game -> engine`, never the reverse. The game translates its snapshot into a
+//! [`Scene`] every frame; the translation is cheap, because the polylines have
+//! to be narrowed to `f32` relative to the camera anyway, and that is done once,
+//! in the frame.
 //!
-//! ## Список тіл з'явився, і чому саме тепер
+//! ## The list of bodies appeared, and why exactly now
 //!
-//! Донедавна його тут не було, і причина була записана прямо: сфера в кадрі
-//! одна, в початку координат, з радіусом Землі з рушія, а список тіл був би
-//! структурою, яку хтось заповнює, а рушій ігнорує — гіршою за свою
-//! відсутність. Умова знялася: радіус приніс `eph_body_radius` (U2a),
-//! орієнтацію — `eph_body_orientation` (R1c), і в списку нарешті є читач —
-//! кубосфера, якій треба знати, **де** тіло й **як воно повернуте**
+//! Until recently it was not here, and the reason was written down plainly:
+//! there was one sphere in the frame, at the origin, with Earth's radius from
+//! the engine, and a list of bodies would have been a struct somebody fills in
+//! and the engine ignores -- worse than its own absence. The condition lifted:
+//! `eph_body_radius` brought the radius (U2a), `eph_body_orientation` the
+//! orientation (R1c), and the list finally has a reader -- the cubesphere, which
+//! needs to know **where** a body is and **how it is turned**
 //! (ROADMAP-PLANETS.md, R1).
 //!
-//! **Це дані, а не «Земля».** [`Body`] не знає ні назви, ні індексу в
-//! ефемериді: центр, радіус, орієнтація, ідентифікатор набору тайлів. Рушій і
-//! далі не знає про гру — правило 3 етапу R.
+//! **This is data, not "Earth".** [`Body`] knows neither a name nor an index in
+//! an ephemeris: a centre, a radius, an orientation, a tile-set identifier. The
+//! engine still does not know about the game -- rule 3 of stage R.
 //!
-//! ## Чого тут свідомо немає
+//! ## What is deliberately absent
 //!
-//! **Обертового фрейму.** PROJECT.md §7 вимагає його як фрейм за
-//! замовчуванням для карти, і `trajectory_render` уже вміє його рахувати у
-//! вертексному шейдері. Але там перетворення прив'язане до пари Земля-Місяць
-//! і до власної камери одним зсувом; тягнути це в інтерактивний кадр до того,
-//! як з'явиться сервіс фреймів, означало б зафіксувати саме цю пару тіл у
-//! рушії. Поки що ламані приходять у тих світових координатах, у яких їх
-//! хочуть побачити.
+//! **The rotating frame.** PROJECT.md section 7 requires it as the default frame
+//! for the map, and `trajectory_render` already knows how to compute it in the
+//! vertex shader. But there the transform is tied to the Earth-Moon pair and to
+//! its own camera by a single offset; dragging that into the interactive frame
+//! before a frame service exists would fix that particular pair of bodies into
+//! the engine. For now polylines arrive in the world coordinates they are meant
+//! to be seen in.
 
 use crate::camera::Camera;
 
-/// Ламана в світових координатах, метри.
+/// A polyline in world coordinates, metres.
 ///
-/// `Vec<[f64; 3]>` копіюється щокадру, і це навмисно: сотня кілобайт на
-/// копію проти вершинних буферів на ланку, які має сенс заводити тоді, коли
-/// профайлер про них попросить (PROJECT.md §6 називає ланку одиницею
-/// відвантаження саме для цього дня).
+/// `Vec<[f64; 3]>` is copied every frame, and that is deliberate: a hundred
+/// kilobytes per copy against per-leg vertex buffers, which are worth
+/// introducing when the profiler asks for them (PROJECT.md section 6 names the
+/// leg as the unit of upload for exactly that day).
 pub struct Polyline {
     pub points: Vec<[f64; 3]>,
     pub colour: [f32; 4],
 }
 
-/// Тіло в кадрі — **дані**, а не «Земля» (ROADMAP-PLANETS.md, R1c).
+/// A body in the frame -- **data**, not "Earth" (ROADMAP-PLANETS.md, R1c).
 ///
-/// Ані назви, ані індексу в ефемериді тут немає й не буде: рушій не знає про
-/// гру, а планета для нього — це центр, розмір, поворот і набір тайлів.
+/// There is no name and no ephemeris index here and there will be none: the
+/// engine does not know about the game, and a planet to it is a centre, a size,
+/// a rotation and a tile set.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Body {
-    /// Центр у світових координатах, метри. `f64`, бо це саме та величина,
-    /// заради якої весь camera-relative і існує.
+    /// The centre in world coordinates, metres. `f64`, because this is exactly
+    /// the quantity all of camera-relative exists for.
     pub centre: [f64; 3],
-    /// Середній радіус, метри. З ассета (`eph_body_radius`), не з рушія.
+    /// The mean radius, metres. From the asset (`eph_body_radius`), not from
+    /// the engine.
     pub radius_m: f64,
-    /// Поворот із системи тіла в систему світу: `[w, x, y, z]`.
+    /// Rotation from body space into world space: `[w, x, y, z]`.
     ///
-    /// Масивом, а не типом з `core-rs`: рушій про ядро не знає нічого, і
-    /// залежність `engine → core-rs` існує лише заради `live`-фікстури.
-    /// Одиничний кватерніон означає «не обертається», і це те саме, що
-    /// віддає ассет для тіла без моделі.
+    /// An array rather than a type from `core-rs`: the engine knows nothing about
+    /// the core, and the `engine -> core-rs` dependency exists only for the
+    /// `live` fixture. The identity quaternion means "does not rotate", and that
+    /// is what the asset returns for a body without a model.
     pub orientation: [f64; 4],
-    /// Який набір тайлів малювати. Поки що жодного немає, і поле лишається
-    /// **єдиним**, що відрізняє одне тіло від іншого для рендера: DEM
-    /// приїде в R5 і адресуватиметься саме цим.
+    /// Which tile set to draw. There is none yet, and the field remains the
+    /// **only** thing distinguishing one body from another for the renderer: the
+    /// DEM arrives in R5 and will be addressed by exactly this.
     pub tiles: TileSet,
-    /// Колір поверхні (етап T, крок T1).
+    /// Surface colour (stage T, step T1).
     ///
-    /// **Властивість тіла, а не стала рушія** — та сама причина, що в радіуса,
-    /// повітря й гармонік: колір Місяця є властивістю Місяця, і два викликачі
-    /// не мають права намалювати два різні Місяці. До T1 це була
-    /// `frame::COLOUR`, зашита в кадр ще на F5, тобто всі тіла світу мали один
-    /// колір за побудовою.
+    /// **A property of the body rather than an engine constant** -- the same
+    /// reason as for the radius, the air and the harmonics: the Moon's colour is
+    /// a property of the Moon, and two callers have no right to draw two
+    /// different Moons. Before T1 this was `frame::COLOUR`, hard-wired into the
+    /// frame back in F5, so every body in the world had one colour by
+    /// construction.
     ///
-    /// Тимчасово плаский: тайли кольору приходять у T3, і тоді це поле стане
-    /// кольором тіла **без** тайлів (як `TileSet::Smooth` для висот).
+    /// Temporarily flat: colour tiles arrive in T3, and then this field becomes
+    /// the colour of a body **without** tiles (like `TileSet::Smooth` for
+    /// heights).
     pub colour: [f32; 4],
-    /// Повітря навколо тіла, або `None` — його немає (ROADMAP-ATMOSPHERE.md,
-    /// S1).
+    /// The air around the body, or `None` -- there is none
+    /// (ROADMAP-ATMOSPHERE.md, S1).
     ///
-    /// **Властивість тіла, а не налаштування кадру** — те саме рішення, що з
-    /// гармоніками й радіусом (CLAUDE.md): повітря Землі є властивістю Землі,
-    /// і два викликачі не мають права намалювати дві різні Землі. `None` —
-    /// це Місяць, і він зобов'язаний давати той самий кадр, що до етапу S.
+    /// **A property of the body rather than a frame setting** -- the same
+    /// decision as with the harmonics and the radius (CLAUDE.md): Earth's air is
+    /// a property of Earth, and two callers have no right to draw two different
+    /// Earths. `None` is the Moon, and it is obliged to give the same frame as
+    /// before stage S.
     pub air: Option<Atmosphere>,
 }
 
-/// Корабель у кадрі — геометрія, а не апарат (етап V, крок V2).
+/// A ship in the frame -- geometry, not a vessel (stage V, step V2).
 ///
-/// Рушій і тут не знає про гру: ні маси, ні плану, ні палива. Центр,
-/// орієнтація й **габарит** — те, з чого будується кадр, і рівно те, чого
-/// йому бракувало, щоб намалювати щось ближче за планету.
+/// Here too the engine does not know about the game: no mass, no plan, no fuel.
+/// A centre, an orientation and an **extent** are what the frame is built from,
+/// and exactly what it lacked in order to draw anything closer than a planet.
 ///
-/// ## Габарит — поле, а не константа рушія
+/// ## The extent is a field, not an engine constant
 ///
-/// `extent_m` (радіус обмежувальної сфери) читає рівно один споживач —
-/// [`crate::frame::Frame::near_for`]. Ближня площина мусить бути ближчою за
-/// корпус, інакше корабель зникає цілком: до V2 вона виводилася з висоти над
-/// найближчим тілом і на орбіті 400 км ставала 40 км, тобто відсікала все, що
-/// ближче за сорок кілометрів.
+/// `extent_m` (the bounding-sphere radius) is read by exactly one consumer --
+/// [`crate::frame::Frame::near_for`]. The near plane must be closer than the
+/// hull, otherwise the ship disappears entirely: before V2 it was derived from
+/// the altitude above the nearest body and at a 400 km orbit became 40 km, that
+/// is it clipped everything closer than forty kilometres.
 ///
-/// Чому число, а не «взяти з меша»: меш живе в рушії, а межа проходить тут, і
-/// кадр не має права питати геометрію про те, що йому потрібно **до** її
-/// завантаження.
+/// Why a number rather than "take it from the mesh": the mesh lives in the
+/// engine while the boundary runs here, and the frame has no right to ask the
+/// geometry about something it needs **before** loading it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ship {
-    /// Центр у світових координатах, метри.
+    /// The centre in world coordinates, metres.
     pub centre: [f64; 3],
-    /// Поворот із системи корабля в систему світу: `[w, x, y, z]`, як у
-    /// [`Body`]. Корабель дивиться носом уздовж свого `+Z`.
+    /// Rotation from ship space into world space: `[w, x, y, z]`, as in
+    /// [`Body`]. The ship's nose points along its own `+Z`.
     pub orientation: [f64; 4],
-    /// Висота корпусу, метри — та сама, що в [`crate::ship::generate`].
+    /// Hull height, metres -- the same as in [`crate::ship::generate`].
     pub height_m: f64,
-    /// Радіус обмежувальної сфери, метри. Не виводиться з `height_m`, бо
-    /// стабілізатори виступають за корпус, а майбутня справжня модель
-    /// виступатиме за нього як завгодно.
+    /// Bounding-sphere radius, metres. Not derived from `height_m`, because the
+    /// fins stick out past the hull, and a future real model will stick out
+    /// however it likes.
     pub extent_m: f64,
-    /// Базовий колір корпусу, **лінійне світло**.
+    /// The hull's base colour, **linear light**.
     ///
-    /// Для діелектрика це дифузне альбедо, для металу — `F0`, тобто колір
-    /// самого відбиття. Що з двох — вирішує [`Ship::metallic`].
+    /// For a dielectric this is the diffuse albedo, for a metal `F0`, that is the
+    /// colour of the reflection itself. Which of the two is decided by
+    /// [`Ship::metallic`].
     pub colour: [f32; 4],
-    /// Шорсткість, `0…1`; менша — вужчий і яскравіший відблиск.
+    /// Roughness, `0..1`; smaller means a narrower and brighter highlight.
     ///
-    /// ⚠ Художній параметр, не `α`: у BRDF іде `roughness²`
-    /// ([`crate::brdf`]), і та сама угода діє в glTF та Blender. Отже число
-    /// звідти можна класти сюди без перерахунку, і саме заради цього.
+    /// WARNING: an artistic parameter, not `alpha`: the BRDF takes `roughness^2`
+    /// ([`crate::brdf`]), and the same convention holds in glTF and Blender. So a
+    /// number from there can be put here without conversion, and that is exactly
+    /// what it is for.
     pub roughness: f32,
-    /// Метал (`1`) чи діелектрик (`0`); проміжні значення — суміш.
+    /// Metal (`1`) or dielectric (`0`); intermediate values are a mixture.
     ///
-    /// Фізично проміжних не буває: матеріал або має вільні електрони, або ні.
-    /// Поле лишається неперервним, бо таким його дають Blender і glTF, і
-    /// відсікати їхні значення до двох означало б тихо міняти імпортоване.
+    /// Physically there are no intermediates: a material either has free
+    /// electrons or it does not. The field stays continuous because Blender and
+    /// glTF give it that way, and snapping their values to two would silently
+    /// change what was imported.
     pub metallic: f32,
 }
 
-/// Атмосфера тіла за моделлю Hillaire 2020 (PROJECT.md §7).
+/// A body's atmosphere by the Hillaire 2020 model (PROJECT.md section 7).
 ///
-/// Одиниці — **на метр**, не на кілометр: у статті все в кілометрах, і саме
-/// на цьому перетворенні найлегше загубити три порядки. Решта рушія міряє
-/// метрами, тож міряють і ці числа.
+/// The units are **per metre**, not per kilometre: the paper works in
+/// kilometres, and that conversion is the easiest place to lose three orders of
+/// magnitude. The rest of the engine measures in metres, so these numbers do
+/// too.
 ///
-/// Значення для Землі — [`Atmosphere::EARTH`]; для іншої планети це просто
-/// інші числа, і жодного коду вони не міняють.
+/// Earth's values are [`Atmosphere::EARTH`]; for another planet these are simply
+/// different numbers, and they change no code at all.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Atmosphere {
-    /// Радіус верхньої межі атмосфери, метри. Від центра тіла, не від
-    /// поверхні: так само, як `radius_m`.
+    /// The radius of the atmosphere's upper boundary, metres. From the body's
+    /// centre, not from the surface: the same as `radius_m`.
     pub top_m: f64,
-    /// Розсіювання Релея на рівні поверхні, 1/м, по RGB.
+    /// Rayleigh scattering at surface level, 1/m, per RGB.
     pub rayleigh_scattering: [f32; 3],
-    /// Висота шкали Релея, метри.
+    /// Rayleigh scale height, metres.
     pub rayleigh_height_m: f32,
-    /// Розсіювання Мі на рівні поверхні, 1/м. Сіре — Мі майже не залежить
-    /// від довжини хвилі, і саме тому серпанок білий.
+    /// Mie scattering at surface level, 1/m. Grey -- Mie barely depends on
+    /// wavelength, and that is why haze is white.
     pub mie_scattering: f32,
-    /// Поглинання Мі, 1/м. Більше за розсіювання: аерозоль ще й гасить.
+    /// Mie absorption, 1/m. Larger than the scattering: aerosol also
+    /// extinguishes.
     pub mie_absorption: f32,
-    /// Висота шкали Мі, метри.
+    /// Mie scale height, metres.
     pub mie_height_m: f32,
-    /// Асиметрія фазової функції Мі, безрозмірна. Додатна — вперед.
+    /// Asymmetry of the Mie phase function, dimensionless. Positive is
+    /// forward.
     pub mie_g: f32,
-    /// Поглинання озоном на піку, 1/м, по RGB.
+    /// Ozone absorption at the peak, 1/m, per RGB.
     pub ozone_absorption: [f32; 3],
-    /// Центр озонового шару й його півширина, метри. Шар трикутний, як у
-    /// статті: лінійно росте до центра й лінійно спадає.
+    /// The ozone layer's centre and half-width, metres. The layer is triangular
+    /// as in the paper: rising linearly to the centre and falling linearly.
     pub ozone_centre_m: f32,
     pub ozone_width_m: f32,
 }
 
 impl Atmosphere {
-    /// Земля: числа зі статті Hillaire 2020, переведені в метри.
+    /// Earth: the numbers from the Hillaire 2020 paper, converted to metres.
     ///
-    /// Верхня межа 100 км над поверхнею — лінія Кармана й та сама висота, на
-    /// якій `core/atmosphere.c` перестає рахувати опір. Збіг тут не
-    /// випадковий і не обов'язковий: одне число про рендер, друге про
-    /// фізику, і якщо колись розійдуться — це буде рішення, а не помилка.
+    /// The upper boundary at 100 km above the surface is the Karman line and the
+    /// same altitude at which `core/atmosphere.c` stops computing drag. The
+    /// coincidence is neither accidental nor obligatory: one number is about
+    /// rendering, the other about physics, and if they ever diverge it will be a
+    /// decision rather than a bug.
     pub const EARTH: Atmosphere = Atmosphere {
         top_m: 6_371_000.0 + 100_000.0,
-        // 5.802, 13.558, 33.1 · 10⁻⁶ на кілометр у статті.
+        // 5.802, 13.558, 33.1e-6 per kilometre in the paper.
         rayleigh_scattering: [5.802e-6, 13.558e-6, 33.1e-6],
         rayleigh_height_m: 8_000.0,
         mie_scattering: 3.996e-6,
@@ -194,16 +210,15 @@ impl Atmosphere {
         ozone_width_m: 15_000.0,
     };
 
-    /// Скільки повітря підіймається над поверхнею Землі, метри. Лінія
-    /// Кармана.
+    /// How far the air rises above Earth's surface, metres. The Karman line.
     pub const EARTH_THICKNESS_M: f64 = 100_000.0;
 
-    /// Ті самі коефіцієнти, але верхня межа — над **цим** радіусом.
+    /// The same coefficients, but with the upper boundary above **this** radius.
     ///
-    /// Радіус тіла приходить з ассета (`eph_body_radius`), і брати замість
-    /// нього константу означало б мати дві різні Землі: одну у фізиці, другу
-    /// в повітрі. Товщина шару лишається та сама — вона властивість
-    /// атмосфери, а не тіла.
+    /// The body's radius comes from the asset (`eph_body_radius`), and taking a
+    /// constant instead would mean two different Earths: one in physics, another
+    /// in the air. The layer's thickness stays the same -- it is a property of
+    /// the atmosphere, not of the body.
     pub fn with_surface(self, surface_m: f64) -> Atmosphere {
         Atmosphere {
             top_m: surface_m + (self.top_m - 6_371_000.0),
@@ -211,53 +226,56 @@ impl Atmosphere {
         }
     }
 
-    /// Товщина шару повітря, метри: скільки атмосфера підіймається над
-    /// поверхнею тіла радіуса `surface_m`.
+    /// The air layer's thickness, metres: how far the atmosphere rises above the
+    /// surface of a body of radius `surface_m`.
     pub fn thickness_m(&self, surface_m: f64) -> f64 {
         self.top_m - surface_m
     }
 }
 
-/// Набір тайлів поверхні.
+/// A surface tile set.
 ///
-/// Не `Option`, і це чесніше: «поверхні немає» — це теж вибір того, що
-/// малювати (гладка сфера), а не відсутність вибору.
+/// Not an `Option`, and that is more honest: "there is no surface" is also a
+/// choice of what to draw (a smooth sphere) rather than the absence of a
+/// choice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TileSet {
-    /// Гладка сфера без рельєфу.
+    /// A smooth sphere without terrain.
     Smooth,
-    /// Рельєф, уже завантажений у кадр (`Frame::load_terrain`, R5c).
+    /// Terrain already loaded into the frame (`Frame::load_terrain`, R5c).
     ///
-    /// Ідентифікатор, а не шлях до файлу: гра каже, **що** малювати, а не
-    /// звідки це взяти. Рушій і далі не знає про гру, а гра — про формат
-    /// тайлсета.
+    /// An identifier rather than a file path: the game says **what** to draw, not
+    /// where to get it. The engine still does not know about the game, nor the
+    /// game about the tileset format.
     Loaded(TerrainId),
 }
 
-/// Хендл рельєфу, виданий кадром.
+/// A terrain handle issued by the frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TerrainId(pub usize);
 
-/// Кадр очима гри: звідки дивимось і що в ньому є.
+/// The frame as the game sees it: where we look from and what is in it.
 pub struct Scene {
     pub camera: Camera,
     pub polylines: Vec<Polyline>,
-    /// Тіла в кадрі. Порожній список — це порожнє небо, а не «намалюй
-    /// Землю за замовчуванням».
+    /// Bodies in the frame. An empty list is an empty sky, not "draw Earth by
+    /// default".
     pub bodies: Vec<Body>,
-    /// Кораблі в кадрі (етап V). Порожній список — це кадр до V2, байт у байт.
+    /// Ships in the frame (stage V). An empty list is the pre-V2 frame, byte for
+    /// byte.
     pub ships: Vec<Ship>,
-    /// Напрямок **до** світила, світові осі (етап V, крок V5; борг D16).
+    /// The direction **to** the light, world axes (stage V, step V5; debt D16).
     ///
-    /// Полем сцени, а не тіла: світло одне на кадр, і корпус корабля, небо й
-    /// поверхня планети мусять освітлюватись з однієї точки. Тіло, що несло б
-    /// власне сонце, дозволило б їм розійтися.
+    /// A field of the scene rather than of a body: there is one light per frame,
+    /// and the ship's hull, the sky and the planet's surface must be lit from one
+    /// point. A body carrying its own sun would let them diverge.
     ///
-    /// ⚠ **Довжина має значення для тіл і корабля, але не для неба.** Небо
-    /// нормалізує вектор саме, а дифузний член поверхні й корпусу множиться
-    /// на нього як є — спадок тимчасового освітлення, зашитого ще на F5.
-    /// Гра дає одиничний; кадр нормалізуватиме сам, коли на місце
-    /// тимчасового освітлення прийдуть матеріали M5.
+    /// WARNING: **the length matters for bodies and for the ship, but not for the
+    /// sky.** The sky normalises the vector itself, while the diffuse term of the
+    /// surface and the hull multiplies by it as it is -- a legacy of the
+    /// temporary lighting hard-wired back in F5. The game supplies a unit vector;
+    /// the frame will normalise it itself when the M5 materials replace the
+    /// temporary lighting.
     pub sun: [f64; 3],
     /// The multiplier applied before the tonemapper's curve (stage Z, step Z1).
     ///
@@ -280,29 +298,31 @@ pub struct Scene {
 }
 
 impl Scene {
-    /// Порожня сцена: камера й нічого більше.
+    /// An empty scene: a camera and nothing else.
     ///
-    /// Порожня буквально — з R1e кадр малює тіла звідси, тож така сцена дає
-    /// саме порожнє небо. Тіло радіуса Землі, яке кадр підставляв сам,
-    /// переїхало в [`crate::frame::default_scene`] — до зондів рушія, яким
-    /// воно й потрібне.
+    /// Literally empty -- since R1e the frame draws bodies from here, so such a
+    /// scene gives exactly an empty sky. The Earth-radius body the frame used to
+    /// substitute itself moved into [`crate::frame::default_scene`] -- to the
+    /// engine probes, which are the ones that need it.
     pub fn new(camera: Camera) -> Scene {
         Scene {
             camera,
             polylines: Vec::new(),
             bodies: Vec::new(),
             ships: Vec::new(),
-            // Той самий напрямок, що був сталою `frame::LIGHT_DIR` від F5 до
-            // V5 — і рівно тому кадр зондів рушія лишається бітово тим самим.
-            // Хто знає, де його світило, той його й ставить.
+            // The same direction that was the constant `frame::LIGHT_DIR` from
+            // F5 to V5 -- and precisely for that reason the engine probes' frame
+            // stays bitwise the same. Whoever knows where their light is sets
+            // it.
             sun: crate::frame::LIGHT_DIR.map(f64::from),
             exposure: crate::tonemap::DEFAULT_EXPOSURE,
         }
     }
 
-    /// Скільки вершин у всіх ламаних разом.
+    /// How many vertices all the polylines have together.
     ///
-    /// Потрібно тому, хто виділяє буфер під них один раз, а не щокадру.
+    /// Needed by whoever allocates a buffer for them once rather than every
+    /// frame.
     pub fn vertex_count(&self) -> usize {
         self.polylines.iter().map(|p| p.points.len()).sum()
     }
@@ -312,12 +332,13 @@ impl Scene {
 mod atmosphere_tests {
     use super::*;
 
-    /// Одиниці — на метр, і це та помилка, яку найлегше зробити мовчки.
+    /// The units are per metre, and that is the easiest mistake to make
+    /// silently.
     ///
-    /// Оптична товща вертикального променя крізь усю атмосферу — це
-    /// `β·H` з точністю до `exp(−товщина/H)`, тобто для Землі число порядку
-    /// 0.1 у синьому. Якби коефіцієнти лишились «на кілометр», вийшло б 100,
-    /// тобто небо, крізь яке не видно нічого.
+    /// The optical depth of a vertical ray through the whole atmosphere is
+    /// `beta*H` up to `exp(-thickness/H)`, that is a number of order 0.1 in the
+    /// blue for Earth. Had the coefficients stayed "per kilometre", it would come
+    /// out at 100 -- a sky nothing is visible through.
     #[test]
     fn the_vertical_optical_depth_is_the_order_of_a_tenth() {
         let air = Atmosphere::EARTH;
@@ -326,15 +347,16 @@ mod atmosphere_tests {
             let depth = f64::from(*beta) * h;
             assert!(
                 (0.01..1.0).contains(&depth),
-                "канал {channel}: оптична товща {depth}, тобто одиниці не ті"
+                "channel {channel}: optical depth {depth}, so the units are wrong"
             );
         }
     }
 
-    /// Мі гасить сильніше, ніж розсіює, і озон поглинає найбільше в зеленому.
+    /// Mie extinguishes more than it scatters, and ozone absorbs most in the
+    /// green.
     ///
-    /// Не краса, а перевірка того, що числа не переставлені місцями: саме
-    /// таку помилку не видно в кадрі — небо лишається блакитним.
+    /// Not aesthetics but a check that the numbers were not swapped: exactly that
+    /// kind of mistake is invisible in the frame -- the sky stays blue.
     #[test]
     fn the_coefficients_keep_the_order_the_paper_gives_them() {
         let air = Atmosphere::EARTH;
@@ -345,7 +367,8 @@ mod atmosphere_tests {
         assert!(air.ozone_absorption[1] > air.ozone_absorption[2]);
     }
 
-    /// Верхня межа їде за радіусом тіла, товщина шару лишається.
+    /// The upper boundary follows the body's radius, the layer's thickness
+    /// stays.
     #[test]
     fn the_layer_keeps_its_thickness_on_any_radius() {
         let surface = 6_378_137.0;
