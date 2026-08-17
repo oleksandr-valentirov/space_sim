@@ -193,6 +193,70 @@ fn the_binding_follows_the_set_and_never_lags_behind_it() {
     );
 }
 
+/// A deeper pyramid does not enlarge what the frame binds (Y1e).
+///
+/// This is the claim the rest of stage Y stands on, and it is the converse of
+/// the measurement that opened debt D19. T8 varied exactly this -- pyramid
+/// depth from 1 to 6 levels, 6 to 8190 views -- at a camera 1e9 m away, and
+/// the frame time rose linearly with the count at about 51 ns per texture,
+/// even though the body covered a handful of pixels. If that line is now flat,
+/// clouds and night lights can each bring a pyramid without bringing a
+/// millisecond.
+///
+/// Counted rather than timed, deliberately. A frame time proves the claim on
+/// one machine on one afternoon; the number of views bound is what the driver
+/// is actually charging for, and it is the same everywhere.
+///
+/// The camera is far enough that the level criterion stops at the coarsest
+/// level whatever the pyramid holds -- which is the point. A near camera would
+/// legitimately read more tiles from a deeper pyramid, and then the test would
+/// be measuring the criterion instead of the binding.
+#[test]
+fn a_deeper_pyramid_does_not_enlarge_what_is_bound() {
+    let Some(gpu) = gpu() else { return };
+
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../data/lola/ldem_4.img");
+    let grid = Grid::read(&path).expect("the LOLA grid should have read");
+
+    let mut bound = Vec::new();
+    let mut declared = Vec::new();
+    for levels in [2u32, 3, 4] {
+        let terrain = build(&grid, levels);
+        declared.push(Terrain::count(levels));
+
+        let mut frame = Frame::new(&gpu, shot::FORMAT);
+        let id = frame
+            .load_surface(&gpu, &terrain, None)
+            .expect("the terrain should have loaded");
+        let _ = draw(&gpu, &mut frame, &moon(1.0e9, TileSet::Loaded(id)));
+        bound.push(frame.resident_tiles()[0]);
+    }
+
+    assert!(
+        declared[2] > declared[0] * 4,
+        "the pyramids did not actually differ in depth: {declared:?}"
+    );
+    assert_eq!(
+        bound[0], bound[1],
+        "a level of pyramid depth changed what is bound: {bound:?} for {declared:?} declared"
+    );
+    assert_eq!(
+        bound[1], bound[2],
+        "a level of pyramid depth changed what is bound: {bound:?} for {declared:?} declared"
+    );
+
+    // Without this the test would pass on a build that binds everything and
+    // simply declares the same everywhere -- constant is not the claim, small
+    // is. Before Y1b the deepest row bound all 510 views; it now binds the
+    // handful the coarsest level asks for.
+    assert!(
+        bound[2] * 10 < declared[2],
+        "{} views bound out of {} declared -- that is not a resident set",
+        bound[2],
+        declared[2]
+    );
+}
+
 /// A body whose terrain is swapped rebuilds the binding, even standing still.
 ///
 /// The set of tile *indices* is unchanged by such a swap -- the same patches,

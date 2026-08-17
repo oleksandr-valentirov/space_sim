@@ -714,6 +714,29 @@ impl Frame {
         self.planet.rebuilds
     }
 
+    /// How many tile views the last frame bound, per body (Y1e).
+    ///
+    /// This is the number debt D19 charged for, and the whole of stage Y turns
+    /// on it no longer being the pyramid's size. Reading it costs nothing --
+    /// the resident set is kept on the CPU anyway, for the memo.
+    ///
+    /// The empty set counts as one view rather than none, because that is what
+    /// is actually bound: an empty binding array cannot be bound at all.
+    ///
+    /// ⚠ Indexed by **slot**, and slots outlive the scene that made them: the
+    /// vector can be longer than `scene.bodies`, and a body dropped from the
+    /// scene leaves its last set behind. Read it right after a draw.
+    pub fn resident_tiles(&self) -> Vec<usize> {
+        self.planet
+            .bodies
+            .iter()
+            .map(|body| match body.tiles {
+                Some(_) => body.bound_heights.len().max(1) + body.bound_colours.len().max(1),
+                None => 0,
+            })
+            .collect()
+    }
+
     /// Скільки патчів GPU справді намалював для кожного тіла останнього кадру
     /// (ROADMAP-PLANETS.md, R6b).
     ///
