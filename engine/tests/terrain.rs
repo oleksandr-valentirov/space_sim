@@ -1,22 +1,24 @@
-//! Тайл у кадрі крізь bindless (ROADMAP-PLANETS.md, R5c).
+//! A tile in the frame through bindless (ROADMAP-PLANETS.md, R5c).
 //!
-//! Три твердження, і кожне ловить свою помилку.
+//! Three claims, and each catches its own mistake.
 //!
-//! 1. **Висота доходить до вершини.** Кадр із рельєфом і кадр без нього
-//!    різні — інакше тайл прочитаний, завантажений і проігнорований.
-//! 2. **Індексація масиву працює.** Масив з одного елемента не доводить
-//!    нічого: перевіряється, що **різні тайли дають різні пікселі** —
-//!    поворотом камери навколо осі світла, який гладку сферу лишає тією
-//!    самою, а рельєф ні.
-//! 3. **Рельєф видно тінями.** Знімок на термінаторі: там, де сонце падає
-//!    навскіс, схил або освітлений, або ні. Міряється різкість перепадів
-//!    яскравості (повна варіація), а не кількість відтінків: на термінаторі
-//!    більшість рельєфу йде в тінь, тож відтінків там стає **менше**, а
-//!    перепадів між ними — набагато більше.
+//! 1. **The height reaches the vertex.** A frame with terrain and a frame
+//!    without it differ -- otherwise the tile was read, uploaded and ignored.
+//! 2. **Array indexing works.** An array of one element proves nothing: what
+//!    is checked is that **different tiles give different pixels** -- by
+//!    rotating the camera about the light axis, which leaves a smooth sphere
+//!    the same and terrain not.
+//! 3. **The terrain shows as shadow.** A shot on the terminator: where the sun
+//!    grazes the surface, a slope is either lit or it is not. What is measured
+//!    is the sharpness of the brightness steps (total variation), not the
+//!    number of shades: on the terminator most of the terrain goes into
+//!    shadow, so there are **fewer** shades there and far more steps between
+//!    them.
 //!
-//! Пристрій без bindless пропускає ці тести з поясненням. Це не мовчазний
-//! пропуск: bindless мають усі три цілі проєкту (PROJECT.md §7), тож
-//! відсутність його означає бекенд, який і так не ціль.
+//! A device without bindless skips these tests with an explanation. This is
+//! not a silent skip: all three targets of the project have bindless
+//! (PROJECT.md section 7), so its absence means a backend that is not a target
+//! anyway.
 
 use dem_cook::cook::build;
 use dem_cook::Grid;
@@ -37,7 +39,7 @@ const LEVELS: u32 = 4;
 fn gpu() -> Option<Gpu> {
     let gpu = Gpu::for_tests()?;
     if !gpu.bindless {
-        eprintln!("ПРОПУЩЕНО: адаптер без bindless ({})", gpu.describe());
+        eprintln!("SKIPPED: adapter without bindless ({})", gpu.describe());
         return None;
     }
     Some(gpu)
@@ -45,22 +47,23 @@ fn gpu() -> Option<Gpu> {
 
 fn terrain() -> Terrain {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../data/lola/ldem_4.img");
-    let grid = Grid::read(&path).expect("сітка LOLA мала прочитатися");
+    let grid = Grid::read(&path).expect("the LOLA grid should have been read");
     build(&grid, LEVELS)
 }
 
-/// Місяць у кадрі: камера на висоті `altitude` над напрямком `direction`.
+/// The Moon in frame: the camera at altitude `altitude` above direction
+/// `direction`.
 fn moon(direction: [f64; 3], altitude: f64, tiles: TileSet) -> Scene {
     let length = (direction.iter().map(|v| v * v).sum::<f64>()).sqrt();
     let unit = direction.map(|v| v / length);
     let distance = MOON_RADIUS_M + altitude;
     let eye = unit.map(|v| v * distance);
 
-    // Вертикаль кадру — **вісь світла**, а не світова z. Це і є те, що робить
-    // поворот навколо світла симетрією кадру: разом із оком повертається вся
-    // конфігурація, тож гладка сфера мусить дати ту саму картинку. З
-    // нерухомою z вона її не давала — і перша версія цього тесту нічого не
-    // ловила саме тому.
+    // The frame's vertical is the **light axis**, not the world z. That is
+    // what makes a rotation about the light a symmetry of the frame: the whole
+    // configuration turns along with the eye, so a smooth sphere has to give
+    // the same picture. With a fixed z it did not -- and that is exactly why
+    // the first version of this test caught nothing.
     let mut scene = Scene::new(Camera::look_at(eye, [0.0, 0.0, 0.0], light()));
     scene.bodies.push(Body {
         centre: [0.0, 0.0, 0.0],
@@ -73,29 +76,29 @@ fn moon(direction: [f64; 3], altitude: f64, tiles: TileSet) -> Scene {
     scene
 }
 
-/// Напрямок на точку з широтою й довготою в градусах.
+/// The direction to a point at a latitude and longitude in degrees.
 fn towards(lat: f64, lon: f64) -> [f64; 3] {
     let (a, b) = (lat.to_radians(), lon.to_radians());
     [a.cos() * b.cos(), a.cos() * b.sin(), a.sin()]
 }
 
-/// Одиничний напрямок на джерело світла — той самий, що в кадрі.
+/// The unit direction to the light source -- the same one as in the frame.
 fn light() -> [f64; 3] {
     let l = frame::LIGHT_DIR.map(f64::from);
     let n = l.iter().map(|v| v * v).sum::<f64>().sqrt();
     l.map(|v| v / n)
 }
 
-/// Напрямок під кутом `tilt` до світла, повернутий навколо нього на `turn`.
+/// A direction at angle `tilt` to the light, rotated about it by `turn`.
 ///
-/// Ключова властивість: **поворот навколо осі світла лишає освітлення
-/// незмінним**. Гладка сфера при цьому дає бітово ту саму картинку —
-/// конфігурація «світло, око, вертикаль» переходить сама в себе. А рельєф не
-/// переходить, бо він не симетричний. Саме на цьому й стоїть перевірка
-/// індексації масиву.
+/// The key property: **a rotation about the light axis leaves the
+/// illumination unchanged**. A smooth sphere then gives the bitwise same
+/// picture -- the configuration "light, eye, vertical" maps onto itself.
+/// Terrain does not, because it is not symmetric. That is exactly what the
+/// array-indexing check rests on.
 fn around_light(tilt: f64, turn: f64) -> [f64; 3] {
     let l = light();
-    // Будь-який вектор, не паралельний до `l`, дає перший орт.
+    // Any vector not parallel to `l` gives the first basis vector.
     let seed = if l[2].abs() < 0.9 {
         [0.0, 0.0, 1.0]
     } else {
@@ -120,13 +123,14 @@ fn around_light(tilt: f64, turn: f64) -> [f64; 3] {
     [0, 1, 2].map(|k| c * l[k] + s * (ct * e1[k] + st * e2[k]))
 }
 
-/// Рельєф з самих нулів: поверхня — точнісінько сфера радіуса `reference_m`.
+/// Terrain made of pure zeroes: the surface is exactly a sphere of radius
+/// `reference_m`.
 fn flat_terrain() -> Terrain {
     let grids = vec![vec![0i16; STORED * STORED]; Terrain::count(LEVELS)];
     Terrain::build(LEVELS, MOON_RADIUS_M, 1.0, tiles::NO_SEA, &grids)
 }
 
-/// Скільки пікселів різні між двома знімками.
+/// How many pixels differ between two shots.
 fn different(a: &Shot, b: &Shot) -> usize {
     let mut count = 0;
     for y in 0..a.height {
@@ -139,12 +143,13 @@ fn different(a: &Shot, b: &Shot) -> usize {
     count
 }
 
-/// Знімок сцени з рельєфом і без нього, з тієї самої камери.
+/// A shot of the scene with terrain and without it, from the same camera.
 fn pair(gpu: &Gpu, direction: [f64; 3], altitude: f64) -> (Shot, Shot) {
     pair_of(gpu, &terrain(), direction, altitude)
 }
 
-/// Те саме, але з наперед заданим рельєфом — щоб можна було подати **плаский**.
+/// The same, but with terrain given up front -- so that a **flat** one can be
+/// passed in.
 fn pair_of(gpu: &Gpu, relief: &Terrain, direction: [f64; 3], altitude: f64) -> (Shot, Shot) {
     let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("terrain shot"),
@@ -162,12 +167,12 @@ fn pair_of(gpu: &Gpu, relief: &Terrain, direction: [f64; 3], altitude: f64) -> (
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-    // Один `Frame` на обидва знімки: рельєф завантажується в нього, і саме
-    // тому смуга «завантажили — не намалювали» тут неможлива.
+    // One `Frame` for both shots: the terrain is loaded into it, and that is
+    // exactly why a "loaded but not drawn" gap is impossible here.
     let mut frame = Frame::new(gpu, shot::FORMAT);
     let id = frame
         .load_terrain(gpu, relief)
-        .expect("рельєф мав завантажитись");
+        .expect("the terrain should have loaded");
 
     let mut take = |tiles: TileSet| {
         let scene = moon(direction, altitude, tiles);
@@ -177,7 +182,7 @@ fn pair_of(gpu: &Gpu, relief: &Terrain, direction: [f64; 3], altitude: f64) -> (
                 label: Some("shot"),
             });
         frame.draw(gpu, &mut encoder, &view, SIZE, SIZE, &scene);
-        shot::read_back(gpu, encoder, &texture, SIZE, SIZE).expect("кадр мав намалюватися")
+        shot::read_back(gpu, encoder, &texture, SIZE, SIZE).expect("the frame should have drawn")
     };
 
     let with = take(TileSet::Loaded(id));
@@ -185,36 +190,39 @@ fn pair_of(gpu: &Gpu, relief: &Terrain, direction: [f64; 3], altitude: f64) -> (
     (with, without)
 }
 
-/// Висота доходить до вершини: кадр із рельєфом не такий, як без нього.
+/// The height reaches the vertex: a frame with terrain is not the same as one
+/// without.
 #[test]
 fn the_terrain_changes_the_frame() {
     let Some(gpu) = gpu() else { return };
-    // Освітлений бік, і це не дрібниця: на нічному боці освітлення стале
-    // (`shade = 0.05`), тож рельєф там не видно ні з тайлом, ні без нього.
-    // Перша версія цього тесту стояла над басейном Ейткен — і той лежить
-    // рівно навпроти світла.
+    // The lit side, and that is no detail: on the night side the illumination
+    // is constant (`shade = 0.05`), so terrain is invisible there with a tile
+    // and without one. The first version of this test stood over the Aitken
+    // basin -- and that lies exactly opposite the light.
     let (with, without) = pair(&gpu, around_light(35.0, 0.0), 5.0e4);
 
     let moved = different(&with, &without);
     let all = (SIZE * SIZE) as usize;
-    println!("  освітлений бік з 50 км: різних пікселів {moved} з {all}");
+    println!("  lit side from 50 km: {moved} differing pixels out of {all}");
     assert!(
         moved > all / 20,
-        "рельєф змінив лише {moved} пікселів з {all} — тайл або не доїхав до \
-         вершинного шейдера, або доїхав нулями"
+        "the terrain changed only {moved} pixels out of {all} -- the tile \
+         either never reached the vertex shader or reached it as zeroes"
     );
 }
 
-/// Різні тайли дають різні пікселі — інакше індексація масиву нічого не варта.
+/// Different tiles give different pixels -- otherwise array indexing is worth
+/// nothing.
 ///
-/// Оракул — **симетрія, яку ламає лише рельєф**. Поворот камери навколо осі
-/// світла лишає освітлення незмінним, тож гладка сфера з двох таких положень
-/// дає ту саму картинку: симетрична поверхня, симетричне світло. Рельєф
-/// симетрії не має, і його картинки розходяться.
+/// The oracle is **a symmetry that only terrain breaks**. Rotating the camera
+/// about the light axis leaves the illumination unchanged, so a smooth sphere
+/// gives the same picture from two such positions: symmetric surface,
+/// symmetric light. Terrain has no such symmetry, and its pictures diverge.
 ///
-/// Реалізація, у якій усі патчі читають один тайл, теж симетрична — вона дала
-/// б однакові кадри так само, як гладка сфера. Тому твердження тут не «щось
-/// змінилося», а «змінилося саме там, де симетрію ламає рельєф».
+/// An implementation in which every patch reads one tile is symmetric too --
+/// it would give identical frames just as a smooth sphere does. So the claim
+/// here is not "something changed" but "it changed exactly where terrain
+/// breaks the symmetry".
 #[test]
 fn different_tiles_give_different_pixels() {
     let Some(gpu) = gpu() else { return };
@@ -228,48 +236,53 @@ fn different_tiles_give_different_pixels() {
     let all = (SIZE * SIZE) as usize;
 
     println!(
-        "  поворот на 120° навколо світла: гладка сфера {smooth_moved} \
-         різних пікселів, рельєф {terrain_moved} з {all}"
+        "  120 deg turn about the light: smooth sphere {smooth_moved} \
+         differing pixels, terrain {terrain_moved} out of {all}"
     );
 
-    // Гладка сфера мусить лишитися майже тією самою. Не бітово: базис камери
-    // рахується через векторні добутки, і поворот дає інші останні біти.
-    // Виміряно — 808 пікселів з 65536, тобто 1.2%; поріг у 2% це і закріплює.
+    // The smooth sphere has to stay nearly the same. Not bitwise: the camera
+    // basis is computed through cross products, and a rotation gives different
+    // last bits. Measured -- 808 pixels out of 65536, i.e. 1.2%; the 2%
+    // threshold is what pins that down.
     assert!(
         smooth_moved < all / 50,
-        "гладка сфера при повороті навколо світла змінилася на {smooth_moved} \
-         пікселів — тоді симетрія, на якій стоїть цей тест, не тримається"
+        "the smooth sphere changed by {smooth_moved} pixels under a rotation \
+         about the light -- then the symmetry this test rests on does not hold"
     );
     assert!(
         terrain_moved > all / 10,
-        "рельєф при повороті навколо світла змінився лише на {terrain_moved} \
-         пікселів з {all} — усі патчі читають той самий тайл"
+        "the terrain changed by only {terrain_moved} pixels out of {all} under \
+         a rotation about the light -- every patch reads the same tile"
     );
 }
 
-/// Рельєф видно тінями: на термінаторі схили розсипають освітлення.
+/// The terrain shows as shadow: on the terminator the slopes scatter the
+/// illumination.
 ///
-/// Міряється **кількістю різних відтінків**. У гладкої сфери освітлення —
-/// гладка функція нормалі, тобто небагато плавних градацій; у рельєфу кожна
-/// фасетка має свій нахил, і кількість відтінків стрибає. Це те саме
-/// твердження, що «видно тінями», але числом, а не оком.
+/// Measured by **the number of distinct shades**. On a smooth sphere the
+/// illumination is a smooth function of the normal, i.e. a few gentle
+/// gradations; on terrain every facet has its own slope, and the shade count
+/// jumps. This is the same claim as "shows as shadow", but as a number rather
+/// than by eye.
 #[test]
 fn on_the_terminator_the_relief_shows_as_shade() {
     let Some(gpu) = gpu() else { return };
 
-    // Термінатор — це напрямок під 90° до світла: там сонце падає рівно
-    // вздовж поверхні, і найменший нахил вирішує, освітлений схил чи ні.
+    // The terminator is the direction at 90 deg to the light: there the sun
+    // falls exactly along the surface, and the slightest slope decides whether
+    // a hillside is lit or not.
     let (with, without) = pair(&gpu, around_light(70.0, 0.0), 1.2e6);
 
-    // Міряється **різкість**, а не кількість відтінків. Гладка сфера має
-    // плавний градієнт: сусідні пікселі різняться на одиницю-дві. У рельєфу
-    // кожна фасетка має свій нахил, і на її межі яскравість стрибає. Кількість
-    // відтінків тут не годиться взагалі — на термінаторі більшість рельєфу
-    // йде в тінь і зливається в один рівень, тобто відтінків стає МЕНШЕ.
+    // What is measured is **sharpness**, not the number of shades. A smooth
+    // sphere has a gentle gradient: neighbouring pixels differ by one or two.
+    // On terrain every facet has its own slope, and brightness jumps at its
+    // edge. A shade count is no good here at all -- on the terminator most of
+    // the terrain goes into shadow and merges into one level, i.e. there are
+    // FEWER shades.
     let sharp = |shot: &Shot| {
         let mut count = 0usize;
-        // Повна варіація яскравості по рядках: сума модулів перепадів між
-        // сусідніми пікселями.
+        // Total variation of brightness along the rows: the sum of the
+        // absolute steps between neighbouring pixels.
         for y in 0..shot.height {
             for x in 1..shot.width {
                 let (a, b) = (shot.pixel(x - 1, y), shot.pixel(x, y));
@@ -287,59 +300,67 @@ fn on_the_terminator_the_relief_shows_as_shade() {
     let rough = sharp(&with);
     let smooth = sharp(&without);
     println!(
-        "  повна варіація яскравості на термінаторі: рельєф {rough}, \
-         гладка сфера {smooth}"
+        "  total brightness variation on the terminator: terrain {rough}, \
+         smooth sphere {smooth}"
     );
 
-    // Знімки лягають на диск: коли це колись почервоніє, дивитися буде на що.
+    // The shots go to disk: when this eventually turns red, there will be
+    // something to look at.
     let out = Path::new("build/r5c");
     let _ = with.write_png(&out.join("terminator_terrain.png"));
     let _ = without.write_png(&out.join("terminator_smooth.png"));
 
-    // ⚠ Поріг **1.7, а не 3**, і це не послаблення тесту, а виправлення того,
-    // що він міряв (T7f). До виправлення нормалі число було 39179 проти 4745,
-    // тобто ×8.25, і майже все воно бралося не з рельєфу: нормаль фрагмента
-    // була фасеткою трикутника **разом із кривиною сфери**, тож Місяць
-    // виходив гранчастим м'ячем, і саме грані давали ту варіацію. З чистою
-    // нормаллю лишається 9100 проти 4745 — це вже нахил рельєфу й тільки він.
+    // WARNING: the threshold is **1.7, not 3**, and that is not a weakening of
+    // the test but a correction of what it measured (T7f). Before the normal
+    // was fixed the number was 39179 against 4745, i.e. x8.25, and almost all
+    // of it came from something other than the terrain: the fragment normal
+    // was the triangle facet **together with the sphere's curvature**, so the
+    // Moon came out a faceted ball, and it was the facets that gave that
+    // variation. With a clean normal 9100 against 4745 is left -- that is the
+    // terrain's slope and nothing else.
     //
-    // Що поріг більше не стереже фасетковий артефакт, стереже натомість
-    // `a_flat_tileset_shades_like_a_smooth_sphere`: на нульових висотах
-    // різниця мусить бути тотожно нульова, а гранчастий м'яч дає її одразу.
+    // What now guards the faceting artefact instead of this threshold is
+    // `a_flat_tileset_shades_like_a_smooth_sphere`: at zero heights the
+    // difference has to be identically zero, and a faceted ball gives it away
+    // immediately.
     assert!(
         rough * 10 > smooth * 17,
-        "рельєф дав варіацію {rough} проти {smooth} у гладкої — тіней від \
-         нахилу не видно"
+        "the terrain gave variation {rough} against {smooth} for the smooth \
+         one -- no shadows from slope are visible"
     );
 }
 
-/// Нульові висоти малюються так само, як гладка сфера, — байт у байт.
+/// Zero heights are drawn exactly as a smooth sphere is -- byte for byte.
 ///
-/// Оракул на **нормаль**, і поставлений він за помилкою, яку сам і зловив би
-/// (T7f). Нормаль фрагмента бралася з похідних світової позиції по екрану,
-/// тобто була нормаллю **трикутника**. У неї потрапляв не лише нахил рельєфу,
-/// а й злам самої теселяції сфери, — і здалеку, коли клітинка сітки більша за
-/// рельєф під нею, у кадрі лишався саме він: Земля з 10⁶ м виходила плитками
-/// по 135 пікселів зі стрибком яскравості 3%, а Місяць — гранчастим м'ячем.
+/// An oracle on the **normal**, and it was put in for a mistake it would have
+/// caught itself (T7f). The fragment normal was taken from the screen-space
+/// derivatives of the world position, i.e. it was the **triangle's** normal.
+/// Into it went not only the terrain's slope but also the break of the
+/// sphere's own tessellation -- and from afar, when a grid cell is larger than
+/// the terrain under it, it was that break that stayed in the frame: the Earth
+/// from 1e6 m came out as 135-pixel tiles with a 3% brightness jump, and the
+/// Moon as a faceted ball.
 ///
-/// Тут це видно найпростіше: якщо висоти всюди нулі, то поверхня **і є**
-/// сфера, і два пайплайни зобов'язані намалювати той самий кадр. Різниця в
-/// ньому — це рівно те, що нормаль вигадала від себе.
+/// Here this is easiest to see: if the heights are zero everywhere, then the
+/// surface **is** the sphere, and the two pipelines are obliged to draw the
+/// same frame. Any difference in it is exactly what the normal invented on its
+/// own.
 ///
-/// ⚠ Головний допуск тут — **на глибину розбіжності, а не на кількість**:
-/// жоден піксель не має права відрізнятися більш ніж на один байт у каналі.
-/// Гранчастий м'яч давав 3% (сім байтів), тобто провалював саме цю умову, а не
-/// лічильник. Один байт при цьому законний, і причина точна: `lift` виходить
-/// точним нулем, тож геометрія в обох гілках бітово одна, але рельєфна
-/// нормалізує вектор двічі (`normalize(sphere + 0)`, а потім ще раз у `shade`),
-/// а гладка — один. Подвійна нормалізація в `f32` не тотожна, і один ULP на
-/// схилі яскравості виходить одним байтом.
+/// WARNING: the main tolerance here is **on the depth of the divergence, not
+/// on its count**: no pixel may differ by more than one byte in a channel. The
+/// faceted ball gave 3% (seven bytes), i.e. it failed precisely this condition
+/// rather than the counter. One byte is legitimate, and the reason is exact:
+/// `lift` comes out an exact zero, so the geometry is bitwise identical in
+/// both branches, but the terrain one normalises the vector twice
+/// (`normalize(sphere + 0)`, and then once more in `shade`) while the smooth
+/// one does it once. Double normalisation in `f32` is not an identity, and one
+/// ULP on a brightness slope comes out as one byte.
 #[test]
 fn a_flat_tileset_shades_like_a_smooth_sphere() {
     let Some(gpu) = gpu() else { return };
 
-    // Той самий ракурс, що й у тесту про термінатор: там кривина сфери в
-    // кадрі найбільша, тобто фасетковий артефакт найпомітніший.
+    // The same angle as in the terminator test: there the sphere's curvature
+    // in frame is greatest, i.e. the faceting artefact is most visible.
     let (flat, sphere) = pair_of(&gpu, &flat_terrain(), around_light(70.0, 0.0), 1.2e6);
 
     let mut count = 0usize;
@@ -356,7 +377,7 @@ fn a_flat_tileset_shades_like_a_smooth_sphere() {
         }
     }
     println!(
-        "  різних пікселів: {count} з {}, найглибша розбіжність {worst} байта",
+        "  differing pixels: {count} out of {}, deepest divergence {worst} bytes",
         SIZE * SIZE
     );
 
@@ -366,64 +387,71 @@ fn a_flat_tileset_shades_like_a_smooth_sphere() {
 
     assert!(
         worst <= 1,
-        "нульовий рельєф розійшовся з сферою на {worst} байта: нормаль знає \
-         про теселяцію"
+        "zero terrain diverged from the sphere by {worst} bytes: the normal \
+         knows about the tessellation"
     );
     assert!(
         count * 100 < (SIZE * SIZE) as usize,
-        "розійшлося {count} пікселів — це вже не округлення"
+        "{count} pixels diverged -- that is no longer rounding"
     );
 }
 
 // ---------------------------------------------------------------------------
-// Підпрямокутник чужого тайла (R7a, GPU-половина)
+// A subrectangle of someone else's tile (R7a, the GPU half)
 
-/// Скільки рівнів має піраміда, якої патчам **не вистачає**.
+/// How many levels a pyramid has that the patches find **insufficient**.
 const SHALLOW: u32 = 2;
-/// Скільки рівнів має піраміда, у якій кожен патч має **власний** тайл.
+/// How many levels a pyramid has in which every patch has its **own** tile.
 const DEEP: u32 = 4;
-/// Метрів в одиниці зберігання. Один метр: тоді одиниці зберігання й метри —
-/// те саме число, і звірка на цілість нижче читається без переведення.
+/// Metres per storage unit. One metre: then storage units and metres are the
+/// same number, and the integrality check below reads without conversion.
 const UNIT_M: f32 = 1.0;
-/// Сторона кадру цієї перевірки — більша за спільну [`SIZE`], і навмисно.
+/// The frame side of this check -- larger than the shared [`SIZE`], and
+/// deliberately so.
 ///
-/// Рівень вибирається за екранною похибкою, тож глибину набору купує або
-/// низька висота, або високий кадр. Низька коштувала б камерою всередині
-/// рельєфу (перепад ±1 км), високий кадр не коштує нічого, крім зчитування.
-/// Тисяча двадцять чотири піксели дають рівень 3 із двадцяти кілометрів —
-/// тобто **дві** сходинки нижче за піраміду, а не одну: модуль у зсуві вікна
-/// перевіряється там, де він уже не зводиться до `i % 2`.
+/// The level is chosen by screen-space error, so the depth of the set is
+/// bought either by a low altitude or by a tall frame. A low one would cost a
+/// camera inside the terrain (a range of +-1 km), a tall frame costs nothing
+/// but the read-back. A thousand and twenty-four pixels give level 3 from
+/// twenty kilometres -- i.e. **two** steps below the pyramid rather than one:
+/// the modulo in the window offset is checked where it no longer reduces to
+/// `i % 2`.
 const SUBRECT_SIZE: u32 = 1024;
 
-/// Висота вузла — **крутий пандус** у частках грані: `4096·(x + y)` одиниць.
+/// The node height is a **steep ramp** in fractions of a face:
+/// `4096*(x + y)` units.
 ///
-/// Три вимоги стикаються тут, і пандус — єдина форма, що вдовольняє всі три.
+/// Three requirements collide here, and the ramp is the only shape satisfying
+/// all three.
 ///
-/// 1. **Білінійна вибірка мусить відтворювати поле точно**, інакше глибокий
-///    тайл зберігав би округлення й бітова рівність зламалась би не з тієї
-///    причини, яку тест шукає. Лінійна функція відтворюється точно.
-/// 2. **Нахил мусить бути однаковий за будь-якої бази різниці.** Відколи
-///    рельєф входить у вибір рівня (R7c), дві піраміди різної глибини дають
-///    різні набори патчів — і тоді порівнювати кадри нема сенсу. У лінійного
-///    поля градієнт від бази не залежить узагалі, а всі множники тут —
-///    степені двійки, тож рівність виходить бітова, а не «майже».
-/// 3. **Освітлення мусить бачити рельєф.** Перша версія цього пандуса давала
-///    512 м на чверть кола, нахил 2·10⁻⁴, і не змінювала **жодного** пікселя
-///    проти гладкої сфери. Тут перепад 8192 м, нахил 2.1·10⁻³ — на порядок з
-///    гаком більше, і кадр міняється помітно.
+/// 1. **Bilinear sampling must reproduce the field exactly**, otherwise the
+///    deep tile would store rounding and the bitwise equality would break for
+///    a reason other than the one the test looks for. A linear function is
+///    reproduced exactly.
+/// 2. **The slope must be the same over any difference base.** Ever since
+///    terrain entered the level choice (R7c), two pyramids of different depth
+///    give different sets of patches -- and then comparing frames makes no
+///    sense. For a linear field the gradient does not depend on the base at
+///    all, and every multiplier here is a power of two, so the equality comes
+///    out bitwise rather than "almost".
+/// 3. **The lighting must see the terrain.** The first version of this ramp
+///    gave 512 m per quarter circle, a slope of 2e-4, and changed **not one**
+///    pixel against a smooth sphere. Here the range is 8192 m and the slope
+///    2.1e-3 -- more than an order larger, and the frame changes visibly.
 ///
-/// Множник `128 >> level` тримає значення цілими на кожному рівні до сьомого
-/// і в межах `i16` (стеля 8192).
+/// The multiplier `128 >> level` keeps the values integral at every level up
+/// to the seventh and within `i16` (ceiling 8192).
 fn ramp_units(level: u32, u: i64, v: i64) -> i16 {
     ((u + v) * i64::from(128u32 >> level)) as i16
 }
 
-/// Мілка піраміда: власні дані на обох рівнях, глибше — нічого.
+/// The shallow pyramid: its own data on both levels, nothing deeper.
 ///
-/// Ореол тут — продовження того самого пандуса, а не отрута: відколи нахил
-/// входить у вибір рівня, крайні вузли патча читають ореол **через
-/// `slope_at`**, і `i16::MIN` за краєм дав би нескінченний нахил і поділ до
-/// стелі. Це і є той «голосний злам», заради якого отрута лежала.
+/// The halo here is a continuation of the same ramp rather than poison: ever
+/// since slope entered the level choice, the edge nodes of a patch read the
+/// halo **through `slope_at`**, and `i16::MIN` beyond the edge would give an
+/// infinite slope and a division up to the ceiling. That is the "loud break"
+/// the poison used to be there for.
 fn shallow_relief() -> Terrain {
     let mut grids = Vec::with_capacity(Terrain::count(SHALLOW));
     for level in 0..SHALLOW {
@@ -447,13 +475,13 @@ fn shallow_relief() -> Terrain {
     Terrain::build(SHALLOW, MOON_RADIUS_M, UNIT_M, tiles::NO_SEA, &grids)
 }
 
-/// Глибока піраміда **того самого поля**: кожен її тайл — це те, що
-/// [`Terrain::height_m`] читає з мілкої для того самого патча.
+/// A deep pyramid of **the same field**: each of its tiles is what
+/// [`Terrain::height_m`] reads out of the shallow one for the same patch.
 ///
-/// Тобто питання, яке ставить тест, звучить так: чи прочитає GPU з мілкої
-/// піраміди те саме, що CPU вже поклав у глибоку. Рівні 0 і 1 виходять
-/// дослівною копією (там `height_m` бере вузол точно), рівні 2 і 3 —
-/// білінійним підпрямокутником предка.
+/// So the question the test asks is this: will the GPU read out of the shallow
+/// pyramid the same thing the CPU already put into the deep one. Levels 0 and
+/// 1 come out a literal copy (there `height_m` takes the node exactly), levels
+/// 2 and 3 a bilinear subrectangle of the ancestor.
 fn deep_relief(shallow: &Terrain) -> Terrain {
     let mut grids = Vec::with_capacity(Terrain::count(DEEP));
     for level in 0..DEEP {
@@ -462,9 +490,10 @@ fn deep_relief(shallow: &Terrain) -> Terrain {
             for i in 0..side {
                 for j in 0..side {
                     let patch = Patch { face, level, i, j };
-                    // Ореол — з того самого пандуса аналітично: `height_m`
-                    // за край сітки не виходить свідомо, а `slope_at` там
-                    // читає, і без нього нахил на краю патча збожеволів би.
+                    // The halo comes from the same ramp analytically:
+                    // `height_m` deliberately never goes beyond the edge of
+                    // the grid, but `slope_at` reads there, and without it the
+                    // slope at the patch edge would go mad.
                     let mut grid = vec![0i16; STORED * STORED];
                     for a in 0..STORED {
                         for b in 0..STORED {
@@ -476,15 +505,17 @@ fn deep_relief(shallow: &Terrain) -> Terrain {
                     for a in 0..NODES {
                         for b in 0..NODES {
                             let value = shallow.height_m(&patch, a, b) / f64::from(UNIT_M);
-                            // Сторож на самій конструкцію фікстури: якщо крок
-                            // висоти колись перестане ділитися на ваги, тайл
-                            // почне округлятись і бітова рівність нижче
-                            // зламається з зовсім іншої причини.
+                            // A guard on the construction of the fixture
+                            // itself: if the height step ever stops dividing
+                            // into the weights, the tile will start rounding
+                            // and the bitwise equality below will break for an
+                            // entirely different reason.
                             assert_eq!(
                                 value,
                                 value.round(),
-                                "{patch:?} вузол ({a}, {b}): {value} не ціле — \
-                                 множник пандуса не покриває ваг вибірки"
+                                "{patch:?} node ({a}, {b}): {value} is not an \
+                                 integer -- the ramp multiplier does not cover \
+                                 the sampling weights"
                             );
                             grid[(a + HALO) * STORED + b + HALO] = value as i16;
                         }
@@ -497,45 +528,48 @@ fn deep_relief(shallow: &Terrain) -> Terrain {
     Terrain::build(DEEP, MOON_RADIUS_M, UNIT_M, tiles::NO_SEA, &grids)
 }
 
-/// **Патч, глибший за піраміду, малює ту саму поверхню, що й патч із власним
-/// тайлом** (R7a).
+/// **A patch deeper than the pyramid draws the same surface as a patch with a
+/// tile of its own** (R7a).
 ///
-/// Це та половина оракула R7a, якої на момент кроку написати не вдалось: LOD
-/// не спускався глибше за нульовий рівень, тож патчів, глибших за піраміду, у
-/// кадрі не виникало взагалі. Борг D13 це закрив, і перевірка стала можлива.
+/// This is the half of the R7a oracle that could not be written at the time of
+/// the step: LOD did not descend below level zero, so patches deeper than the
+/// pyramid never arose in the frame at all. Debt D13 closed that, and the
+/// check became possible.
 ///
-/// **Твердження — бітова рівність двох кадрів,** знятих із однієї камери на
-/// двох пірамідах **одного поля висот**: мілкій, де патч читає підпрямокутник
-/// предка, і глибокій, де той самий патч має власний тайл, заповнений тим, що
-/// `Terrain::height_m` прочитала з мілкої. Тобто GPU звіряється не з другою
-/// копією формули, а з тією самою CPU-функцією, двійником якої оголошено
-/// шейдер. Округлення на цьому шляху немає взагалі
-/// ([`STEP_UNITS`]), тож і допуску не треба.
+/// **The claim is the bitwise equality of two frames** taken from one camera
+/// over two pyramids of **one height field**: the shallow one, where the patch
+/// reads a subrectangle of its ancestor, and the deep one, where the same
+/// patch has its own tile filled with what `Terrain::height_m` read out of the
+/// shallow one. So the GPU is checked not against a second copy of the formula
+/// but against the very CPU function the shader is declared to be a twin of.
+/// There is no rounding along that path at all ([`UNIT_M`] is one metre, and
+/// the fixture asserts integrality node by node), so no tolerance is needed.
 ///
-/// Помилка, яку це ловить, — рівно та, заради якої крок робився: патч, що
-/// читає тайл предка **своїми** локальними координатами, розтягнув би весь
-/// тайл предка на себе, тобто повторив би рельєф у кожному патчі й розірвав
-/// його на кожній межі. Жодного допуску тут не треба — така помилка міняє
-/// кадр цілком.
+/// The mistake this catches is exactly the one the step was made for: a patch
+/// reading its ancestor's tile with **its own** local coordinates would
+/// stretch the whole ancestor tile over itself, i.e. repeat the terrain in
+/// every patch and tear it at every boundary. No tolerance is needed here --
+/// such a mistake changes the frame entirely.
 ///
-/// Третій знімок, гладкий, стоїть проти протилежної підміни: два кадри, у яких
-/// висота не доїхала до вершини взагалі, теж бітово рівні.
+/// The third shot, the smooth one, stands against the opposite substitution:
+/// two frames in which the height never reached the vertex at all are bitwise
+/// equal too.
 ///
-/// **Камер чотири, і це не запас.** З двадцяти кілометрів видно шапку в кілька
-/// градусів, тобто малюється п'ять патчів із сорока — і те, чи потрапить серед
-/// них патч із **несиметричним** вікном (`origin.x != origin.y`), вирішує
-/// випадок. Виміряно на одній камері: перестановка `origin.x` і `origin.y` у
-/// шейдері не змінила **жодного** пікселя, хоча три з п'яти намальованих
-/// патчів мали різні координати вікна. Одна камера тут просто не бачить
-/// половини помилок адресації.
+/// **There are four cameras, and that is not slack.** From twenty kilometres a
+/// cap of a few degrees is visible, i.e. five patches out of forty get drawn
+/// -- and whether a patch with an **asymmetric** window (`origin.x !=
+/// origin.y`) is among them is down to chance. Measured on a single camera:
+/// swapping `origin.x` and `origin.y` in the shader changed **not one** pixel,
+/// even though three of the five drawn patches had different window
+/// coordinates. One camera simply does not see half the addressing mistakes.
 #[test]
 fn a_patch_deeper_than_the_pyramid_draws_the_same_surface() {
     let Some(gpu) = gpu() else { return };
 
-    // Двадцять кілометрів: на цій висоті набір іде до рівня 3 при кадрі
-    // 1024 px — тобто глибше за мілку піраміду й дрібніше за глибоку. Висота
-    // підібрана не на око: обидві межі перевіряються нижче, і тест червоніє,
-    // якщо критерій похибки колись поїде.
+    // Twenty kilometres: at this altitude the set goes down to level 3 with a
+    // 1024 px frame -- i.e. deeper than the shallow pyramid and finer than the
+    // deep one. The altitude was not picked by eye: both bounds are checked
+    // below, and the test turns red if the error criterion ever moves.
     let altitude = 2.0e4;
 
     let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -554,16 +588,16 @@ fn a_patch_deeper_than_the_pyramid_draws_the_same_surface() {
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-    // Один кадр на всі три знімки: обидві піраміди живуть у ньому одночасно,
-    // тож між знімками не міняється взагалі нічого, крім хендла.
+    // One frame for all three shots: both pyramids live in it at once, so
+    // between the shots nothing changes at all except the handle.
     let mut frame = Frame::new(&gpu, shot::FORMAT);
     let field = shallow_relief();
     let shallow = frame
         .load_terrain(&gpu, &field)
-        .expect("мілка піраміда мала завантажитись");
+        .expect("the shallow pyramid should have loaded");
     let deep = frame
         .load_terrain(&gpu, &deep_relief(&field))
-        .expect("глибока піраміда мала завантажитись");
+        .expect("the deep pyramid should have loaded");
 
     let mut take = |direction: [f64; 3], tiles: TileSet| {
         let scene = moon(direction, altitude, tiles);
@@ -581,7 +615,7 @@ fn a_patch_deeper_than_the_pyramid_draws_the_same_surface() {
             &scene,
         );
         shot::read_back(&gpu, encoder, &texture, SUBRECT_SIZE, SUBRECT_SIZE)
-            .expect("кадр мав намалюватися")
+            .expect("the frame should have drawn")
     };
 
     let all = (SUBRECT_SIZE * SUBRECT_SIZE) as usize;
@@ -591,10 +625,11 @@ fn a_patch_deeper_than_the_pyramid_draws_the_same_surface() {
         let direction = around_light(35.0, turn);
         let scene = moon(direction, altitude, TileSet::Smooth);
 
-        // Перевірка, що перевірка не порожня. Без неї тест лишався б зеленим
-        // на наборі з самих граней — тобто саме в тому стані, у якому був до
-        // D13. Заразом рахуються патчі з несиметричним вікном: без жодного
-        // такого рівність кадрів не сказала б нічого про самі координати.
+        // A check that the check is not empty. Without it the test would stay
+        // green on a set made of bare faces -- i.e. in exactly the state it
+        // was in before D13. It also counts the patches with an asymmetric
+        // window: without a single one of those, equality of frames would say
+        // nothing about the coordinates themselves.
         let selection = lod::select(
             &lod::Body::still([0.0, 0.0, 0.0], MOON_RADIUS_M),
             &scene.camera,
@@ -606,7 +641,7 @@ fn a_patch_deeper_than_the_pyramid_draws_the_same_surface() {
             .iter()
             .map(|p| p.level)
             .max()
-            .expect("набір не буває порожнім");
+            .expect("the set is never empty");
         asymmetric += selection
             .patches
             .iter()
@@ -617,13 +652,13 @@ fn a_patch_deeper_than_the_pyramid_draws_the_same_surface() {
             .count();
         assert!(
             deepest >= SHALLOW,
-            "поворот {turn}°: найглибший рівень {deepest} — жоден патч не \
-             виходить за мілку піраміду, тобто підпрямокутник ніде не читається"
+            "turn {turn} deg: deepest level {deepest} -- no patch goes beyond \
+             the shallow pyramid, i.e. the subrectangle is never read anywhere"
         );
         assert!(
             deepest < DEEP,
-            "поворот {turn}°: найглибший рівень {deepest} — глибока піраміда \
-             теж його не накриває, і порівнювати нема з чим"
+            "turn {turn} deg: deepest level {deepest} -- the deep pyramid does \
+             not cover it either, and there is nothing to compare against"
         );
 
         let from_parent = take(direction, TileSet::Loaded(shallow));
@@ -633,49 +668,51 @@ fn a_patch_deeper_than_the_pyramid_draws_the_same_surface() {
         let moved = different(&from_parent, &smooth);
         let apart = different(&from_parent, &from_own);
         println!(
-            "  поворот {turn}°: {} патчів до рівня {deepest}, проти гладкої \
-             {moved} різних з {all}, проти власного тайла {apart}",
+            "  turn {turn} deg: {} patches down to level {deepest}, against the \
+             smooth one {moved} differing out of {all}, against its own tile {apart}",
             selection.patches.len()
         );
         assert!(
             moved > all / 20,
-            "поворот {turn}°: рельєф змінив лише {moved} пікселів з {all} — \
-             висота не доїхала до вершини, і рівність нижче нічого не значила б"
+            "turn {turn} deg: the terrain changed only {moved} pixels out of \
+             {all} -- the height never reached the vertex, and the equality \
+             below would have meant nothing"
         );
         assert_eq!(
             apart, 0,
-            "поворот {turn}°: патч глибший за піраміду намалював не ту \
-             поверхню, що патч із власним тайлом — вікно в тайлі предка стоїть \
-             не там"
+            "turn {turn} deg: a patch deeper than the pyramid drew a different \
+             surface from a patch with its own tile -- the window in the \
+             ancestor's tile is in the wrong place"
         );
     }
 
-    println!("  патчів із несиметричним вікном на чотирьох камерах: {asymmetric}");
+    println!("  patches with an asymmetric window over four cameras: {asymmetric}");
     assert!(
         asymmetric > 0,
-        "жодна з камер не дала патча, у якого зсув вікна різний по осях — \
-         перестановка координат пройшла б непоміченою"
+        "not one camera gave a patch whose window offset differs along the \
+         axes -- swapping the coordinates would have gone unnoticed"
     );
 }
 
-/// Порожній рельєф — це помилка, а не гладка планета.
+/// An empty terrain is an error, not a smooth planet.
 ///
-/// Порожня піраміда заданої глибини — фікстура для перевірок **стелі**.
+/// An empty pyramid of a given depth is a fixture for **ceiling** checks.
 ///
-/// Нулі, а не рельєф із LOLA, і це не лінощі: питання тут про кількість
-/// текстур, а не про їхній вміст, а сім рівнів із джерела означали б сорок
-/// мільйонів вибірок у тесті, який жодної з них не читає.
+/// Zeroes rather than LOLA terrain, and that is not laziness: the question
+/// here is about the number of textures, not their contents, and seven levels
+/// from the source would mean forty million samples in a test that reads none
+/// of them.
 fn flat(levels: u32) -> Terrain {
     let grids = vec![vec![0i16; STORED * STORED]; Terrain::count(levels)];
     Terrain::build(levels, MOON_RADIUS_M, 0.5, tiles::NO_SEA, &grids)
 }
 
-/// Найглибша піраміда, яка справді існує, у масив влазить.
+/// The deepest pyramid we actually cook fits into the array.
 ///
-/// Шість рівнів — це 8190 тайлів, тобто **колірний** тайлсет Місяця (T2a), і
-/// стеля масиву піднята рівно під нього. Без цього твердження стеля лишалася б
-/// числом, яке хтось колись підняв: перевірка на відмову нижче пройшла б і при
-/// стелі 4096, і при 64.
+/// Six levels is 8190 tiles, i.e. the Moon's **colour** tileset (T2a), and the
+/// array ceiling was raised for exactly that. Without this claim the ceiling
+/// would stay a number somebody once raised: the refusal check below would
+/// pass at a ceiling of 4096 and at 64 alike.
 #[test]
 fn the_deepest_pyramid_we_actually_cook_fits() {
     let Some(gpu) = gpu() else { return };
@@ -684,23 +721,27 @@ fn the_deepest_pyramid_we_actually_cook_fits() {
     let deep = flat(6);
     assert_eq!(Terrain::count(6), 8190);
     let loaded = frame.load_terrain(&gpu, &deep);
-    assert!(loaded.is_ok(), "8190 тайлів не влізли: {loaded:?}");
+    assert!(loaded.is_ok(), "8190 tiles did not fit: {loaded:?}");
 }
 
-/// Хендл, якого немає, не має тихо перетворюватись на `Smooth`: планета без
-/// гір і планета, чий асет не завантажився, виглядають однаково.
+/// A handle that does not exist must not quietly turn into `Smooth`: a planet
+/// without mountains and a planet whose asset failed to load look the same.
 #[test]
 fn a_terrain_that_does_not_fit_is_refused_out_loud() {
     let Some(gpu) = gpu() else { return };
     let mut frame = Frame::new(&gpu, shot::FORMAT);
 
-    // Піраміда, більша за стелю масиву: 7 рівнів це 32766 тайлів.
+    // A pyramid larger than the array ceiling: 7 levels is 32766 tiles.
     let refused = frame.load_terrain(&gpu, &flat(7));
-    println!("  завелика піраміда: {refused:?}");
-    assert!(refused.is_err(), "завеликий рельєф прийняли мовчки");
+    println!("  oversized pyramid: {refused:?}");
+    assert!(
+        refused.is_err(),
+        "an oversized terrain was accepted silently"
+    );
 
-    // А неіснуючий хендл у сцені просто не малює рельєфу — але й не падає.
+    // And a non-existent handle in the scene simply draws no terrain -- but
+    // does not crash either.
     let scene = moon(towards(0.0, 0.0), 1.0e5, TileSet::Loaded(TerrainId(42)));
     let taken = shot::take_scene(&gpu, 64, 64, &scene);
-    assert!(taken.is_ok(), "чужий хендл повалив кадр");
+    assert!(taken.is_ok(), "a foreign handle brought the frame down");
 }
