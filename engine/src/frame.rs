@@ -135,8 +135,8 @@ pub fn default_scene(camera: Camera) -> Scene {
     scene.bodies.push(Body {
         centre: [0.0, 0.0, 0.0],
         radius_m: sphere::EARTH_RADIUS_M,
-        // Одиничний кватерніон: зонди міряють геометрію, і поворот у них
-        // лише додав би до кожного числа привід сумніватися.
+        // The identity quaternion: the probes measure geometry, and a rotation
+        // in them would only add a reason to doubt every number.
         orientation: [1.0, 0.0, 0.0, 0.0],
         tiles: TileSet::Smooth,
         colour: COLOUR,
@@ -1738,10 +1738,10 @@ impl PatchCache {
         let mesh = patch.mesh(1.0);
         let base = (slot * PATCH_VERTICES) as u64 * VERTEX_BYTES;
 
-        // Розкладка `PatchVertex` у std430: два `vec3` з вирівнюванням 16,
-        // тобто 32 байти на вершину з чотирма нулями в кожному хвості.
-        // Виписано руками з тієї самої причини, що й `Uniforms::to_bytes`:
-        // наш `unsafe` живе лише в `core-rs`.
+        // The layout of `PatchVertex` in std430: two `vec3` at alignment 16,
+        // i.e. 32 bytes per vertex with four zeros in each tail. Written out by
+        // hand for the same reason as `Uniforms::to_bytes`: our `unsafe` lives
+        // only in `core-rs`.
         let mut bytes = Vec::with_capacity(PATCH_VERTICES * VERTEX_BYTES as usize);
         for (offset, normal) in mesh.offsets.iter().zip(mesh.normals.iter()) {
             for value in offset {
@@ -1755,8 +1755,8 @@ impl PatchCache {
         }
         gpu.queue.write_buffer(&self.vertex_buffer, base, &bytes);
 
-        // Конус — розкладка `Cone` у std430: `vec3` з вирівнюванням 16, потім
-        // два `float`, з яких другий знову вирівняний на 16.
+        // The cone -- the layout of `Cone` in std430: a `vec3` at alignment 16,
+        // then two `float`, the second of which is aligned to 16 again.
         let cone = patch.cone();
         let mut cone_bytes = Vec::with_capacity(CONE_BYTES as usize);
         for value in cone.axis {
@@ -1795,17 +1795,18 @@ impl Planet {
                         visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
-                            // Один буфер на тіло, зсув — на прохід (R4a).
-                            // Інакше кількість буферів множилася б на
-                            // кількість діапазонів, а вони — те, що міняється.
+                            // One buffer per body, the offset per pass (R4a).
+                            // Otherwise the number of buffers would multiply by
+                            // the number of ranges, and it is the ranges that
+                            // change.
                             has_dynamic_offset: true,
                             min_binding_size: std::num::NonZeroU64::new(UNIFORM_BYTES),
                         },
                         count: None,
                     },
-                    // 1 — початки патчів і номери тайлів (за слотом кеша),
-                    // 2 — геометрія всіх патчів кеша,
-                    // 3 — список того, що малюється цього кадру (за інстансом).
+                    // 1 -- patch origins and tile indices (by cache slot),
+                    // 2 -- the geometry of all the cache's patches,
+                    // 3 -- the list of what is drawn this frame (by instance).
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
                         visibility: wgpu::ShaderStages::VERTEX,
@@ -1839,10 +1840,12 @@ impl Planet {
                 ],
             });
 
-        // ⚠ Масив висот — **окрема група**, і це вимога wgpu, а не смак:
+        // WARNING: the heights array is a **separate group**, and that is a
+        // requirement of wgpu, not taste:
         // «bind groups may not contain both a binding array and a dynamically
-        // offset buffer». Динамічний зсув у групі 0 вибирає прохід глибини
-        // (R4a) і нікуди не подінеться, тож розійтися мусив масив.
+        // offset buffer". The dynamic offset in group 0 picks the depth pass
+        // (R4a) and is not going anywhere, so it is the array that had to move
+        // out.
         let tile_layout = gpu.bindless.then(|| {
             gpu.device
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1858,12 +1861,12 @@ impl Planet {
                             },
                             count: std::num::NonZeroU32::new(MAX_TILES),
                         },
-                        // Колір — другий масив у **тій самій** групі, і
-                        // видимість у нього фрагментна: висота зсуває вершину,
-                        // а колір фарбує піксель. Окремої групи він не дістав
-                        // навмисно: поверхня тіла — одна річ, і два хендли на
-                        // неї означали б стан, у якому колір є, а рельєфу вже
-                        // немає.
+                        // Colour is the second array in the **same** group, and
+                        // its visibility is fragment: height displaces a vertex,
+                        // colour paints a pixel. It deliberately did not get a
+                        // group of its own: a body's surface is one thing, and
+                        // two handles to it would allow a state in which the
+                        // colour is there and the terrain is already gone.
                         wgpu::BindGroupLayoutEntry {
                             binding: 1,
                             visibility: wgpu::ShaderStages::FRAGMENT,
@@ -1886,9 +1889,9 @@ impl Planet {
                 immediate_size: 0,
             });
 
-        // Вершинних буферів більше немає взагалі (R6a): усе, що читає
-        // вершинна стадія, приходить storage-буферами, а номер вершини
-        // й номер інстансу дає сам конвеєр.
+        // There are no vertex buffers at all any more (R6a): everything the
+        // vertex stage reads arrives in storage buffers, and the vertex index and
+        // instance index are given by the pipeline itself.
         let build = |vertex: &str, fragment: &str| {
             gpu.device
                 .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1911,9 +1914,9 @@ impl Planet {
                         })],
                     }),
                     primitive: wgpu::PrimitiveState {
-                        // Без відсікання граней — той самий вибір, що був у
-                        // сфери: коректність тримається на тесті глибини, а не
-                        // на вгаданому порядку обходу вершин.
+                        // No face culling -- the same choice the sphere made:
+                        // correctness rests on the depth test rather than on a
+                        // guessed winding order.
                         cull_mode: None,
                         ..Default::default()
                     },
@@ -2045,7 +2048,8 @@ impl Planet {
         }
     }
 
-    /// Слот під тіло — свій uniform, свої початки патчів, своя bind-група.
+    /// A slot for a body -- its own uniform, its own patch origins, its own bind
+    /// group.
     fn slot(&self, gpu: &Gpu) -> BodySlot {
         let uniform_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("patch uniforms"),
@@ -2054,9 +2058,10 @@ impl Planet {
             mapped_at_creation: false,
         });
 
-        // Вісім слів на патч: початок (три) плюс номер тайла, тоді вікно в
-        // тайлі (зсув-два й крок) і одне слово запасу на вирівнювання
-        // (R7a). Індексується слотом кеша, тобто буфер рівно такий, як кеш.
+        // Eight words per patch: the origin (three) plus the tile index, then
+        // the window into the tile (a two-component offset and a step) and one
+        // spare word for alignment (R7a). Indexed by cache slot, i.e. the buffer
+        // is exactly as large as the cache.
         let origin_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("patch origins"),
             size: (self.cache.capacity * PATCH_DATA_BYTES) as u64,
@@ -2064,13 +2069,14 @@ impl Planet {
             mapped_at_creation: false,
         });
 
-        // Список того, що справді малюється: його пише compute, а читає
-        // вершинна стадія. Полем структури він не стає — обидві bind-групи
-        // тримають його самі, а поле, якого ніхто не читає, гірше за свою
-        // відсутність (CLAUDE.md).
+        // The list of what actually gets drawn: compute writes it, the vertex
+        // stage reads it. It does not become a field of the struct -- both bind
+        // groups hold it themselves, and a field nobody reads is worse than its
+        // absence (CLAUDE.md).
         //
-        // По вісім байтів на інстанс, і інстансів не більше за місткість
-        // кеша: патч, якого немає в кеші, намалювати нема з чого.
+        // Eight bytes per instance, and there are no more instances than the
+        // cache's capacity: a patch not in the cache has nothing to be drawn
+        // from.
         let draw_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("patch draws"),
             size: (self.cache.capacity * 8) as u64,
@@ -2089,9 +2095,9 @@ impl Planet {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        // `COPY_SRC` тут не для кадру, а для перевірки: R6b звіряє кількість
-        // намальованих патчів із CPU-відбором, і прочитати її можна лише
-        // звідси (`Frame::drawn_patches`).
+        // `COPY_SRC` here is not for the frame but for the check: R6b compares
+        // the number of drawn patches against the CPU cull, and it can only be
+        // read from here (`Frame::drawn_patches`).
         let indirect_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("patch indirect"),
             size: 16,
@@ -2177,31 +2183,34 @@ impl Planet {
         }
     }
 
-    /// Місткість кеша під потребу кадру — **вдвічі** більша за неї.
+    /// The cache's capacity for a frame's demand -- **twice** it.
     ///
-    /// Удвічі, а не рівно: витіснення шукає слот, не потрібний цього кадру, і
-    /// при місткості впритул такого слота могло б не бути взагалі. Запас
-    /// перетворює пошук на завжди успішний, і саме тому в ньому немає гілки
-    /// «а якщо ні».
+    /// Twice and not exactly: eviction looks for a slot not needed this frame,
+    /// and at a capacity fitted exactly there might be no such slot at all. The
+    /// margin turns the search into an always-successful one, and that is exactly
+    /// why it has no "and if not" branch.
     ///
-    /// Росте й не спадає, а зростання скидає кеш: буфери перестворюються, і
-    /// те, що в них лежало, більше не за тими адресами. Платиться це один раз
-    /// на кожне подвоєння за всю сесію.
+    /// It grows and never shrinks, and growth resets the cache: the buffers are
+    /// re-created, and what lay in them is no longer at those addresses. That is
+    /// paid once per doubling over the whole session.
     fn reserve(&mut self, gpu: &Gpu, needed: usize) {
         if needed * 2 <= self.cache.capacity {
             return;
         }
         let capacity = (needed * 2).next_power_of_two().max(MIN_PATCHES);
         self.cache = PatchCache::new(gpu, capacity);
-        // Буфери початків були під стару місткість, а bind-групи — під ті
-        // буфери. Слоти тіл перестворяться при наступному ж проході.
+        // The origin buffers were sized for the old capacity, and the bind
+        // groups for those buffers. The body slots will be re-created on the very
+        // next pass.
         self.bodies.clear();
     }
 
-    /// Набори патчів, їхня геометрія й початки — усе, що кадр рахує на CPU.
+    /// The patch sets, their geometry and their origins -- everything the frame
+    /// computes on the CPU.
     ///
-    /// Оце і є прохід планети: вибір рівня на тіло, звіряння з кешем і
-    /// віднімання камери від початку кожного патча, у `double`.
+    /// This is the planet pass: level selection per body, reconciliation with the
+    /// cache, and subtraction of the camera from each patch's origin, in
+    /// `double`.
     fn upload(&mut self, gpu: &Gpu, scene: &Scene, passes: &[Pass], width_px: f64, height_px: f64) {
         let sun = narrow_sun(scene);
         let aspect = width_px / height_px;
@@ -2209,30 +2218,32 @@ impl Planet {
         let eye = camera.position();
         let focal = lod::focal_px(FOV_Y, height_px);
 
-        // Вибір рівня — на тіло, і до всякого дотику до GPU: місткість кеша
-        // мусить бути відома до першого `intern`.
+        // Level selection is per body, and comes before any touch of the GPU:
+        // the cache's capacity must be known before the first `intern`.
         self.selections.clear();
         let mut needed = 0;
         for body in &scene.bodies {
-            // **Стелю даних знято (R7a).** До цього кроку вибір не йшов
-            // глибше за піраміду тайлів, і причина була не в кількості
-            // деталей, а в адресації: патч глибшого рівня читав би тайл
-            // предка за **своїми** локальними координатами, тобто не в тому
-            // місці. Тепер вікно в тайлі приїжджає в `PatchData`
-            // (`Terrain::window`), і глибший патч читає підпрямокутник предка
-            // білінійно — рівно те, що `Terrain::height_m` рахує на CPU.
+            // **The data ceiling has been lifted (R7a).** Before this step the
+            // selection did not go deeper than the tile pyramid, and the reason
+            // was not the amount of detail but addressing: a patch of a deeper
+            // level would read an ancestor's tile at **its own** local
+            // coordinates, i.e. in the wrong place. Now the window into the tile
+            // arrives in `PatchData` (`Terrain::window`), and a deeper patch reads
+            // an ancestor's sub-rectangle bilinearly -- exactly what
+            // `Terrain::height_m` computes on the CPU.
             //
-            // Само по собі це нових висот не додає: інтерполяція між вузлами
-            // LOLA — це та сама поверхня, лише дрібнішою сіткою. Сенс з'явиться
-            // з процедурною деталлю (R7c), якій треба, куди сідати; передумова
-            // ж мусила бути закрита окремо й з власним оракулом.
+            // By itself this adds no new heights: interpolation between LOLA
+            // nodes is the same surface, only on a finer grid. The point appears
+            // with procedural detail (R7c), which needs somewhere to sit; the
+            // precondition had to be closed separately and with an oracle of its
+            // own.
             let ceiling = lod::MAX_LEVEL;
-            // **Рельєф входить у вибір рівня (R7c).** Без нього критерій
-            // питає лише про стрілу прогину сфери, а сфера зблизька пласка:
-            // на кілометрі над Місяцем клітинка виходила 2665 м, тобто 1662
-            // пікселі завширшки, і в неї не влазив ні шум, ні сам DEM (вузол
-            // 5330 м). Тіло без тайлів лишається гладким і рахується як
-            // раніше — бітово.
+            // **Terrain enters the level selection (R7c).** Without it the
+            // criterion asks only about the sphere's sagitta, and a sphere up
+            // close is flat: at a kilometre above the Moon a cell came out 2665 m
+            // across, i.e. 1662 pixels wide, and neither the noise nor the DEM
+            // itself (a 5330 m node) fitted into it. A body without tiles stays
+            // smooth and is computed as before -- bitwise.
             let terrain = match body.tiles {
                 scene::TileSet::Loaded(id) => self.terrains.get(id.0).map(|slot| &slot.data),
                 scene::TileSet::Smooth => None,
@@ -2259,8 +2270,8 @@ impl Planet {
             self.bodies.push(slot);
         }
 
-        // Поворот вигляду однаковий для всіх тіл і всіх проходів — множиться
-        // раз, а не на тіло й не на прохід.
+        // The view rotation is the same for all bodies and all passes -- it is
+        // multiplied once, not per body and not per pass.
         let view_rotation = camera.view_rotation();
 
         let mut origin_bytes: Vec<u8> = Vec::with_capacity(self.cache.capacity * PATCH_DATA_BYTES);
@@ -2270,10 +2281,11 @@ impl Planet {
             let rotation = rotation(body.orientation);
             let selection = &self.selections[index];
 
-            // **Відбір переїхав у compute (R6b).** Сюди подається весь
-            // вибраний набір; що з нього намалювати, вирішує GPU. CPU-шлях
-            // (`crate::cull`) лишається — але як другий незалежний шлях до
-            // того самого числа, тобто як оракул, а не як робота кадру.
+            // **Culling has moved into compute (R6b).** The whole selected set
+            // is submitted here; what to draw out of it is decided by the GPU.
+            // The CPU path (`crate::cull`) remains -- but as a second independent
+            // route to the same number, i.e. as an oracle rather than as the
+            // frame's work.
             draw_bytes.clear();
             for (patch, &mask) in selection.patches.iter().zip(&selection.masks) {
                 let slot = self.cache.intern(gpu, *patch);
@@ -2287,8 +2299,9 @@ impl Planet {
                     .write_buffer(&self.bodies[index].candidate_buffer, 0, &draw_bytes);
             }
 
-            // Параметри відбору: те саме, що рахує `cull::horizon` і
-            // `cull::frustum`, лише один раз на тіло замість разу на патч.
+            // The culling parameters: the same thing `cull::horizon` and
+            // `cull::frustum` compute, only once per body instead of once per
+            // patch.
             let in_body = lod::Body {
                 rotation,
                 ..lod::Body::still(body.centre, body.radius_m)
@@ -2320,8 +2333,9 @@ impl Planet {
                 to_eye[2] as f32,
                 limb as f32,
             ]);
-            // Рядки повороту вигляду: `view_rotation` лежить стовпцями, тож
-            // рядок — це однойменні компоненти трьох перших стовпців.
+            // The rows of the view rotation: `view_rotation` is stored by
+            // columns, so a row is the like-named components of the first three
+            // columns.
             let [right, up, back, _] = view_rotation;
             for row in [0, 1, 2] {
                 vectors.push([right[row], up[row], back[row], 0.0]);
@@ -2348,8 +2362,8 @@ impl Planet {
             gpu.queue
                 .write_buffer(&self.bodies[index].cull_uniform, 0, &cull_bytes);
 
-            // Аргументи indirect: скільки вершин у патчі, і нуль інстансів —
-            // лічильник, який compute нарощує атомарно.
+            // The indirect arguments: how many vertices are in a patch, and zero
+            // instances -- a counter compute increments atomically.
             let mut args = Vec::with_capacity(16);
             for value in [PATCH_INDICES as u32, 0, 0, 0] {
                 args.extend_from_slice(&value.to_le_bytes());
@@ -2357,7 +2371,8 @@ impl Planet {
             gpu.queue
                 .write_buffer(&self.bodies[index].indirect_buffer, 0, &args);
 
-            // Рельєф тіла, якщо він є: множник висоти й таблиця тайлів.
+            // The body's terrain, if it has one: the height multiplier and the
+            // tile table.
             let wanted = match body.tiles {
                 TileSet::Smooth => None,
                 TileSet::Loaded(id) => (id.0 < self.terrains.len()).then_some(id.0),
@@ -2367,9 +2382,9 @@ impl Planet {
             let height_scale = terrain
                 .map(|t| t.scale_m / body.radius_m as f32)
                 .unwrap_or(0.0);
-            // Глибина колірної піраміди — своя, і саме вона вирішує, у який
-            // тайл дивиться патч. `None` означає «кольору немає», і тоді
-            // фрагмент лишається на `Body::colour`.
+            // The colour pyramid's depth is its own, and it is what decides which
+            // tile a patch looks into. `None` means "there is no colour", and then
+            // the fragment falls back on `Body::colour`.
             let colour = terrain.and_then(|t| t.colour.as_ref());
             let colour_levels = colour.map(|c| c.levels);
 
@@ -2414,14 +2429,16 @@ impl Planet {
                 }
             }
 
-            // Початки — на **слот**, а не на позицію в наборі: так номер
-            // патча живе у вершинному буфері й не переписується щокадру.
-            // Слоти, не зайняті цим тілом, лишаються нулями й не малюються.
+            // The origins are per **slot** rather than per position in the set:
+            // that way a patch's index lives in the vertex buffer and is not
+            // rewritten every frame. Slots not occupied by this body stay zero and
+            // are not drawn.
             origin_bytes.clear();
             for (slot, origin) in self.cache.origins.iter().enumerate() {
-                // Усе в `double`: поворот одиничного початку, множення на
-                // радіус, зсув до центра тіла й віднімання камери. Звуження до
-                // `f32` — останнім кроком, як завжди (ROADMAP F4).
+                // Everything in `double`: rotating the unit origin, multiplying
+                // by the radius, shifting to the body's centre and subtracting the
+                // camera. Narrowing to `f32` is the last step, as always
+                // (ROADMAP F4).
                 for k in 0..3 {
                     let turned = rotation[k][0] * origin[0]
                         + rotation[k][1] * origin[1]
@@ -2429,14 +2446,15 @@ impl Planet {
                     let value = (body.centre[k] + body.radius_m * turned - eye[k]) as f32;
                     origin_bytes.extend_from_slice(&value.to_le_bytes());
                 }
-                // Четверте слово — номер тайла в bindless-масиві, а не
-                // вирівнювальний нуль: `PatchData` у шейдері саме такий.
+                // The fourth word is the tile's index in the bindless array, not
+                // an alignment zero: `PatchData` in the shader is exactly that.
                 //
-                // Далі — **вікно в цьому тайлі** (R7a): зсув патча всередині
-                // нього у вузлах і крок. Для патча, який має власний тайл, це
-                // `(0, 0)` і `1`, тобто те саме, що робив точний `Load`. Для
-                // глибшого — підпрямокутник предка, і рахує його
-                // `Terrain::window`, той самий код, що й `height_m` на CPU.
+                // Then comes **the window into that tile** (R7a): the patch's
+                // offset inside it in nodes, and the step. For a patch that owns
+                // its tile that is `(0, 0)` and `1`, i.e. the same thing an exact
+                // `Load` did. For a deeper one it is an ancestor's sub-rectangle,
+                // computed by `Terrain::window` -- the same code as `height_m` on
+                // the CPU.
                 //
                 // Since Y1b the number written is the tile's place in **this
                 // frame's** resident set, not its place in the pyramid: the
@@ -2460,16 +2478,17 @@ impl Planet {
                 origin_bytes.extend_from_slice(&(origin_uv[0] as f32).to_le_bytes());
                 origin_bytes.extend_from_slice(&(origin_uv[1] as f32).to_le_bytes());
                 origin_bytes.extend_from_slice(&(step as f32).to_le_bytes());
-                // Восьме слово — вирівнювання, і нічого більше. До етапу W тут
-                // жив крок центральної різниці (`delta_nodes`); нахил тепер
-                // лежить у тайлі, а слово лишилось, бо std430 однаково вимагає
-                // восьмибайтового вирівнювання під `colour_origin` нижче —
-                // структура без нього має ті самі 48 байтів, лише з дірою.
+                // The eighth word is alignment, and nothing more. Before stage W
+                // the central-difference step (`delta_nodes`) lived here; slope
+                // now lies in the tile, and the word stayed because std430 demands
+                // eight-byte alignment for `colour_origin` below anyway -- without
+                // it the struct has the same 48 bytes, just with a hole.
                 origin_bytes.extend_from_slice(&0f32.to_le_bytes());
 
-                // Друге вікно — у колірній піраміді, і рахується воно **її**
-                // глибиною (T3b). Той самий патч цілком законно має власний
-                // колірний тайл і водночас читає висоту в предка.
+                // The second window is into the colour pyramid, and it is
+                // computed by **its** depth (T3b). The same patch quite
+                // legitimately owns its colour tile while reading its height from
+                // an ancestor.
                 let (colour_tile, colour_uv, colour_step) =
                     match (colour_levels, self.cache.resident[slot]) {
                         (Some(levels), Some(patch)) => {
@@ -2488,10 +2507,11 @@ impl Planet {
                         _ => (0, [0.0, 0.0], 1.0),
                     };
                 //
-                // ⚠ Крок **перед** зсувом, і порядок цей диктує std430:
-                // `vec2<f32>` вимагає восьмибайтового вирівнювання, тож пара
-                // «uint, vec2, float» лягла б із діркою і структура виросла б
-                // до 64 байтів. Звірка — у згенерованому `patch.wgsl`.
+                // WARNING: the step comes **before** the offset, and that order
+                // is dictated by std430: `vec2<f32>` demands eight-byte
+                // alignment, so a "uint, vec2, float" sequence would land with a
+                // hole and the struct would grow to 64 bytes. The check is in the
+                // generated `patch.wgsl`.
                 origin_bytes.extend_from_slice(&(colour_tile as u32).to_le_bytes());
                 origin_bytes.extend_from_slice(&(colour_step as f32).to_le_bytes());
                 origin_bytes.extend_from_slice(&(colour_uv[0] as f32).to_le_bytes());
