@@ -173,11 +173,18 @@ fn the_air_bands_the_nadir_and_not_the_limb() {
     let Some(gpu) = gpu() else { return };
     let mut frame = Frame::new(&gpu, shot::FORMAT);
 
+    // The frames land on disk: when this goes red one day, there will be
+    // something to look at -- and while choosing a cure, something to measure
+    // the ring positions on.
+    let out = std::path::Path::new("build/d17");
     let mut report = Vec::new();
     for (name, pitch) in [("nadir", 0.0f64), ("limb", 88.0)] {
-        let with = residual(&look(&gpu, &mut frame, pitch, true));
-        let without = residual(&look(&gpu, &mut frame, pitch, false));
+        let air = look(&gpu, &mut frame, pitch, true);
+        let bare = look(&gpu, &mut frame, pitch, false);
+        let (with, without) = (residual(&air), residual(&bare));
         println!("  {name}: with air {with:.1}, without {without:.1} bytes");
+        let _ = air.write_png(&out.join(format!("{name}_air.png")));
+        let _ = bare.write_png(&out.join(format!("{name}_bare.png")));
         report.push((name, with, without));
     }
 
