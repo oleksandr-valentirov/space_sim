@@ -1130,8 +1130,9 @@ impl Frame {
         gpu.queue
             .write_buffer(&self.tonemap.exposure_buffer, 0, &exposure);
 
-        // Стиснення — **один раз, після всієї сцени**. Саме тут кадр уперше
-        // дізнається про формат цілі: усе, що вище, малювалося в HDR.
+        // Compression happens **once, after the whole scene**. This is where the
+        // frame first learns about the target's format: everything above was
+        // drawn in HDR.
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("tonemap"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1139,8 +1140,8 @@ impl Frame {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    // Не `Load`: прохід накриває кожен піксель цілі, тож
-                    // читати те, що там лежало, нема сенсу.
+                    // Not `Load`: the pass covers every pixel of the target, so
+                    // there is no point reading what lay there.
                     load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                     store: wgpu::StoreOp::Store,
                 },
@@ -1155,32 +1156,33 @@ impl Frame {
         pass.draw(0..3, 0..1);
     }
 
-    /// Скільки пікселів кадру займає товщина шару повітря — умова кроку S5.
+    /// How many frame pixels the thickness of the air shell takes -- step S5's
+    /// condition.
     ///
-    /// Число, а не «камера далеко»: питання не в тому, де камера, а в тому, чи
-    /// видно повітря. З 10⁹ м шар у сто кілометрів тонший за соту пікселя, і
-    /// об'єм 32×32×32 рахувався б заради нічого. Зблизька ж камера стоїть
-    /// усередині повітря, відстань до поверхні прямує до нуля, і число росте
-    /// само.
+    /// A number, not "the camera is far away": the question is not where the
+    /// camera is but whether the air is visible. From 1e9 m a hundred-kilometre
+    /// shell is thinner than a hundredth of a pixel, and a 32x32x32 volume would
+    /// be computed for nothing. Up close the camera stands inside the air, the
+    /// distance to the surface tends to zero, and the number grows by itself.
     ///
-    /// Той самий вид критерію, що `lod::error_px`: екранна похибка, а не
-    /// відстань у метрах. Відстань у метрах довелося б підбирати на кожен
-    /// радіус тіла окремо.
+    /// The same kind of criterion as `lod::error_px`: a screen-space error rather
+    /// than a distance in metres. A distance in metres would have to be tuned for
+    /// each body's radius separately.
     fn shell_px(air: &scene::Atmosphere, bottom: f64, view: &sky::View, focal: f64) -> f64 {
         let altitude = (view.radius() - bottom).max(1.0);
         air.thickness_m(bottom) / altitude * focal
     }
 
-    /// Тіло з повітрям, найближче до камери, і камера відносно нього.
+    /// The body with air nearest to the camera, and the camera relative to it.
     ///
-    /// **Найближче, а не перше в списку.** Тіл з атмосферою в сцені сьогодні
-    /// одне (Земля, S1), але правило мусить бути назване до того, як їх стане
-    /// два: далеке повітря камери не оточує, і небо їй малює те, всередині
-    /// якого — або поруч із яким — вона стоїть.
+    /// **Nearest, not first in the list.** Today the scene has one body with an
+    /// atmosphere (Earth, S1), but the rule has to be named before there are two:
+    /// distant air does not surround the camera, and the sky is drawn for it by
+    /// the air it stands inside -- or next to.
     ///
-    /// `None` означає «повітря в кадрі немає», і це не окремий випадок, а той
-    /// самий кадр, що був до етапу S: жодна таблиця не рахується, прохід не
-    /// подається, знімок лишається бітово тим самим.
+    /// `None` means "there is no air in the frame", and that is not a special
+    /// case but the same frame as before stage S: no table is computed, no pass
+    /// is submitted, the screenshot stays bitwise the same.
     fn air_view(
         scene: &Scene,
         aspect: f64,
@@ -1203,8 +1205,8 @@ impl Frame {
         let air = body.air?;
 
         let (right, up, forward) = scene.camera.axes();
-        // Небо нормалізує напрямок саме — воно єдине, кому довжина завадила б
-        // (`Scene::sun`).
+        // The sky normalises the direction itself -- it is the only thing the
+        // length would get in the way of (`Scene::sun`).
         let sun = {
             let l = scene.sun;
             let length = (l[0] * l[0] + l[1] * l[1] + l[2] * l[2]).sqrt();
@@ -1217,7 +1219,8 @@ impl Frame {
         let t = (FOV_Y / 2.0).tan();
         let narrow = |v: [f64; 3]| [v[0] as f32, v[1] as f32, v[2] as f32];
 
-        // Тайлсет тіла — щоб небо дізналося, що під ним лежить (T7h).
+        // The body's tileset -- so that the sky learns what lies beneath it
+        // (T7h).
         let surface = match body.tiles {
             scene::TileSet::Loaded(id) => Some(id),
             scene::TileSet::Smooth => None,
@@ -1226,8 +1229,9 @@ impl Frame {
             air,
             body.radius_m,
             sky::View {
-                // Віднімання центра тіла від ока — у `f64`, як усе
-                // camera-relative (F4). Звужується воно вже в `sky`.
+                // Subtracting the body's centre from the eye happens in `f64`,
+                // like everything camera-relative (F4). The narrowing happens in
+                // `sky`.
                 eye: [
                     eye[0] - body.centre[0],
                     eye[1] - body.centre[1],
@@ -1243,11 +1247,12 @@ impl Frame {
         ))
     }
 
-    /// Найдальша точка сцени: дальній край найдальшого тіла.
+    /// The scene's farthest point: the far edge of the farthest body.
     ///
-    /// Ламані сюди не входять, і це не недогляд: найдальший діапазон
-    /// **нескінченний**, тож нічого за цією межею з кадру не зникає. Число
-    /// вирішує лише, де поставити межі між проходами, а не що малювати.
+    /// Polylines do not enter here, and that is not an oversight: the farthest
+    /// range is **infinite**, so nothing beyond this bound disappears from the
+    /// frame. The number decides only where to put the boundaries between passes,
+    /// not what to draw.
     fn far_for(scene: &Scene) -> f64 {
         let eye = scene.camera.position();
         let mut far: f64 = 0.0;
@@ -1262,22 +1267,22 @@ impl Frame {
         far
     }
 
-    /// Ближні площини діапазонів глибини цієї сцени, **від найближчого**.
+    /// The near planes of this scene's depth ranges, **from the nearest**.
     ///
-    /// Довжина — скільки буде проходів; `[0]` — ближня площина кадру, `[1]` —
-    /// межа між першим і другим діапазоном, і так далі. Питання до плану, і
-    /// відповідь на нього не варта ні GPU, ні кадру — так само, як
-    /// [`Frame::near_for`].
+    /// The length is how many passes there will be; `[0]` is the frame's near
+    /// plane, `[1]` the boundary between the first and the second range, and so
+    /// on. A question for the plan, and the answer to it is worth neither a GPU
+    /// nor a frame -- just like [`Frame::near_for`].
     ///
-    /// Числа дістаються з тих самих `depth_a`/`depth_b`, якими користується
-    /// композиція аеральної перспективи (`z_ndc = −A + B/z`), а не рахуються
-    /// вдруге: `lo = B/(A+1)` однаково для скінченного діапазону й для
-    /// нескінченного, у якого `A = 0`. Тобто перевірка питає те число, яким
-    /// кадр справді малює, а не своє власне.
+    /// The numbers are recovered from the same `depth_a`/`depth_b` the
+    /// composition of aerial perspective uses (`z_ndc = -A + B/z`) rather than
+    /// computed a second time: `lo = B/(A+1)` holds equally for a finite range
+    /// and for an infinite one, where `A = 0`. That is, the check asks for the
+    /// very number the frame draws with, not one of its own.
     ///
-    /// Існує заради V3: там треба стверджувати і «діапазонів два», і «межа
-    /// лягла саме сюди», а повторювати формулу поруч із нею — це два джерела
-    /// правди про одну річ.
+    /// It exists for V3: there one has to assert both "there are two ranges" and
+    /// "the boundary landed exactly here", and repeating the formula next to it
+    /// would be two sources of truth about one thing.
     pub fn depth_ranges(scene: &Scene, aspect: f64) -> Vec<f64> {
         let mut passes = Vec::new();
         Frame::plan(&mut passes, scene, aspect);
@@ -1288,45 +1293,49 @@ impl Frame {
             .collect()
     }
 
-    /// План кадру: скільки діапазонів глибини й де їхні межі (R4a, R4b).
+    /// The frame's plan: how many depth ranges and where their boundaries are
+    /// (R4a, R4b).
     ///
-    /// ## Скільки проходів, і звідки взялося це число
+    /// ## How many passes, and where that number came from
     ///
-    /// Не «завжди чотири». Прохід коштує повний перемальовок сцени, тож
-    /// заводити його треба тоді, коли одного буфера справді не вистачає — а
-    /// це межа, яку F3 виміряв: **сім порядків відстані** (`Δz ≈ z·6·10⁻⁸`).
-    /// Звідси правило: один діапазон на кожні сім порядків розмаху сцени,
-    /// не більше [`MAX_PASSES`] (PROJECT.md §7). Сцена зондів рушія має
-    /// розмах 22.7 — тобто рівно один прохід, і кадр лишається тим самим
-    /// бітово, яким був до R4b.
+    /// Not "always four". A pass costs a full redraw of the scene, so one should
+    /// be introduced when a single buffer really is not enough -- and that is the
+    /// bound F3 measured: **seven decades of distance** (`dz ~= z*6e-8`). Hence
+    /// the rule: one range per seven decades of the scene's span, at most
+    /// [`MAX_PASSES`] (PROJECT.md section 7). The engine's probe scene has a span
+    /// of 22.7 -- that is, exactly one pass, and the frame stays bitwise the one
+    /// it was before R4b.
     ///
-    /// ## Чим діапазони виправдані, а чим — ні
+    /// ## What the ranges are justified by, and what not
     ///
-    /// **Не роздільністю глибини.** Це виміряно й записано числом:
-    /// `depth::tests::a_finite_range_is_no_sharper_than_an_infinite_one`
-    /// показує 4.0 м на 10⁸ м однаково для нескінченної проєкції й для
-    /// скінченного діапазону з будь-якого його кінця. Причина — катастрофічне
-    /// скорочення в `z_clip` біля далекої площини, яке з'їдає рівно те, що
-    /// обіцяла викладка. Те саме стосується й самої межі: площина відсікання
-    /// стоїть на тій самій арифметиці, тож нею не розділити двох поверхонь
-    /// ближче, ніж `z·6·10⁻⁸`.
+    /// **Not by depth resolution.** That is measured and written down as a
+    /// number: `depth::tests::a_finite_range_is_no_sharper_than_an_infinite_one`
+    /// shows 4.0 m at 1e8 m equally for an infinite projection and for a finite
+    /// range from either of its ends. The reason is catastrophic cancellation in
+    /// `z_clip` near the far plane, which eats exactly what the derivation
+    /// promised. The same goes for the boundary itself: the clip plane rests on
+    /// the same arithmetic, so it cannot separate two surfaces closer than
+    /// `z*6e-8`.
     ///
-    /// Виправдані вони **scaled space** (PROJECT.md §7): правом малювати
-    /// далеке на вигаданій відстані. Тіло за 10¹¹ м, намальоване як мала
-    /// модель за 10⁶ м, зіткнулося б із реальною геометрією тієї відстані —
-    /// і рятує від цього рівно окремий прохід із власною глибиною, а не
-    /// точність. Того малювання ще немає; механізм для нього — є.
+    /// They are justified by **scaled space** (PROJECT.md section 7): by the
+    /// right to draw the distant at an invented distance. A body at 1e11 m drawn
+    /// as a small model at 1e6 m would collide with the real geometry of that
+    /// distance -- and what saves it from that is precisely a separate pass with
+    /// its own depth, not precision. That drawing does not exist yet; the
+    /// mechanism for it does.
     ///
-    /// Межі — **геометричні**: глибина міряє відношення, а не різницю, тож
-    /// рівні частки логарифма й дають рівні частки роботи.
+    /// The boundaries are **geometric**: depth measures a ratio rather than a
+    /// difference, so equal shares of the logarithm give equal shares of the
+    /// work.
     ///
-    /// Порядок — back-to-front, від найдальшого діапазону до найближчого:
-    /// колір очищає перший, глибину — кожен.
+    /// The order is back-to-front, from the farthest range to the nearest: the
+    /// first clears colour, every one clears depth.
     ///
-    /// Без `self` навмисно — з тієї самої причини, що [`Frame::near_for`]: це
-    /// чиста арифметика над сценою, і питати в неї «скільки тут проходів»
-    /// не має вимагати ні GPU, ні кадру. Список приходить параметром, щоб
-    /// пам'ять під нього виділялась один раз на життя кадру, а не щокадру.
+    /// Without `self` deliberately -- for the same reason as [`Frame::near_for`]:
+    /// this is pure arithmetic over the scene, and asking it "how many passes are
+    /// there" should require neither a GPU nor a frame. The list arrives as a
+    /// parameter so that memory for it is allocated once in the frame's lifetime
+    /// rather than every frame.
     fn plan(passes: &mut Vec<Pass>, scene: &Scene, aspect: f64) {
         let near = Frame::near_for(scene);
         let far = Frame::far_for(scene);
@@ -1339,8 +1348,8 @@ impl Frame {
         for k in (0..count).rev() {
             let lo = near * ratio.powi(k as i32);
             let last = k + 1 == count;
-            // Найдальший — нескінченний: за ним не лишається нічого, що
-            // намалює хтось інший.
+            // The farthest is infinite: nothing is left beyond it for anyone
+            // else to draw.
             let (projection, depth_a, depth_b) = if last {
                 (depth::reversed_infinite(FOV_Y, aspect, lo), 0.0, lo)
             } else {
@@ -1363,11 +1372,12 @@ impl Frame {
     }
 }
 
-/// Напрямок на світило так, як його бачить шейдер: четвертий компонент —
-/// набивка до `float4`, не частина вектора.
+/// The direction to the light source as the shader sees it: the fourth component
+/// is padding to `float4`, not part of the vector.
 ///
-/// Не нормалізує навмисно: довжина зараз масштабує дифузний член, і зміна
-/// цього — робота матеріалів M5, а не плюмбінгу V5 (`Scene::sun`).
+/// It deliberately does not normalise: the length currently scales the diffuse
+/// term, and changing that is the work of M5's materials rather than V5's
+/// plumbing (`Scene::sun`).
 fn narrow_sun(scene: &Scene) -> [f32; 4] {
     [
         scene.sun[0] as f32,
@@ -1377,44 +1387,48 @@ fn narrow_sun(scene: &Scene) -> [f32; 4] {
     ]
 }
 
-/// Планети патчами кубосфери (ROADMAP-PLANETS.md, R1d, R1e, R2c).
+/// Planets in cube-sphere patches (ROADMAP-PLANETS.md, R1d, R1e, R2c).
 ///
-/// Заміна UV-сфери, і суть заміни не в формі, а в тому, **хто рахує
-/// camera-relative**. Було: CPU щокадру проганяв кожну з 8385 вершин через
-/// `camera.relative`. Стало: CPU віднімає камеру раз на патч — шість чисел
-/// на грань замість тисячі, — а зсув вершини всередині патча в `f32` уже
-/// лежить у буфері й не переписується взагалі.
+/// A replacement for the UV sphere, and the point of the replacement is not the
+/// shape but **who computes camera-relative**. It used to be: every frame the
+/// CPU ran each of 8385 vertices through `camera.relative`. Now: the CPU
+/// subtracts the camera once per patch -- six numbers per face instead of a
+/// thousand -- and a vertex's offset inside the patch already lies in the buffer
+/// in `f32` and is never rewritten.
 ///
-/// Поворот вигляду при цьому переїхав у шейдер, у ту саму матрицю, що й
-/// проєкція: перенесення зробило віднімання на CPU в `double`, повороту
-/// байдуже до масштабу (`camera::Camera::view_rotation`).
+/// The view rotation moved into the shader in the process, into the same matrix
+/// as the projection: what mattered was doing the subtraction on the CPU in
+/// `double`, and a rotation does not care about scale
+/// (`camera::Camera::view_rotation`).
 ///
-/// **Геометрія — одинична сфера, спільна для всіх тіл** (R1e). Радіус і
-/// поворот конкретного тіла приходять другою матрицею, а початок його патча
-/// рахується на CPU у `f64`: `центр + R·(q·s) − око`. Це головне, чого крок
-/// не мав права зламати: множення на радіус у `f32` після віднімання камери
-/// повернуло б катастрофу скорочення на низькій орбіті.
+/// **The geometry is the unit sphere, shared by all bodies** (R1e). A particular
+/// body's radius and rotation arrive in a second matrix, and its patch's origin
+/// is computed on the CPU in `f64`: `centre + R*(q*s) - eye`. That is the main
+/// thing the step had no right to break: multiplying by the radius in `f32`
+/// after subtracting the camera would bring back catastrophic cancellation in
+/// low orbit.
 ///
-/// Початки патчів їдуть **storage-буфером**, а не масивом uniform-буферів:
-/// D3D12 останніх не дає взагалі, і PROJECT.md §7 уже поклав per-object дані
-/// саме сюди.
+/// The patch origins travel in a **storage buffer**, not an array of uniform
+/// buffers: D3D12 does not offer the latter at all, and PROJECT.md section 7
+/// already put per-object data here.
 ///
-/// ## Що приніс LOD (R2c)
+/// ## What LOD brought (R2c)
 ///
-/// Набір патчів більше не сталий: [`crate::lod::select`] дає його щокадру,
-/// на тіло. Звідси три рішення, і кожне випливає з правила 1 етапу R — патч
-/// є одиницею всього:
+/// The set of patches is no longer constant: [`crate::lod::select`] gives it
+/// every frame, per body. Hence three decisions, and each follows from rule 1 of
+/// stage R -- the patch is the unit of everything:
 ///
-/// - **геометрія патча кешується за самим патчем.** Зсуви вершин не залежать
-///   ні від камери, ні від тіла (одинична сфера), тож патч, який уже був у
-///   кадрі, не рахується вдруге. Без кеша LOD коштував би десятки тисяч
-///   `tan` щокадру — рівно та ціна, яку R1d щойно прибрав;
-/// - **індексні набори лежать усі шістнадцять поспіль** в одному буфері, і
-///   зшивання вибирає діапазон, а не буфер. Вони не залежать ні від патча,
-///   ні від тіла — це адресація сітки;
-/// - **виклик малювання — на патч**, `base_vertex` вказує на його слот у
-///   кеші. Дорого це стане тоді, коли патчів стануть тисячі, і відповідь на
-///   це вже названа: R6 і `draw_indexed_indirect`.
+/// - **a patch's geometry is cached by the patch itself.** Vertex offsets depend
+///   neither on the camera nor on the body (the unit sphere), so a patch that was
+///   already in the frame is not computed a second time. Without the cache, LOD
+///   would cost tens of thousands of `tan` every frame -- exactly the price R1d
+///   had just removed;
+/// - **all sixteen index sets lie back to back** in one buffer, and stitching
+///   picks a range rather than a buffer. They depend neither on the patch nor on
+///   the body -- this is addressing of the grid;
+/// - **one draw call per patch**, with `base_vertex` pointing at its slot in the
+///   cache. That becomes expensive when the patches number in the thousands, and
+///   the answer to it is already named: R6 and `draw_indexed_indirect`.
 struct Planet {
     /// Два пайплайни, а не гілка в шейдері: гладке тіло й тіло з рельєфом
     /// малюються різними програмами (R5c). Причина — уже спіймана пастка
