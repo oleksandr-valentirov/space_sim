@@ -1,72 +1,76 @@
-//! Камера третьої особи: чим гравець дивиться на власний корабель (етап V,
-//! крок V4).
+//! The third-person camera: what the player looks at their own ship with
+//! (stage V, step V4).
 //!
-//! Побудована так само, як [`crate::orbit::Orbit`], і з тієї самої причини:
-//! стан — три числа, позиція з них **виводиться**, а не накопичується. Камера,
-//! яка інтегрує зсуви, з часом сповзає зі сфери навколо цілі, і моменту, коли
-//! це стало помітно, не існує.
+//! Built like [`crate::orbit::Orbit`] and for the same reason: the state is
+//! three numbers, and the position is **derived** from them rather than
+//! accumulated. A camera that integrates offsets drifts off the sphere around
+//! the target over time, and there is no moment where that becomes noticeable.
 //!
-//! Тут немає ні GPU, ні вікна, ні `winit`: на вході числа, на виході
-//! [`Camera`].
+//! There is no GPU here, no window and no `winit`: numbers in, a [`Camera`]
+//! out.
 //!
-//! ## Два рішення, з яких випливає решта
+//! ## Two decisions the rest follows from
 //!
-//! **Камера бере від корабля позицію, а не орієнтацію.** Це не спрощення, а
-//! суть вигляду від третьої особи: камера, прив'язана до осей корабля,
-//! показує його нерухомим завжди — крен, поворот на курс і перекладання носа
-//! в ній не видно взагалі, бо разом із кораблем повертається весь кадр. Саме
-//! тому перевірка кроку — «поворот навколо кожної з трьох осей міняє силует»,
-//! і саме тому вона мала б сенс лише за цього рішення.
+//! **The camera takes position from the ship, not orientation.** Not a
+//! simplification but the essence of a third-person view: a camera bound to the
+//! ship's axes always shows it motionless -- roll, turning onto a heading and
+//! swinging the nose are not visible in it at all, because the whole frame
+//! turns with the ship. That is why the step's check is "a rotation about each
+//! of the three axes changes the silhouette", and why it would only make sense
+//! under this decision.
 //!
-//! **Відстань міряється габаритами корабля, а не метрами.** Стан несе
-//! `ranges` — у скільки разів камера далі за габарит, — і в метри це
-//! перетворюється лише в момент побудови [`Camera`]. Тоді кадр однаково
-//! компонує і шестиметрову заглушку, і майбутню справжню модель будь-якого
-//! розміру, а межа наближення («не залазити в корпус») виражається числом,
-//! яке не доведеться переглядати з кожним новим кораблем.
+//! **Distance is measured in ship extents, not metres.** The state carries
+//! `ranges` -- how many times farther the camera is than the extent -- and it
+//! turns into metres only when a [`Camera`] is built. Then the frame composes a
+//! six-metre placeholder and a future real model of any size alike, and the
+//! near limit ("do not climb inside the hull") is expressed by a number that
+//! will not have to be revisited with every new ship.
 
 use crate::camera::Camera;
 use crate::scene::Ship;
 
-/// Найближче, куди пускає колесо — у габаритах корабля.
+/// The closest the wheel allows -- in ship extents.
 ///
-/// Півтора габарита, а не один: габарит — це радіус обмежувальної сфери, тож
-/// на одиниці камера стояла б рівно на корпусі. Запас у половину лишає ближню
-/// площину кадру осмисленою — вона десята частина відстані до корпусу
-/// (`Frame::near_for`), і на нулі впиралася б у поріг 0.1 м.
+/// One and a half extents, not one: the extent is the bounding-sphere radius,
+/// so at one the camera would sit exactly on the hull. The half-extent margin
+/// keeps the frame's near plane meaningful -- it is a tenth of the distance to
+/// the hull (`Frame::near_for`), and at zero would hit the 0.1 m floor.
 pub const MIN_RANGES: f64 = 1.5;
 
-/// Найдалі. Двісті габаритів шестиметрового корабля — це кілометр, тобто
-/// апарат розміром у півтора пікселя кадру 720p. Далі третій особі нема на що
-/// дивитися: там уже карта, а не вигляд.
+/// The farthest. Two hundred extents of a six-metre ship is a kilometre, that
+/// is a vessel one and a half pixels across in a 720p frame. Beyond that the
+/// third person has nothing to look at: that is a map, not a view.
 pub const MAX_RANGES: f64 = 200.0;
 
-/// Скільки радіан на піксель тягне миша — те саме число, що в орбітальної
-/// камери: два різні темпи в одній грі гравець відчув би як несправність.
+/// Radians per pixel of mouse drag -- the same number as the orbit camera's:
+/// two different rates in one game would feel to the player like a fault.
 pub const RADIANS_PER_PIXEL: f64 = std::f64::consts::PI / 600.0;
 
-/// У скільки разів один «клац» колеса міняє відстань. Геометрично, як у
-/// [`crate::orbit`]: від півтора габарита до двохсот два з половиною порядки.
+/// The factor by which one wheel notch changes the distance. Geometric, as in
+/// [`crate::orbit`]: from one and a half extents to two hundred is two and a
+/// half orders of magnitude.
 const ZOOM_PER_NOTCH: f64 = 1.25;
 
-/// Куди не можна доводити нахил: рівно на полюсі напрямок погляду збігається
-/// з орієнтиром «вгору», їхній векторний добуток — нуль, і базис камери стає
-/// NaN. Користувач доводить камеру до полюса за секунду.
+/// Where the pitch must not reach: exactly at the pole the view direction
+/// coincides with the "up" reference, their cross product is zero, and the
+/// camera basis becomes NaN. A user drags the camera to the pole in a
+/// second.
 const PITCH_LIMIT: f64 = std::f64::consts::FRAC_PI_2 - 1.0e-3;
 
 pub struct Chase {
-    /// Азимут навколо орієнтира «вгору».
+    /// Azimuth about the "up" reference.
     yaw: f64,
-    /// Підйом над площиною, перпендикулярною до «вгору».
+    /// Elevation above the plane perpendicular to "up".
     pitch: f64,
-    /// Відстань до корабля в його ж габаритах.
+    /// Distance to the ship in the ship's own extents.
     ranges: f64,
 }
 
 impl Default for Chase {
-    /// Збоку й трохи згори — той самий ракурс, з якого починається
-    /// демо-анімація V2, і не випадково: з носа корабель читається гірше за
-    /// все, а третя особа має відкриватися впізнаваним силуетом.
+    /// From the side and slightly above -- the same angle the V2 demo
+    /// animation starts from, and not by accident: from the nose the ship reads
+    /// worst of all, and the third person should open on a recognisable
+    /// silhouette.
     fn default() -> Self {
         Chase {
             yaw: std::f64::consts::FRAC_PI_2,
@@ -77,7 +81,7 @@ impl Default for Chase {
 }
 
 impl Chase {
-    /// Той самий ракурс, але з іншої відстані — у габаритах корабля.
+    /// The same angle, but from a different distance -- in ship extents.
     pub fn at_ranges(ranges: f64) -> Chase {
         Chase {
             ranges: ranges.clamp(MIN_RANGES, MAX_RANGES),
@@ -85,32 +89,33 @@ impl Chase {
         }
     }
 
-    /// Куди дивиться камера, у габаритах корабля.
+    /// How far the camera is, in ship extents.
     pub fn ranges(&self) -> f64 {
         self.ranges
     }
 
-    /// Тягнення миші на `dx`, `dy` пікселів.
+    /// A mouse drag of `dx`, `dy` pixels.
     pub fn drag(&mut self, dx: f64, dy: f64) {
         self.yaw += dx * RADIANS_PER_PIXEL;
         self.pitch = (self.pitch + dy * RADIANS_PER_PIXEL).clamp(-PITCH_LIMIT, PITCH_LIMIT);
     }
 
-    /// `notches` клацань колеса: додатні наближають.
+    /// `notches` wheel clicks: positive zooms in.
     pub fn zoom(&mut self, notches: f64) {
         let factor = ZOOM_PER_NOTCH.powf(-notches);
         self.ranges = (self.ranges * factor).clamp(MIN_RANGES, MAX_RANGES);
     }
 
-    /// Камера, що дивиться на `ship` з поточних кутів і відстані.
+    /// A camera looking at `ship` from the current angles and distance.
     ///
-    /// `up` — орієнтир «вгору», і він **приходить від викликача**, а не
-    /// виводиться тут. Біля планети це місцева вертикаль, у міжпланетному
-    /// перельоті — що завгодно стале; `Scene` не каже, біля якого тіла
-    /// апарат, а вгадувати це з найближчого тіла означало б завести другу
-    /// правду про те, що викликач і так знає точно.
+    /// `up` is the "up" reference, and it **comes from the caller** rather than
+    /// being derived here. Near a planet it is the local vertical, in an
+    /// interplanetary transfer anything constant; `Scene` does not say which
+    /// body the vessel is near, and guessing it from the nearest body would
+    /// create a second truth about something the caller already knows exactly.
     ///
-    /// Орієнтація корабля не читається навмисно — див. модульний коментар.
+    /// The ship's orientation is deliberately not read -- see the module
+    /// comment.
     pub fn camera(&self, ship: &Ship, up: [f64; 3]) -> Camera {
         let (east, north) = basis(up);
         let (sin_pitch, cos_pitch) = self.pitch.sin_cos();
@@ -128,11 +133,11 @@ impl Chase {
     }
 }
 
-/// Два напрямки впоперек `up`, які доповнюють його до правої трійки.
+/// Two directions across `up` that complete it into a right-handed triple.
 ///
-/// Опорний вектор вибирається за найменшою компонентою `up`: будь-який сталий
-/// вибір вироджується там, де `up` збігається з ним, а найменша компонента
-/// гарантує кут не менший за 54° у найгіршому випадку.
+/// The reference vector is chosen by the smallest component of `up`: any fixed
+/// choice degenerates where `up` coincides with it, and the smallest component
+/// guarantees an angle of at least 54 degrees in the worst case.
 fn basis(up: [f64; 3]) -> ([f64; 3], [f64; 3]) {
     let smallest = (0..3).fold(0, |best, k| {
         if up[k].abs() < up[best].abs() {
@@ -177,21 +182,21 @@ mod tests {
         }
     }
 
-    /// Косий орієнтир «вгору»: жодна вісь не збігається з віссю світу.
+    /// A skewed "up" reference: no axis coincides with a world axis.
     fn up() -> [f64; 3] {
         let v = [0.37, -0.51, 0.77_f64];
         let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
         [v[0] / n, v[1] / n, v[2] / n]
     }
 
-    /// Корабель лишається точно попереду під будь-якими кутами, і рівно на
-    /// тій відстані, яку обіцяє стан.
+    /// The ship stays dead ahead at any angles, and exactly at the distance
+    /// the state promises.
     ///
-    /// Це перевірка всього ланцюжка кути → позиція → базис камери за один раз:
-    /// помилка в знаку, порядку множників чи переплутані sin/cos зсунули б
-    /// ціль убік. Береться `relative64`, а не `relative`: на 5.9·10⁶ м від
-    /// початку координат `f32` дає похибку в метри, і тест міряв би її, а не
-    /// камеру.
+    /// This checks the whole chain angles -> position -> camera basis at once: a
+    /// sign error, a wrong multiplication order or swapped sin/cos would push
+    /// the target aside. `relative64` is used rather than `relative`: at 5.9e6 m
+    /// from the origin `f32` errs by metres, and the test would be measuring
+    /// that instead of the camera.
     #[test]
     fn the_ship_stays_dead_ahead() {
         let ship = ship(3.0);
@@ -203,27 +208,27 @@ mod tests {
                 let centre = chase.camera(&ship, up()).relative64(ship.centre);
                 assert!(
                     centre[0].abs() < 1.0e-6 && centre[1].abs() < 1.0e-6,
-                    "корабель зсунувся вбік: {centre:?}"
+                    "the ship drifted aside: {centre:?}"
                 );
                 let distance = chase.ranges() * ship.extent_m;
                 assert!(
                     (-centre[2] - distance).abs() < 1.0e-6,
-                    "відстань {} замість {distance}",
+                    "distance {} instead of {distance}",
                     -centre[2]
                 );
             }
         }
     }
 
-    /// Удвічі більший корабель компонується так само — тобто камера справді
-    /// міряє габаритами, а не метрами.
+    /// A ship twice as large is framed the same way -- so the camera really
+    /// does measure in extents rather than metres.
     ///
-    /// Оракул — кутовий розмір: `atan(габарит / відстань)` мусить збігтися.
-    /// Допуск 10⁻⁹ — не «приблизно», а ціна місця: корабель стоїть за 5.9·10⁶ м
-    /// від початку координат, тож віднімання камери лишає близько нанометра, а
-    /// кут на тринадцяти метрах відстані переводить його в 1.5·10⁻¹¹ радіана.
-    /// Ставити корабель у початок координат було б простіше й перевіряло б
-    /// менше.
+    /// The oracle is angular size: `atan(extent / distance)` must match. The
+    /// 1e-9 tolerance is not "approximately" but the price of location: the ship
+    /// stands 5.9e6 m from the origin, so subtracting the camera leaves about a
+    /// nanometre, and the angle at thirteen metres of distance turns that into
+    /// 1.5e-11 radians. Putting the ship at the origin would be simpler and
+    /// would check less.
     #[test]
     fn a_bigger_ship_is_framed_the_same_way() {
         let small = ship(3.0);
@@ -236,16 +241,17 @@ mod tests {
         };
         assert!(
             (angle(&small) - angle(&big)).abs() < 1.0e-9,
-            "{} проти {}",
+            "{} against {}",
             angle(&small),
             angle(&big)
         );
     }
 
-    /// Колесо не заводить камеру в корпус і не відпускає її за межу карти.
+    /// The wheel neither drives the camera into the hull nor lets it past the
+    /// map's edge.
     ///
-    /// Сто клацань у кожен бік — більше, ніж треба, щоб дійти до обох меж, тож
-    /// перевіряється саме затискання, а не швидкість.
+    /// A hundred notches each way is more than enough to reach both bounds, so
+    /// what is checked is the clamping rather than the rate.
     #[test]
     fn the_wheel_stops_at_both_ends() {
         let mut chase = Chase::default();
@@ -254,7 +260,7 @@ mod tests {
         }
         assert!(
             (chase.ranges() - MIN_RANGES).abs() < 1.0e-12,
-            "наблизилась до {}",
+            "zoomed in to {}",
             chase.ranges()
         );
 
@@ -263,15 +269,16 @@ mod tests {
         }
         assert!(
             (chase.ranges() - MAX_RANGES).abs() < 1.0e-12,
-            "віддалилась до {}",
+            "zoomed out to {}",
             chase.ranges()
         );
     }
 
-    /// Нахил не доходить до полюса, тож базис камери не вироджується.
+    /// The pitch never reaches the pole, so the camera basis does not
+    /// degenerate.
     ///
-    /// Перевірка — не сам кут, а те, заради чого межа існує: позиція камери
-    /// лишається скінченною й на відстані, а не NaN.
+    /// What is checked is not the angle itself but what the bound exists for:
+    /// the camera position stays finite and at its distance, rather than NaN.
     #[test]
     fn the_pitch_never_reaches_the_pole() {
         let ship = ship(3.0);
@@ -282,19 +289,19 @@ mod tests {
         let centre = chase.camera(&ship, up()).relative64(ship.centre);
         assert!(
             centre.iter().all(|v| v.is_finite()),
-            "базис вироджений: {centre:?}"
+            "the basis degenerated: {centre:?}"
         );
         assert!(
             (-centre[2] - chase.ranges() * ship.extent_m).abs() < 1.0e-6,
-            "камера зійшла з сфери: {centre:?}"
+            "the camera left the sphere: {centre:?}"
         );
     }
 
-    /// Поворот корабля не рухає камеру взагалі — камера бере позицію, а не
-    /// орієнтацію.
+    /// Turning the ship does not move the camera at all -- the camera takes
+    /// position, not orientation.
     ///
-    /// Найдешевший сторож проти того, щоб орієнтація колись «знадобилася» тут:
-    /// із нею вигляд від третьої особи перестав би показувати обертання.
+    /// The cheapest guard against orientation ever becoming "needed" here: with
+    /// it the third-person view would stop showing rotation.
     #[test]
     fn turning_the_ship_does_not_move_the_camera() {
         let chase = Chase::default();
@@ -306,7 +313,7 @@ mod tests {
         let a = chase.camera(&upright, up()).position();
         let b = chase.camera(&rolled, up()).position();
         for k in 0..3 {
-            assert!((a[k] - b[k]).abs() < 1.0e-12, "{a:?} проти {b:?}");
+            assert!((a[k] - b[k]).abs() < 1.0e-12, "{a:?} against {b:?}");
         }
     }
 }

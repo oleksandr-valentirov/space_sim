@@ -1,85 +1,89 @@
-//! Відбір патчів: що взагалі не варто малювати (ROADMAP-PLANETS.md, R3).
+//! Patch culling: what is not worth drawing at all (ROADMAP-PLANETS.md, R3).
 //!
-//! PROJECT.md §7 каже прямо: **horizon culling важливіший за frustum** —
-//! половина планети завжди за лімбом, і скільки б камера не крутилась, це не
-//! міняється. Frustum прибирає те, що збоку; горизонт прибирає те, чого немає
-//! в принципі.
+//! PROJECT.md section 7 says it outright: **horizon culling matters more than
+//! frustum** -- half the planet is always past the limb, and however the camera
+//! turns, that does not change. Frustum removes what is off to the side; the
+//! horizon removes what is not there in principle.
 //!
-//! ## Чому відбір іде **після** вибору рівня, а не всередині нього
+//! ## Why culling comes **after** level selection rather than inside it
 //!
-//! Спокуса очевидна: не спускатися в патч, який усе одно за лімбом, і
-//! заощадити на самому обході. Ціна цієї економії — зшивання. Маска
-//! (`lod::Selection::masks`) рахується з того, що лежить у наборі; викинутий
-//! під час обходу сусід перетворюється на «той бік дрібніший», ребро лишається
-//! незшитим, і тріщина з'являється рівно на лімбі — тобто на силуеті, там, де
-//! її видно найкраще.
+//! The temptation is obvious: do not descend into a patch that is past the limb
+//! anyway, and save on the traversal itself. The price of that saving is
+//! stitching. The mask (`lod::Selection::masks`) is computed from what is in the
+//! set; a neighbour dropped during traversal turns into "that side is finer",
+//! the edge stays unstitched, and a crack appears exactly at the limb -- that
+//! is on the silhouette, where it shows best.
 //!
-//! Тож набір будується цілим, а відбір лише **позначає**, що з нього
-//! малювати. Заощадження при цьому майже не втрачається: дальня півсфера
-//! віддалена на ~2R, і критерій похибки сам віддає їй найгрубіші рівні —
-//! кількох патчів, які нічого не коштують ні в обході, ні в кеші.
+//! So the set is built whole, and culling only **marks** what of it to draw.
+//! Almost nothing of the saving is lost: the far hemisphere is ~2R away, and
+//! the error criterion gives it the coarsest levels by itself -- a handful of
+//! patches that cost nothing in traversal or in the cache.
 //!
-//! ## Критерій лімба — без жодної тригонометрії в кадрі
+//! ## The limb criterion, without a single trigonometric call in the frame
 //!
-//! Точка `p` (одиничний напрямок з центра тіла) сховається за лімбом, коли
-//! `p · u ≤ R_min² / (R · d)`, де `u` — напрямок на камеру, `d` — відстань до
-//! неї. Для патча ж питання не про точку, а про **найближчу до камери точку
-//! патча**, і на нього відповідає конус патча ([`crate::cubesphere::Cone`]):
-//! якщо кут між віссю конуса й `u` дорівнює `β`, а піврозхил — `α`, то
-//! найкраще, на що патч здатний, — це `cos(β − α)`. Розкладається воно в
-//! `cos β cos α + sin β sin α`, тобто в чотири множення на патч.
+//! A point `p` (a unit direction from the body centre) hides past the limb when
+//! `p . u <= R_min^2 / (R * d)`, where `u` is the direction to the camera and
+//! `d` the distance to it. For a patch, though, the question is not about a
+//! point but about the **patch point nearest to the camera**, and the patch cone
+//! answers it ([`crate::cubesphere::Cone`]): if the angle between the cone axis
+//! and `u` is `beta` and the half-spread is `alpha`, then the best the patch can
+//! do is `cos(beta - alpha)`. That expands into
+//! `cos(beta)cos(alpha) + sin(beta)sin(alpha)`, that is four multiplications per
+//! patch.
 //!
-//! ## Мінімальний радіус, а не середній
+//! ## The minimum radius, not the mean
 //!
-//! Різниця не академічна: за середнім радіусом гора за лімбом зникає, а вона
-//! видна. Числа тут різні й плутаються — середній радіус ассета
-//! (`eph_body_radius`), опорний радіус гармонік і найнижча точка тайла; для
-//! Місяця перші два вже розходяться на **470 м** (K5e).
+//! The difference is not academic: by a mean radius a mountain past the limb
+//! disappears, and it is visible. The numbers here differ and get confused --
+//! the asset's mean radius (`eph_body_radius`), the harmonics' reference radius
+//! and a tile's lowest point; for the Moon the first two already differ by
+//! **470 m** (K5e).
 //!
-//! **Поки тайлів немає, мінімальний радіус береться з тіла.** Коли R5 їх
-//! принесе, він мусить братися **з тайла** — там уже є min/max висоти. Це
-//! записано тут, а не «колись згадається»: [`Body::occluder_radius_m`] існує
-//! окремим полем саме заради того дня.
+//! **While there are no tiles, the minimum radius comes from the body.** When
+//! R5 brings them, it must come **from the tile** -- min/max heights are already
+//! there. Written here rather than "remembered some day":
+//! [`Body::occluder_radius_m`] exists as its own field exactly for that day.
 //!
-//! ## Frustum — після горизонту, і рівно тому, що дешевший буває другим
+//! ## Frustum after the horizon, precisely because the cheaper one goes first
 //!
-//! Порядок не з естетики: горизонт прибирає половину планети за один
-//! скалярний добуток, frustum вимагає обмежувальної сфери в камерному
-//! просторі й чотирьох площин. Дешевше спершу викинути те, чого немає, ніж
-//! питати в дорогого критерію про те, що вже викинуто. Скільки frustum додає
-//! **понад** горизонт — окреме поле [`Visibility::outside_frustum`], бо
-//! «важливіший» без числа лишається цитатою.
+//! The order is not aesthetics: the horizon removes half the planet with one dot
+//! product, the frustum needs a bounding sphere in camera space and four planes.
+//! It is cheaper to throw away what is not there first than to ask an expensive
+//! criterion about what is already gone. How much the frustum adds **on top of**
+//! the horizon is its own field [`Visibility::outside_frustum`], because
+//! "matters more" without a number stays a quotation.
 //!
-//! ## Поворот тіла входить у відбір, і це не дрібниця
+//! ## The body's rotation enters culling, and that is not a detail
 //!
-//! Конус патча живе в системі **тіла**, а камера — у системі світу. Поки
-//! орієнтація одинична, різниці немає, і саме тому помилка такого роду
-//! знаходиться не тоді, коли її зробили. Тому напрямок на камеру тут
-//! переводиться в систему тіла транспонованою матрицею повороту — один раз на
-//! тіло, а не на патч.
+//! A patch cone lives in the **body's** frame, while the camera lives in the
+//! world's. As long as the orientation is identity there is no difference, and
+//! that is exactly why an error of this kind is not found when it is made. So
+//! the direction to the camera is taken into body space here by the transposed
+//! rotation matrix -- once per body, not per patch.
 
 use crate::camera::Camera;
 use crate::cubesphere::Patch;
 use crate::lod::Selection;
 
-/// Тіло, яке затуляє: центр, радіус поверхні й радіус затуляння.
+/// An occluding body: centre, surface radius and occluder radius.
 ///
-/// Два радіуси, а не один, і це не запас на майбутнє, а те, що вже різне за
-/// змістом: перший каже, **де лежать вершини патча**, другий — **що саме
-/// затуляє погляд**. Сьогодні вони збігаються; з появою рельєфу другий стане
-/// найнижчою точкою тайла, і жодна формула нижче від цього не зміниться.
+/// Two radii rather than one, and that is not a reserve for the future but two
+/// things that already differ in meaning: the first says **where the patch
+/// vertices lie**, the second **what actually blocks the view**. Today they
+/// coincide; when terrain appears the second becomes the tile's lowest point,
+/// and not one formula below will change because of it.
 #[derive(Clone, Copy, Debug)]
 pub struct Body {
     pub centre: [f64; 3],
     pub radius_m: f64,
     pub occluder_radius_m: f64,
-    /// Поворот із системи тіла в систему світу — той самий, яким кадр
-    /// повертає початки патчів.
+    /// Rotation from body space to world space -- the same one the frame turns
+    /// patch origins with.
     pub rotation: [[f64; 3]; 3],
 }
 
 impl Body {
-    /// Тіло без рельєфу: затуляє рівно своя сфера.
+    /// A body without terrain: its own sphere is exactly what occludes.
     pub fn smooth(centre: [f64; 3], radius_m: f64, rotation: [[f64; 3]; 3]) -> Body {
         Body {
             centre,
@@ -89,8 +93,8 @@ impl Body {
         }
     }
 
-    /// Напрямок зі світу — у систему тіла. Поворот ортогональний, тож
-    /// зворотний до нього — транспонований, без жодного оберненого.
+    /// A direction from the world into body space. The rotation is orthogonal,
+    /// so its inverse is its transpose, with no inversion at all.
     fn in_body(&self, world: [f64; 3]) -> [f64; 3] {
         let mut out = [0.0; 3];
         for (k, value) in out.iter_mut().enumerate() {
@@ -101,7 +105,7 @@ impl Body {
         out
     }
 
-    /// Точка тіла — у світ.
+    /// A body point into the world.
     fn in_world(&self, local: [f64; 3]) -> [f64; 3] {
         let mut out = self.centre;
         for (k, value) in out.iter_mut().enumerate() {
@@ -113,14 +117,14 @@ impl Body {
     }
 }
 
-/// Що з набору малюється, і чому решта — ні.
+/// What of the set is drawn, and why the rest is not.
 pub struct Visibility {
-    /// Паралельний до `Selection::patches`.
+    /// Parallel to `Selection::patches`.
     pub visible: Vec<bool>,
-    /// Скільки патчів прибрав горизонт.
+    /// How many patches the horizon removed.
     pub past_limb: usize,
-    /// Скільки додав frustum **понад** горизонт — тобто тих, які горизонт
-    /// лишив, а межі кадру прибрали.
+    /// How many the frustum added **on top of** the horizon -- those the
+    /// horizon kept and the frame bounds removed.
     pub outside_frustum: usize,
 }
 
@@ -130,44 +134,49 @@ impl Visibility {
     }
 }
 
-/// Косинус кута, далі за який точка поверхні ховається за лімбом.
+/// The cosine of the angle past which a surface point hides behind the limb.
 ///
-/// Понад одиницю означає, що не видно нічого: камера всередині тіла. Нижче
-/// за −1 — що видно все, і таке буває, коли затуляч менший за поверхню.
+/// Above one means nothing is visible: the camera is inside the body. Below -1
+/// means everything is visible, which happens when the occluder is smaller than
+/// the surface.
 pub fn limb_cos(body: &Body, distance_m: f64) -> f64 {
     let r = body.occluder_radius_m;
     r * r / (body.radius_m * distance_m.max(1.0))
 }
 
-/// Чи видно патч поверх лімба.
+/// Whether the patch is hidden past the limb.
 ///
-/// `to_eye` — одиничний напрямок з центра тіла на камеру.
+/// `to_eye` is the unit direction from the body centre to the camera.
 pub fn beyond_limb(patch: &Patch, to_eye: [f64; 3], limb_cos: f64) -> bool {
     let cone = patch.cone();
     let cos_beta = (cone.axis[0] * to_eye[0] + cone.axis[1] * to_eye[1] + cone.axis[2] * to_eye[2])
         .clamp(-1.0, 1.0);
-    // **Око всередині конуса — окремий випадок, і саме на ньому це колись
-    // ламалося.** Формула нижче дає `cos(β − α)`, а косинус парний, тож при
-    // `β < α` вона повертає `cos(α − β)` — косинус кута до **краю** шапки, а
-    // не до найближчої її точки. Найближча ж при цьому лежить рівно під оком,
-    // тобто під кутом нуль, і правильна відповідь — одиниця.
+    // **The eye inside the cone is a special case, and it is exactly where
+    // this once broke.** The formula below gives `cos(beta - alpha)`, and cosine
+    // is even, so at `beta < alpha` it returns `cos(alpha - beta)` -- the cosine
+    // of the angle to the **edge** of the cap rather than to its nearest point.
+    // The nearest point then lies exactly under the eye, that is at angle zero,
+    // and the right answer is one.
     //
-    // Ціна помилки була не косметична: грань нульового рівня має `α = 54.7°`,
-    // тож `cos(α − β) ≤ R/d` виконувалось для всього, що ближче за `1.7 R` —
-    // і відбір викидав грань, **над якою стоїть камера**. У кадрі це виглядало
-    // як тіло, обрізане по краю грані куба, і з'являлося смугами, бо поріг
-    // повзе з висотою. Коментар на цьому місці стверджував протилежне
-    // («формула працює і при β < α»), і саме тому помилка прожила від R3a.
+    // The price of the mistake was not cosmetic: a level-zero face has
+    // `alpha = 54.7 deg`, so `cos(alpha - beta) <= R/d` held for everything
+    // closer than `1.7 R` -- and culling threw away the face **the camera stands
+    // over**. In the frame this looked like a body cut off along a cube-face
+    // edge, and it appeared in bands, because the threshold creeps with
+    // altitude. The comment in this very place claimed the opposite ("the
+    // formula works at beta < alpha too"), which is why the bug lived from
+    // R3a.
     if cos_beta >= cone.cos_half {
         return false;
     }
     let sin_beta = (1.0 - cos_beta * cos_beta).max(0.0).sqrt();
-    // cos(β − α) — найбільше, на що патч здатний, коли око поза шапкою.
+    // cos(beta - alpha) -- the best the patch can do when the eye is outside
+    // the cap.
     let best = cos_beta * cone.cos_half + sin_beta * cone.sin_half;
     best <= limb_cos
 }
 
-/// Відбір за горизонтом для всього набору.
+/// Horizon culling for the whole set.
 pub fn horizon(selection: &Selection, body: &Body, camera: &Camera) -> Visibility {
     let eye = camera.position();
     let d = [
@@ -200,12 +209,12 @@ pub fn horizon(selection: &Selection, body: &Body, camera: &Camera) -> Visibilit
     out
 }
 
-/// Обмежувальна сфера патча у світових координатах.
+/// The patch bounding sphere in world coordinates.
 ///
-/// Центр — точка поверхні на осі конуса, радіус — хорда до найдальшого вузла:
-/// `R·|p − axis| = R·√(2 − 2·cos α)`. Це не оцінка згори «з запасом», а точна
-/// межа для того самого конуса, яким користується горизонт — і саме тому два
-/// критерії не можуть розійтися в тому, що вважають патчем.
+/// The centre is the surface point on the cone axis, the radius is the chord to
+/// the farthest node: `R*|p - axis| = R*sqrt(2 - 2cos(alpha))`. Not a generous
+/// upper estimate but the exact bound for the same cone the horizon uses -- and
+/// that is why the two criteria cannot disagree about what a patch is.
 fn bounding_sphere(patch: &Patch, body: &Body) -> ([f64; 3], f64) {
     let cone = patch.cone();
     let centre = body.in_world([
@@ -217,12 +226,12 @@ fn bounding_sphere(patch: &Patch, body: &Body) -> ([f64; 3], f64) {
     (centre, radius)
 }
 
-/// Відбір за межами кадру — **поверх** уже готового відбору за горизонтом.
+/// Frustum culling -- **on top of** the finished horizon culling.
 ///
-/// Чотири бічні площини, і жодної ближньої чи дальньої: далека площина
-/// нескінченна (reversed-Z, F3), а ближня менша за будь-який патч на кілька
-/// порядків. Патч позаду камери відкидають ті самі чотири площини — усі
-/// одразу, бо позаду вони сходяться.
+/// Four side planes and no near or far one: the far plane is infinite
+/// (reversed-Z, F3), and the near one is orders of magnitude smaller than any
+/// patch. A patch behind the camera is rejected by those same four planes -- all
+/// at once, because behind the camera they converge.
 pub fn frustum(
     visibility: &mut Visibility,
     selection: &Selection,
@@ -233,8 +242,8 @@ pub fn frustum(
 ) {
     let t = (fov_y / 2.0).tan();
     let (tx, ty) = (aspect * t, t);
-    // Нормування площин — щоб порівнювати з радіусом у метрах, а не з
-    // величиною, у якій сховався масштаб.
+    // Normalising the planes, so the comparison is against a radius in metres
+    // rather than a quantity with a hidden scale.
     let (nx, ny) = ((1.0 + tx * tx).sqrt(), (1.0 + ty * ty).sqrt());
 
     for (patch, visible) in selection.patches.iter().zip(visibility.visible.iter_mut()) {
@@ -243,8 +252,9 @@ pub fn frustum(
         }
         let (centre, radius) = bounding_sphere(patch, body);
         let p = camera.relative64(centre);
-        // Камера дивиться вздовж −z, отже попереду `z` від'ємне, і «зовні»
-        // для кожної площини — це додатна відстань більша за радіус.
+        // The camera looks along -z, so `z` is negative in front, and
+        // "outside" for each plane is a positive distance larger than the
+        // radius.
         let outside = (p[0] + tx * p[2]) / nx > radius
             || (-p[0] + tx * p[2]) / nx > radius
             || (p[1] + ty * p[2]) / ny > radius

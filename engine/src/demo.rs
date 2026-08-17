@@ -1,31 +1,36 @@
-//! Демонстрація поточного стану рендера: серія знімків без вікна.
+//! A demonstration of the renderer's current state: a series of shots with no
+//! window.
 //!
-//! Не новий шлях і не окремий рендер. Це той самий [`crate::frame::Frame`],
-//! той самий [`crate::shot`] і ті самі сцени, якими користуються тести —
-//! просто зібрані в один прогін і підписані. Тому демка **не може**
-//! показати те, чого немає в грі: якщо картинка вийшла, значить рушій справді
-//! це малює.
+//! Not a new path and not a separate renderer. This is the same
+//! [`crate::frame::Frame`], the same [`crate::shot`] and the same scenes the
+//! tests use -- just collected into one run and captioned. So the demo
+//! **cannot** show anything that is not in the game: if a picture came out, the
+//! engine really does draw it.
 //!
-//! ## Чому знімками, а не вікном
+//! ## Why shots rather than a window
 //!
-//! З тієї самої причини, з якої існує `--shot` (ROADMAP F1): вікно нічого не
-//! доводить, а знімок можна покласти в комміт, надіслати й порівняти. Демка
-//! перевідтворюється однією командою й дає ті самі байти:
+//! For the same reason `--shot` exists (ROADMAP F1): a window proves nothing,
+//! while a shot can be committed, sent and compared. The demo is reproduced by
+//! one command and gives the same bytes:
 //!
 //! ```sh
-//! make cook-dem                                  # раз, якщо assets/ порожній
+//! make cook-dem                                  # once, if assets/ is empty
 //! cargo run --release -p engine -- --demo build/demo
 //! ```
 //!
-//! Каталог належить тому, хто його назвав: демка пише в нього свої файли й
-//! **нічого не видаляє**. Перейменований кадр лишить по собі старий файл, і
-//! прибрати його — справа того, хто перейменовував.
+//! The directory belongs to whoever named it: the demo writes its files into it
+//! and **deletes nothing**. A renamed frame leaves the old file behind, and
+//! removing it is the business of whoever renamed it.
 //!
-//! ## Чого тут свідомо немає
+//! Captions stay in Ukrainian deliberately: they are written into a manifest
+//! for the developer, the same class of text as README.md, not diagnostics.
 //!
-//! **Жодного власного шейдера, кольору чи камери «щоб гарніше».** Освітлення
-//! тимчасове й таким і виглядає; колір планети — той самий `COLOUR` з
-//! `frame.rs`. Демка, підфарбована окремо, показувала б себе, а не рушій.
+//! ## What is deliberately absent
+//!
+//! **No shader, colour or camera of its own "to look nicer".** The lighting is
+//! temporary and looks it; the planet's colour is the same `COLOUR` from
+//! `frame.rs`. A separately tinted demo would be showing itself rather than the
+//! engine.
 
 use std::path::Path;
 
@@ -37,29 +42,32 @@ use crate::shot;
 use crate::tiles::Terrain;
 use crate::{live, sphere};
 
-/// Розмір кадру демки.
+/// The demo frame size.
 ///
-/// Не 1280×720: знімки читаються поруч один з одним, а не поодинці, і
-/// вчетверо менший файл важить тут більше за вчетверо більший піксель.
+/// Not 1280x720: the shots are read side by side rather than one at a time, and
+/// a file four times smaller matters more here than a pixel four times
+/// larger.
 const WIDTH: u32 = 960;
 const HEIGHT: u32 = 540;
 
 const MOON_RADIUS_M: f64 = 1_737_400.0;
 
-/// Скукований рельєф Місяця, від кореня репозиторію.
+/// The cooked lunar terrain, relative to the repository root.
 pub const TERRAIN_ASSET: &str = "assets/moon.dem";
 
-/// Скукований колір Місяця (етап T, T2d). Окремий асет, і бракувати може
-/// незалежно від рельєфу — тоді демо малює сірий Місяць із горами.
+/// The cooked lunar colour (stage T, T2d). A separate asset, and it can be
+/// missing independently of the terrain -- then the demo draws a grey Moon with
+/// mountains.
 pub const COLOUR_ASSET: &str = "assets/moon.col";
 
-/// Один кадр демки: ім'я файлу й підпис, що саме на ньому видно.
+/// One demo frame: the file name and a caption of what is visible on it.
 pub struct Picture {
     pub name: &'static str,
     pub caption: String,
 }
 
-/// Камера на висоті `altitude` над напрямком `direction`, дивиться в центр.
+/// A camera at altitude `altitude` above direction `direction`, looking at the
+/// centre.
 fn above(direction: [f64; 3], radius_m: f64, altitude: f64, up: [f64; 3]) -> Camera {
     let length = direction.iter().map(|v| v * v).sum::<f64>().sqrt();
     let distance = radius_m + altitude;
@@ -67,18 +75,19 @@ fn above(direction: [f64; 3], radius_m: f64, altitude: f64, up: [f64; 3]) -> Cam
     Camera::look_at(eye, [0.0, 0.0, 0.0], up)
 }
 
-/// Одиничний напрямок на джерело світла — той самий, що освітлює кадр.
+/// The unit direction to the light source -- the same one that lights the
+/// frame.
 fn light() -> [f64; 3] {
     let l = frame::LIGHT_DIR.map(f64::from);
     let n = l.iter().map(|v| v * v).sum::<f64>().sqrt();
     l.map(|v| v / n)
 }
 
-/// Напрямок під кутом `tilt` градусів до світла.
+/// A direction `tilt` degrees away from the light.
 ///
-/// Потрібен рівно для того, щоб не знімати нічний бік: там освітлення стале,
-/// і рельєф на ньому невидимий ні з тайлами, ні без них. Перша версія тестів
-/// R5c саме на це й наступила.
+/// Needed exactly so as not to shoot the night side: illumination there is
+/// constant, and terrain on it is invisible both with tiles and without. The
+/// first version of the R5c tests stepped on precisely that.
 fn from_light(tilt: f64) -> [f64; 3] {
     let l = light();
     let seed = if l[2].abs() < 0.9 {
@@ -102,23 +111,26 @@ fn from_light(tilt: f64) -> [f64; 3] {
     [0, 1, 2].map(|k| c * l[k] + s * e1[k])
 }
 
-/// Камера на висоті `altitude`, що дивиться **вздовж лімба**, а не вниз.
+/// A camera at altitude `altitude` looking **along the limb** rather than down.
 ///
-/// Погляд у надир з низької орбіти дає рівне поле кольору й не показує
-/// нічого: сфера накриває кадр цілком, а гладка сфера ще й не має чого
-/// показувати. Перша версія демки саме такою й вийшла, і це було чесно, але
-/// марно. Лімб натомість показує все одразу — кривизну, ближню площину,
-/// відбір за горизонтом і профіль рельєфу проти неба.
+/// A nadir view from low orbit gives a flat field of colour and shows nothing:
+/// the sphere covers the frame entirely, and a smooth sphere has nothing to
+/// show anyway. The first version of the demo came out exactly like that, and
+/// it was honest but useless. The limb instead shows everything at once --
+/// curvature, the near plane, horizon culling and the terrain profile against
+/// the sky.
 ///
-/// Ціль погляду — точка поверхні рівно на горизонті: `acos(R / (R + h))` від
-/// підкамерної. Її рахує арифметика, а не око.
+/// The look-at target is the surface point exactly on the horizon:
+/// `acos(R / (R + h))` from the sub-camera point. Arithmetic computes it, not
+/// the eye.
 fn along_limb(direction: [f64; 3], radius_m: f64, altitude: f64) -> Camera {
     let unit = |v: [f64; 3]| {
         let n = v.iter().map(|x| x * x).sum::<f64>().sqrt();
         v.map(|x| x / n)
     };
     let u = unit(direction);
-    // Дотична до сфери в підкамерній точці: будь-яка, аби перпендикулярна.
+    // A tangent to the sphere at the sub-camera point: any one, as long as it
+    // is perpendicular.
     let seed = if u[2].abs() < 0.9 {
         [0.0, 0.0, 1.0]
     } else {
@@ -140,7 +152,7 @@ fn along_limb(direction: [f64; 3], radius_m: f64, altitude: f64) -> Camera {
     let horizon = (radius_m / distance).acos();
     let (c, s) = (horizon.cos(), horizon.sin());
     let target = [0, 1, 2].map(|k| radius_m * (c * u[k] + s * tangent[k]));
-    // Вертикаль кадру — назовні від тіла: так небо вгорі, а поверхня внизу.
+    // The frame's up is outward from the body: sky on top, surface below.
     Camera::look_at(eye, target, u)
 }
 
@@ -155,25 +167,26 @@ fn body(radius_m: f64, tiles: TileSet) -> Body {
     }
 }
 
-/// Сцена з halo-орбіти: Земля, Місяць і траєкторія, порахована **зараз**.
+/// The halo-orbit scene: Earth, the Moon and a trajectory computed **now**.
 ///
-/// Єдина сцена демки, у якій є фізика. Лінія — вихід `prop_run` крізь поле
-/// десяти тіл ассета (H5), а не колонка з CSV.
+/// The only demo scene with physics in it. The line is the output of `prop_run`
+/// through the field of the asset's ten bodies (H5), not a column from a CSV.
 ///
-/// ## Чому в обертовому фреймі, а не у світових координатах
+/// ## Why in the rotating frame rather than in world coordinates
 ///
-/// Перша версія цієї сцени малювала світові координати й дала пряму лінію
-/// через увесь кадр — і це не помилка рендера, а правда про масштаб: за
-/// дванадцять діб система Земля-Місяць пролітає геліоцентрично на порядки
-/// більше, ніж розмах самої halo-орбіти. Та сама причина, з якої
-/// `trajectory_render` бере **геоцентричний** anchor (F6).
+/// The first version of this scene drew world coordinates and gave a straight
+/// line across the whole frame -- and that is not a render bug but the truth
+/// about scale: over twelve days the Earth-Moon system travels heliocentrically
+/// orders of magnitude farther than the span of the halo orbit itself. The same
+/// reason `trajectory_render` takes a **geocentric** anchor (F6).
 ///
-/// Тут фрейм обертовий (`trajectory::rotating_position`), а масштаб
-/// **закріплений** сталою відстанню, а не миттєвою: інакше Місяць дихав би
-/// разом з ексцентриситетом своєї орбіти (U6a3).
+/// Here the frame is rotating (`trajectory::rotating_position`), and the scale
+/// is **pinned** by a constant distance rather than the instantaneous one:
+/// otherwise the Moon would breathe along with its orbital eccentricity
+/// (U6a3).
 fn halo() -> Result<Scene, String> {
-    // Середня відстань Земля-Місяць. Обертовий фрейм безрозмірний, і саме
-    // цією сталою він повертається в метри.
+    // The mean Earth-Moon distance. The rotating frame is dimensionless, and
+    // this constant is what brings it back to metres.
     const L: f64 = 3.844e8;
 
     let asset = live::repo_asset();
@@ -181,7 +194,7 @@ fn halo() -> Result<Scene, String> {
         live::propagate(&live::fixture_start(), 14.0, &asset).map_err(|e| format!("{e:?}"))?;
     let samples = &flight.samples;
     if samples.len() < 2 {
-        return Err("прогноз повернув менше двох семплів".to_string());
+        return Err("the prediction returned fewer than two samples".to_string());
     }
 
     let points: Vec<[f64; 3]> = samples
@@ -195,9 +208,10 @@ fn halo() -> Result<Scene, String> {
     let moon = [(1.0 - crate::trajectory::MU) * L, 0.0, 0.0];
     let earth = [-crate::trajectory::MU * L, 0.0, 0.0];
 
-    // Кадр будується з даних: центр — середина хмари точок разом із Місяцем,
-    // відстань — з її розмаху. Підбирати це руками означало б, що знімок
-    // перестане бути правильним, щойно орбіта зміниться.
+    // The framing is built from the data: the centre is the middle of the
+    // point cloud together with the Moon, the distance comes from its span.
+    // Tuning this by hand would mean the shot stops being right the moment the
+    // orbit changes.
     let mut low = [f64::INFINITY; 3];
     let mut high = [f64::NEG_INFINITY; 3];
     for p in points.iter().chain(std::iter::once(&moon)) {
@@ -212,8 +226,8 @@ fn halo() -> Result<Scene, String> {
         .fold(0.0_f64, f64::max)
         .max(1.0);
 
-    // Погляд збоку й трохи згори: halo-орбіта не пласка, і фронтальний
-    // погляд показав би її як відрізок.
+    // A view from the side and slightly above: a halo orbit is not planar, and
+    // a head-on view would show it as a line segment.
     let eye = [
         centre[0] - extent * 0.35,
         centre[1] - extent * 1.25,
@@ -244,12 +258,13 @@ fn halo() -> Result<Scene, String> {
     Ok(scene)
 }
 
-/// Намалювати всю серію в каталог `out`.
+/// Draw the whole series into directory `out`.
 pub fn render(gpu: &Gpu, out: &Path) -> Result<Vec<Picture>, String> {
     let mut frame = Frame::new(gpu, shot::FORMAT);
 
-    // Рельєф — з готового ассета. Його відсутність не мовчазна: сцени з
-    // тайлами зникають, і про це сказано вголос, з командою, яка це лікує.
+    // The terrain comes from a cooked asset. Its absence is not silent: the
+    // tiled scenes disappear, and that is said out loud, with the command that
+    // fixes it.
     let terrain: Option<TerrainId> = match std::fs::read(TERRAIN_ASSET) {
         Ok(bytes) => {
             let data = Terrain::from_bytes(&bytes)?;
@@ -257,22 +272,22 @@ pub fn render(gpu: &Gpu, out: &Path) -> Result<Vec<Picture>, String> {
             let colour = match std::fs::read(COLOUR_ASSET) {
                 Ok(bytes) => {
                     let colour = crate::tiles::Colour::from_bytes(&bytes)?;
-                    println!("колір: {COLOUR_ASSET}, {} рівнів піраміди", colour.levels);
+                    println!("colour: {COLOUR_ASSET}, {} pyramid levels", colour.levels);
                     Some(colour)
                 }
                 Err(e) => {
-                    println!("кольору немає ({COLOUR_ASSET}: {e}) — Місяць сірий.");
-                    println!("полікувати: make cook-colour");
+                    println!("no colour ({COLOUR_ASSET}: {e}) -- the Moon is grey.");
+                    println!("to fix: make cook-colour");
                     None
                 }
             };
             let id = frame.load_surface(gpu, &data, colour.as_ref())?;
-            println!("рельєф: {TERRAIN_ASSET}, {levels} рівнів піраміди");
+            println!("terrain: {TERRAIN_ASSET}, {levels} pyramid levels");
             Some(id)
         }
         Err(e) => {
-            println!("рельєфу немає ({TERRAIN_ASSET}: {e}) — сцени з тайлами пропущено.");
-            println!("полікувати: make cook-dem");
+            println!("no terrain ({TERRAIN_ASSET}: {e}) -- the tiled scenes are skipped.");
+            println!("to fix: make cook-dem");
             None
         }
     };
@@ -310,7 +325,7 @@ pub fn render(gpu: &Gpu, out: &Path) -> Result<Vec<Picture>, String> {
         Ok(())
     };
 
-    // 1. Земля здалеку — той самий кадр, що дає `--shot`.
+    // 1. Earth from afar -- the same frame `--shot` gives.
     let mut scene = Scene::new(above(
         from_light(35.0),
         sphere::EARTH_RADIUS_M,
@@ -328,7 +343,7 @@ pub fn render(gpu: &Gpu, out: &Path) -> Result<Vec<Picture>, String> {
         &scene,
     )?;
 
-    // 2. Земля з низької орбіти, погляд уздовж лімба.
+    // 2. Earth from low orbit, looking along the limb.
     let mut scene = Scene::new(along_limb(from_light(35.0), sphere::EARTH_RADIUS_M, 3.0e5));
     scene
         .bodies
@@ -344,7 +359,7 @@ pub fn render(gpu: &Gpu, out: &Path) -> Result<Vec<Picture>, String> {
     )?;
 
     if let Some(id) = terrain {
-        // 3 і 4 — пара з однієї камери: без тайлів і з ними.
+        // 3 and 4 -- a pair from one camera: without tiles and with them.
         for (name, tiles, what) in [
             ("03_moon_smooth", TileSet::Smooth, "без тайлів"),
             ("04_moon_terrain", TileSet::Loaded(id), "з тайлами LOLA"),
@@ -366,7 +381,7 @@ pub fn render(gpu: &Gpu, out: &Path) -> Result<Vec<Picture>, String> {
             )?;
         }
 
-        // 5. Термінатор — те, заради чого R5c робився.
+        // 5. The terminator -- what R5c was done for.
         let mut scene = Scene::new(above(from_light(72.0), MOON_RADIUS_M, 1.2e6, light()));
         scene.bodies.push(body(MOON_RADIUS_M, TileSet::Loaded(id)));
         shoot(
@@ -378,9 +393,9 @@ pub fn render(gpu: &Gpu, out: &Path) -> Result<Vec<Picture>, String> {
             &scene,
         )?;
 
-        // 6 і 7 — друга пара, зблизька й уздовж лімба. Пара, а не один
-        // знімок, з тієї самої причини, що й вище: «рельєф видно» без
-        // другої картинки поруч — це твердження, яке нікому не перевірити.
+        // 6 and 7 -- a second pair, up close and along the limb. A pair rather
+        // than one shot for the same reason as above: "the terrain is visible"
+        // without a second picture beside it is a claim nobody can check.
         for (name, tiles, what) in [
             ("06_moon_limb_smooth", TileSet::Smooth, "без тайлів"),
             ("07_moon_limb_terrain", TileSet::Loaded(id), "з тайлами"),
@@ -400,7 +415,7 @@ pub fn render(gpu: &Gpu, out: &Path) -> Result<Vec<Picture>, String> {
         }
     }
 
-    // 7. Фізика в кадрі: halo-орбіта, порахована зараз.
+    // 8. Physics in the frame: a halo orbit computed now.
     match halo() {
         Ok(scene) => shoot(
             "08_halo",
@@ -411,7 +426,7 @@ pub fn render(gpu: &Gpu, out: &Path) -> Result<Vec<Picture>, String> {
                 .to_string(),
             &scene,
         )?,
-        Err(e) => println!("сцену halo пропущено: {e}"),
+        Err(e) => println!("the halo scene was skipped: {e}"),
     }
 
     Ok(taken)
