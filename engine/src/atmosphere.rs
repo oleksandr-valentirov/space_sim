@@ -1,78 +1,83 @@
-//! Повітря на CPU: та сама фізика, що в `shaders/sky.slang`, але в `f64` і
-//! без GPU (ROADMAP-ATMOSPHERE.md, S2).
+//! Air on the CPU: the same physics as `shaders/sky.slang`, but in `f64` and
+//! without a GPU (ROADMAP-ATMOSPHERE.md, S2).
 //!
-//! ## Навіщо друга копія
+//! ## Why a second copy
 //!
-//! Правило 2 етапу S вимагає від кожного LUT **числа**, а не «схоже на небо».
-//! Число мусить прийти звідкись, і взяти його з того самого шейдера не можна:
-//! так перевіряється лише те, що GPU вміє додавати. Тому тут лежить дослівний
-//! двійник — рівно та сама конструкція, що вже двічі виправдала себе в
-//! проєкті: `engine::cull` проти `cull.slang`, `Terrain::height_m` проти
-//! `sample_height`.
+//! Rule 2 of stage S demands a **number** from every LUT, not "looks like
+//! sky". That number has to come from somewhere, and it cannot come from the
+//! shader itself: that would only check that the GPU can add. So a literal
+//! twin lives here -- the same construction that has already paid for itself
+//! twice in this project: `engine::cull` against `cull.slang`,
+//! `Terrain::height_m` against `sample_height`.
 //!
-//! ## На чому стоїть сам двійник
+//! ## What the twin itself stands on
 //!
-//! Двійник — теж чисельне інтегрування, тож його теж треба чимось пришпилити,
-//! інакше дві однакові помилки збіглися б і назвалися перевіркою. Пришпилює
-//! його **замкнена форма**: для вертикального променя оптична товща крізь
-//! експоненційну атмосферу дорівнює `β·H·(exp(−h₀/H) − exp(−h₁/H))`, а крізь
-//! трикутний озоновий шар — інтегралу трапеції, теж у замкненому вигляді.
-//! Отже ланцюг такий:
+//! The twin is numeric integration too, so it also needs pinning down;
+//! otherwise two identical mistakes would agree and call themselves a check.
+//! What pins it is the **closed form**: for a vertical ray the optical depth
+//! through an exponential atmosphere is `beta*H*(exp(-h0/H) - exp(-h1/H))`,
+//! and through the triangular ozone layer it is a trapezoid integral, closed
+//! form as well. So the chain is:
 //!
-//! 1. замкнена форма ⇄ [`optical_depth`] — юніт-тест, без GPU;
-//! 2. [`optical_depth`] ⇄ таблиця на GPU — тест на пристрої, на десятках
-//!    висот і кутів (`engine/tests/atmosphere.rs`).
+//! 1. closed form vs [`optical_depth`] -- unit test, no GPU;
+//! 2. [`optical_depth`] vs the table on the GPU -- device test, over dozens of
+//!    altitudes and angles (`engine/tests/atmosphere.rs`).
 //!
-//! Жодна ланка не перевіряє себе сама.
+//! No link checks itself.
 //!
-//! ## Геометрія
+//! ## Geometry
 //!
-//! Скрізь однакова пара `(r, mu)`: `r` — відстань від **центра тіла**, `mu` —
-//! косинус кута між напрямком променя й зенітом (напрямком від центра). Це та
-//! сама параметризація, що в статті, і саме в ній таблиця пропускання має
-//! перший стовпець рівно вертикальним — на чому й стоїть замкнена форма.
+//! The same pair `(r, mu)` everywhere: `r` is the distance from the **centre
+//! of the body**, `mu` the cosine of the angle between the ray direction and
+//! the zenith (the direction away from the centre). This is the
+//! parametrisation from the paper, and it is exactly the one in which the
+//! transmittance table has its first column strictly vertical -- which is what
+//! the closed form stands on.
 
 use crate::scene::Atmosphere;
 
-/// Ширина таблиці пропускання — вісь `mu`.
+/// Width of the transmittance table -- the `mu` axis.
 ///
-/// Мусить збігатися з `TRANSMITTANCE_WIDTH` у `shaders/sky.slang`; спільної
-/// константи між Rust і Slang не існує, тож звіряє їх тест
-/// `engine::tests::atmosphere`, який греппить файл шейдера. Той самий прийом,
-/// що з `SIDE` у патчів (R6a).
+/// Must match `TRANSMITTANCE_WIDTH` in `shaders/sky.slang`; there is no
+/// constant shared between Rust and Slang, so the `engine::tests::atmosphere`
+/// test greps the shader file to compare them. The same trick as with `SIDE`
+/// for patches (R6a).
 pub const TRANSMITTANCE_WIDTH: u32 = 256;
-/// Висота таблиці пропускання — вісь `r`.
+/// Height of the transmittance table -- the `r` axis.
 pub const TRANSMITTANCE_HEIGHT: u32 = 64;
 
-/// Скільки кроків робить чисельне інтегрування **тут**.
+/// How many steps the numeric integration takes **here**.
 ///
-/// Учетверо більше, ніж у шейдері (там 500), і різниця навмисна: два
-/// обчислення з однаковою сіткою мали б і однакову похибку дискретизації,
-/// тобто збігалися б навіть тоді, коли обидва неправильні. Виміряно на
-/// найгіршому промені таблиці: 500 кроків дають 3.6·10⁻⁵, 2048 — 2.1·10⁻⁶,
-/// тобто оракул точніший за перевіряне на порядок із гаком. Оракул має право
-/// коштувати дорого — він біжить у тесті, а не в кадрі.
+/// Four times more than in the shader (500 there), and the difference is
+/// deliberate: two computations on the same grid would share their
+/// discretisation error, i.e. agree even when both are wrong. Measured on the
+/// worst ray of the table: 500 steps give 3.6e-5, 2048 give 2.1e-6, so the
+/// oracle is more than an order of magnitude better than what it checks. An
+/// oracle is allowed to be expensive -- it runs in a test, not in a frame.
 pub const ORACLE_STEPS: usize = 2048;
 
-/// Найменше ослаблення, на яке ще можна ділити.
+/// The smallest extinction still safe to divide by.
 ///
-/// Порожнє повітря дає нуль і в чисельнику, і в знаменнику; `max` робить вираз
-/// визначеним, не міняючи результату — при нульовому ослабленні `1 − exp(0)`
-/// теж нуль. Форма з `max` замість гілки прийшла з шейдера, і там вона
-/// вимушена: HLSL не індексує вектор змінною, тож циклу по каналах у ньому бути
-/// не може взагалі (`sky.slang`, застереження про `X3511`).
+/// Empty air gives zero in both numerator and denominator; `max` makes the
+/// expression defined without changing the result -- at zero extinction
+/// `1 - exp(0)` is zero too. The `max`-instead-of-branch shape came from the
+/// shader, where it is forced: HLSL cannot index a vector with a variable, so
+/// a loop over channels cannot exist there at all (`sky.slang`, the `X3511`
+/// warning).
 const TINY: f64 = 1.0e-30;
 
-/// Густина трьох компонент повітря на висоті `h` метрів над поверхнею:
-/// `[Релей, Мі, озон]`, безрозмірна частка приземного значення.
+/// Density of the three air components at altitude `h` metres above the
+/// surface: `[Rayleigh, Mie, ozone]`, dimensionless fraction of the
+/// ground-level value.
 ///
-/// Релей і Мі — експоненти зі своїми висотами шкали. Озон — трикутник, як у
-/// статті: він не спадає з висотою взагалі, а має шар на ~25 км, і саме тому
-/// небо в зеніті синє, а не фіолетове.
+/// Rayleigh and Mie are exponentials with their own scale heights. Ozone is a
+/// triangle, as in the paper: it does not fall off with altitude at all but
+/// has a layer at ~25 km, and that is why the zenith sky is blue rather than
+/// violet.
 pub fn density(air: &Atmosphere, h: f64) -> [f64; 3] {
-    // Під поверхнею повітря немає. Затискання тут не косметика: промінь, що
-    // пірнув під землю, дав би `exp(+796)`, тобто нескінченність, а вона на
-    // нульовому кроці дає NaN. Спіймано на S3, у шейдері.
+    // There is no air below the surface. The clamp is not cosmetic: a ray that
+    // dived underground would give `exp(+796)`, i.e. infinity, and that gives
+    // NaN on the very first step. Caught on S3, in the shader.
     let h = h.max(0.0);
     let rayleigh = (-h / f64::from(air.rayleigh_height_m)).exp();
     let mie = (-h / f64::from(air.mie_height_m)).exp();
@@ -82,11 +87,11 @@ pub fn density(air: &Atmosphere, h: f64) -> [f64; 3] {
     [rayleigh, mie, ozone]
 }
 
-/// Коефіцієнт ослаблення на висоті `h`, 1/м, по RGB.
+/// Extinction coefficient at altitude `h`, 1/m, per RGB channel.
 ///
-/// Ослаблення — це розсіювання **плюс** поглинання: промінь втрачає фотон і
-/// тоді, коли той полетів убік, і тоді, коли його з'їли. Релей не поглинає
-/// зовсім, Мі поглинає більше, ніж розсіює, озон лише поглинає.
+/// Extinction is scattering **plus** absorption: a ray loses a photon both
+/// when it flies off sideways and when it is eaten. Rayleigh does not absorb
+/// at all, Mie absorbs more than it scatters, ozone only absorbs.
 pub fn extinction(air: &Atmosphere, h: f64) -> [f64; 3] {
     let [d_rayleigh, d_mie, d_ozone] = density(air, h);
     let mie = f64::from(air.mie_scattering) + f64::from(air.mie_absorption);
@@ -99,61 +104,65 @@ pub fn extinction(air: &Atmosphere, h: f64) -> [f64; 3] {
     out
 }
 
-/// `r² − bottom²` — квадрат відстані від точки до дотику з поверхнею.
+/// `r^2 - bottom^2` -- the squared distance from the point to the grazing
+/// point on the surface.
 ///
-/// **Це число, а не радіус, є природною змінною всієї геометрії тут**, і на цьому
-/// етап S спіткнувся двічі. Обидві відстані — до поверхні й до верхньої межі —
-/// виражаються через нього без жодного віднімання великих чисел, а сам радіус у
-/// них входить лише множником. Хто знає його точніше (параметризація таблиці,
-/// висота над поверхнею), той і мусить його передати: у `f32` при `r ≈ 6.4·10⁶`
-/// різниця квадратів має одиницю останнього розряду 4·10⁶, тобто біля дотику
-/// їй дає знак округлення.
+/// **This number, not the radius, is the natural variable of all the geometry
+/// here**, and stage S tripped over that twice. Both distances -- to the
+/// surface and to the top boundary -- are expressed through it without
+/// subtracting large numbers, and the radius itself enters them only as a
+/// factor. Whoever knows it more precisely (the table parametrisation, the
+/// altitude above the surface) is the one who must pass it: in `f32` at
+/// `r ~ 6.4e6` the difference of squares has a last-place unit of 4e6, so near
+/// the grazing point rounding, not geometry, decides its sign.
 pub fn rho_squared(r: f64, bottom: f64) -> f64 {
     (r * r - bottom * bottom).max(0.0)
 }
 
-/// Те саме для верхньої межі: `top² − bottom²`, у вигляді добутку.
+/// The same for the top boundary: `top^2 - bottom^2`, written as a product.
 ///
-/// Добутком, а не різницею квадратів: `(top − bottom)·(top + bottom)` — це сто
-/// кілометрів на тринадцять тисяч, тобто жодного скорочення.
+/// A product, not a difference of squares: `(top - bottom)*(top + bottom)` is
+/// a hundred kilometres times thirteen thousand, i.e. no cancellation at all.
 pub fn shell_squared(air: &Atmosphere, bottom: f64) -> f64 {
     (air.top_m - bottom) * (air.top_m + bottom)
 }
 
-/// Скільки метрів від точки `(r, mu)` до верхньої межі повітря.
+/// How many metres from the point `(r, mu)` to the top of the air.
 ///
-/// `rho2` — [`rho_squared`] цієї точки, `shell2` — [`shell_squared`] атмосфери.
-/// Корінь квадратного рівняння `|r·zenith + d·dir|² = top²`, переписаний через
-/// них: `d = −r·mu + √(r²mu² + shell2 − rho2)`. Другий корінь від'ємний завжди,
-/// коли точка всередині повітря, тож вибору тут немає.
+/// `rho2` is [`rho_squared`] of this point, `shell2` is [`shell_squared`] of
+/// the atmosphere. The root of the quadratic `|r*zenith + d*dir|^2 = top^2`,
+/// rewritten through them: `d = -r*mu + sqrt(r^2*mu^2 + shell2 - rho2)`. The
+/// second root is always negative when the point is inside the air, so there
+/// is no choice to make here.
 pub fn distance_to_top(r: f64, mu: f64, rho2: f64, shell2: f64) -> f64 {
     let discriminant = r * r * mu * mu + (shell2 - rho2);
     (-r * mu + discriminant.max(0.0).sqrt()).max(0.0)
 }
 
-/// Скільки метрів до поверхні, або `None`, якщо промінь її не зустріне.
+/// How many metres to the surface, or `None` if the ray never meets it.
 ///
-/// Промінь, спрямований угору (`mu ≥ 0`), поверхні не бачить ніколи — і
-/// перевіряти це окремо треба, бо дискримінант там теж буває додатний: то
-/// друга, «задня» точка перетину, якої попереду немає.
+/// A ray pointing up (`mu >= 0`) never sees the surface -- and that has to be
+/// checked separately, because the discriminant there can be positive too:
+/// that is the second, "rear" intersection, which is not ahead.
 pub fn distance_to_ground(r: f64, mu: f64, rho2: f64) -> Option<f64> {
     let discriminant = r * r * mu * mu - rho2;
     if mu >= 0.0 || discriminant < 0.0 {
         return None;
     }
-    // `max(0)` — не косметика. Промінь, що йде вниз із самої поверхні, має
-    // `rho² = 0`, і різниця `−r·mu − √(r²mu²)` у `f32` виходить то трохи
-    // додатною, то трохи від'ємною. Від'ємну викликач читає як «поверхні
-    // попереду немає» й веде промінь крізь планету. Спіймано на S3: рядок 0
-    // таблиці розсіювання виходив утричі яскравішим за двійник.
+    // `max(0)` is not cosmetic. A ray going down from the surface itself has
+    // `rho^2 = 0`, and the difference `-r*mu - sqrt(r^2*mu^2)` comes out in
+    // `f32` sometimes slightly positive, sometimes slightly negative. The
+    // caller reads a negative one as "no surface ahead" and takes the ray
+    // through the planet. Caught on S3: row 0 of the scattering table came out
+    // three times brighter than the twin.
     Some((-r * mu - discriminant.sqrt()).max(0.0))
 }
 
-/// Скільки метрів промінь `(r, mu)` іде повітрям: до поверхні або до верхньої
-/// межі, залежно від того, що ближче.
+/// How many metres the ray `(r, mu)` travels through air: to the surface or to
+/// the top boundary, whichever is nearer.
 ///
-/// Для променів **таблиці пропускання** цією функцією користуватися не можна,
-/// і це не смак — див. [`optical_depth_to_top`].
+/// This function must not be used for rays of the **transmittance table**, and
+/// that is not taste -- see [`optical_depth_to_top`].
 pub fn span_in_air(air: &Atmosphere, bottom: f64, r: f64, mu: f64) -> f64 {
     let rho2 = rho_squared(r, bottom);
     let top = distance_to_top(r, mu, rho2, shell_squared(air, bottom));
@@ -163,11 +172,12 @@ pub fn span_in_air(air: &Atmosphere, bottom: f64, r: f64, mu: f64) -> f64 {
     }
 }
 
-/// Оптична товща на відрізку `span` уздовж променя `(r, mu)`, по RGB.
+/// Optical depth over the segment `span` along the ray `(r, mu)`, per RGB
+/// channel.
 ///
-/// Правило середньої точки, `steps` кроків. Не Сімпсон: підінтегральна
-/// функція біля горизонту міняється на порядки на довжині кроку, і виграш
-/// вищого порядку там уявний, а ціна — реальна.
+/// Midpoint rule, `steps` steps. Not Simpson: near the horizon the integrand
+/// changes by orders of magnitude over one step, so the gain of a higher order
+/// there is imaginary while the cost is real.
 pub fn optical_depth(
     air: &Atmosphere,
     bottom: f64,
@@ -181,8 +191,8 @@ pub fn optical_depth(
     let mut out = [0.0; 3];
     for k in 0..steps {
         let d = (k as f64 + 0.5) * step;
-        // Висота середини кроку: теорема косинусів у трикутнику
-        // центр-точка-середина.
+        // Altitude of the step midpoint: law of cosines in the
+        // centre-point-midpoint triangle.
         let h = (r * r + d * d + 2.0 * r * d * mu).max(0.0).sqrt() - bottom;
         let e = extinction(air, h);
         for (value, add) in out.iter_mut().zip(e.iter()) {
@@ -192,15 +202,16 @@ pub fn optical_depth(
     out
 }
 
-/// Оптична товща від `(r, mu)` **до верхньої межі**, без огляду на поверхню.
+/// Optical depth from `(r, mu)` **to the top boundary**, ignoring the surface.
 ///
-/// Саме це лежить у таблиці пропускання, і «без огляду на поверхню» тут не
-/// спрощення, а вимога. Параметризація таблиці накриває рівно ті напрямки, які
-/// верхньої межі досягають; крайній стовпець — промінь, дотичний до поверхні.
-/// Питати такий промінь, чи він зустріне поверхню, не можна взагалі: відповідь
-/// стоїть на різниці `r²−bottom²`, яка в дотику дорівнює нулю, і знак їй дає
-/// похибка округлення. Одного разу це вже коштувало вдесятеро коротшого шляху
-/// (виявлено на S2, у `f32` на GPU — там та сама різниця дає ±1.5 км).
+/// This is what lies in the transmittance table, and "ignoring the surface" is
+/// a requirement here, not a simplification. The table parametrisation covers
+/// exactly those directions that do reach the top boundary; the last column is
+/// the ray tangent to the surface. Asking such a ray whether it meets the
+/// surface is not allowed at all: the answer rests on the difference
+/// `r^2 - bottom^2`, which is zero at the tangent point, and rounding decides
+/// its sign. This once already cost a path ten times too short (found on S2,
+/// in `f32` on the GPU -- there the same difference gives +-1.5 km).
 pub fn optical_depth_to_top(
     air: &Atmosphere,
     bottom: f64,
@@ -212,22 +223,22 @@ pub fn optical_depth_to_top(
     optical_depth(air, bottom, r, mu, span, steps)
 }
 
-/// Пропускання від `(r, mu)` до верхньої межі — `exp(−оптична товща)`.
+/// Transmittance from `(r, mu)` to the top boundary -- `exp(-optical depth)`.
 pub fn transmittance(air: &Atmosphere, bottom: f64, r: f64, mu: f64, steps: usize) -> [f64; 3] {
     let depth = optical_depth_to_top(air, bottom, r, mu, steps);
     [(-depth[0]).exp(), (-depth[1]).exp(), (-depth[2]).exp()]
 }
 
-/// Оптична товща **вертикального** променя вгору — у замкненій формі.
+/// Optical depth of a **vertical** ray going up -- in closed form.
 ///
-/// Те, чим пришпилюється [`optical_depth`]. Для експоненційного шару це
-/// `β·H·(exp(−h₀/H) − exp(−h₁/H))`, для трикутного озонового — різниця
-/// первісних трикутника, теж елементарна.
+/// This is what pins [`optical_depth`] down. For an exponential layer it is
+/// `beta*H*(exp(-h0/H) - exp(-h1/H))`, for the triangular ozone layer it is a
+/// difference of the triangle's antiderivatives, elementary as well.
 ///
-/// Тільки вгору й тільки вертикально: сферична геометрія під кутом замкненої
-/// форми не має взагалі (це функція Чепмена, а вона не елементарна). Одного
-/// напрямку досить — таблиця пропускання влаштована так, що її перший
-/// стовпець і є цей промінь, тож замкнена форма накриває всі 64 висоти.
+/// Up only and vertical only: the spherical geometry at an angle has no closed
+/// form at all (that is the Chapman function, and it is not elementary). One
+/// direction is enough -- the transmittance table is built so that its first
+/// column is exactly this ray, so the closed form covers all 64 altitudes.
 pub fn vertical_optical_depth(air: &Atmosphere, bottom: f64, r: f64) -> [f64; 3] {
     let h0 = r - bottom;
     let h1 = air.top_m - bottom;
@@ -255,7 +266,8 @@ pub fn vertical_optical_depth(air: &Atmosphere, bottom: f64, r: f64) -> [f64; 3]
     out
 }
 
-/// Первісна трикутного профілю озону: `∫₀^h max(0, 1 − |z − centre| / width) dz`.
+/// Antiderivative of the triangular ozone profile:
+/// `integral from 0 to h of max(0, 1 - |z - centre| / width) dz`.
 fn triangle_integral(centre: f64, width: f64, h: f64) -> f64 {
     if h <= centre - width {
         0.0
@@ -270,17 +282,17 @@ fn triangle_integral(centre: f64, width: f64, h: f64) -> f64 {
     }
 }
 
-/// Точка `(r, mu)` за координатами текселя таблиці пропускання.
+/// The point `(r, mu)` for texel coordinates of the transmittance table.
 ///
-/// Параметризація зі статті, і в ній важлива рівно одна властивість, на якій
-/// стоїть уся перевірка кроку: при `u = 0` виходить `mu = 1`, тобто промінь
-/// строго вгору. Це не збіг — `u` міряє довжину променя від найкоротшої
-/// (вертикальної, `top − r`) до найдовшої (дотичної до поверхні), а найкоротша
-/// і є вертикаль.
+/// The parametrisation from the paper, and exactly one of its properties
+/// matters here, the one the whole check of this step stands on: at `u = 0` it
+/// gives `mu = 1`, i.e. a ray straight up. That is no coincidence -- `u`
+/// measures the ray length from the shortest (vertical, `top - r`) to the
+/// longest (tangent to the surface), and the shortest is the vertical.
 pub fn uv_to_r_mu(air: &Atmosphere, bottom: f64, u: f64, v: f64) -> (f64, f64) {
     let top = air.top_m;
-    // Довжина дотичної до поверхні з верхньої межі — природна одиниця
-    // «горизонтального» розміру атмосфери.
+    // Length of the tangent to the surface from the top boundary -- the
+    // natural unit of the "horizontal" size of the atmosphere.
     let h = (top * top - bottom * bottom).sqrt();
     let rho = h * v;
     let r = (rho * rho + bottom * bottom).sqrt();
@@ -296,20 +308,20 @@ pub fn uv_to_r_mu(air: &Atmosphere, bottom: f64, u: f64, v: f64) -> (f64, f64) {
     (r, mu)
 }
 
-/// Координата текстури, у якій лежить одиничне значення `u`.
+/// The texture coordinate holding the unit value `u`.
 ///
-/// Кінці одиничного діапазону сідають у **центри крайніх текселів**, а не на
-/// краї текстури. Без цього `u = 0` (вертикаль) не лежало б у таблиці зовсім, а
-/// білінійна вибірка на кінцях зазирала б за край. Прийом стандартний
-/// (Bruneton), і саме він робить перший стовпець таблиці перевірюваним
-/// замкненою формою.
+/// The ends of the unit range land in the **centres of the edge texels**, not
+/// on the edges of the texture. Without that, `u = 0` (the vertical) would not
+/// be in the table at all, and bilinear sampling at the ends would reach past
+/// the edge. The trick is standard (Bruneton), and it is precisely what makes
+/// the first column of the table checkable by the closed form.
 pub fn unit_to_texture(u: f64, size: u32) -> f64 {
     let n = f64::from(size);
     0.5 / n + u * (1.0 - 1.0 / n)
 }
 
-/// Зворотне до [`uv_to_r_mu`]. Потрібне тому, хто читає таблицю, а не тому,
-/// хто її пише.
+/// Inverse of [`uv_to_r_mu`]. Needed by whoever reads the table, not by
+/// whoever writes it.
 pub fn r_mu_to_uv(air: &Atmosphere, bottom: f64, r: f64, mu: f64) -> (f64, f64) {
     let top = air.top_m;
     let h = (top * top - bottom * bottom).sqrt();
@@ -326,40 +338,42 @@ pub fn r_mu_to_uv(air: &Atmosphere, bottom: f64, r: f64, mu: f64) -> (f64, f64) 
     (u, (rho / h).clamp(0.0, 1.0))
 }
 
-/// Сторона таблиці багаторазового розсіювання (S3).
+/// Side of the multiple-scattering table (S3).
 ///
-/// Мусить збігатися з `MULTISCATTER_SIZE` у `shaders/sky.slang`.
+/// Must match `MULTISCATTER_SIZE` in `shaders/sky.slang`.
 pub const MULTISCATTER_SIZE: u32 = 32;
 
-/// Скільки напрямків обходить інтегрування по сфері — 8×8.
+/// How many directions the integration over the sphere visits -- 8x8.
 ///
-/// Сітка, а не випадкові напрямки: таблиця, яку не можна відтворити, не може
-/// бути й оракулом. Той самий набір будує CPU-двійник, і саме тому їх узагалі
-/// можна покласти поруч.
+/// A grid, not random directions: a table that cannot be reproduced cannot be
+/// an oracle either. The CPU twin builds the same set, and that is the only
+/// reason the two can be placed side by side at all.
 pub const MULTISCATTER_DIRECTIONS: u32 = 64;
 
-/// Скільки кроків робить промінь усередині одного напрямку.
+/// How many steps a ray takes within one direction.
 pub const MULTISCATTER_STEPS: u32 = 20;
 
-/// Точка `(r, mu_s)` за одиничними координатами таблиці розсіювання.
+/// The point `(r, mu_s)` for unit coordinates of the scattering table.
 ///
-/// Параметризація тут проста — лінійна по обох осях, — і це не лінощі: у
-/// таблиці пропускання нелінійність існувала заради дотичного променя, тобто
-/// заради того, щоб різкий край горизонту не розмазався по текселю. Тут
-/// різкого краю немає взагалі: багаторазове розсіювання — це те, що лишилося
-/// після усереднення по всій сфері напрямків.
+/// The parametrisation here is simple -- linear on both axes -- and that is
+/// not laziness: in the transmittance table the non-linearity existed for the
+/// sake of the tangent ray, i.e. so that the sharp edge of the horizon would
+/// not smear across a texel. Here there is no sharp edge at all: multiple
+/// scattering is what is left after averaging over the whole sphere of
+/// directions.
 pub fn multiscatter_uv(air: &Atmosphere, bottom: f64, u: f64, v: f64) -> (f64, f64) {
     let mu_s = (u * 2.0 - 1.0).clamp(-1.0, 1.0);
     let r = bottom + v * (air.top_m - bottom);
     (r, mu_s)
 }
 
-/// Таблиця пропускання в пам'яті — дзеркало тієї, що лежить на GPU.
+/// The transmittance table in memory -- a mirror of the one on the GPU.
 ///
-/// Потрібна тому, що двійник багаторазового розсіювання (S3) читає пропускання
-/// **мільйон разів**, і рахувати його щоразу інтегруванням означало б тест,
-/// який ніхто не запустить. Шейдер робить рівно те саме — читає таблицю
-/// білінійно, — тож двійник тут ще й ближчий до нього, а не далі.
+/// Needed because the multiple-scattering twin (S3) reads transmittance **a
+/// million times**, and recomputing it by integration each time would make a
+/// test nobody would ever run. The shader does exactly the same -- reads the
+/// table bilinearly -- so the twin is in fact closer to it this way, not
+/// further.
 pub struct Table {
     pub width: u32,
     pub height: u32,
@@ -367,7 +381,7 @@ pub struct Table {
 }
 
 impl Table {
-    /// Побудувати таблицю пропускання так само, як це робить `sky.slang`.
+    /// Build the transmittance table the same way `sky.slang` does.
     pub fn transmittance(air: &Atmosphere, bottom: f64, steps: usize) -> Table {
         let width = TRANSMITTANCE_WIDTH;
         let height = TRANSMITTANCE_HEIGHT;
@@ -387,11 +401,11 @@ impl Table {
         }
     }
 
-    /// Побудувати таблицю багаторазового розсіювання — двійник
-    /// `multiscatter_main` (S3).
+    /// Build the multiple-scattering table -- the twin of `multiscatter_main`
+    /// (S3).
     ///
-    /// Тільки `ψ`; `f` тут не зберігається, бо його читає лише перевірка
-    /// збіжності, а вона дивиться в таблицю на GPU.
+    /// Only `psi`; `f` is not stored here, because only the convergence check
+    /// reads it, and that one looks at the table on the GPU.
     pub fn multiscatter(
         air: &Atmosphere,
         bottom: f64,
@@ -416,26 +430,28 @@ impl Table {
         }
     }
 
-    /// Значення за **одиничними** координатами — білінійно, як `SampleLevel` у
-    /// шейдері.
+    /// The value at **unit** coordinates -- bilinear, like `SampleLevel` in the
+    /// shader.
     ///
-    /// Одиничними, а не текстурними: параметризація — справа викликача, і саме
-    /// тому одна таблиця обслуговує три різні (S2, S3, S4).
+    /// Unit, not texture coordinates: the parametrisation is the caller's
+    /// business, and that is exactly why one table serves three different ones
+    /// (S2, S3, S4).
     pub fn sample_unit(&self, u: f64, v: f64) -> [f64; 3] {
-        // З одиничного діапазону в координату текстури, звідти в індекс
-        // текселя. `− 0.5`, бо тексель `k` живе в координаті `(k + 0.5)/розмір`.
+        // From the unit range into a texture coordinate, from there into a
+        // texel index. `- 0.5` because texel `k` lives at coordinate
+        // `(k + 0.5)/size`.
         let x = unit_to_texture(u, self.width) * f64::from(self.width) - 0.5;
         let y = unit_to_texture(v, self.height) * f64::from(self.height) - 0.5;
         self.bilinear(x, y)
     }
 
-    /// Пропускання від `(r, mu)` до верхньої межі.
+    /// Transmittance from `(r, mu)` to the top boundary.
     pub fn transmittance_at(&self, air: &Atmosphere, bottom: f64, r: f64, mu: f64) -> [f64; 3] {
         let (u, v) = r_mu_to_uv(air, bottom, r, mu);
         self.sample_unit(u, v)
     }
 
-    /// Багаторазове розсіювання в точці `(r, mu_s)`.
+    /// Multiple scattering at the point `(r, mu_s)`.
     pub fn multiscatter_at(&self, air: &Atmosphere, bottom: f64, r: f64, mu_s: f64) -> [f64; 3] {
         let u = (mu_s * 0.5 + 0.5).clamp(0.0, 1.0);
         let v = ((r - bottom) / (air.top_m - bottom)).clamp(0.0, 1.0);
@@ -464,12 +480,12 @@ impl Table {
     }
 }
 
-/// Напрямок номер `k` з рівномірної сітки 8×8 на сфері.
+/// Direction number `k` of the uniform 8x8 grid on the sphere.
 ///
-/// Виписано так само, як у шейдері, включно з порядком: `k / 8` іде по азимуту,
-/// `k % 8` — по полярному куту. Порядок сам по собі на результат не впливає
-/// (сума комутативна), але двійник, який обходить сферу іншою сіткою, вже не
-/// двійник.
+/// Written out the same way as in the shader, including the order: `k / 8`
+/// goes along the azimuth, `k % 8` along the polar angle. The order by itself
+/// does not affect the result (the sum is commutative), but a twin that walks
+/// the sphere on a different grid is no longer a twin.
 pub fn sphere_direction(k: u32) -> [f64; 3] {
     let i = 0.5 + f64::from(k / 8);
     let j = 0.5 + f64::from(k % 8);
@@ -478,11 +494,12 @@ pub fn sphere_direction(k: u32) -> [f64; 3] {
     [phi.sin() * theta.cos(), phi.sin() * theta.sin(), phi.cos()]
 }
 
-/// Розсіювання (без поглинання) на висоті `h`, 1/м по RGB.
+/// Scattering (without absorption) at altitude `h`, 1/m per RGB channel.
 ///
-/// Відрізняється від [`extinction`] рівно тим, що не рахує з'їденого: озон не
-/// розсіює зовсім, Мі розсіює менше, ніж гасить. Саме це число стоїть у
-/// джерелі розсіювання — фотон, якого поглинули, у небо не летить.
+/// Differs from [`extinction`] exactly in not counting what was eaten: ozone
+/// does not scatter at all, Mie scatters less than it extinguishes. This is
+/// the number that belongs in the scattering source -- a photon that was
+/// absorbed does not fly into the sky.
 pub fn scattering(air: &Atmosphere, h: f64) -> [f64; 3] {
     let [d_rayleigh, d_mie, _] = density(air, h);
     let mie = f64::from(air.mie_scattering) * d_mie;
@@ -493,35 +510,39 @@ pub fn scattering(air: &Atmosphere, h: f64) -> [f64; 3] {
     out
 }
 
-/// Багаторазове розсіювання в точці `(r, mu_s)` — двійник `multiscatter_main`.
+/// Multiple scattering at the point `(r, mu_s)` -- the twin of
+/// `multiscatter_main`.
 ///
-/// Повертає пару: `ψ` (внесок другого й наступних порядків, усереднений по
-/// сфері напрямків, на одиницю освітленості Сонця) і `f` — частку, яку одне
-/// розсіювання повертає назад у ту саму точку.
+/// Returns a pair: `psi` (the contribution of orders 2 and above, averaged
+/// over the sphere of directions, per unit of solar irradiance) and `f`, the
+/// fraction that a single scattering event returns back to the same point.
 ///
-/// ## Звідки береться `ψ = L₂ / (1 − f)`
+/// ## Where `psi = L2 / (1 - f)` comes from
 ///
-/// Означення тут самоузгоджене, і його варто прочитати перед правкою.
+/// The definition here is self-consistent, and it is worth reading before
+/// editing.
 ///
-/// `ψ` — **середня по сфері яскравість** у точці від порядків 2 і вище. Тоді
-/// джерело ізотропного розсіювання в точці дорівнює `σ_s · ψ`, бо
-/// `∫ L·(1/4π) dω` і є середнє.
+/// `psi` is the **sphere-averaged radiance** at the point from orders 2 and
+/// up. Then the isotropic scattering source at the point equals `sigma_s*psi`,
+/// because `integral of L*(1/4pi) dw` is precisely that average.
 ///
-/// `f` рахується так: покласти, що середовище світиться рівномірно з
-/// яскравістю 1, і подивитися, яка середня яскравість повернеться в точку
-/// після **одного** розсіювання. Це лінійний оператор, тож наступний порядок
-/// дає `f` від попереднього, а сума — геометрична прогресія. Звідси й
-/// `1 / (1 − f)`, і вимога `f < 1`, яку тест і перевіряє: якщо вона не
-/// виконується, ряд не збігається, а «енергія росте» перестає бути метафорою.
+/// `f` is computed like this: assume the medium glows uniformly with radiance
+/// 1, and look at what average radiance returns to the point after **one**
+/// scattering event. That is a linear operator, so the next order gives `f`
+/// times the previous one, and the sum is a geometric series. Hence both
+/// `1 / (1 - f)` and the requirement `f < 1`, which the test does check: if it
+/// does not hold, the series does not converge, and "the energy grows" stops
+/// being a metaphor.
 ///
-/// ## Чого тут свідомо немає
+/// ## What is deliberately absent here
 ///
-/// **Нічого — з T7h.** Відбиття від поверхні тут є, і аргумент `albedo` це
-/// воно: середнє альбедо тіла, лінійне. До T7h стояв нуль, і то було рішення,
-/// а не пропуск — кольору поверхні в `crate::scene` тоді не існувало взагалі,
-/// тож будь-яке число було б вигаданим. Тепер воно береться з тайлсета
-/// (`Colour::mean`), а нуль лишається законним значенням для тіла, кольору
-/// якого ми не знаємо.
+/// **Nothing -- since T7h.** Reflection off the surface is here, and the
+/// `albedo` argument is it: the mean albedo of the body, linear. Before T7h
+/// there was a zero, and that was a decision rather than an omission -- the
+/// surface colour did not exist in `crate::scene` at all back then, so any
+/// number would have been made up. Now it comes from the tileset
+/// (`Colour::mean`), and zero remains a legitimate value for a body whose
+/// colour we do not know.
 pub fn multiple_scattering(
     air: &Atmosphere,
     bottom: f64,
@@ -530,15 +551,16 @@ pub fn multiple_scattering(
     mu_s: f64,
     albedo: [f64; 3],
 ) -> ([f64; 3], [f64; 3]) {
-    // Сонце в площині xz, точка на осі z: `up = (0, 0, 1)`.
+    // Sun in the xz plane, point on the z axis: `up = (0, 0, 1)`.
     let sun = [(1.0 - mu_s * mu_s).max(0.0).sqrt(), 0.0, mu_s];
 
     let shell2 = shell_squared(air, bottom);
-    // `rho²` точки, з якої все починається. **Через висоту, а не через різницю
-    // квадратів радіусів**: на рівні поверхні друге дорівнює нулю, і в `f32`
-    // йому дає знак округлення — промінь униз тоді не зупиняється на землі, а
-    // йде крізь планету. Спіймано на S3: рядок 0 таблиці розходився з двійником
-    // удвічі, решта — на 0.05%.
+    // `rho^2` of the point everything starts from. **Through the altitude, not
+    // through a difference of squared radii**: at surface level the latter is
+    // zero, and in `f32` rounding gives it its sign -- a downward ray then does
+    // not stop at the ground but goes through the planet. Caught on S3: row 0
+    // of the table differed from the twin by a factor of two, the rest by
+    // 0.05%.
     let altitude = r - bottom;
     let rho2 = altitude * (2.0 * bottom + altitude);
 
@@ -557,20 +579,22 @@ pub fn multiple_scattering(
         let mut throughput = [1.0; 3];
         for s in 0..MULTISCATTER_STEPS {
             let t = (f64::from(s) + 0.5) * step;
-            // Точка семпла: `p + t·w` при `p = (0, 0, r)`.
+            // The sample point: `p + t*w` with `p = (0, 0, r)`.
             let point = [t * w[0], t * w[1], r + t * w[2]];
-            // `rho²` семпла — теж без різниці квадратів:
-            // `|p + t·w|² − bottom² = rho² + 2·t·r·mu + t²`.
+            // `rho^2` of the sample -- also without a difference of squares:
+            // `|p + t*w|^2 - bottom^2 = rho^2 + 2*t*r*mu + t^2`.
             let rho2_here = (rho2 + 2.0 * t * r * mu + t * t).max(0.0);
             let radius = (rho2_here + bottom * bottom).max(0.0).sqrt();
-            // Висота — з того самого `rho²`: `rho² = (radius − bottom)(radius + bottom)`,
-            // а сума великих чисел скорочення не має.
+            // The altitude comes from that same `rho^2`:
+            // `rho^2 = (radius - bottom)(radius + bottom)`, and a sum of large
+            // numbers has no cancellation.
             let h = rho2_here / (radius + bottom);
             let mu_s_here =
                 (point[0] * sun[0] + point[1] * sun[1] + point[2] * sun[2]) / radius.max(1.0);
 
-            // Тінь планети: Сонце під горизонтом цієї точки — світла немає
-            // взагалі, і саме звідси береться нічний бік.
+            // The planet's shadow: with the Sun below this point's horizon
+            // there is no light at all, and this is where the night side comes
+            // from.
             let lit = distance_to_ground(radius, mu_s_here, rho2_here).is_none();
             let to_sun = if lit {
                 table.transmittance_at(air, bottom, radius, mu_s_here)
@@ -583,41 +607,45 @@ pub fn multiple_scattering(
 
             for channel in 0..3 {
                 let step_transmittance = (-sigma_e[channel] * step).exp();
-                // Точний інтеграл джерела на кроці, а не «значення в середині
-                // × довжину»: на верхніх кроках промінь гасне в межах одного
-                // кроку, і різниця там не косметична.
+                // The exact source integral over the step, not "the midpoint
+                // value times the length": on the upper steps the ray dies out
+                // within a single step, and the difference there is not
+                // cosmetic.
                 //
-                // Порожнє повітря ділення не ламає: при нульовому ослабленні
-                // `1 − exp(0)` теж нуль, тобто внесок нульовий, а `TINY` у
-                // знаменнику робить сам вираз визначеним. Це та сама форма, що
-                // в шейдері, і там вона вимушена — HLSL не індексує вектор
-                // змінною, тож циклу по каналах у нього бути не може.
+                // Empty air does not break the division: at zero extinction
+                // `1 - exp(0)` is zero too, i.e. the contribution is zero,
+                // while `TINY` in the denominator keeps the expression itself
+                // defined. This is the same shape as in the shader, and there
+                // it is forced -- HLSL cannot index a vector with a variable,
+                // so a loop over channels cannot exist in it.
                 let integrate =
                     |source: f64| source * (1.0 - step_transmittance) / sigma_e[channel].max(TINY);
 
-                // Друге розсіювання: у точку з напрямку `w` приходить те, що
-                // розсіялося з прямого сонячного світла. Фазова функція
-                // рівномірна — це і є наближення статті.
+                // Second scattering: what arrives at the point from direction
+                // `w` is what scattered out of direct sunlight. The phase
+                // function is uniform -- that is the paper's approximation.
                 let uniform_phase = 1.0 / (4.0 * std::f64::consts::PI);
                 second[channel] += throughput[channel]
                     * integrate(sigma_s[channel] * to_sun[channel] * uniform_phase);
-                // Частка: те саме, але середовище світиться одиницею з усіх
-                // боків, тож джерело — просто `σ_s` (інтеграл рівномірної
-                // яскравості по сфері з рівномірною фазою дає одиницю).
+                // The fraction: the same thing, but the medium glows with
+                // radiance one from all sides, so the source is just `sigma_s`
+                // (the integral of uniform radiance over the sphere with a
+                // uniform phase gives one).
                 fraction[channel] += throughput[channel] * integrate(sigma_s[channel]);
 
                 throughput[channel] *= step_transmittance;
             }
         }
 
-        // Відбиття від поверхні (T7h). Промінь, що впав у землю, повертає
-        // ламбертове `albedo/π · E`, і повертає його **після** всього шляху,
-        // тобто помноженим на те, що від нього лишилось.
+        // Reflection off the surface (T7h). A ray that fell to the ground
+        // returns a Lambertian `albedo/pi * E`, and returns it **after** the
+        // whole path, i.e. multiplied by whatever is left of it.
         //
-        // Для частки джерело те саме, але освітлення ізотропне з яскравістю
-        // одиниця: `∫ cos/π dω = 1`, тож ламбертова поверхня віддає рівно
-        // `albedo`. Без цього доданка відбиття рахувалося б лише у другому
-        // порядку, а в третьому й далі — ні.
+        // For the fraction the source is the same, but the illumination is
+        // isotropic with radiance one: `integral of cos/pi dw = 1`, so a
+        // Lambertian surface gives back exactly `albedo`. Without this term
+        // reflection would only be counted in the second order, and not in the
+        // third and beyond.
         if let Some(ground) = distance_to_ground(r, mu, rho2) {
             let hit = [ground * w[0], ground * w[1], r + ground * w[2]];
             let length = (hit[0] * hit[0] + hit[1] * hit[1] + hit[2] * hit[2]).sqrt();
@@ -634,8 +662,8 @@ pub fn multiple_scattering(
         }
     }
 
-    // Середнє по сфері: `(4π/N)` тілесного кута на напрямок, поділене на `4π`
-    // самого усереднення. Лишається `1/N`.
+    // Average over the sphere: `(4pi/N)` of solid angle per direction, divided
+    // by the `4pi` of the averaging itself. What is left is `1/N`.
     let mut psi = [0.0; 3];
     for channel in 0..3 {
         second[channel] /= f64::from(MULTISCATTER_DIRECTIONS);
@@ -645,36 +673,39 @@ pub fn multiple_scattering(
     (psi, fraction)
 }
 
-/// Ширина таблиці неба — азимут відносно Сонця (S4).
+/// Width of the sky-view table -- azimuth relative to the Sun (S4).
 pub const SKYVIEW_WIDTH: u32 = 192;
-/// Висота таблиці неба — зенітний кут погляду.
+/// Height of the sky-view table -- the view zenith angle.
 pub const SKYVIEW_HEIGHT: u32 = 108;
-/// Скільки кроків робить промінь таблиці неба.
+/// How many steps a ray of the sky-view table takes.
 pub const SKYVIEW_STEPS: u32 = 32;
 
-/// Напрямок погляду за одиничними координатами таблиці неба.
+/// The view direction for unit coordinates of the sky-view table.
 ///
-/// Повертає `(mu_v, cos_azimuth)`: косинус зенітного кута погляду й косинус
-/// азимутального кута між поглядом і Сонцем.
+/// Returns `(mu_v, cos_azimuth)`: the cosine of the view zenith angle and the
+/// cosine of the azimuthal angle between the view and the Sun.
 ///
-/// ## Чому обидві осі нелінійні
+/// ## Why both axes are non-linear
 ///
-/// **По зеніту** — бо горизонт різкий, а решта неба ні. Половина висоти
-/// таблиці витрачається на півсферу над горизонтом, половина на ту, що під
-/// ним, і всередині кожної половини крок згущується саме до горизонту
-/// (квадратний корінь). Лінійна шкала розмазала б смугу заходу по одному
-/// текселю з ста восьми.
+/// **Along the zenith** -- because the horizon is sharp and the rest of the
+/// sky is not. Half the table height goes to the hemisphere above the horizon,
+/// half to the one below it, and within each half the step tightens towards
+/// the horizon (square root). A linear scale would smear the band of sunset
+/// across one texel out of a hundred and eight.
 ///
-/// **По азимуту** — бо Сонце мале, а фазова функція Мі гостра: більшість
-/// зміни кольору відбувається в кількох градусах від світила. Квадрат
-/// стискає далекий від Сонця бік і розтягує ближній.
+/// **Along the azimuth** -- because the Sun is small and the Mie phase
+/// function is sharp: most of the colour variation happens within a few
+/// degrees of the light source. The square compresses the side away from the
+/// Sun and stretches the near one.
 ///
-/// Границя півсфер — не екватор, а **горизонт цієї висоти**: з десяти
-/// кілометрів він нижчий за геометричну горизонталь, і таблиця, побудована на
-/// екваторі, мала б розрив у видимому місці.
+/// The boundary between the hemispheres is not the equator but the **horizon
+/// at this altitude**: from ten kilometres up it is below the geometric
+/// horizontal, and a table built at the equator would have its discontinuity
+/// in a visible place.
 pub fn skyview_uv(bottom: f64, r: f64, u: f64, v: f64) -> (f64, f64) {
     let rho2 = rho_squared(r, bottom);
-    // Кут від надира до горизонту; зенітний кут горизонту — `π − beta`.
+    // Angle from the nadir to the horizon; the horizon's zenith angle is
+    // `pi - beta`.
     let beta = (rho2.sqrt() / r).clamp(-1.0, 1.0).acos();
     let zenith_horizon = std::f64::consts::PI - beta;
 
@@ -685,12 +716,12 @@ pub fn skyview_uv(bottom: f64, r: f64, u: f64, v: f64) -> (f64, f64) {
         let c = 2.0 * v - 1.0;
         zenith_horizon + beta * c * c
     };
-    // `1 − 2u²` — обернене до `u = √((1 − cos)/2)`. При `u = 0` погляд у бік
-    // Сонця, при `u = 1` — від нього.
+    // `1 - 2u^2` is the inverse of `u = sqrt((1 - cos)/2)`. At `u = 0` the view
+    // is towards the Sun, at `u = 1` away from it.
     (zenith.cos(), 1.0 - 2.0 * u * u)
 }
 
-/// Обернене до [`skyview_uv`]: координати таблиці за напрямком погляду.
+/// Inverse of [`skyview_uv`]: table coordinates for a view direction.
 pub fn skyview_coords(bottom: f64, r: f64, mu_v: f64, cos_azimuth: f64) -> (f64, f64) {
     let rho2 = rho_squared(r, bottom);
     let beta = (rho2.sqrt() / r).clamp(-1.0, 1.0).acos();
@@ -716,56 +747,57 @@ pub fn skyview_coords(bottom: f64, r: f64, mu_v: f64, cos_azimuth: f64) -> (f64,
     (u.clamp(0.0, 1.0), v.clamp(0.0, 1.0))
 }
 
-/// Сторона об'єму аеральної перспективи: 32×32×32 (S5).
+/// Side of the aerial-perspective volume: 32x32x32 (S5).
 pub const AERIAL_SIZE: u32 = 32;
-/// Скільки кроків марша припадає на один шар об'єму.
+/// How many march steps fall on one slice of the volume.
 pub const AERIAL_SLICE_STEPS: u32 = 4;
 
-/// Де починається й де кінчається повітря перед камерою на відстані `r`, метри
-/// вздовж променя.
+/// Where the air in front of the camera at distance `r` begins and ends,
+/// metres along the ray.
 ///
-/// **Об'єм натягується на цей проміжок, а не на «від камери».** З орбіти
-/// різниця вирішальна: повітря лежить за мільйон метрів попереду, і об'єм, що
-/// починається біля камери, витрачає на порожнечу тридцять шарів із тридцяти
-/// двох. Виміряно на S5: з висоти 1000 км увесь стокілометровий шар потрапляв
-/// менш ніж в один шар об'єму.
+/// **The volume is stretched over this interval, not over "from the camera".**
+/// From orbit the difference is decisive: the air lies a million metres ahead,
+/// and a volume that starts at the camera spends thirty of its thirty-two
+/// slices on vacuum. Measured on S5: from 1000 km up, the entire
+/// hundred-kilometre layer fell into less than one slice of the volume.
 ///
-/// - **Ближній край** — найкоротша відстань до оболонки: нуль для камери
-///   всередині, `r − top` ззовні.
-/// - **Дальній** — найдовший промінь, який узагалі лишається в повітрі: від
-///   камери по дотичній до поверхні й далі до верхньої межі. Одна формула на
-///   обидва випадки, і це не збіг: другий доданок — та сама дотична, лише з
-///   іншого кінця.
+/// - **The near edge** is the shortest distance to the shell: zero for a
+///   camera inside, `r - top` outside.
+/// - **The far one** is the longest ray that stays in air at all: from the
+///   camera along the tangent to the surface and on to the top boundary. One
+///   formula for both cases, and that is no coincidence: the second term is
+///   that same tangent, only from the other end.
 pub fn aerial_span(air: &Atmosphere, bottom: f64, r: f64) -> (f64, f64) {
     let near = (r - air.top_m).max(0.0);
     let far = rho_squared(r, bottom).sqrt() + shell_squared(air, bottom).sqrt();
     (near, far.max(near + 1.0))
 }
 
-/// Фазова функція Релея: `3/(16π)·(1 + cos²θ)`.
+/// The Rayleigh phase function: `3/(16pi)*(1 + cos^2(theta))`.
 ///
-/// Симетрична вперед-назад, і саме тому небо світле й позаду спостерігача, а
-/// не лише навколо Сонця.
+/// Symmetric forward and backward, and that is why the sky is bright behind
+/// the observer too, not only around the Sun.
 pub fn rayleigh_phase(cos_theta: f64) -> f64 {
     3.0 / (16.0 * std::f64::consts::PI) * (1.0 + cos_theta * cos_theta)
 }
 
-/// Фазова функція Мі — Хеньї-Ґрінстайна з параметром `g`.
+/// The Mie phase function -- Henyey-Greenstein with parameter `g`.
 ///
-/// Гостро вперед: `g = 0.8` означає, що аерозоль розсіює переважно в бік
-/// продовження променя. Звідси й ореол навколо Сонця, і те, що серпанок видно
-/// проти світла, а не за ним.
+/// Sharply forward: `g = 0.8` means the aerosol scatters mostly along the
+/// continuation of the ray. Hence both the halo around the Sun and the fact
+/// that haze is seen against the light rather than with it.
 pub fn mie_phase(cos_theta: f64, g: f64) -> f64 {
     let denominator = 1.0 + g * g - 2.0 * g * cos_theta;
     (1.0 - g * g) / (4.0 * std::f64::consts::PI * denominator.max(1.0e-6).powf(1.5))
 }
 
-/// Повітря разом з обома сталими таблицями — усе, чим рахується небо.
+/// The air together with both constant tables -- everything the sky is
+/// computed from.
 ///
-/// Структура, а не чотири окремі аргументи: без неї [`Model::sky_view`] брав би
-/// вісім, і жоден із них не можна було б переплутати лише на око. Полів рівно
-/// стільки, скільки читається (CLAUDE.md), і власних, без лайфтаймів — таблиця
-/// коштує пів мегабайта, а будується раз на тест.
+/// A struct rather than four separate arguments: without it [`Model::sky_view`]
+/// would take eight, and none of them could be told apart by eye alone. It has
+/// exactly as many fields as are read (CLAUDE.md), and they are owned, without
+/// lifetimes -- a table costs half a megabyte and is built once per test.
 pub struct Model {
     pub air: Atmosphere,
     pub bottom: f64,
@@ -774,8 +806,8 @@ pub struct Model {
 }
 
 impl Model {
-    /// Побудувати обидві сталі таблиці. `steps` — скільки кроків на промінь у
-    /// таблиці пропускання; 500 дає те саме, що шейдер.
+    /// Build both constant tables. `steps` is how many steps per ray in the
+    /// transmittance table; 500 gives the same as the shader.
     pub fn build(air: &Atmosphere, bottom: f64, steps: usize, albedo: [f64; 3]) -> Model {
         let transmittance = Table::transmittance(air, bottom, steps);
         let multiscatter = Table::multiscatter(air, bottom, &transmittance, albedo);
@@ -787,17 +819,17 @@ impl Model {
         }
     }
 
-    /// Розсіяне світло вздовж променя — двійник `skyview_main` (S4).
+    /// Scattered light along a ray -- the twin of `skyview_main` (S4).
     ///
-    /// Система координат локальна: `up = (0, 0, 1)`, Сонце в площині `xz`.
-    /// Погляд задається парою `(mu_v, cos_azimuth)`, тобто рівно тим, що лежить
-    /// в осях таблиці, — і це не втрата: фізика залежить лише від
-    /// `dot(погляд, Сонце)` і зенітних кутів обох, а знак азимута в них не
-    /// входить.
+    /// The coordinate system is local: `up = (0, 0, 1)`, the Sun in the `xz`
+    /// plane. The view is given by the pair `(mu_v, cos_azimuth)`, i.e. by
+    /// exactly what lies on the table's axes -- and that is no loss: the
+    /// physics depends only on `dot(view, sun)` and on the zenith angles of
+    /// both, and the sign of the azimuth does not enter them.
     ///
-    /// Промінь зупиняється на поверхні й **нічого до неї не додає**: поверхню
-    /// малює кадр, а не таблиця неба. Те, що видно крізь повітря, — це вже
-    /// аеральна перспектива, і вона окремий крок (S5).
+    /// The ray stops at the surface and **adds nothing up to it**: the surface
+    /// is drawn by the frame, not by the sky table. What is seen through the
+    /// air is already aerial perspective, and that is a separate step (S5).
     pub fn sky_view(&self, r: f64, mu_s: f64, mu_v: f64, cos_azimuth: f64) -> [f64; 3] {
         let air = &self.air;
         let bottom = self.bottom;
@@ -808,7 +840,8 @@ impl Model {
         let sin_azimuth = (1.0 - cos_azimuth * cos_azimuth).max(0.0).sqrt();
         let w = [sin_v * cos_azimuth, sin_v * sin_azimuth, mu_v];
 
-        // Кут розсіювання сталий уздовж променя: обидва напрямки нерухомі.
+        // The scattering angle is constant along the ray: both directions are
+        // fixed.
         let cos_theta = w[0] * sun[0] + w[1] * sun[1] + w[2] * sun[2];
         let phase_r = rayleigh_phase(cos_theta);
         let phase_m = mie_phase(cos_theta, f64::from(air.mie_g));
@@ -845,8 +878,9 @@ impl Model {
             for channel in 0..3 {
                 let sigma_r = f64::from(air.rayleigh_scattering[channel]) * d_rayleigh;
                 let sigma_m = f64::from(air.mie_scattering) * d_mie;
-                // Пряме світло — з власною фазовою функцією кожної компоненти;
-                // багаторазове — вже усереднене по сфері, тож фази не має.
+                // Direct light -- with each component's own phase function;
+                // multiple scattering is already averaged over the sphere, so
+                // it has no phase.
                 let source = (sigma_r * phase_r + sigma_m * phase_m) * to_sun[channel]
                     + (sigma_r + sigma_m) * psi[channel];
 
@@ -870,12 +904,12 @@ mod tests {
         Atmosphere::EARTH
     }
 
-    /// Ланка 1 ланцюга: чисельне інтегрування збігається із замкненою формою.
+    /// Link 1 of the chain: numeric integration agrees with the closed form.
     ///
-    /// Вертикальний промінь — єдиний напрямок, у якому замкнена форма існує,
-    /// і саме тому таблиця влаштована так, щоб він у ній був. Перевіряється на
-    /// всіх висотах шару, а не в одній точці: помилка в густині озону видна
-    /// лише там, де озон є.
+    /// The vertical ray is the only direction in which a closed form exists,
+    /// and that is exactly why the table is built to contain it. Checked at
+    /// every altitude of the layer rather than at a single point: an error in
+    /// the ozone density is only visible where the ozone is.
     #[test]
     fn the_numeric_integral_matches_the_closed_form_going_straight_up() {
         let air = air();
@@ -886,35 +920,38 @@ mod tests {
             let numeric = optical_depth_to_top(&air, BOTTOM, r, 1.0, ORACLE_STEPS);
             let closed = vertical_optical_depth(&air, BOTTOM, r);
             for channel in 0..3 {
-                // Відносна похибка: біля верхньої межі обидва числа малі, і
-                // абсолютна нічого не сказала б.
+                // Relative error: near the top boundary both numbers are
+                // small, and an absolute one would say nothing.
                 let scale = closed[channel].abs().max(1.0e-12);
                 worst = worst.max((numeric[channel] - closed[channel]).abs() / scale);
             }
         }
         assert!(
             worst < 1.0e-3,
-            "найгірша відносна розбіжність {worst}, а мала б бути кроком інтегрування"
+            "worst relative error {worst}, should be the integration step"
         );
     }
 
-    /// Та сама перевірка, але для точки НАД шаром озону.
+    /// The same check, but for a point ABOVE the ozone layer.
     ///
-    /// Окремо, бо тут первісна трикутника входить обома гілками — і саме на
-    /// стику гілок помилка в ній була б непомітна в тесті вище.
+    /// Separate, because here the triangle's antiderivative enters through
+    /// both branches -- and an error in it right at the seam between them
+    /// would go unnoticed in the test above.
     #[test]
     fn the_ozone_layer_integrates_through_its_own_peak() {
         let air = air();
-        // 25 км — рівно центр шару, тобто злам профілю.
+        // 25 km is exactly the centre of the layer, i.e. the kink of the
+        // profile.
         let numeric = optical_depth_to_top(&air, BOTTOM, BOTTOM + 25_000.0, 1.0, ORACLE_STEPS);
         let closed = vertical_optical_depth(&air, BOTTOM, BOTTOM + 25_000.0);
         for channel in 0..3 {
             let relative = (numeric[channel] - closed[channel]).abs() / closed[channel];
-            assert!(relative < 1.0e-3, "канал {channel}: розбіжність {relative}");
+            assert!(relative < 1.0e-3, "channel {channel}: error {relative}");
         }
     }
 
-    /// Перший стовпець таблиці — вертикаль. На цьому стоїть увесь оракул S2.
+    /// The first column of the table looks straight up. The whole S2 oracle
+    /// stands on this.
     #[test]
     fn the_first_column_of_the_table_looks_straight_up() {
         let air = air();
@@ -926,26 +963,27 @@ mod tests {
         }
     }
 
-    /// Останній стовпець — дотична до поверхні: промінь, що ковзає горизонтом.
+    /// The last column is tangent to the surface: a ray grazing the horizon.
     #[test]
     fn the_last_column_grazes_the_ground() {
         let air = air();
         for k in 1..=8 {
             let v = f64::from(k) / 8.0;
             let (r, mu) = uv_to_r_mu(&air, BOTTOM, 1.0, v);
-            // Дотична з висоти r має `mu = −√(r² − bottom²)/r`.
+            // A tangent from altitude r has `mu = -sqrt(r^2 - bottom^2)/r`.
             let expected = -(r * r - BOTTOM * BOTTOM).sqrt() / r;
             assert!(
                 (mu - expected).abs() < 1.0e-9,
-                "v = {v}: {mu} проти {expected}"
+                "v = {v}: {mu} vs {expected}"
             );
         }
     }
 
-    /// Пряме й зворотне перетворення дають ту саму точку.
+    /// The forward and inverse transforms give back the same point.
     ///
-    /// Це не тавтологія: зворотне рахується іншою формулою (через
-    /// [`distance_to_top`]), і саме воно читатиме таблицю в кадрі.
+    /// This is not a tautology: the inverse is computed by a different formula
+    /// (through [`distance_to_top`]), and it is the one that will read the
+    /// table in the frame.
     #[test]
     fn the_parametrisation_survives_a_round_trip() {
         let air = air();
@@ -959,43 +997,46 @@ mod tests {
                 worst = worst.max((u - u2).abs()).max((v - v2).abs());
             }
         }
-        assert!(worst < 1.0e-6, "найгірше розходження {worst}");
+        assert!(worst < 1.0e-6, "worst mismatch {worst}");
     }
 
-    /// Промінь угору поверхні не бачить, промінь униз — бачить.
+    /// A ray pointing up never meets the surface, one pointing down does.
     #[test]
     fn only_a_ray_pointing_down_can_meet_the_ground() {
         let r = BOTTOM + 50_000.0;
         let rho2 = rho_squared(r, BOTTOM);
         assert!(distance_to_ground(r, 0.5, rho2).is_none());
         assert!(distance_to_ground(r, 0.0, rho2).is_none());
-        // Строго вниз: до поверхні рівно висота.
-        let down = distance_to_ground(r, -1.0, rho2).expect("вниз поверхня є");
+        // Straight down: the surface is exactly the altitude away.
+        let down = distance_to_ground(r, -1.0, rho2).expect("downwards there is ground");
         assert!((down - 50_000.0).abs() < 1.0e-6, "{down}");
-        // Ковзний промінь трохи нижче дотичної поверхні таки досягає.
+        // A grazing ray slightly below the tangent does reach the surface.
         let grazing = -rho2.sqrt() / r;
         assert!(distance_to_ground(r, grazing - 1.0e-6, rho2).is_some());
     }
 
-    /// Промінь униз із самої поверхні нікуди не йде — і це нуль, а не «немає».
+    /// A ray leaving the surface downwards goes nowhere -- and that is a zero,
+    /// not a "none".
     ///
-    /// Найдрібніше з тверджень цього модуля й найдорожче з них: у `f32` цей
-    /// самий вираз без затискання виходив від'ємним, викликач читав його як
-    /// «поверхні попереду немає», і промінь ішов крізь планету. Рядок 0
-    /// таблиці розсіювання виходив утричі яскравішим (S3).
+    /// The smallest of this module's claims and the most expensive of them: in
+    /// `f32` this very expression without the clamp came out negative, the
+    /// caller read it as "no surface ahead", and the ray went through the
+    /// planet. Row 0 of the scattering table came out three times brighter
+    /// (S3).
     #[test]
     fn a_ray_leaving_the_surface_downwards_travels_nowhere() {
         for mu in [-1.0, -0.5, -0.001] {
-            let d = distance_to_ground(BOTTOM, mu, 0.0).expect("поверхня прямо тут");
+            let d = distance_to_ground(BOTTOM, mu, 0.0).expect("the ground is right here");
             assert_eq!(d, 0.0, "mu = {mu}");
         }
     }
 
-    /// `rho²` через висоту й через різницю квадратів — те саме число.
+    /// `rho^2` through the altitude and through a difference of squares is the
+    /// same number.
     ///
-    /// У `f64` різниця квадратів іще працює, тож тут перевіряється не точність,
-    /// а те, що обидві формули описують одну величину: саме на цьому стоїть
-    /// право шейдера рахувати її дешевшим способом.
+    /// In `f64` a difference of squares still works, so what is checked here
+    /// is not the precision but that both formulas describe one quantity:
+    /// that is what gives the shader the right to compute it the cheaper way.
     #[test]
     fn rho_squared_is_the_same_whether_it_comes_from_height_or_from_radii() {
         for altitude in [0.0, 10.0, 1_000.0, 100_000.0] {
@@ -1005,10 +1046,10 @@ mod tests {
             let scale = by_height.max(1.0);
             assert!(
                 (by_height - by_radii).abs() / scale < 1.0e-9,
-                "висота {altitude}: {by_height} проти {by_radii}"
+                "altitude {altitude}: {by_height} vs {by_radii}"
             );
         }
-        // Те саме для оболонки.
+        // The same for the shell.
         let air = air();
         let shell = shell_squared(&air, BOTTOM);
         assert!((shell - (air.top_m * air.top_m - BOTTOM * BOTTOM)).abs() / shell < 1.0e-9);
