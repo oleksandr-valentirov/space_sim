@@ -1,0 +1,175 @@
+//! Y1a: how many tiles does a frame actually read? (ROADMAP.md, stage Y)
+//!
+//! The go/no-go for the whole of Y1. Debt D19 charges 1.86-2.04 ms per frame
+//! for the **length** of the bindless array -- 26,616 textures across two
+//! bodies -- regardless of what is drawn. A resident set replaces that with
+//! the cost of what the frame actually reads, so the saving is worth exactly
+//! the ratio between the two numbers, and only one of them is known.
+//!
+//! If the set is not two or three orders below 26,616, Y1 does not pay for
+//! itself and an hour here is a cheap way to learn that. Hence a census
+//! before the work, not a measurement after it.
+//!
+//! ## Why this counts `lod::select` rather than the compute cull
+//!
+//! The cull drops patches behind the limb and outside the frustum (R6b), so
+//! its set is smaller -- but it lives on the GPU, and reading it back costs a
+//! frame of latency. `lod::select` runs on the CPU before the frame is
+//! encoded, and its set is a **superset** of what is drawn. A superset is the
+//! safe direction: a surplus bound tile costs its 61-78 ns, a missing one is
+//! a hole in the frame. So this is the number the resident set would be built
+//! from, which is why it is the number measured.
+//!
+//! ## Why the camera is not pointed straight down
+//!
+//! Every fixture of the engine's geometry once stood exactly above the centre
+//! of a cube face -- the one point where a wrong distance to a patch gives the
+//! right answer -- and D13 and D14 both lived there unseen. The rule that came
+//! out of it (CLAUDE.md) is that a new check of body geometry must have at
+//! least one asymmetric direction and at least one small altitude. This has
+//! both: `drag` turns the camera off the face centre, and 10 km is in the
+//! list.
+//!
+//! Run: `cargo run --release -p engine --example tile_census`
+
+use std::collections::HashSet;
+
+use engine::camera::Camera;
+use engine::frame::FOV_Y;
+use engine::lod;
+use engine::tiles::{self, Colour, Terrain};
+
+/// The resolution the census is taken at.
+///
+/// The level criterion is measured in screen pixels, so the set depends on it
+/// -- the same body at 720p asks for fewer patches. 1080p is the larger of the
+/// two the performance probes use, i.e. the pessimistic end.
+const HEIGHT_PX: f64 = 1080.0;
+
+/// Altitudes above the surface, metres.
+///
+/// The map view, low orbit and close-up. The last one exists for the reason
+/// given in the header: errors of this class need a wide cone and a near
+/// camera at once.
+const ALTITUDES_M: [f64; 3] = [1.0e9, 400.0e3, 10.0e3];
+
+/// Where the camera stands, as an azimuth and an elevation in radians.
+///
+/// Any direction that is not symmetric would do; this one is over neither a
+/// face centre (0, 0) nor a cube corner (pi/4, atan(1/sqrt(2))).
+const YAW: f64 = 0.7;
+const PITCH: f64 = 0.35;
+
+/// The camera for this body at this altitude, looking at its centre.
+///
+/// ⚠ Built here rather than through `orbit::Orbit`, and that is the whole
+/// point: `Orbit::distance` is `sphere::EARTH_RADIUS_M + altitude`, i.e. it
+/// hard-codes **Earth's** radius. Asking it for "10 km" over the Moon puts the
+/// camera 4634 km above the surface, and the census then reports six patches
+/// at every altitude -- a wrong answer that looks like a measurement. Each
+/// body must be seen from its own radius.
+fn camera_at(radius_m: f64, altitude_m: f64) -> Camera {
+    let distance = radius_m + altitude_m;
+    let (sin_pitch, cos_pitch) = PITCH.sin_cos();
+    let (sin_yaw, cos_yaw) = YAW.sin_cos();
+    let position = [
+        distance * cos_pitch * cos_yaw,
+        distance * cos_pitch * sin_yaw,
+        distance * sin_pitch,
+    ];
+    Camera::look_at(position, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0])
+}
+
+fn main() -> Result<(), String> {
+    println!(
+        "profile: {}",
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        }
+    );
+    println!(
+        "resolution: {HEIGHT_PX:.0}px high, fov_y {:.1} deg",
+        FOV_Y.to_degrees()
+    );
+
+    let mut total_declared = 0usize;
+
+    for (name, dem_path, colour_path) in [
+        ("Moon", "assets/moon.dem", "assets/moon.col"),
+        ("Earth", "assets/earth.dem", "assets/earth.col"),
+    ] {
+        let terrain =
+            Terrain::from_bytes(&std::fs::read(dem_path).map_err(|e| format!("{dem_path}: {e}"))?)?;
+        let colour = Colour::from_bytes(
+            &std::fs::read(colour_path).map_err(|e| format!("{colour_path}: {e}"))?,
+        )?;
+
+        // What the bindless array declares today: the whole pyramid, both
+        // channels, bound whole every frame. This is the number D19 charges
+        // for.
+        let declared = tiles::count(terrain.levels) + tiles::count(colour.levels);
+        total_declared += declared;
+
+        println!();
+        println!(
+            "=== {name}: radius {:.1} km, {} terrain levels ({} tiles), {} colour levels ({} tiles)",
+            terrain.reference_m / 1000.0,
+            terrain.levels,
+            tiles::count(terrain.levels),
+            colour.levels,
+            tiles::count(colour.levels),
+        );
+
+        let body = lod::Body::still([0.0, 0.0, 0.0], terrain.reference_m);
+        let focal = lod::focal_px(FOV_Y, HEIGHT_PX);
+
+        for altitude in ALTITUDES_M {
+            let camera = camera_at(terrain.reference_m, altitude);
+
+            let selection = lod::select(&body, &camera, focal, Some(&terrain));
+
+            // Two distinct sets, because the two pyramids have different
+            // depths: a patch deeper than a pyramid reads its nearest
+            // ancestor's tile (`covering`), and with five terrain levels
+            // against six colour ones the same patch can share a terrain tile
+            // with its sibling while owning its colour tile alone.
+            let mut height_tiles: HashSet<usize> = HashSet::new();
+            let mut colour_tiles: HashSet<usize> = HashSet::new();
+            for patch in &selection.patches {
+                let (covering, _) = tiles::covering(terrain.levels, patch);
+                if let Some(index) = tiles::index(terrain.levels, &covering) {
+                    height_tiles.insert(index);
+                }
+                let (covering, _) = tiles::covering(colour.levels, patch);
+                if let Some(index) = tiles::index(colour.levels, &covering) {
+                    colour_tiles.insert(index);
+                }
+            }
+
+            let read = height_tiles.len() + colour_tiles.len();
+            println!(
+                "  {:>9.0} km: {:>5} patches -> {:>4} height + {:>4} colour = {:>4} tiles read, \
+                 {:>5} declared, ratio 1:{:.0}",
+                altitude / 1000.0,
+                selection.patches.len(),
+                height_tiles.len(),
+                colour_tiles.len(),
+                read,
+                declared,
+                declared as f64 / read.max(1) as f64,
+            );
+        }
+    }
+
+    println!();
+    println!("declared across both bodies: {total_declared} textures");
+    println!(
+        "at 61-78 ns per texture per frame (NVIDIA/Vulkan, T8/T7h): {:.2}-{:.2} ms",
+        total_declared as f64 * 61.0e-6,
+        total_declared as f64 * 78.0e-6,
+    );
+
+    Ok(())
+}
