@@ -214,6 +214,28 @@ fn main() -> Result<(), String> {
                 declared as f64 / read.max(1) as f64,
             );
 
+            // X5e: how deep the frame actually reaches into each pyramid.
+            //
+            // The count alone does not say it: 144 tiles at eight levels and 105
+            // at six are different tiles, not more of the same. This is the
+            // number that says the mosaic's finest tiles arrive in the frame at
+            // all, which is the whole claim of the recook.
+            let deepest = |levels: u32| {
+                selection
+                    .patches
+                    .iter()
+                    .map(|patch| tiles::covering(levels, patch).0.level)
+                    .max()
+                    .unwrap_or(0)
+            };
+            println!(
+                "               deepest level read: {} of {} (height), {} of {} (colour)",
+                deepest(terrain.levels),
+                terrain.levels - 1,
+                deepest(colour.levels),
+                colour.levels - 1,
+            );
+
             // X5a: the same set against the depths the pool would serve. One
             // pyramid's worth per column -- the two pyramids of a body are
             // counted separately because they are separate pools, and a body
@@ -234,8 +256,14 @@ fn main() -> Result<(), String> {
 
     println!();
     println!("declared across both bodies: {total_declared} textures");
+    // What binding the pyramid used to cost, and no longer does: since Y1b the
+    // frame binds the resident set and since X5b the GPU holds a pool, so this
+    // line is the debt rather than the bill. It is kept because it is the
+    // number the whole of Y1 and X5 were measured against -- and because it
+    // grows with every recook, which is exactly the thing that would have made
+    // eight levels impossible.
     println!(
-        "at 61-78 ns per texture per frame (NVIDIA/Vulkan, T8/T7h): {:.2}-{:.2} ms",
+        "what D19 would have charged for that at 61-78 ns per texture per frame: {:.2}-{:.2} ms",
         total_declared as f64 * 61.0e-6,
         total_declared as f64 * 78.0e-6,
     );

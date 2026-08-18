@@ -32,14 +32,29 @@ const DEFAULT_LEVELS: u32 = 5;
 /// gap.
 const DEFAULT_COLOUR_LEVELS: u32 = 6;
 
-/// How many pyramid levels for Earth -- six, also measured (T7).
+/// How many pyramid levels for Earth's **shape** -- six, measured at T7.
 ///
 /// A level 6 node covers 9.77 km of Earth, five times coarser than the source
-/// (1.85 km) -- the cooker averages the grid down a chain. A seventh level
-/// would cost 384 MiB of video memory against 96 and 1.67 ms of frame against
-/// 0.42 (debt D19), and reaches the screen no better either way: with the
-/// camera at 100 km a level 6 node is 61 screen pixels.
+/// (1.85 km). That is visible in colour and not in shape: at this node the
+/// coastline is where it should be, and metre-scale relief has nothing to be
+/// built on either way. Deepening it is a separate decision, to be made on a
+/// sharp Earth rather than before one (ROADMAP, after X5e).
 const DEFAULT_EARTH_LEVELS: u32 = 6;
+
+/// How many pyramid levels for Earth's **colour** -- eight (X5e).
+///
+/// Eight because eight is where the source runs out: a level 8 node covers
+/// 2.45 km against Blue Marble's 1.85 km per pixel, and a ninth (1.22 km) would
+/// be finer than the source cell, i.e. a fourfold larger file carrying nothing
+/// (see `tiles.rs`). Six saw 3.5% of the mosaic's pixels; this sees all of
+/// them.
+///
+/// What used to forbid it was video memory -- the whole pyramid was resident,
+/// and eight levels measure 1.5 GiB (NVIDIA) or 2.0 (RADV) for this pyramid
+/// alone (X5a). Since X5b/X5d the GPU holds a pool of slots and the file is
+/// read a tile at a time, so depth costs disk (571 MB) and cooking time, not
+/// VRAM.
+const DEFAULT_EARTH_COLOUR_LEVELS: u32 = 8;
 
 fn main() {
     let mut colour = false;
@@ -94,7 +109,7 @@ fn main() {
         (true, true) => (
             "data/bmng/world.topo.bathy.200407.jpg",
             "assets/earth.col",
-            DEFAULT_EARTH_LEVELS,
+            DEFAULT_EARTH_COLOUR_LEVELS,
         ),
     };
     let source = source.unwrap_or_else(|| PathBuf::from(default_source));
