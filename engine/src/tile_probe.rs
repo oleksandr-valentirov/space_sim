@@ -98,7 +98,14 @@ use crate::tiles;
 
 /// The levels worth measuring: 5 is the Moon's terrain, 6 its colour and both
 /// of the Earth's pyramids, 7 the candidate T2 turned down.
-const LEVELS: [u32; 3] = [5, 6, 7];
+///
+/// 8 is the depth stage X5 aims at -- the one that reaches the source
+/// (2.45 km per node against Blue Marble's 1.85 km). It is measured here
+/// precisely because the frame will never allocate it: X5's whole claim is
+/// that a resident pool costs the screen rather than the pyramid, and the
+/// number that claim is compared against has to be a measurement rather than
+/// an extrapolation of the granularity from 7.
+const LEVELS: [u32; 4] = [5, 6, 7, 8];
 
 /// The formats and grids T2 and W1 choose between.
 ///

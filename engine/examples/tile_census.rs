@@ -13,6 +13,26 @@
 //! It still runs, and it is still the number to look at when a new pyramid is
 //! added (Y2-Y4): what the resident set costs is what the frame reads.
 //!
+//! ## X5a: the same census at the depths the pool would serve
+//!
+//! Stage X5 aims at eight levels -- the depth that reaches the source (2.45 km
+//! per node against Blue Marble's 1.85 km per pixel). Residency there is not
+//! an option: `--tile-probe` measures 1.5 GiB (NVIDIA) and 2.0 GiB (RADV) for
+//! **one** pyramid of **one** body. So the number that sizes the slot pool is
+//! how many distinct tiles the frame reads at that depth, and it is measured
+//! here rather than extrapolated: patches share ancestors, and how much they
+//! share is exactly what changes with depth.
+//!
+//! Pyramid depth is arithmetic (`covering` and `index` take the level count,
+//! not the asset), so the deeper columns need no recook.
+//!
+//! ⚠ **They are a floor, not the answer.** The patch set itself comes from
+//! `lod::select` against **today's** assets, and the criterion asks the terrain
+//! about slope (R7c). A deeper pyramid measures slope on a shorter base, so it
+//! reports steeper, so the criterion splits further: the real set at eight
+//! levels is this one or larger. X5e re-measures on the cooked asset, and the
+//! pool is sized with that in mind.
+//!
 //! ## Why this counts `lod::select` rather than the compute cull
 //!
 //! The cull drops patches behind the limb and outside the frustum (R6b), so
@@ -57,6 +77,39 @@ const HEIGHT_PX: f64 = 1080.0;
 /// camera at once.
 const ALTITUDES_M: [f64; 3] = [1.0e9, 400.0e3, 10.0e3];
 
+/// The pyramid depths the census reports, beyond the assets' own (X5a).
+///
+/// Seven and eight are the two X5 weighed; six is there so the deeper columns
+/// are read against a number this file already printed before X5, rather than
+/// against nothing.
+const DEPTHS: [u32; 3] = [6, 7, 8];
+
+/// What one tile of the Earth's colour costs in video memory, in bytes.
+///
+/// Measured, not derived from the payload: `--tile-probe` reports 12288 on
+/// NVIDIA/Vulkan and 16384 on RADV for `Rgba8Unorm` at 33^2, against 4356
+/// bytes of data. The granularity is a step of the allocator and holds from
+/// five levels to eight, which is why one constant serves every depth here.
+const TILE_BYTES_NVIDIA: usize = 12288;
+
+/// The same on RADV -- the wider of the two steps, i.e. the pessimistic end.
+const TILE_BYTES_RADV: usize = 16384;
+
+/// How many distinct tiles a patch set reads from a pyramid of `levels`.
+///
+/// The same walk the frame does: a patch deeper than the pyramid reads its
+/// nearest ancestor's tile, so the count is of **coverings**, not of patches.
+fn tiles_read(levels: u32, patches: &[engine::cubesphere::Patch]) -> usize {
+    let mut seen: HashSet<usize> = HashSet::new();
+    for patch in patches {
+        let (covering, _) = tiles::covering(levels, patch);
+        if let Some(index) = tiles::index(levels, &covering) {
+            seen.insert(index);
+        }
+    }
+    seen.len()
+}
+
 /// Where the camera stands, as a mouse drag in pixels off the default view.
 ///
 /// Any direction that is not symmetric would do; this one (0.70 rad, 0.35 rad)
@@ -93,6 +146,8 @@ fn main() -> Result<(), String> {
     );
 
     let mut total_declared = 0usize;
+    // The worst per-pyramid demand seen at each depth, indexed by depth (X5a).
+    let mut worst_per_pyramid = [0usize; 9];
 
     for (name, dem_path, colour_path) in [
         ("Moon", "assets/moon.dem", "assets/moon.col"),
@@ -158,6 +213,22 @@ fn main() -> Result<(), String> {
                 declared,
                 declared as f64 / read.max(1) as f64,
             );
+
+            // X5a: the same set against the depths the pool would serve. One
+            // pyramid's worth per column -- the two pyramids of a body are
+            // counted separately because they are separate pools, and a body
+            // may well carry them at different depths (T3b).
+            for depth in DEPTHS {
+                let per_pyramid = tiles_read(depth, &selection.patches);
+                worst_per_pyramid[depth as usize] =
+                    worst_per_pyramid[depth as usize].max(per_pyramid);
+                println!(
+                    "               at {depth} levels: {per_pyramid:>4} tiles per pyramid \
+                     ({:>6} declared, ratio 1:{:.0})",
+                    tiles::count(depth),
+                    tiles::count(depth) as f64 / per_pyramid.max(1) as f64,
+                );
+            }
         }
     }
 
@@ -168,6 +239,26 @@ fn main() -> Result<(), String> {
         total_declared as f64 * 61.0e-6,
         total_declared as f64 * 78.0e-6,
     );
+
+    // X5a: what sizes the pool. Four pyramids are live at once (two bodies,
+    // height and colour each), and the worst case is taken per pyramid rather
+    // than per frame because a slot is a slot: the pool is one array, and the
+    // demand on it is four times the worst a single pyramid shows.
+    println!();
+    println!("X5a -- the slot pool, sized by what the frame reads:");
+    for depth in DEPTHS {
+        let worst = worst_per_pyramid[depth as usize];
+        let demand = worst * 4;
+        println!(
+            "  {depth} levels: worst {worst} tiles in one pyramid, {demand} across four; \
+             residency would be {:.2} GiB (NVIDIA) / {:.2} GiB (RADV), \
+             a pool of 4096 slots is {:.0} MiB / {:.0} MiB",
+            (tiles::count(depth) * 4 * TILE_BYTES_NVIDIA) as f64 / 1024.0 / 1024.0 / 1024.0,
+            (tiles::count(depth) * 4 * TILE_BYTES_RADV) as f64 / 1024.0 / 1024.0 / 1024.0,
+            (4096 * TILE_BYTES_NVIDIA) as f64 / 1024.0 / 1024.0,
+            (4096 * TILE_BYTES_RADV) as f64 / 1024.0 / 1024.0,
+        );
+    }
 
     Ok(())
 }
