@@ -649,8 +649,10 @@ fn tile_assets() -> Option<(engine::tiles::Terrain, engine::tiles::Colour)> {
 
 /// A cooked surface from disk -- terrain and colour together, or nothing.
 fn surface_assets(dem: &str, col: &str) -> Option<(engine::tiles::Terrain, engine::tiles::Colour)> {
-    let terrain = engine::tiles::Terrain::from_bytes(&std::fs::read(dem).ok()?).ok()?;
-    let colour = engine::tiles::Colour::from_bytes(&std::fs::read(col).ok()?).ok()?;
+    // `open` rather than a whole read (X5d): the same bytes for the assets we
+    // cook today, and the streaming path for the deeper ones to come.
+    let terrain = engine::tiles::Terrain::open(std::path::Path::new(dem)).ok()?;
+    let colour = engine::tiles::Colour::open(std::path::Path::new(col)).ok()?;
     Some((terrain, colour))
 }
 

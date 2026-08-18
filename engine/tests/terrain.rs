@@ -775,22 +775,150 @@ fn a_streamed_pyramid_draws_what_its_prefix_draws() {
     file.push(format!("space_sim_streamed_{}.dem", std::process::id()));
     std::fs::write(&file, deep.to_bytes()).expect("the fixture should have written");
     let streamed = Terrain::open_with(&file, LEVELS).expect("the fixture should have opened");
-    std::fs::remove_file(&file).ok();
 
     assert_eq!(streamed.levels, LEVELS + 1);
     assert_eq!(streamed.resident_levels(), LEVELS);
 
-    // Off any axis of symmetry and close enough that patches go past the
-    // prefix -- otherwise the streaming path is never taken and the two frames
-    // agree for want of anything to disagree about.
+    // Off any axis of symmetry and low enough that patches go past the prefix.
+    // Higher up the prefix covers everything, the streaming path is never
+    // taken, and the frames agree for want of anything to disagree about --
+    // which is why the deep asset is compared against as well.
+    //
+    // `pair_of` takes the terrain shot on its **first** draw, before anything
+    // could have been requested, let alone delivered. That is what makes this a
+    // statement about the prefix rather than about how fast the disk is.
     let eye = towards(40.0, 25.0);
-    for altitude in [50.0e3, 5.0e3] {
+    for altitude in [5.0e3, 500.0] {
         let (with_prefix, _) = pair_of(&gpu, &shallow, eye, altitude);
         let (streamed_shot, _) = pair_of(&gpu, &streamed, eye, altitude);
+        let (whole, _) = pair_of(&gpu, &deep, eye, altitude);
         assert_eq!(
             different(&with_prefix, &streamed_shot),
             0,
             "at {altitude:.0} m a streamed pyramid drew something its prefix does not"
         );
+        assert_ne!(
+            different(&whole, &streamed_shot),
+            0,
+            "at {altitude:.0} m the prefix already draws the whole pyramid -- \
+             this altitude proves nothing"
+        );
     }
+
+    std::fs::remove_file(&file).ok();
+}
+
+/// One frame through a `Frame` that outlives the call -- the streaming tests
+/// need the same frame across several draws, which `pair_of` cannot give.
+fn draw_once(gpu: &Gpu, frame: &mut Frame, scene: &Scene) -> Shot {
+    let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("streamed shot"),
+        size: wgpu::Extent3d {
+            width: SIZE,
+            height: SIZE,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: shot::FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut encoder = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("streamed shot"),
+        });
+    frame.draw(gpu, &mut encoder, &view, SIZE, SIZE, scene);
+    shot::read_back(gpu, encoder, &texture, SIZE, SIZE).expect("the shot should have read back")
+}
+
+/// Draws until the loading has caught up, and returns that frame (X5d3).
+///
+/// Two conditions, and the second is the one that is easy to forget: nothing in
+/// flight is not enough, because a tile that lands lets the **next** frame
+/// choose deeper patches, which asks for more. Settled means the disk is quiet
+/// and the resident set has stopped moving.
+///
+/// This is what every screenshot oracle over a streamed body has to do. Without
+/// it the shot depends on how fast the disk was, which is a flickering test
+/// that blames the renderer.
+fn settled(gpu: &Gpu, frame: &mut Frame, scene: &Scene) -> Shot {
+    let mut previous = Vec::new();
+    for _ in 0..64 {
+        let shot = draw_once(gpu, frame, scene);
+        let resident = frame.resident_tiles();
+        if frame.tiles_in_flight() == 0 && resident == previous {
+            return shot;
+        }
+        previous = resident;
+    }
+    panic!("the tiles never settled");
+}
+
+/// Once the disk has caught up, a streamed pyramid draws what the whole one
+/// draws (X5d3).
+///
+/// The claim streaming exists to make: what a tile costs is a wait, not a
+/// picture. Bitwise against the same asset loaded whole -- the streamed body
+/// starts at its four-level prefix, asks for the fifth as patches want it, and
+/// must arrive at exactly the frame the resident asset draws on its first.
+///
+/// The two shots come from separate `Frame`s over the same file, so a pass is
+/// also a statement that the disk path and the memory path put the same bytes
+/// in the same texture.
+#[test]
+fn a_settled_stream_draws_what_the_whole_pyramid_draws() {
+    let Some(gpu) = gpu() else { return };
+
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../data/lola/ldem_4.img");
+    let grid = Grid::read(&path).expect("the LOLA grid should have read");
+    let deep = build(&grid, LEVELS + 1);
+
+    let mut file = std::env::temp_dir();
+    file.push(format!("space_sim_settle_{}.dem", std::process::id()));
+    std::fs::write(&file, deep.to_bytes()).expect("the fixture should have written");
+    let streamed = Terrain::open_with(&file, LEVELS).expect("the fixture should have opened");
+    assert!(
+        streamed.source().is_some(),
+        "the fixture is not streaming anything"
+    );
+
+    let eye = towards(40.0, 25.0);
+    for altitude in [5.0e3, 500.0] {
+        let scene_of = |id| moon(eye, altitude, TileSet::Loaded(id));
+
+        let whole = {
+            let mut frame = Frame::new(&gpu, shot::FORMAT);
+            let id = frame
+                .load_terrain(&gpu, &deep)
+                .expect("the whole asset should have loaded");
+            settled(&gpu, &mut frame, &scene_of(id))
+        };
+
+        let mut frame = Frame::new(&gpu, shot::FORMAT);
+        let id = frame
+            .load_terrain(&gpu, &streamed)
+            .expect("the streamed asset should have loaded");
+        // The first frame is drawn from the prefix alone, and it is **not**
+        // expected to match: that is the blur X5d2 promises, and asserting it
+        // differs is what keeps this test from passing when nothing streams.
+        let first = draw_once(&gpu, &mut frame, &scene_of(id));
+        let after = settled(&gpu, &mut frame, &scene_of(id));
+
+        assert_ne!(
+            different(&first, &whole),
+            0,
+            "at {altitude:.0} m the first frame already matched -- nothing was streamed"
+        );
+        assert_eq!(
+            different(&after, &whole),
+            0,
+            "at {altitude:.0} m a settled stream did not reach the whole pyramid"
+        );
+    }
+
+    std::fs::remove_file(&file).ok();
 }

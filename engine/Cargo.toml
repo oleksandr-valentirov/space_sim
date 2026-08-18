@@ -13,6 +13,11 @@ core-rs = { path = "../core-rs" }
 
 pollster = "1.0.1"
 wgpu = "30"
+
+# Tiles are read off the frame thread (X5d3). The same channel crate `game`
+# uses, and for the same reason (CLAUDE.md, invariant 8): no shared mutable
+# state between threads, only channels.
+crossbeam-channel = "0.5.16"
 winit = "0.30"
 
 # A screenshot of the frame into a file. We do not write the codec ourselves

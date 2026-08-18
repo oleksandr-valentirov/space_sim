@@ -685,7 +685,7 @@ impl Frame {
         // depending on pyramid depth: creating an eight-level pyramid measured
         // 0.7 s per pyramid (X5a), and it was paid whether the body was ever
         // looked at or not.
-        let heights = TilePool::new(
+        let mut heights = TilePool::new(
             gpu,
             "terrain tile",
             wgpu::TextureFormat::Rg16Sint,
@@ -693,6 +693,7 @@ impl Frame {
             4,
             self.planet.pool_slots,
         );
+        heights.loader = terrain.source().cloned().map(TileLoader::spawn);
         // A body without colour still needs a pool: an empty binding array
         // cannot be bound at all, and one slot is enough to bind. Nobody reads
         // it -- `terrain.y` in the uniforms stays zero.
@@ -700,7 +701,7 @@ impl Frame {
             Some(c) => (colour_format(c), c.channels),
             None => (NO_COLOUR_FORMAT, 1),
         };
-        let colours = TilePool::new(
+        let mut colours = TilePool::new(
             gpu,
             "colour tile",
             format,
@@ -712,6 +713,9 @@ impl Frame {
                 1
             },
         );
+        colours.loader = colour
+            .and_then(|c| c.source().cloned())
+            .map(TileLoader::spawn);
 
         self.planet.terrains.push(TerrainSlot {
             data: terrain.clone(),
@@ -732,6 +736,21 @@ impl Frame {
     /// done, and the only honest check of that is counting.
     pub fn tile_rebuilds(&self) -> u64 {
         self.planet.rebuilds
+    }
+
+    /// How many tiles the frame is still waiting on the disk for (X5d3).
+    ///
+    /// Zero does not by itself mean "settled": a tile that lands lets the next
+    /// frame choose deeper patches, which asks for more. So the settle is "no
+    /// tiles in flight **and** the resident set did not move", and both halves
+    /// are read from here and `resident_tiles`.
+    ///
+    /// It exists for the oracle. A frame that depends on what has loaded cannot
+    /// be compared with a stored image unless the test can wait for the loading
+    /// to finish -- and without that the first screenshot test would start
+    /// flickering, and the renderer would get the blame.
+    pub fn tiles_in_flight(&self) -> usize {
+        self.planet.in_flight()
     }
 
     /// Caps the tile pools made from here on at `slots`, for the oracle (X5b).
@@ -1646,7 +1665,11 @@ struct BodySlot {
 /// must not move under the predicate halfway through.
 fn height_ready(terrain: Option<&TerrainSlot>, tile: usize) -> bool {
     match terrain {
-        Some(t) => t.heights.holds(tile) || t.data.resident_tile(tile).is_some(),
+        Some(t) => {
+            t.heights.holds(tile)
+                || t.data.resident_tile(tile).is_some()
+                || t.heights.delivered(tile)
+        }
         None => false,
     }
 }
@@ -1654,7 +1677,9 @@ fn height_ready(terrain: Option<&TerrainSlot>, tile: usize) -> bool {
 /// The same for colour, whose pyramid has its own depth and its own pool.
 fn colour_ready(terrain: Option<&TerrainSlot>, tile: usize) -> bool {
     match terrain.and_then(|t| t.colour.as_ref().map(|c| (t, c))) {
-        Some((t, c)) => t.colours.holds(tile) || c.resident_tile(tile).is_some(),
+        Some((t, c)) => {
+            t.colours.holds(tile) || c.resident_tile(tile).is_some() || t.colours.delivered(tile)
+        }
         None => false,
     }
 }
@@ -1688,6 +1713,110 @@ fn resident_views<'a>(views: &'a [wgpu::TextureView], ids: &[usize]) -> Vec<&'a 
 /// What it costs is the point: 1024 slots are 12 MiB (NVIDIA) or 16 (RADV) per
 /// pyramid, against 1.5-2.0 GiB for the eight-level pyramid itself.
 const TILE_POOL_SLOTS: usize = 1024;
+
+/// How many tiles may be waiting on the loader at once (X5d3).
+///
+/// A bound on memory rather than on bandwidth: a tile in flight is 4356 bytes
+/// on the heap, and a camera swung across a body asks for every tile it passes.
+/// At this cap that is half a megabyte per pyramid, and what does not fit is
+/// simply asked for again next frame -- the frame draws an ancestor meanwhile,
+/// which is the whole point of X5d2.
+const MAX_TILES_IN_FLIGHT: usize = 128;
+
+/// Reads tiles off the frame thread (X5d3).
+///
+/// One thread per pyramid rather than a pool of them, and the simplest possible
+/// pair of channels: the thread blocks on requests, reads one tile, sends it
+/// back. It ends when the request channel is dropped, so nothing has to be
+/// joined.
+///
+/// ## Why a failed read is remembered
+///
+/// A tile that will not read is not a slow tile -- the file is short, or the
+/// disk is gone. Left in `pending` it would jam the queue; dropped from it, it
+/// would be asked for again every frame, which is a log flood and a thread
+/// spinning on `ENOENT`. So it is recorded once and never asked for again, and
+/// the frame keeps drawing its ancestor: the same degradation as a tile still
+/// in flight, which is the only behaviour the rest of the frame knows.
+struct TileLoader {
+    requests: crossbeam_channel::Sender<usize>,
+    ready: crossbeam_channel::Receiver<(usize, Vec<u8>)>,
+    /// Asked for and not yet arrived.
+    pending: std::collections::HashSet<usize>,
+    /// Arrived and waiting for a slot.
+    delivered: std::collections::HashMap<usize, Vec<u8>>,
+    /// Asked for once and refused by the file.
+    failed: std::collections::HashSet<usize>,
+}
+
+impl TileLoader {
+    fn spawn(source: tiles::TileSource) -> TileLoader {
+        let (requests, wanted) = crossbeam_channel::unbounded::<usize>();
+        let (done, ready) = crossbeam_channel::unbounded::<(usize, Vec<u8>)>();
+        std::thread::spawn(move || {
+            for index in wanted {
+                // An empty payload is the failure: the reader on the other side
+                // has no other way to learn that this tile will never come, and
+                // a tile is never legitimately empty.
+                let bytes = match source.read(index) {
+                    Ok(bytes) => bytes,
+                    Err(message) => {
+                        eprintln!("tile {index}: {message}");
+                        Vec::new()
+                    }
+                };
+                if done.send((index, bytes)).is_err() {
+                    break;
+                }
+            }
+        });
+        TileLoader {
+            requests,
+            ready,
+            pending: std::collections::HashSet::new(),
+            delivered: std::collections::HashMap::new(),
+            failed: std::collections::HashSet::new(),
+        }
+    }
+
+    /// Takes in whatever has arrived -- before the frame chooses anything, so
+    /// that a tile that landed a moment ago is used by this frame rather than
+    /// the next one.
+    fn collect(&mut self) {
+        while let Ok((index, bytes)) = self.ready.try_recv() {
+            self.pending.remove(&index);
+            if bytes.is_empty() {
+                self.failed.insert(index);
+            } else {
+                self.delivered.insert(index, bytes);
+            }
+        }
+    }
+
+    /// Asks for a tile, unless it is already coming or already known bad.
+    fn want(&mut self, tile: usize) {
+        if self.pending.len() >= MAX_TILES_IN_FLIGHT
+            || self.pending.contains(&tile)
+            || self.failed.contains(&tile)
+            || self.delivered.contains_key(&tile)
+        {
+            return;
+        }
+        if self.requests.send(tile).is_ok() {
+            self.pending.insert(tile);
+        }
+    }
+
+    /// Drops what arrived and was not wanted after all.
+    ///
+    /// Called once the frame has taken what it needed, so this is exactly the
+    /// tiles the camera moved away from while they were in flight. Keeping them
+    /// would need an eviction policy for a second cache; asking again costs one
+    /// read of a file that is now in the page cache anyway.
+    fn forget_unused(&mut self) {
+        self.delivered.clear();
+    }
+}
 
 /// A fixed set of tile textures, filled on demand and evicted by a cursor (X5b).
 ///
@@ -1769,6 +1898,9 @@ struct TilePool {
     format: wgpu::TextureFormat,
     side: u32,
     bytes_per_texel: u32,
+    /// Where tiles that are neither in the pool nor in the asset's prefix come
+    /// from (X5d3). `None` for a pyramid that fits in memory whole.
+    loader: Option<TileLoader>,
 }
 
 impl TilePool {
@@ -1795,6 +1927,7 @@ impl TilePool {
             format,
             side,
             bytes_per_texel,
+            loader: None,
         };
         pool.allocate(gpu, capacity);
         pool
@@ -1867,6 +2000,44 @@ impl TilePool {
     /// interned, when it means "this frame can have it for nothing" (X5d2).
     fn holds(&self, tile: usize) -> bool {
         self.slot.contains_key(&tile)
+    }
+
+    /// Whether the loader has this tile in hand (X5d3).
+    fn delivered(&self, tile: usize) -> bool {
+        self.loader
+            .as_ref()
+            .is_some_and(|l| l.delivered.contains_key(&tile))
+    }
+
+    /// Takes in what the loader has read since the last frame.
+    fn collect(&mut self) {
+        if let Some(loader) = self.loader.as_mut() {
+            loader.collect();
+        }
+    }
+
+    /// Asks the loader for a tile this frame wanted and could not have.
+    fn want(&mut self, tile: usize) {
+        if let Some(loader) = self.loader.as_mut() {
+            loader.want(tile);
+        }
+    }
+
+    /// Drops what arrived and was not used.
+    fn forget_unused(&mut self) {
+        if let Some(loader) = self.loader.as_mut() {
+            loader.forget_unused();
+        }
+    }
+
+    /// How many tiles this pool is waiting for.
+    fn in_flight(&self) -> usize {
+        self.loader.as_ref().map_or(0, |l| l.pending.len())
+    }
+
+    /// A delivered tile's bytes, taken out of the loader's hands.
+    fn take_delivered(&mut self, tile: usize) -> Option<Vec<u8>> {
+        self.loader.as_mut()?.delivered.remove(&tile)
     }
 
     /// The slot holding `tile`, if the pool has it -- and it is needed now.
@@ -2575,6 +2746,14 @@ impl Planet {
         // be the same one for two bodies sharing an asset.
         self.tile_frame += 1;
 
+        // What the loader read since the last frame, taken in **before** any
+        // body chooses its tiles (X5d3): a tile that landed a moment ago should
+        // sharpen this frame rather than the next one.
+        for slot in &mut self.terrains {
+            slot.heights.collect();
+            slot.colours.collect();
+        }
+
         self.selections.clear();
         let mut needed = 0;
         for body in &scene.bodies {
@@ -2806,13 +2985,16 @@ impl Planet {
                     // above admitted no third case, which is what `expect` says.
                     let at = match slot.heights.slot_of(tile) {
                         Some(at) => at,
-                        None => {
-                            let bytes = slot
-                                .data
-                                .resident_tile(tile)
-                                .expect("the window only chose tiles this frame can have");
-                            slot.heights.insert(gpu, tile, bytes)
-                        }
+                        None => match slot.data.resident_tile(tile) {
+                            Some(bytes) => slot.heights.insert(gpu, tile, bytes),
+                            None => {
+                                let bytes = slot
+                                    .heights
+                                    .take_delivered(tile)
+                                    .expect("the window only chose tiles this frame can have");
+                                slot.heights.insert(gpu, tile, &bytes)
+                            }
+                        },
                     };
                     height_pool.push(at);
                 }
@@ -2821,17 +3003,45 @@ impl Planet {
                     for &tile in &colour_ids {
                         let at = match slot.colours.slot_of(tile) {
                             Some(at) => at,
-                            None => {
-                                let bytes = c
-                                    .resident_tile(tile)
-                                    .expect("the window only chose tiles this frame can have");
-                                slot.colours.insert(gpu, tile, bytes)
-                            }
+                            None => match c.resident_tile(tile) {
+                                Some(bytes) => slot.colours.insert(gpu, tile, bytes),
+                                None => {
+                                    let bytes = slot
+                                        .colours
+                                        .take_delivered(tile)
+                                        .expect("the window only chose tiles this frame can have");
+                                    slot.colours.insert(gpu, tile, &bytes)
+                                }
+                            },
                         };
                         colour_pool.push(at);
                     }
                 }
             }
+            // And what this frame wanted but could not have: asked for, so a later
+            // frame can have it (X5d3). The **ideal** tile is what is asked for,
+            // not the next level down -- the chain below it is resident anyway,
+            // and asking for the ancestors would read tiles nobody will look at.
+            if let Some(id) = wanted {
+                let slot = &mut self.terrains[id];
+                for patch in &selection.patches {
+                    let ideal = tiles::window(slot.data.levels, patch).0;
+                    if !slot.heights.holds(ideal) && slot.data.resident_tile(ideal).is_none() {
+                        slot.heights.want(ideal);
+                    }
+                    if let Some(levels) = colour_levels {
+                        let ideal = tiles::window(levels, patch).0;
+                        let have = slot
+                            .colour
+                            .as_ref()
+                            .is_some_and(|c| c.resident_tile(ideal).is_some());
+                        if !slot.colours.holds(ideal) && !have {
+                            slot.colours.want(ideal);
+                        }
+                    }
+                }
+            }
+
             // Taken again because interning needed `self.terrains` mutably, and
             // the window arithmetic below reads from the very same struct. Two
             // bindings rather than one is the whole price of putting the pool
@@ -3043,6 +3253,22 @@ impl Planet {
                 );
             }
         }
+
+        // Whatever arrived and no body wanted, dropped (X5d3). Here rather than
+        // inside the body loop, because a pool belongs to an asset: the first
+        // body must not throw away what the second one is about to read.
+        for slot in &mut self.terrains {
+            slot.heights.forget_unused();
+            slot.colours.forget_unused();
+        }
+    }
+
+    /// How many tiles all the pyramids are waiting on (X5d3).
+    fn in_flight(&self) -> usize {
+        self.terrains
+            .iter()
+            .map(|t| t.heights.in_flight() + t.colours.in_flight())
+            .sum()
     }
 
     /// Culling in compute: one group per 64 candidates, per body.

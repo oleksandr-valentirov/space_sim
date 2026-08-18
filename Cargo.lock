@@ -549,6 +549,7 @@ name = "engine"
 version = "0.1.0"
 dependencies = [
  "core-rs",
+ "crossbeam-channel",
  "dem-cook",
  "egui",
  "egui-wgpu",

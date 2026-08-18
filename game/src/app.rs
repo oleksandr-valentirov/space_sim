@@ -281,8 +281,12 @@ fn load_surface(
     terrain_asset: &str,
     colour_asset: &str,
 ) -> Option<engine::scene::TerrainId> {
-    let bytes = match std::fs::read(terrain_asset) {
-        Ok(bytes) => bytes,
+    // `open` rather than reading the file whole (X5d): the coarse prefix comes
+    // into memory, the rest stays on disk and arrives a tile at a time. For an
+    // asset no deeper than the prefix -- everything we cook today -- this is
+    // the same thing as reading it whole, down to the bytes.
+    let terrain = match engine::tiles::Terrain::open(std::path::Path::new(terrain_asset)) {
+        Ok(terrain) => terrain,
         Err(e) => {
             eprintln!("no terrain for {whose} ({terrain_asset}: {e}) -- drawing smooth.");
             eprintln!("to fix: make cook-dem");
@@ -290,25 +294,11 @@ fn load_surface(
         }
     };
 
-    let terrain = match engine::tiles::Terrain::from_bytes(&bytes) {
-        Ok(terrain) => terrain,
-        Err(e) => {
-            eprintln!("terrain {terrain_asset} does not read ({e}) -- drawing smooth.");
-            return None;
-        }
-    };
-
     // Colour is a separate asset and a separate absence (T2c). Without it the
     // Moon stays grey per `Body::colour`, exactly as before stage T; the
     // mountains go nowhere meanwhile.
-    let colour = match std::fs::read(colour_asset) {
-        Ok(bytes) => match engine::tiles::Colour::from_bytes(&bytes) {
-            Ok(colour) => Some(colour),
-            Err(e) => {
-                eprintln!("colour {colour_asset} does not read ({e}) -- drawing grey.");
-                None
-            }
-        },
+    let colour = match engine::tiles::Colour::open(std::path::Path::new(colour_asset)) {
+        Ok(colour) => Some(colour),
         Err(e) => {
             eprintln!("no colour for {whose} ({colour_asset}: {e}) -- drawing grey.");
             eprintln!("to fix: make cook-colour");

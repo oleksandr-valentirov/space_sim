@@ -167,13 +167,13 @@ pub fn render(gpu: &Gpu, width: u32, height: u32, frames: u32, path: &Path) -> R
 
 /// The Moon's terrain and colour from cooked assets.
 fn load_surface(gpu: &Gpu, frame: &mut Frame) -> Result<TerrainId, String> {
-    let bytes = std::fs::read(demo::TERRAIN_ASSET)
-        .map_err(|e| format!("{}: {e}\nto fix: make cook-dem", demo::TERRAIN_ASSET))?;
-    let terrain = tiles::Terrain::from_bytes(&bytes)?;
-
-    let bytes = std::fs::read(demo::COLOUR_ASSET)
-        .map_err(|e| format!("{}: {e}\nto fix: make cook-colour", demo::COLOUR_ASSET))?;
-    let colour = tiles::Colour::from_bytes(&bytes)?;
+    // `open` rather than a whole read (X5d): identical for a pyramid no deeper
+    // than the resident prefix, which is every asset we cook today, and the
+    // streaming path once X5e cooks a deeper one.
+    let terrain = tiles::Terrain::open(std::path::Path::new(demo::TERRAIN_ASSET))
+        .map_err(|e| format!("{e}\nto fix: make cook-dem"))?;
+    let colour = tiles::Colour::open(std::path::Path::new(demo::COLOUR_ASSET))
+        .map_err(|e| format!("{e}\nto fix: make cook-colour"))?;
 
     println!(
         "terrain: {} levels; colour: {} levels",
