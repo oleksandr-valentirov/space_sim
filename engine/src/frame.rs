@@ -660,86 +660,57 @@ impl Frame {
                 gpu.describe()
             ));
         }
-        let count = tiles::Terrain::count(terrain.levels);
-        let colour_count = colour.map(|c| tiles::count(c.levels)).unwrap_or(0);
-        for (what, n) in [("terrain", count), ("colour", colour_count)] {
-            if n > MAX_TILES as usize {
-                return Err(format!(
-                    "{n} {what} tiles against an array ceiling of {MAX_TILES} -- raise MAX_TILES"
-                ));
-            }
+        // The pyramid is no longer bounded by the array ceiling (X5b): what gets
+        // bound is the resident set, and what exists on the GPU is the pool. The
+        // ceiling now applies to the pool, which is why it is checked here --
+        // once, on load, rather than on the frame path that can only grow it.
+        if self.planet.pool_slots > MAX_TILES as usize {
+            return Err(format!(
+                "a pool of {} slots against an array ceiling of {MAX_TILES} -- raise MAX_TILES",
+                self.planet.pool_slots
+            ));
         }
 
         // The grid is now one for both tilesets -- exactly the patch's grid: the
         // halo disappeared from the terrain along with the baked slope (version
         // 4) and from the colour, where it was never read (version 3). It stays a
         // parameter because the texture has to know its side anyway.
-        let upload = |label, format, side: u32, bytes_per_texel: u32, payload: &[&[u8]]| {
-            let mut views = Vec::with_capacity(payload.len());
-            for bytes in payload {
-                let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some(label),
-                    size: wgpu::Extent3d {
-                        width: side,
-                        height: side,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                    view_formats: &[],
-                });
-                gpu.queue.write_texture(
-                    texture.as_image_copy(),
-                    bytes,
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(side * bytes_per_texel),
-                        rows_per_image: Some(side),
-                    },
-                    wgpu::Extent3d {
-                        width: side,
-                        height: side,
-                        depth_or_array_layers: 1,
-                    },
-                );
-                views.push(texture.create_view(&wgpu::TextureViewDescriptor::default()));
-            }
-            views
-        };
-
         // Signed integers for heights and a byte for colour -- exactly what lies
         // in the tile: no conversion between asset and texture, hence no place
         // for one to drift. The terrain's two channels are height and slope, and
         // they lie in one texel precisely because they share one sample.
-        let height_tiles: Vec<&[u8]> = (0..count).map(|i| terrain.tile_bytes(i)).collect();
-        let heights = upload(
+        //
+        // Nothing is uploaded here since X5b. The pools start empty and fill on
+        // the first frame that asks, which is also why load time stopped
+        // depending on pyramid depth: creating an eight-level pyramid measured
+        // 0.7 s per pyramid (X5a), and it was paid whether the body was ever
+        // looked at or not.
+        let heights = TilePool::new(
+            gpu,
             "terrain tile",
             wgpu::TextureFormat::Rg16Sint,
             tiles::NODES as u32,
             4,
-            &height_tiles,
+            self.planet.pool_slots,
         );
-        // An empty array cannot be bound, so a body without colour gets one stub
-        // texture -- the same trick as `no_tiles`. Nobody will read it:
-        // `terrain.y` in the uniforms will stay zero.
-        let blank = vec![0u8; tiles::NODES * tiles::NODES];
-        let colour_tiles: Vec<&[u8]> = match colour {
-            Some(c) => (0..colour_count).map(|i| c.tile_bytes(i)).collect(),
-            None => vec![blank.as_slice()],
-        };
+        // A body without colour still needs a pool: an empty binding array
+        // cannot be bound at all, and one slot is enough to bind. Nobody reads
+        // it -- `terrain.y` in the uniforms stays zero.
         let (format, bytes_per_texel) = match colour {
             Some(c) => (colour_format(c), c.channels),
             None => (NO_COLOUR_FORMAT, 1),
         };
-        let colours = upload(
+        let colours = TilePool::new(
+            gpu,
             "colour tile",
             format,
             tiles::NODES as u32,
             bytes_per_texel,
-            &colour_tiles,
+            if colour.is_some() {
+                self.planet.pool_slots
+            } else {
+                1
+            },
         );
 
         self.planet.terrains.push(TerrainSlot {
@@ -761,6 +732,21 @@ impl Frame {
     /// done, and the only honest check of that is counting.
     pub fn tile_rebuilds(&self) -> u64 {
         self.planet.rebuilds
+    }
+
+    /// Caps the tile pools made from here on at `slots`, for the oracle (X5b).
+    ///
+    /// X5b claims that a pool smaller than the pyramid changes nothing visible,
+    /// and the only honest check of that is to make one small: the real pool
+    /// holds 1024 slots against a demand measured at 240 (X5a), so a test that
+    /// did not ask for it would never see a single eviction.
+    ///
+    /// It takes effect on the next `load_surface`, since that is where pools are
+    /// made, and it is a floor rather than a ceiling: `TilePool::begin` still
+    /// grows past it when a frame demands more, and must, or the eviction loop
+    /// would spin forever looking for a slot that is not needed.
+    pub fn set_tile_pool_slots(&mut self, slots: usize) {
+        self.planet.pool_slots = slots.max(1);
     }
 
     /// How many tile views the last frame bound, per body (Y1e).
@@ -1519,8 +1505,19 @@ struct Planet {
     /// texel costs four bytes.
     no_tiles: Option<wgpu::BindGroup>,
 
-    /// The loaded terrains: one texture per tile.
+    /// The loaded terrains: a pool of tile textures each, since X5b.
     terrains: Vec<TerrainSlot>,
+    /// How many slots a pool made from here on gets (X5b).
+    ///
+    /// A field rather than the constant read at the call site, so the oracle can
+    /// force a pool below the pyramid; see `Frame::set_tile_pool_slots`.
+    pool_slots: usize,
+    /// Which frame the tile pools are serving (X5b).
+    ///
+    /// One counter for the whole planet pass, and not one per pool: eviction is
+    /// keyed on it, and a pool shared by two bodies must see one frame rather
+    /// than two.
+    tile_frame: u64,
 
     /// How many resident-set bind groups have been built since the frame was
     /// created (Y1c).
@@ -1555,15 +1552,19 @@ struct TerrainSlot {
     data: tiles::Terrain,
     /// The colour of the same surface, if the asset was there (stage T, T3b).
     colour: Option<tiles::Colour>,
-    /// The pyramid's texture views, by tile index -- the whole of it.
+    /// The tiles that exist on the GPU: a pool of slots, not the pyramid (X5b).
     ///
-    /// Views rather than a finished `bind_group` since Y1b: the group is built
-    /// from the tiles a frame actually reads (once debt D19), and to build it
-    /// we need the views to pick from. Nothing here is uploaded per frame --
-    /// the textures are loaded once and only their *selection* changes, and
-    /// since Y1c even that is rebuilt only when the selection moves.
-    heights: Vec<wgpu::TextureView>,
-    colours: Vec<wgpu::TextureView>,
+    /// It was the pyramid whole until X5b, and that is what tied resolution to
+    /// video memory -- the ceiling X5 exists to remove. Now a slot is filled
+    /// when a frame asks for its tile and reused when it stops asking, so what
+    /// the body costs is what the screen can show rather than what the asset
+    /// contains.
+    ///
+    /// Views rather than a finished `bind_group`, as since Y1b: the group is
+    /// built from the tiles a frame actually reads (once debt D19), and to
+    /// build it we need views to pick from.
+    heights: TilePool,
+    colours: TilePool,
     /// Metres per storage unit -- the multiplier for the vertex offset.
     scale_m: f32,
     /// The surface's mean albedo, linear (T7h). Computed **once per asset**:
@@ -1646,6 +1647,243 @@ fn resident_views<'a>(views: &'a [wgpu::TextureView], ids: &[usize]) -> Vec<&'a 
     ids.iter().map(|&i| &views[i]).collect()
 }
 
+/// How many slots a tile pool starts with (X5b).
+///
+/// X5a measured the worst per-pyramid demand at **240 tiles** -- eight levels,
+/// 10 km above the Moon, 1080p -- and recorded it as a floor rather than an
+/// answer: the patch set behind it came from today's six-level assets, and a
+/// deeper pyramid measures slope on a shorter base, so it splits further. This
+/// is four times that floor, and `TilePool::begin` grows it if a frame ever
+/// asks for more.
+///
+/// What it costs is the point: 1024 slots are 12 MiB (NVIDIA) or 16 (RADV) per
+/// pyramid, against 1.5-2.0 GiB for the eight-level pyramid itself.
+const TILE_POOL_SLOTS: usize = 1024;
+
+/// A fixed set of tile textures, filled on demand and evicted by a cursor (X5b).
+///
+/// The pyramid used to be resident whole -- one texture per tile, created when
+/// the body loaded. At six levels that is 96 MiB per pyramid and nobody
+/// noticed; at the eight levels stage X5 aims at, `--tile-probe` measures
+/// 1.5 GiB (NVIDIA) and 2.0 (RADV) for **one** pyramid of **one** body, while
+/// the frame reads 240 tiles of it (X5a). So the array stops being the pyramid
+/// and becomes a pool of slots, and depth stops being a question about video
+/// memory at all.
+///
+/// ## Eviction by a cursor, exactly as `PatchCache` does it
+///
+/// Same structure, same reason: the set changes a patch at a time as the camera
+/// moves rather than in jumps, so a cursor going round finds a slot not needed
+/// this frame, and LRU would give the same answer for more money. A slot
+/// stamped with the current frame is never taken, so a tile interned this frame
+/// cannot be evicted by a later one in the same frame.
+///
+/// ## The capacity is not what a frame pays for
+///
+/// The bind group still holds the resident **set**, not the pool (Y1b): a bound
+/// array costs by its length -- 51 ns per texture per frame (T8) -- so binding
+/// 1024 slots would spend 52 us of what Y1 just saved. The pool decides what
+/// exists in video memory; the resident set decides what is bound. Two
+/// indirections, separate on purpose.
+///
+/// Until X5d the payload still comes from RAM (`Terrain::tile_bytes`), so this
+/// step buys no memory on its own -- it buys the structure that X5d fills from
+/// disk, and it is verifiable on its own terms: with a pool smaller than the
+/// pyramid the frame must come out bitwise unchanged.
+struct TilePool {
+    capacity: usize,
+    /// The textures, one per slot, created once and rewritten in place.
+    ///
+    /// Kept alongside the views because `write_texture` needs the texture and
+    /// the bind group needs the view, and a view does not lend back its
+    /// texture.
+    textures: Vec<wgpu::Texture>,
+    views: Vec<wgpu::TextureView>,
+    /// Which pyramid tile each slot holds, if any.
+    holds: Vec<Option<usize>>,
+    /// Where a pyramid tile sits in the pool, if it is in it at all.
+    slot: std::collections::HashMap<usize, usize>,
+    /// The frame in which each slot was last needed.
+    stamp: Vec<u64>,
+    cursor: usize,
+    /// The frame this pool is currently serving -- the **planet's** number, not
+    /// one of its own.
+    ///
+    /// It has to be the planet's, because a pool is per asset and two bodies
+    /// may share one asset. Were the count bumped per body, the second body
+    /// would find the first body's tiles stamped with an older frame and evict
+    /// them mid-frame -- and the first body's bind group, already built, would
+    /// draw the second body's surface.
+    ///
+    /// ⚠ **This one is held by construction and not by a test**, and that is
+    /// worth knowing rather than assuming. Making it fail needs three bodies on
+    /// one asset whose combined demand passes the capacity, and the capacity is
+    /// twice the largest body's demand rounded up to a power of two -- so the
+    /// fixture only bites when that demand lands on a power of two exactly. A
+    /// test built on that would be a test of `next_power_of_two`. X5d, which
+    /// brings a real budget for the pool, is where this becomes checkable.
+    frame: u64,
+    /// How many tiles have been asked of this pool during `frame`.
+    ///
+    /// Read at the frame boundary, where it is the previous frame's total, and
+    /// that is what the capacity is set from: growth must happen before
+    /// anything is interned, since it drops every slot.
+    demand: usize,
+    /// The capacity the pool never shrinks below.
+    ///
+    /// A field rather than the constant directly, so the oracle can force a
+    /// pool smaller than the pyramid (`Frame::set_tile_pool_slots`): with the
+    /// real floor a test would never see an eviction, the demand being 240
+    /// against 1024 slots.
+    floor: usize,
+    label: &'static str,
+    format: wgpu::TextureFormat,
+    side: u32,
+    bytes_per_texel: u32,
+}
+
+impl TilePool {
+    fn new(
+        gpu: &Gpu,
+        label: &'static str,
+        format: wgpu::TextureFormat,
+        side: u32,
+        bytes_per_texel: u32,
+        capacity: usize,
+    ) -> TilePool {
+        let mut pool = TilePool {
+            capacity: 0,
+            floor: capacity,
+            textures: Vec::new(),
+            views: Vec::new(),
+            holds: Vec::new(),
+            slot: std::collections::HashMap::new(),
+            stamp: Vec::new(),
+            cursor: 0,
+            frame: 0,
+            demand: 0,
+            label,
+            format,
+            side,
+            bytes_per_texel,
+        };
+        pool.allocate(gpu, capacity);
+        pool
+    }
+
+    /// Takes `capacity` fresh slots, dropping whatever the pool held.
+    ///
+    /// Everything resident is forgotten, and that is correct rather than
+    /// wasteful: the textures themselves are gone, so a slot map pointing into
+    /// them would point at nothing.
+    fn allocate(&mut self, gpu: &Gpu, capacity: usize) {
+        self.textures.clear();
+        self.views.clear();
+        self.slot.clear();
+        for _ in 0..capacity {
+            let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(self.label),
+                size: wgpu::Extent3d {
+                    width: self.side,
+                    height: self.side,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            self.views
+                .push(texture.create_view(&wgpu::TextureViewDescriptor::default()));
+            self.textures.push(texture);
+        }
+        self.holds = vec![None; capacity];
+        self.stamp = vec![0; capacity];
+        self.capacity = capacity;
+        self.cursor = 0;
+    }
+
+    /// Opens `frame` for a body that will ask this pool for `demand` tiles.
+    ///
+    /// Called once per body rather than once per frame, because a pool is per
+    /// asset: two bodies sharing a surface share the pool, and the demand on it
+    /// is the sum. Only the **first** call of a frame does anything but add to
+    /// that sum.
+    ///
+    /// The capacity is set at the frame boundary and only there: growing drops
+    /// every slot, so it may not happen once the frame has interned anything.
+    /// It takes the larger of what this body is about to ask and what the whole
+    /// of the previous frame asked -- the first covers a lone body on its very
+    /// first frame, the second covers bodies that share the pool, one frame
+    /// late. The factor of two is `Planet::reserve`'s, and for the same reason:
+    /// at exactly the demand, every frame would evict what the next one asks
+    /// for.
+    fn begin(&mut self, gpu: &Gpu, frame: u64, demand: usize) {
+        if frame != self.frame {
+            let wanted = (self.demand.max(demand) * 2)
+                .next_power_of_two()
+                .max(self.floor);
+            if wanted > self.capacity {
+                self.allocate(gpu, wanted);
+            }
+            self.frame = frame;
+            self.demand = 0;
+        }
+        self.demand += demand;
+    }
+
+    /// The slot holding `tile`, filling one if the pool does not have it.
+    fn intern(&mut self, gpu: &Gpu, tile: usize, bytes: &[u8]) -> usize {
+        if let Some(&slot) = self.slot.get(&tile) {
+            self.stamp[slot] = self.frame;
+            return slot;
+        }
+
+        // A slot not needed this frame. There almost always is one: the capacity
+        // is twice the demand of the previous frame.
+        //
+        // "Almost", because the capacity follows the demand one frame late, and
+        // a frame that suddenly asks for more than the pool holds has to draw
+        // with something. It takes a slot needed this frame, and the frame comes
+        // out wrong -- for that frame only: `begin` grows the pool on the next
+        // one, having now seen the true demand. The alternative is a loop that
+        // does not terminate, which is worse than a wrong frame in every way.
+        let mut looked = 0;
+        let slot = loop {
+            let candidate = self.cursor;
+            self.cursor = (self.cursor + 1) % self.capacity;
+            looked += 1;
+            if self.stamp[candidate] < self.frame || looked >= self.capacity {
+                break candidate;
+            }
+        };
+
+        if let Some(old) = self.holds[slot] {
+            self.slot.remove(&old);
+        }
+        gpu.queue.write_texture(
+            self.textures[slot].as_image_copy(),
+            bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(self.side * self.bytes_per_texel),
+                rows_per_image: Some(self.side),
+            },
+            wgpu::Extent3d {
+                width: self.side,
+                height: self.side,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.holds[slot] = Some(tile);
+        self.slot.insert(tile, slot);
+        self.stamp[slot] = self.frame;
+        slot
+    }
+}
+
 /// How many vertices are in one patch's grid.
 const PATCH_VERTICES: usize = (cubesphere::SIDE + 1) * (cubesphere::SIDE + 1);
 /// How many vertices are in a patch's triangle list -- three per triangle, two
@@ -1670,17 +1908,20 @@ const MIN_PATCHES: usize = 64;
 /// How many elements the bindless tile array declares.
 ///
 /// A ceiling of the layout, not a count of tiles: `PARTIALLY_BOUND_BINDING_ARRAY`
-/// allows binding fewer. The number is taken from the deepest pyramid that
-/// really exists: **the Moon's colour at six levels is 8190 tiles** (T2a),
-/// heights at five are 2046. Hence 8192, and the margin here is exactly zero: a
-/// seventh level would cost 32 766 tiles, and T2a measured that it is not worth
-/// it (256 MiB of video memory against 32).
+/// allows binding fewer, and what is bound is the resident set (Y1b) -- a few
+/// hundred views.
+///
+/// It used to be read off the deepest pyramid, because the pyramid was what got
+/// bound. Since X5b the pyramid is not on the GPU at all: a pool of slots is,
+/// and the resident set can never be larger than the pool. So this bounds
+/// `Planet::pool_slots`, and it is checked in `load_surface`.
 ///
 /// The hardware limit is orders of magnitude higher -- 1e6 on the most modest of
 /// this machine's adapters (`--tile-probe`) -- so what one can run into here is
-/// the asset, not the GPU. The cost of the declaration itself is not zero,
+/// our own pool, not the GPU. The cost of the declaration itself is not zero,
 /// though: the descriptor set grows in proportion, so a ceiling "just in case"
-/// would cost memory for every tileset.
+/// would cost memory for every tileset. 8192 is eight times the pool it guards,
+/// and shrinking it to the pool is a saving X5d can take if it wants one.
 const MAX_TILES: u32 = 8192;
 
 /// The format of a colour tile in GPU memory -- exactly what lies in the asset.
@@ -2109,6 +2350,8 @@ impl Planet {
             no_tiles,
             rebuilds: 0,
             cache: PatchCache::new(gpu, MIN_PATCHES),
+            pool_slots: TILE_POOL_SLOTS,
+            tile_frame: 0,
             bodies: Vec::new(),
             selections: Vec::new(),
         }
@@ -2286,6 +2529,11 @@ impl Planet {
 
         // Level selection is per body, and comes before any touch of the GPU:
         // the cache's capacity must be known before the first `intern`.
+        // One tick per planet pass, for every pool at once (X5b): what makes a
+        // slot evictable is "not needed in **this** frame", and the frame has to
+        // be the same one for two bodies sharing an asset.
+        self.tile_frame += 1;
+
         self.selections.clear();
         let mut needed = 0;
         for body in &scene.bodies {
@@ -2495,6 +2743,39 @@ impl Planet {
                 }
             }
 
+            // Into the pools (X5b). A tile the pool does not hold takes a slot
+            // here, and from X5d that is where the disk read will be waited on.
+            //
+            // What the rest of the frame carries from this point is the **pool
+            // slot**, not the pyramid index: two frames can read the same tile
+            // from different slots, and a bind group memoised on pyramid
+            // indices would then serve views of somebody else's tile -- the
+            // exact failure `tests/resident_tiles.rs` was written to catch.
+            let mut height_pool: Vec<usize> = Vec::new();
+            let mut colour_pool: Vec<usize> = Vec::new();
+            if let Some(id) = wanted {
+                let tile_frame = self.tile_frame;
+                let slot = &mut self.terrains[id];
+                slot.heights.begin(gpu, tile_frame, height_ids.len());
+                for &tile in &height_ids {
+                    let bytes = slot.data.tile_bytes(tile);
+                    height_pool.push(slot.heights.intern(gpu, tile, bytes));
+                }
+                if let Some(c) = slot.colour.as_ref() {
+                    slot.colours.begin(gpu, tile_frame, colour_ids.len());
+                    for &tile in &colour_ids {
+                        let bytes = c.tile_bytes(tile);
+                        colour_pool.push(slot.colours.intern(gpu, tile, bytes));
+                    }
+                }
+            }
+            // Taken again because interning needed `self.terrains` mutably, and
+            // the window arithmetic below reads from the very same struct. Two
+            // bindings rather than one is the whole price of putting the pool
+            // next to the asset it is filled from.
+            let terrain = wanted.and_then(|id| self.terrains.get(id));
+            let colour = terrain.and_then(|t| t.colour.as_ref());
+
             // The origins are per **slot** rather than per position in the set:
             // that way a patch's index lives in the vertex buffer and is not
             // rewritten every frame. Slots not occupied by this body stay zero and
@@ -2598,12 +2879,12 @@ impl Planet {
             // selects no patches at all.
             let stale = self.bodies[index].tiles.is_none()
                 || self.bodies[index].bound_terrain != wanted
-                || self.bodies[index].bound_heights != height_ids
-                || self.bodies[index].bound_colours != colour_ids;
+                || self.bodies[index].bound_heights != height_pool
+                || self.bodies[index].bound_colours != colour_pool;
             if stale {
                 let tiles_group = terrain.map(|t| {
-                    let heights = resident_views(&t.heights, &height_ids);
-                    let colours = resident_views(&t.colours, &colour_ids);
+                    let heights = resident_views(&t.heights.views, &height_pool);
+                    let colours = resident_views(&t.colours.views, &colour_pool);
                     gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("resident tiles"),
                         layout: self.tile_layout.as_ref().expect(
@@ -2627,8 +2908,8 @@ impl Planet {
                 let slot = &mut self.bodies[index];
                 slot.tiles = tiles_group;
                 slot.bound_terrain = wanted;
-                slot.bound_heights = height_ids;
-                slot.bound_colours = colour_ids;
+                slot.bound_heights = height_pool;
+                slot.bound_colours = colour_pool;
             }
 
             let slot = &self.bodies[index];

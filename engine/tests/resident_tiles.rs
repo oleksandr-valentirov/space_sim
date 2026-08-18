@@ -301,3 +301,60 @@ fn pointing_a_body_at_another_surface_rebuilds_the_binding() {
     // handles were never distinct.
     assert_ne!(real, TerrainId(usize::MAX));
 }
+
+/// A pool smaller than the pyramid draws exactly the same frame (X5b).
+///
+/// This is the whole claim of X5b, and it has to be bitwise: the pool changes
+/// **where** a tile sits on the GPU, and nothing else. A per-pixel tolerance
+/// would pass just as happily on a frame that read somebody else's tile at the
+/// far end of the array, which is the one failure this step can produce.
+///
+/// The pool is forced tiny rather than left at its 1024 slots for the reason
+/// `Frame::set_tile_pool_slots` exists: the demand here is a few dozen tiles,
+/// so the real pool would never evict anything, and a test that never evicts
+/// says nothing about eviction.
+///
+/// Three shots, and the third is the one that catches a stale binding: the
+/// camera goes away and comes back, so every tile of the first shot has been
+/// evicted and refilled by the time the third is drawn. Y1c memoises the bind
+/// group, and it memoises on **pool slots** since X5b precisely so that this
+/// shot cannot be served a group built for the same tiles in other slots.
+#[test]
+fn a_pool_smaller_than_the_pyramid_draws_the_same_frame() {
+    let Some(gpu) = gpu() else { return };
+    let asset = terrain();
+
+    let near = moon(50.0e3, TileSet::Loaded(TerrainId(0)));
+    let far = moon(4.0e6, TileSet::Loaded(TerrainId(0)));
+
+    // The whole pyramid resident: 4 levels is 510 tiles, so nothing is ever
+    // evicted and this is the frame as it was drawn before X5b.
+    let mut roomy = Frame::new(&gpu, shot::FORMAT);
+    roomy.set_tile_pool_slots(1024);
+    let id = roomy
+        .load_surface(&gpu, &asset, None)
+        .expect("the terrain should have loaded");
+    assert_eq!(id, TerrainId(0));
+    let reference = draw(&gpu, &mut roomy, &near);
+
+    // And the same body through a pool that cannot hold it.
+    let mut tight = Frame::new(&gpu, shot::FORMAT);
+    tight.set_tile_pool_slots(8);
+    tight
+        .load_surface(&gpu, &asset, None)
+        .expect("the terrain should have loaded");
+    let first = draw(&gpu, &mut tight, &near);
+    let _ = draw(&gpu, &mut tight, &far);
+    let again = draw(&gpu, &mut tight, &near);
+
+    assert_eq!(
+        different(&reference, &first),
+        0,
+        "a pool smaller than the pyramid changed the frame"
+    );
+    assert_eq!(
+        different(&reference, &again),
+        0,
+        "the frame did not come back after its tiles were evicted and refilled"
+    );
+}

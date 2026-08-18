@@ -707,40 +707,40 @@ fn flat(levels: u32) -> Terrain {
     Terrain::build(levels, MOON_RADIUS_M, 0.5, tiles::NO_SEA, &grids)
 }
 
-/// The deepest pyramid we actually cook fits into the array.
+/// A pyramid past the old array ceiling loads (X5b).
 ///
-/// Six levels is 8190 tiles, i.e. the Moon's **colour** tileset (T2a), and the
-/// array ceiling was raised for exactly that. Without this claim the ceiling
-/// would stay a number somebody once raised: the refusal check below would
-/// pass at a ceiling of 4096 and at 64 alike.
+/// This claim is the reverse of the one that stood here until X5b, and the
+/// reversal is the step: seven levels is 32 766 tiles, and it used to be
+/// **refused**, because the array that got bound was the pyramid itself. Now
+/// the GPU holds a pool of slots and the pyramid stays in the asset, so depth
+/// is no longer something the renderer is allowed to have an opinion about.
+///
+/// Six levels is checked alongside it because that is what we cook today (T2a):
+/// the deep case passing while the shipped one broke would be a strange way to
+/// find out.
 #[test]
-fn the_deepest_pyramid_we_actually_cook_fits() {
+fn a_pyramid_past_the_old_ceiling_loads() {
     let Some(gpu) = gpu() else { return };
     let mut frame = Frame::new(&gpu, shot::FORMAT);
 
-    let deep = flat(6);
     assert_eq!(Terrain::count(6), 8190);
-    let loaded = frame.load_terrain(&gpu, &deep);
-    assert!(loaded.is_ok(), "8190 tiles did not fit: {loaded:?}");
+    let shipped = frame.load_terrain(&gpu, &flat(6));
+    assert!(shipped.is_ok(), "8190 tiles did not load: {shipped:?}");
+
+    assert_eq!(Terrain::count(7), 32766);
+    let deep = frame.load_terrain(&gpu, &flat(7));
+    assert!(
+        deep.is_ok(),
+        "32766 tiles were refused, i.e. depth still costs the array: {deep:?}"
+    );
 }
 
 /// A handle that does not exist must not quietly turn into `Smooth`: a planet
 /// without mountains and a planet whose asset failed to load look the same.
 #[test]
-fn a_terrain_that_does_not_fit_is_refused_out_loud() {
+fn a_terrain_handle_that_does_not_exist_draws_nothing() {
     let Some(gpu) = gpu() else { return };
-    let mut frame = Frame::new(&gpu, shot::FORMAT);
 
-    // A pyramid larger than the array ceiling: 7 levels is 32766 tiles.
-    let refused = frame.load_terrain(&gpu, &flat(7));
-    println!("  oversized pyramid: {refused:?}");
-    assert!(
-        refused.is_err(),
-        "an oversized terrain was accepted silently"
-    );
-
-    // And a non-existent handle in the scene simply draws no terrain -- but
-    // does not crash either.
     let scene = moon(towards(0.0, 0.0), 1.0e5, TileSet::Loaded(TerrainId(42)));
     let taken = shot::take_scene(&gpu, 64, 64, &scene);
     assert!(taken.is_ok(), "a foreign handle brought the frame down");
