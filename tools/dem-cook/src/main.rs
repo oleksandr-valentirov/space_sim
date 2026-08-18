@@ -23,13 +23,18 @@ use std::path::PathBuf;
 /// level 5 would bring no new number -- only a fourfold larger file.
 const DEFAULT_LEVELS: u32 = 5;
 
-/// How many colour pyramid levels -- one more, also measured (T2a).
+/// How many colour pyramid levels for the Moon -- one more than its shape (T2a).
 ///
 /// The source is twice as fine as LOLA (1.9 km against 7.6 km per pixel), so a
-/// sixth level has something to take: 3.8 km per node. A seventh would cost
-/// 256 MiB of video memory against 32 and a fourfold longer load, and reaches
-/// the screen no better either way -- the material rule (T4) closes that
-/// gap.
+/// sixth level has something to take: 3.8 km per node.
+///
+/// WARNING: the reason it stopped at six has expired. That reason was video
+/// memory -- a seventh level cost 256 MiB against 32 while the whole pyramid
+/// was resident -- and since X5b it is a pool of slots, so depth costs disk.
+/// The source has exactly one more level in it (1.9 km per node at seven), and
+/// whether to take it is an open question next to the same one about Earth's
+/// shape (ROADMAP.md, after X5e). It is left at six rather than raised in
+/// passing: that is a recook and a measurement, not a constant.
 const DEFAULT_COLOUR_LEVELS: u32 = 6;
 
 /// How many pyramid levels for Earth's **shape** -- six, measured at T7.

@@ -50,8 +50,14 @@
 //! depends neither on the tile count nor on how many channels a tile has: 1225
 //! bytes of data in `R8Unorm` turn into 4096 in memory, 2450 in `R16Sint` into
 //! 8192. That is, **35x35 is not "a small texture", it is a four-kilobyte
-//! one**, and it is that constant, not the declared array ceiling, that
-//! decides how many pyramid levels we can afford.
+//! one**, and it is that constant, not the declared array ceiling, that says
+//! what a tile costs.
+//!
+//! Until X5b that also decided how many pyramid levels we could afford, since
+//! the pyramid was resident whole. It no longer does: the GPU holds a pool of
+//! slots and the pyramid stays in the file, so this constant now prices the
+//! **pool** -- a fixed cost -- and pyramid depth is bounded by the source and
+//! the disk instead.
 //!
 //! The only divergence between vendors is `Rgba8Unorm`: NVIDIA takes 12 288
 //! bytes per tile, RADV 16 384. That is one more proof that a three-byte

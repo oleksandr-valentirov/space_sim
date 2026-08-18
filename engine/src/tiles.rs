@@ -50,10 +50,15 @@
 //!
 //! The price was measured before the change (W1, `--tile-probe`): `Rg16Sint`
 //! costs 12,288 bytes per tile against 8192 for `R16Sint` on NVIDIA and 16,384
-//! on RADV, that is x1.5 and x2. In memory that adds +40/+80 MiB for a
-//! two-body scene; in array binding time, nothing -- binding was charged by
-//! the **number** of textures and not by their size, which is the mechanism
-//! behind D19 and the reason Y1 could close it by binding fewer.
+//! on RADV, that is x1.5 and x2. In array binding time it adds nothing --
+//! binding was charged by the **number** of textures and not by their size,
+//! which is the mechanism behind D19 and the reason Y1 could close it by
+//! binding fewer.
+//!
+//! In memory it used to add +40/+80 MiB for a two-body scene, because the
+//! scene held whole pyramids. Since X5b it holds a pool of slots, so the same
+//! ratio now applies to the pool -- a fixed cost that does not grow with the
+//! asset.
 //!
 //! ## The halo remains, but **only on the input** of [`Terrain::build`] (R7b)
 //!
