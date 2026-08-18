@@ -153,6 +153,102 @@ pub const SLOPE_UNIT: f64 = 1.0e-4;
 /// each.
 const TILE_BYTES: usize = 4 + NODES * NODES * 4;
 
+/// How many levels of a streamed pyramid stay in memory (X5d).
+///
+/// Not a tuning knob: the level criterion reads terrain on the CPU --
+/// `lod::select` asks `slope_at` about a patch it is still deciding about (R7c)
+/// -- and if that read went to the pool, the choice of level would depend on
+/// what happened to have loaded. A patch splits, its tile arrives, its slope
+/// changes, it stops splitting: flicker, and of the same family as the rule
+/// that procedural detail is a function of position and nothing else.
+///
+/// Six because six is what we cook today: with this prefix the criterion sees
+/// **exactly** what it saw before X5, so a deeper asset changes what the frame
+/// draws and not what it chooses to draw. It costs 36 MB of RAM per pyramid,
+/// against 571 MB for the eight-level file.
+pub const RESIDENT_LEVELS: u32 = 6;
+
+/// A file the tiles a pyramid does not keep in memory are read from (X5d).
+///
+/// One tile at a time and by arithmetic: tiles lie flat in index order after a
+/// fixed header, so the offset is `header + index * stride` and no index beside
+/// the data is needed. That is why X5 costs no format version -- `SSDEM` 4 and
+/// `SSCOL` 3 were already seekable, they were simply never read that way.
+///
+/// The handle is shared rather than reopened per read: X5d3 puts the reads on a
+/// loader thread, and an `open` per tile would be a syscall per tile for
+/// nothing. `Arc<Mutex<File>>` is the blunt instrument on purpose (CLAUDE.md):
+/// the lock is held for one `seek`+`read` of four kilobytes.
+#[derive(Clone, Debug)]
+pub struct TileSource {
+    file: std::sync::Arc<std::sync::Mutex<std::fs::File>>,
+    /// Where the first tile begins.
+    header_bytes: u64,
+    /// How many bytes one tile takes in the file.
+    stride: u64,
+    /// Where the texture payload starts inside a tile: the terrain's two bounds
+    /// are not uploaded, the colour has no such prefix.
+    payload_at: u64,
+    /// How many bytes of that payload there are.
+    payload_len: usize,
+}
+
+/// The first `bytes` bytes of a file (X5d).
+///
+/// Not `fs::read` and a slice: the point is to not read 571 MB in order to keep
+/// 36 of them.
+fn read_prefix(path: &std::path::Path, bytes: usize) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut out = Vec::with_capacity(bytes);
+    file.take(bytes as u64)
+        .read_to_end(&mut out)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    if out.len() != bytes {
+        return Err(format!(
+            "{}: {} bytes where the header promises at least {bytes}",
+            path.display(),
+            out.len()
+        ));
+    }
+    Ok(out)
+}
+
+impl TileSource {
+    fn open(
+        path: &std::path::Path,
+        header_bytes: u64,
+        stride: u64,
+        payload_at: u64,
+        payload_len: usize,
+    ) -> Result<TileSource, String> {
+        let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(TileSource {
+            file: std::sync::Arc::new(std::sync::Mutex::new(file)),
+            header_bytes,
+            stride,
+            payload_at,
+            payload_len,
+        })
+    }
+
+    /// One tile's texture payload, read from the file.
+    pub fn read(&self, index: usize) -> Result<Vec<u8>, String> {
+        use std::io::{Read, Seek};
+        let at = self.header_bytes + index as u64 * self.stride + self.payload_at;
+        let mut bytes = vec![0u8; self.payload_len];
+        let mut file = self
+            .file
+            .lock()
+            .map_err(|_| "the tile file's lock was poisoned".to_string())?;
+        file.seek(std::io::SeekFrom::Start(at))
+            .map_err(|e| format!("seek to tile {index}: {e}"))?;
+        file.read_exact(&mut bytes)
+            .map_err(|e| format!("read tile {index}: {e}"))?;
+        Ok(bytes)
+    }
+}
+
 /// The header: signature, version, three numbers, radius, scale and sea
 /// level.
 const HEADER_BYTES: usize = 8 + 4 + 4 + 4 + 8 + 4 + 4;
@@ -456,7 +552,17 @@ pub struct Terrain {
     /// without this field the rule draws mid-ocean ridges on water.
     pub sea_units: f32,
     /// The tiles in a row in canonical order -- see [`Terrain::index`].
+    ///
+    /// Only the first [`Terrain::resident_levels`] levels of them since X5d:
+    /// the rest live in the file and arrive a tile at a time.
     tiles: Vec<u8>,
+    /// How many levels of the pyramid are in `tiles`.
+    ///
+    /// Equal to `levels` for an asset loaded whole -- which is every asset a
+    /// test builds, and the reason nothing below had to learn about streaming.
+    resident_levels: u32,
+    /// Where the deeper tiles are read from, if this pyramid is streamed.
+    source: Option<TileSource>,
 }
 
 impl Terrain {
@@ -720,6 +826,8 @@ impl Terrain {
             scale_m,
             sea_units,
             tiles,
+            resident_levels: levels,
+            source: None,
         }
     }
 
@@ -739,6 +847,13 @@ impl Terrain {
 
     /// Parse the file bytes.
     pub fn from_bytes(bytes: &[u8]) -> Result<Terrain, String> {
+        let levels = Terrain::header_levels(bytes)?;
+        Terrain::from_prefix(bytes, levels, levels)
+    }
+
+    /// The header's checks and the one number `open` needs before it can decide
+    /// how much of the file to read.
+    fn header_levels(bytes: &[u8]) -> Result<u32, String> {
         if bytes.len() < HEADER_BYTES {
             return Err(format!("{} bytes is not even a header", bytes.len()));
         }
@@ -758,16 +873,25 @@ impl Terrain {
                 "a tile of {nodes} nodes against a patch grid of {NODES} -- they do not match"
             ));
         }
-        let levels = word(16);
+        Ok(word(16))
+    }
+
+    /// A tileset from the header and the first `resident` levels of tiles.
+    ///
+    /// With `resident == levels` this is the whole file, i.e. `from_bytes`; the
+    /// length check is what distinguishes the two, and it is the same check
+    /// either way -- how many tiles the bytes claim against how many that many
+    /// levels have.
+    fn from_prefix(bytes: &[u8], levels: u32, resident: u32) -> Result<Terrain, String> {
         let reference_m = f64::from_le_bytes(bytes[20..28].try_into().unwrap());
         let scale_m = f32::from_le_bytes(bytes[28..32].try_into().unwrap());
         let sea_units = f32::from_le_bytes(bytes[32..36].try_into().unwrap());
 
         let tiles = bytes[HEADER_BYTES..].to_vec();
-        let wanted = Terrain::count(levels) * TILE_BYTES;
+        let wanted = Terrain::count(resident) * TILE_BYTES;
         if tiles.len() != wanted {
             return Err(format!(
-                "{} bytes of tiles instead of {wanted} for {levels} levels",
+                "{} bytes of tiles instead of {wanted} for {resident} levels",
                 tiles.len()
             ));
         }
@@ -778,7 +902,65 @@ impl Terrain {
             scale_m,
             sea_units,
             tiles,
+            resident_levels: resident,
+            source: None,
         })
+    }
+
+    /// Opens a tileset keeping only its coarse prefix in memory (X5d).
+    ///
+    /// The prefix is [`RESIDENT_LEVELS`] levels, or the whole pyramid when it is
+    /// shallower than that -- and in the second case the result is exactly what
+    /// [`Terrain::from_bytes`] gives, source and all, because a file that fits
+    /// in memory has nothing to stream.
+    pub fn open(path: &std::path::Path) -> Result<Terrain, String> {
+        let mut head = vec![0u8; HEADER_BYTES];
+        {
+            use std::io::Read;
+            let mut file =
+                std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            file.read_exact(&mut head)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+        }
+        let levels = Terrain::header_levels(&head)?;
+        let resident_levels = levels.min(RESIDENT_LEVELS);
+
+        // The header plus the prefix, in one read: a pyramid's coarse levels are
+        // a contiguous run at the front, by the same canonical order the index
+        // arithmetic uses.
+        let prefix = HEADER_BYTES + Terrain::count(resident_levels) * TILE_BYTES;
+        let bytes = read_prefix(path, prefix)?;
+        let mut terrain = Terrain::from_prefix(&bytes, levels, resident_levels)?;
+        if resident_levels < levels {
+            terrain.source = Some(TileSource::open(
+                path,
+                HEADER_BYTES as u64,
+                TILE_BYTES as u64,
+                4,
+                TILE_BYTES - 4,
+            )?);
+        }
+        Ok(terrain)
+    }
+
+    /// The tile's texture payload if it is in memory (X5d).
+    ///
+    /// `None` means "on disk", not "absent": [`Terrain::source`] reads it. The
+    /// two are kept apart because the frame may do one of them and must not do
+    /// the other -- a disk read on the frame thread is the stall X5d exists to
+    /// avoid.
+    pub fn resident_tile(&self, index: usize) -> Option<&[u8]> {
+        (index < Terrain::count(self.resident_levels)).then(|| self.tile_bytes(index))
+    }
+
+    /// How many levels of this pyramid are in memory.
+    pub fn resident_levels(&self) -> u32 {
+        self.resident_levels
+    }
+
+    /// Where the tiles that are not in memory are read from.
+    pub fn source(&self) -> Option<&TileSource> {
+        self.source.as_ref()
     }
 }
 
@@ -859,7 +1041,12 @@ pub struct Colour {
     /// body.
     pub srgb: bool,
     /// The tiles in a row in canonical order -- see [`index`].
+    ///
+    /// Only the first `resident_levels` of them since X5d, exactly as in
+    /// [`Terrain`].
     tiles: Vec<u8>,
+    resident_levels: u32,
+    source: Option<TileSource>,
 }
 
 impl Colour {
@@ -900,6 +1087,8 @@ impl Colour {
             scale,
             srgb,
             tiles,
+            resident_levels: levels,
+            source: None,
         }
     }
 
@@ -1042,6 +1231,13 @@ impl Colour {
 
     /// Parse the file bytes.
     pub fn from_bytes(bytes: &[u8]) -> Result<Colour, String> {
+        let (levels, channels) = Colour::header_shape(bytes)?;
+        Colour::from_prefix(bytes, levels, channels, levels)
+    }
+
+    /// The header's checks, and the two numbers `open` needs before it knows how
+    /// much of the file to read.
+    fn header_shape(bytes: &[u8]) -> Result<(u32, u32), String> {
         if bytes.len() < COLOUR_HEADER_BYTES {
             return Err(format!("{} bytes is not even a header", bytes.len()));
         }
@@ -1061,7 +1257,6 @@ impl Colour {
                 "a tile of {nodes} nodes against a patch grid of {NODES} -- they do not match"
             ));
         }
-        let levels = word(16);
         let channels = word(20);
         if channels != 1 && channels != 4 {
             return Err(format!(
@@ -1069,18 +1264,27 @@ impl Colour {
                  or in Vulkan"
             ));
         }
+        Ok((word(16), channels))
+    }
+
+    fn from_prefix(
+        bytes: &[u8],
+        levels: u32,
+        channels: u32,
+        resident: u32,
+    ) -> Result<Colour, String> {
         let scale = f32::from_le_bytes(bytes[24..28].try_into().unwrap());
-        let srgb = match word(28) {
+        let srgb = match u32::from_le_bytes(bytes[28..32].try_into().unwrap()) {
             0 => false,
             1 => true,
             other => return Err(format!("sample space {other}: it is 0 or 1")),
         };
 
         let tiles = bytes[COLOUR_HEADER_BYTES..].to_vec();
-        let wanted = count(levels) * Colour::tile_len(channels);
+        let wanted = count(resident) * Colour::tile_len(channels);
         if tiles.len() != wanted {
             return Err(format!(
-                "{} bytes of tiles instead of {wanted} for {levels} levels at {channels} channels",
+                "{} bytes of tiles instead of {wanted} for {resident} levels at {channels} channels",
                 tiles.len()
             ));
         }
@@ -1091,7 +1295,57 @@ impl Colour {
             scale,
             srgb,
             tiles,
+            resident_levels: resident,
+            source: None,
         })
+    }
+
+    /// Opens a colour tileset keeping only its coarse prefix in memory (X5d).
+    ///
+    /// The terrain's `open` with one difference, and it is in the file rather
+    /// than here: a colour tile has no bounds in front of its payload, so the
+    /// whole tile is what goes into the texture.
+    pub fn open(path: &std::path::Path) -> Result<Colour, String> {
+        let mut head = vec![0u8; COLOUR_HEADER_BYTES];
+        {
+            use std::io::Read;
+            let mut file =
+                std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            file.read_exact(&mut head)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+        }
+        let (levels, channels) = Colour::header_shape(&head)?;
+        let resident_levels = levels.min(RESIDENT_LEVELS);
+        let stride = Colour::tile_len(channels);
+
+        let prefix = COLOUR_HEADER_BYTES + count(resident_levels) * stride;
+        let bytes = read_prefix(path, prefix)?;
+        let mut colour = Colour::from_prefix(&bytes, levels, channels, resident_levels)?;
+        if resident_levels < levels {
+            colour.source = Some(TileSource::open(
+                path,
+                COLOUR_HEADER_BYTES as u64,
+                stride as u64,
+                0,
+                stride,
+            )?);
+        }
+        Ok(colour)
+    }
+
+    /// The tile's texture payload if it is in memory (X5d).
+    pub fn resident_tile(&self, index: usize) -> Option<&[u8]> {
+        (index < count(self.resident_levels)).then(|| self.tile_bytes(index))
+    }
+
+    /// How many levels of this pyramid are in memory.
+    pub fn resident_levels(&self) -> u32 {
+        self.resident_levels
+    }
+
+    /// Where the tiles that are not in memory are read from.
+    pub fn source(&self) -> Option<&TileSource> {
+        self.source.as_ref()
     }
 }
 
@@ -1678,5 +1932,136 @@ mod tests {
             high - low > 0.5,
             "the ramp's span slipped: {low} ... {high}"
         );
+    }
+}
+
+#[cfg(test)]
+mod streaming_tests {
+    use super::*;
+
+    /// A path in the temp directory that no other test shares.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "space_sim_{name}_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        path
+    }
+
+    /// A pyramid whose every tile differs from every other, so a read of the
+    /// wrong one cannot pass.
+    ///
+    /// The node carries its own tile's index rather than a smooth field: this
+    /// oracle is about addressing, and a ramp would let a tile read at a
+    /// neighbouring offset look plausible.
+    fn numbered(levels: u32) -> Terrain {
+        let mut grids = Vec::with_capacity(Terrain::count(levels));
+        for index in 0..Terrain::count(levels) {
+            grids.push(vec![index as i16; STORED * STORED]);
+        }
+        Terrain::build(levels, 1_737_400.0, 0.5, NO_SEA, &grids)
+    }
+
+    /// Every tile read from the file is the tile the whole asset has (X5d1).
+    ///
+    /// Every one of them, not a sample: the read is arithmetic on an offset, and
+    /// the way arithmetic fails is at one end or on one level, never in the
+    /// middle. The prefix is checked from memory and the rest from disk, which
+    /// is also the claim that the boundary between the two lands where `open`
+    /// says it does.
+    #[test]
+    fn a_tile_from_the_file_is_the_tile_from_memory() {
+        // Deeper than the resident prefix, or there would be nothing to stream.
+        let levels = RESIDENT_LEVELS + 1;
+        let whole = numbered(levels);
+        let path = scratch("terrain");
+        std::fs::write(&path, whole.to_bytes()).expect("the fixture should have written");
+
+        let streamed = Terrain::open(&path).expect("the fixture should have opened");
+        assert_eq!(streamed.levels, levels);
+        assert_eq!(streamed.resident_levels(), RESIDENT_LEVELS);
+        assert!(streamed.source().is_some(), "nothing to read from");
+
+        let resident = Terrain::count(RESIDENT_LEVELS);
+        for index in 0..Terrain::count(levels) {
+            let wanted = whole.tile_bytes(index);
+            let got = match streamed.resident_tile(index) {
+                Some(bytes) => bytes.to_vec(),
+                None => streamed
+                    .source()
+                    .expect("a deep tile needs a source")
+                    .read(index)
+                    .expect("the tile should have read"),
+            };
+            assert_eq!(got, wanted, "tile {index} came back wrong");
+            assert_eq!(
+                streamed.resident_tile(index).is_some(),
+                index < resident,
+                "tile {index} is on the wrong side of the prefix"
+            );
+        }
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The same for colour, whose tile has no bounds in front of it.
+    ///
+    /// A separate test rather than a loop over both, because the difference
+    /// between the two formats is exactly the offset this step computes: sharing
+    /// the body would hide the one thing worth checking twice.
+    #[test]
+    fn a_colour_tile_from_the_file_is_the_tile_from_memory() {
+        let levels = RESIDENT_LEVELS + 1;
+        let channels = 4;
+        let grids: Vec<Vec<u8>> = (0..count(levels))
+            .map(|index| vec![index as u8; Colour::tile_len(channels)])
+            .collect();
+        let whole = Colour::build(levels, channels, 1.0, true, &grids);
+
+        let path = scratch("colour");
+        std::fs::write(&path, whole.to_bytes()).expect("the fixture should have written");
+
+        let streamed = Colour::open(&path).expect("the fixture should have opened");
+        assert_eq!(streamed.resident_levels(), RESIDENT_LEVELS);
+
+        for index in 0..count(levels) {
+            let got = match streamed.resident_tile(index) {
+                Some(bytes) => bytes.to_vec(),
+                None => streamed
+                    .source()
+                    .expect("a deep tile needs a source")
+                    .read(index)
+                    .expect("the tile should have read"),
+            };
+            assert_eq!(got, whole.tile_bytes(index), "colour tile {index} is wrong");
+        }
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// A pyramid no deeper than the prefix keeps no file open at all.
+    ///
+    /// Not a micro-optimisation: it is what makes `open` safe to use everywhere,
+    /// including for the assets tests cook, and it is why nothing below `open`
+    /// had to learn that streaming exists.
+    #[test]
+    fn a_shallow_pyramid_streams_nothing() {
+        let whole = numbered(3);
+        let path = scratch("shallow");
+        std::fs::write(&path, whole.to_bytes()).expect("the fixture should have written");
+
+        let opened = Terrain::open(&path).expect("the fixture should have opened");
+        assert_eq!(opened.resident_levels(), 3);
+        assert!(
+            opened.source().is_none(),
+            "a file that fits was still opened"
+        );
+        for index in 0..Terrain::count(3) {
+            assert_eq!(opened.resident_tile(index), Some(whole.tile_bytes(index)));
+        }
+
+        std::fs::remove_file(&path).ok();
     }
 }
