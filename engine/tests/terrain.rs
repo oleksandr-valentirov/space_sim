@@ -745,3 +745,52 @@ fn a_terrain_handle_that_does_not_exist_draws_nothing() {
     let taken = shot::take_scene(&gpu, 64, 64, &scene);
     assert!(taken.is_ok(), "a foreign handle brought the frame down");
 }
+
+/// A streamed pyramid draws exactly what the shallower one draws (X5d2).
+///
+/// This is the claim that a tile still on disk costs sharpness and nothing
+/// else. With the prefix at four levels, a five-level asset must produce **the**
+/// frame of the four-level asset -- not a similar one -- because every part of
+/// the chain is the same: `lod::select` reads slope from the resident prefix,
+/// the window climbs to the same tile (checked exhaustively in `tiles`), and
+/// the tile's bytes come from the same grids.
+///
+/// So the degradation is one already covered by every terrain test above, and
+/// that is the point of it: a missing tile does not open a new behaviour.
+///
+/// It also checks the thing arithmetic alone cannot -- that both call sites of
+/// the frame ask the **same** predicate. A window into one tile with the offset
+/// meant for another would land here as a shifted piece of the Moon, which is
+/// exactly what a bitwise comparison sees and a tolerance would not.
+#[test]
+fn a_streamed_pyramid_draws_what_its_prefix_draws() {
+    let Some(gpu) = gpu() else { return };
+
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../data/lola/ldem_4.img");
+    let grid = Grid::read(&path).expect("the LOLA grid should have read");
+    let deep = build(&grid, LEVELS + 1);
+    let shallow = build(&grid, LEVELS);
+
+    let mut file = std::env::temp_dir();
+    file.push(format!("space_sim_streamed_{}.dem", std::process::id()));
+    std::fs::write(&file, deep.to_bytes()).expect("the fixture should have written");
+    let streamed = Terrain::open_with(&file, LEVELS).expect("the fixture should have opened");
+    std::fs::remove_file(&file).ok();
+
+    assert_eq!(streamed.levels, LEVELS + 1);
+    assert_eq!(streamed.resident_levels(), LEVELS);
+
+    // Off any axis of symmetry and close enough that patches go past the
+    // prefix -- otherwise the streaming path is never taken and the two frames
+    // agree for want of anything to disagree about.
+    let eye = towards(40.0, 25.0);
+    for altitude in [50.0e3, 5.0e3] {
+        let (with_prefix, _) = pair_of(&gpu, &shallow, eye, altitude);
+        let (streamed_shot, _) = pair_of(&gpu, &streamed, eye, altitude);
+        assert_eq!(
+            different(&with_prefix, &streamed_shot),
+            0,
+            "at {altitude:.0} m a streamed pyramid drew something its prefix does not"
+        );
+    }
+}

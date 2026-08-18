@@ -506,6 +506,42 @@ pub fn covering(levels: u32, patch: &Patch) -> (Patch, u32) {
     (it, patch.level - it.level)
 }
 
+/// The nearest ancestor whose tile is **available**, and how much coarser it is
+/// (X5d2).
+///
+/// `covering` with one more reason to climb. Until X5d the only reason was
+/// depth: a patch below the pyramid read its ancestor, and every tile of the
+/// pyramid was there. With the tiles on disk, "there" stops being a property of
+/// the pyramid and becomes a property of this frame -- so the walk asks, and
+/// keeps climbing while the answer is no.
+///
+/// Level 0 is always available: the coarse prefix is resident by construction
+/// (`RESIDENT_LEVELS`), which is what makes a missing tile a blurrier frame
+/// rather than a hole.
+pub fn covering_available(
+    levels: u32,
+    patch: &Patch,
+    available: &dyn Fn(usize) -> bool,
+) -> (Patch, u32) {
+    let mut it = *patch;
+    loop {
+        if it.level < levels {
+            match index(levels, &it) {
+                Some(at) if available(at) => break,
+                _ => {}
+            }
+        }
+        match it.parent() {
+            Some(parent) => it = parent,
+            // Level 0 and not available: the prefix is resident by
+            // construction, so this is a broken asset rather than a slow disk.
+            // Drawing the tile we have beats refusing to draw at all.
+            None => break,
+        }
+    }
+    (it, patch.level - it.level)
+}
+
 /// Where a patch looks inside the tile covering it (R7a).
 ///
 /// Three numbers: the tile's index in the pyramid, the patch's offset inside it
@@ -517,7 +553,25 @@ pub fn covering(levels: u32, patch: &Patch) -> (Patch, u32) {
 /// formula, and the test compares the GPU against it rather than against a second
 /// copy of it.
 pub fn window(levels: u32, patch: &Patch) -> (usize, [f64; 2], f64) {
-    let (tile, deeper) = covering(levels, patch);
+    window_from(levels, patch, covering(levels, patch))
+}
+
+/// The same window, but into the nearest **available** ancestor (X5d2).
+///
+/// ⚠ The predicate must be the same one on both call sites of a frame -- the one
+/// that picks which tile to bind and the one that computes the offset into it.
+/// A window into one tile with the offset of another is not a wrong pixel, it is
+/// a different piece of the planet, and it looks entirely plausible.
+pub fn window_available(
+    levels: u32,
+    patch: &Patch,
+    available: &dyn Fn(usize) -> bool,
+) -> (usize, [f64; 2], f64) {
+    window_from(levels, patch, covering_available(levels, patch, available))
+}
+
+fn window_from(levels: u32, patch: &Patch, covering: (Patch, u32)) -> (usize, [f64; 2], f64) {
+    let (tile, deeper) = covering;
     let at = index(levels, &tile).expect("covering has already lowered the level");
 
     // `SIDE` ancestor nodes across `2^deeper` children -- so the step is
@@ -583,8 +637,13 @@ impl Terrain {
 
     /// The patch whose tile covers this patch: itself or the nearest
     /// ancestor.
+    ///
+    /// Against the **resident** depth, not the full one (X5d): everything the
+    /// CPU reads has to be in memory, and what is in memory is the prefix. For
+    /// an asset loaded whole -- every asset a test builds -- the two are the
+    /// same number.
     pub fn covering(&self, patch: &Patch) -> (Patch, u32) {
-        crate::tiles::covering(self.levels, patch)
+        crate::tiles::covering(self.resident_levels, patch)
     }
 
     /// A tile's height bounds in storage units: lowest and highest.
@@ -642,6 +701,15 @@ impl Terrain {
         crate::tiles::window(self.levels, patch)
     }
 
+    /// The same, into the nearest ancestor the caller says it has (X5d2).
+    pub fn window_available(
+        &self,
+        patch: &Patch,
+        available: &dyn Fn(usize) -> bool,
+    ) -> (usize, [f64; 2], f64) {
+        crate::tiles::window_available(self.levels, patch, available)
+    }
+
     /// A bilinear sample of a channel at node `(a, b)` of the given patch, in
     /// storage units.
     ///
@@ -650,7 +718,11 @@ impl Terrain {
     /// Shared between height and slope on purpose -- they have one window, and
     /// two computations of it would diverge.
     fn sample(&self, patch: &Patch, a: usize, b: usize, channel: usize) -> f64 {
-        let (index, origin, step) = self.window(patch);
+        // The resident depth, for the reason `covering` gives: this is a read
+        // from `self.tiles`, and beyond the prefix there is nothing there. It is
+        // also what keeps the level criterion a function of position rather than
+        // of what happened to load (`RESIDENT_LEVELS`).
+        let (index, origin, step) = crate::tiles::window(self.resident_levels, patch);
         if step == 1.0 {
             return f64::from(self.channel(index, a as i32, b as i32, channel));
         }
@@ -914,6 +986,15 @@ impl Terrain {
     /// [`Terrain::from_bytes`] gives, source and all, because a file that fits
     /// in memory has nothing to stream.
     pub fn open(path: &std::path::Path) -> Result<Terrain, String> {
+        Terrain::open_with(path, RESIDENT_LEVELS)
+    }
+
+    /// The same, with the prefix named rather than taken from the constant.
+    ///
+    /// It exists for the oracle: checking what a streamed pyramid draws means
+    /// building one deeper than its prefix, and at the real prefix that is 32 766
+    /// tiles of fixture for a claim that holds at four.
+    pub fn open_with(path: &std::path::Path, prefix: u32) -> Result<Terrain, String> {
         let mut head = vec![0u8; HEADER_BYTES];
         {
             use std::io::Read;
@@ -923,7 +1004,7 @@ impl Terrain {
                 .map_err(|e| format!("{}: {e}", path.display()))?;
         }
         let levels = Terrain::header_levels(&head)?;
-        let resident_levels = levels.min(RESIDENT_LEVELS);
+        let resident_levels = levels.min(prefix.max(1));
 
         // The header plus the prefix, in one read: a pyramid's coarse levels are
         // a contiguous run at the front, by the same canonical order the index
@@ -1306,6 +1387,11 @@ impl Colour {
     /// than here: a colour tile has no bounds in front of its payload, so the
     /// whole tile is what goes into the texture.
     pub fn open(path: &std::path::Path) -> Result<Colour, String> {
+        Colour::open_with(path, RESIDENT_LEVELS)
+    }
+
+    /// The same, with the prefix named -- see [`Terrain::open_with`].
+    pub fn open_with(path: &std::path::Path, prefix: u32) -> Result<Colour, String> {
         let mut head = vec![0u8; COLOUR_HEADER_BYTES];
         {
             use std::io::Read;
@@ -1315,7 +1401,7 @@ impl Colour {
                 .map_err(|e| format!("{}: {e}", path.display()))?;
         }
         let (levels, channels) = Colour::header_shape(&head)?;
-        let resident_levels = levels.min(RESIDENT_LEVELS);
+        let resident_levels = levels.min(prefix.max(1));
         let stride = Colour::tile_len(channels);
 
         let prefix = COLOUR_HEADER_BYTES + count(resident_levels) * stride;
@@ -2039,6 +2125,41 @@ mod streaming_tests {
         }
 
         std::fs::remove_file(&path).ok();
+    }
+
+    /// Climbing to an available ancestor is the same walk as a shallower
+    /// pyramid (X5d2).
+    ///
+    /// This is the claim that a missing tile degrades into something already
+    /// tested rather than into a new behaviour: with "available" meaning "in the
+    /// first `prefix` levels", the window into a deep pyramid must be **the**
+    /// window of a pyramid cooked to `prefix` -- same tile, same offset, same
+    /// step, all three.
+    ///
+    /// Exhaustive over patches rather than sampled: the walk is arithmetic on
+    /// indices, and arithmetic fails at an edge -- the first tile of a level, the
+    /// last, a cube corner -- never in the middle.
+    #[test]
+    fn an_available_ancestor_is_the_shallower_pyramids_tile() {
+        let deep = 5;
+        for prefix in 1..=deep {
+            let available = |at: usize| at < count(prefix);
+            for level in 0..deep + 2 {
+                let side = 1u32 << level;
+                for face in 0..FACES {
+                    for i in 0..side {
+                        for j in 0..side {
+                            let patch = Patch { face, level, i, j };
+                            assert_eq!(
+                                window_available(deep, &patch, &available),
+                                window(prefix, &patch),
+                                "prefix {prefix}, patch {patch:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// A pyramid no deeper than the prefix keeps no file open at all.

@@ -1630,6 +1630,35 @@ struct BodySlot {
     bound_colours: Vec<usize>,
 }
 
+/// Whether a height tile can be had this frame without waiting (X5d2).
+///
+/// Two ways: the pool already holds it, or its payload is in the asset's
+/// resident prefix and can be uploaded on the spot. Anything else is on disk,
+/// and the window climbs to an ancestor rather than leaving a hole.
+///
+/// ⚠ The **same** predicate has to answer at both call sites of a frame -- the
+/// one that decides which tile is bound and the one that computes the offset
+/// into it. That is why it is a function rather than a closure at each site: a
+/// window into one tile with the offset of another is not a wrong pixel, it is
+/// a different piece of the planet, and it looks completely plausible.
+///
+/// It is also why interning happens **after** the whole set is chosen: the pool
+/// must not move under the predicate halfway through.
+fn height_ready(terrain: Option<&TerrainSlot>, tile: usize) -> bool {
+    match terrain {
+        Some(t) => t.heights.holds(tile) || t.data.resident_tile(tile).is_some(),
+        None => false,
+    }
+}
+
+/// The same for colour, whose pyramid has its own depth and its own pool.
+fn colour_ready(terrain: Option<&TerrainSlot>, tile: usize) -> bool {
+    match terrain.and_then(|t| t.colour.as_ref().map(|c| (t, c))) {
+        Some((t, c)) => t.colours.holds(tile) || c.resident_tile(tile).is_some(),
+        None => false,
+    }
+}
+
 /// The views of one resident set, in the set's own order (Y1b).
 ///
 /// A free function rather than a closure at the call site: the closure would
@@ -1834,13 +1863,25 @@ impl TilePool {
         self.demand += demand;
     }
 
-    /// The slot holding `tile`, filling one if the pool does not have it.
-    fn intern(&mut self, gpu: &Gpu, tile: usize, bytes: &[u8]) -> usize {
-        if let Some(&slot) = self.slot.get(&tile) {
-            self.stamp[slot] = self.frame;
-            return slot;
-        }
+    /// Whether the pool already holds this tile -- asked before anything is
+    /// interned, when it means "this frame can have it for nothing" (X5d2).
+    fn holds(&self, tile: usize) -> bool {
+        self.slot.contains_key(&tile)
+    }
 
+    /// The slot holding `tile`, if the pool has it -- and it is needed now.
+    ///
+    /// Stamping here rather than in `insert` alone is the point: a tile asked
+    /// for this frame must not be evicted by the next tile of the same frame.
+    fn slot_of(&mut self, tile: usize) -> Option<usize> {
+        let slot = *self.slot.get(&tile)?;
+        self.stamp[slot] = self.frame;
+        Some(slot)
+    }
+
+    /// Puts `tile` into a slot, taking one from whatever this frame does not
+    /// need.
+    fn insert(&mut self, gpu: &Gpu, tile: usize, bytes: &[u8]) -> usize {
         // A slot not needed this frame. There almost always is one: the capacity
         // is twice the demand of the previous frame.
         //
@@ -2728,14 +2769,17 @@ impl Planet {
                 std::collections::HashMap::new();
             for patch in &selection.patches {
                 if let Some(t) = terrain {
-                    let (tile, _, _) = t.data.window(patch);
+                    let (tile, _, _) = t
+                        .data
+                        .window_available(patch, &|tile| height_ready(terrain, tile));
                     height_slot.entry(tile).or_insert_with(|| {
                         height_ids.push(tile);
                         (height_ids.len() - 1) as u32
                     });
                 }
                 if let Some(levels) = colour_levels {
-                    let (tile, _, _) = tiles::window(levels, patch);
+                    let (tile, _, _) =
+                        tiles::window_available(levels, patch, &|tile| colour_ready(terrain, tile));
                     colour_slot.entry(tile).or_insert_with(|| {
                         colour_ids.push(tile);
                         (colour_ids.len() - 1) as u32
@@ -2758,14 +2802,33 @@ impl Planet {
                 let slot = &mut self.terrains[id];
                 slot.heights.begin(gpu, tile_frame, height_ids.len());
                 for &tile in &height_ids {
-                    let bytes = slot.data.tile_bytes(tile);
-                    height_pool.push(slot.heights.intern(gpu, tile, bytes));
+                    // In the pool, or in the resident prefix -- the selection
+                    // above admitted no third case, which is what `expect` says.
+                    let at = match slot.heights.slot_of(tile) {
+                        Some(at) => at,
+                        None => {
+                            let bytes = slot
+                                .data
+                                .resident_tile(tile)
+                                .expect("the window only chose tiles this frame can have");
+                            slot.heights.insert(gpu, tile, bytes)
+                        }
+                    };
+                    height_pool.push(at);
                 }
                 if let Some(c) = slot.colour.as_ref() {
                     slot.colours.begin(gpu, tile_frame, colour_ids.len());
                     for &tile in &colour_ids {
-                        let bytes = c.tile_bytes(tile);
-                        colour_pool.push(slot.colours.intern(gpu, tile, bytes));
+                        let at = match slot.colours.slot_of(tile) {
+                            Some(at) => at,
+                            None => {
+                                let bytes = c
+                                    .resident_tile(tile)
+                                    .expect("the window only chose tiles this frame can have");
+                                slot.colours.insert(gpu, tile, bytes)
+                            }
+                        };
+                        colour_pool.push(at);
                     }
                 }
             }
@@ -2808,7 +2871,9 @@ impl Planet {
                 // bind group below holds only those tiles, in that order.
                 let (tile, origin_uv, step) = match (terrain, self.cache.resident[slot]) {
                     (Some(t), Some(patch)) => {
-                        let (index, origin_uv, step) = t.data.window(&patch);
+                        let (index, origin_uv, step) = t
+                            .data
+                            .window_available(&patch, &|tile| height_ready(terrain, tile));
                         // A slot the cache holds for **another** body has no
                         // place in this body's set -- and no place in its draw
                         // list either, so the index is never read. Zero is the
@@ -2839,7 +2904,10 @@ impl Planet {
                 let (colour_tile, colour_uv, colour_step) =
                     match (colour_levels, self.cache.resident[slot]) {
                         (Some(levels), Some(patch)) => {
-                            let (index, uv, step) = tiles::window(levels, &patch);
+                            let (index, uv, step) =
+                                tiles::window_available(levels, &patch, &|tile| {
+                                    colour_ready(terrain, tile)
+                                });
                             // Renumbered into the resident set, exactly as the
                             // height above and for the same reason. The two
                             // sets are separate because the two pyramids are:
